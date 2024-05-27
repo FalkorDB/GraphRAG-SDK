@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "rag-sdk"
+version = "0.1.0"
+description = ""
+authors = ["Roi Lipman <roi.lipman@falkordb.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+falkordb = "^1.0.4"
+openai = "^1.30.3"
+pytest = "^8.2.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
