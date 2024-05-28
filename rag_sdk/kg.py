@@ -44,44 +44,6 @@ class KnowledgeGraph(object):
         self.sources = set([])
         self.ontolegy_ratio = 0.1 # Sampaling ratio for ontolegy detection
 
-    def add_source(self, source:str) -> AbstractSource:
-        """
-        Add source from which knowledge will be extracted
-
-        Parameters:
-            source (src): path to source
-
-        Returns:
-            AbstractSource: A source object
-        """
-
-        if not isinstance(source, str) or source == "":
-            raise Exception("Invalid argument, source should be a none empty string.")
-
-        s = Source(source)
-        self.sources.add(s)
-
-        return s
-
-    def remove_source(self, source:str|AbstractSource) -> None:
-        """
-        Remove source from sources
-
-         Parameters:
-             source (str|AbstractSource): source to remove
-        """
-
-        if not isinstance(source, str) and not isinstance(source, AbstractSource):
-            raise Exception("Invalid argument, source should be a string or a Source")
-
-        if isinstance(source, str):
-            for s in self.sources:
-                if s.source == source:
-                    self.sources.remove(s)
-                    break
-        else:
-            self.sources.remove(source)
-
     def list_sources(self) -> list[AbstractSource]:
         """
         List of sources associated with knowledge graph
@@ -92,9 +54,29 @@ class KnowledgeGraph(object):
 
         return [s.source for s in self.sources]
 
+    def process_sources(self, sources: list[AbstractSource]) -> None:
+        """
+        Add entities and relations found in sources into the knowledge-graph
+
+        Parameters:
+            sources (list[AbstractSource]): list of sources to extract knowledge from
+        """
+
+        # Make sure knowledge graph is created.
+        if not 'build_graph_from_sources' in globals() or self.client is None:
+            self._create()
+
+        # Run assistant
+        result = build_graph_from_sources(self, self.client, sources)
+
+        # Add processed sources
+        for src in sources:
+            self.sources.add(src)
+
     def _createKGWithSchema(self):
         # Save schema as an ontology graph
-        self.schema.save_graph(self.graph)
+        schema_graph = self.db.select_graph(f"{self.name}_schema")
+        self.schema.save_graph(schema_graph)
 
         # Create Knowledge Graph construction assistant
 
@@ -119,13 +101,10 @@ class KnowledgeGraph(object):
         # TODO: note multiple calls to _createKGWithSchema will overide one another.
         exec(code, globals())
 
-        # Run assistant
-        result = build_graph_from_sources(self, self.client, self.sources)
-
     def _createKGWithoutSchema(self):
         pass
 
-    def create(self) -> None:
+    def _create(self) -> None:
         """
         Create knowledge graph
         Extract entities and relations from sources

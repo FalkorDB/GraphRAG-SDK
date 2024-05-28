@@ -8,7 +8,6 @@ from .to_graph import schema_to_graph
 from .from_graph import schema_from_graph
 from .auto_detect import schema_auto_detect
 
-
 class Schema(object):
     """
     Knowledge Graph schema (ontology)
