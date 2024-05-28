@@ -1,4 +1,5 @@
 from falkordb import Graph
+from rag_sdk.source import AbstractSource
 from .entity import Entity
 from .relation import Relation
 from .encoder import SchemaEncoder
@@ -7,11 +8,19 @@ from .to_graph import schema_to_graph
 from .from_graph import schema_from_graph
 from .auto_detect import schema_auto_detect
 
-# Knowledge Graph schema
-# The schema captures graph entities in addition to their attributes
-# and the relationship types between the entities
+
 class Schema(object):
+    """
+    Knowledge Graph schema (ontology)
+    The schema captures entities types in addition to their attributes
+    and the relationship types between the them
+    """
+
     def __init__(self):
+        """
+        Initialize Schema
+        """
+
         self.entities = {}
         self.relations = {}
 
@@ -27,8 +36,18 @@ class Schema(object):
 
         return True
 
-    # Add a new entity to schema
-    def add_entity(self, name:str):
+
+    def add_entity(self, name:str) -> Entity:
+        """
+        Add a new entity to schema
+
+         Parameters:
+             name (str): Entity name.
+
+        Returns:
+            entity
+        """
+
         # Validate arguments
         if not isinstance(name, str) or name == "":
             raise Exception(f"Invalid name argument, expecting none empty string")
@@ -39,8 +58,14 @@ class Schema(object):
         self.entities[name] = e
         return e
 
-    # Get an entity from schema
     def get_entity(self, name:str) -> Entity | None:
+        """
+        Get an entity from schema
+
+        Returns:
+            entity
+        """
+
         if not isinstance(name, str) or name == "":
             raise Exception("Invalid argument, name should be a none empty string")
 
@@ -49,8 +74,14 @@ class Schema(object):
         else:
             return None
 
-    # Add a new relation to schema
-    def add_relation(self, name:str, src:Entity, dest:Entity):
+    def add_relation(self, name:str, src:Entity, dest:Entity) -> Relation:
+        """
+        Add a relationship to schema
+
+        Returns:
+            relation
+        """
+
         # Validate arguments
         if not isinstance(src, Entity) and not isinstance(src, str):
             raise Exception(f"Invalid argument, src is expected to be either a string or an Entity")
@@ -85,9 +116,14 @@ class Schema(object):
 
         return r
 
-    # Validate schema
-    # Make sure schema is valid
     def validate(self) -> bool:
+        """
+        Validate schema
+
+        Returns:
+            True if schema is valid
+        """
+
         # Make sure each Relation reference existing Entities
         # And each referenced entity has at least one unique attribute
         for r in self.relations:
@@ -109,32 +145,72 @@ class Schema(object):
 
         return True
 
-    # Save schema as an ontology graph
-    def save_graph(self, g:Graph):
+    def save_graph(self, g:Graph) -> None:
+        """
+        Save schema as an ontology graph
+
+        Parameters:
+            g (Graph): graph to create
+        """
+
         schema_to_graph(self, g)
 
-    # encode schema to JSON string
     def to_JSON(self) -> str:
+        """
+        Encode schema to JSON string
+
+        Returns:
+            JSON representation of schema
+        """
+
         encoder = SchemaEncoder()
         return encoder.to_JSON(self)
 
     @classmethod
-    # Create a schema from an ontology graph
-    def from_graph(cls, g:Graph):
+    def from_graph(cls, g:Graph) -> 'Schema':
+        """
+        Create a schema from an ontology graph
+
+        Parameters:
+            g (Graph): ontology graph to load
+
+         Returns:
+             Schema: schema
+        """
+
         s = cls()
         schema_from_graph(s, g)
         return s
 
     @classmethod
-    # Auto detect schema from sources
-    def auto_detect(cls, sources, model="gpt-3.5-turbo-0125") -> 'Schema':
+    def auto_detect(cls, sources: list[AbstractSource], model="gpt-3.5-turbo-0125") -> 'Schema':
+        """
+        Auto detect schema from sources
+
+        Parameters:
+            sources (list[AbstractSource]): list of sources to extract schema from
+            model (str): OpenAI model to use
+
+         Returns:
+             Schema: schema
+        """
+
         s = cls()
         schema_auto_detect(s, sources, model)
         return s
 
     @classmethod
-    # Create a schema from JSON
     def from_JSON(cls, json:str) -> 'Schema':
+        """
+        Create a schema from JSON
+
+        Parameters:
+            json (str): the output from to_JSON
+
+         Returns:
+             Schema: schema
+        """
+
         s = cls()
         decoder = SchemaDecoder()
         decoder.from_JSON(s, json)

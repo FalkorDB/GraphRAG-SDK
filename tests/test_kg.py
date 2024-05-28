@@ -1,10 +1,10 @@
 import unittest
-from rag_sdk.kg import KG
+from rag_sdk.kg import KnowledgeGraph
 from rag_sdk.Schema import Schema
 
 class TestKG(unittest.TestCase):
     def test_kg_sources(self):
-        g = KG("UFC")
+        g = KnowledgeGraph("UFC")
 
         data_0 = g.add_source("data_0.pdf")
         data_1 = g.add_source("data_1.PDF")
@@ -34,7 +34,7 @@ class TestKG(unittest.TestCase):
         s.add_entity('Movie').add_attribute('title', str, unique=True)
         s.add_relation("ACTED", 'Actor', 'Movie')
 
-        g = KG("IMDB", schema=s)
+        g = KnowledgeGraph("IMDB", schema=s)
         g.add_source("./data/madoff.txt")
 
         g.create()

@@ -1,8 +1,12 @@
-import json
+# template file for entities and relationships extraction using OpenAI assistant
+# The assistant is equipped with a set of auto generated tools
+# e.g. Create_Actor, Create_Movie and CAST functions.
+
+TEMPLATE = '''import json
 import time
 import concurrent.futures
 from openai import OpenAI
-from prompts import KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT
+from .prompts import KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT
 from falkordb import FalkorDB
 
 g      = None # graph
@@ -121,7 +125,7 @@ def handle_run(client, run):
 
 def process_source(client, assistant, src):
     text = src.load()[:32000]
-    user_message = f"Extracts entities and relations from the following text:\n {text}"
+    user_message = f"Extracts entities and relations from the following text: {text}"
 
     run = initiate_interaction(client, assistant, user_message)
 
@@ -146,3 +150,4 @@ def build_graph_from_sources(kg, client, srcs:set):
         concurrent.futures.wait(tasks)
 
     print("Done")
+'''

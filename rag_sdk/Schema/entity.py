@@ -22,9 +22,19 @@ class Attribute(object):
     def __hash__(self) -> int:
         return hash(self.name)
 
-# Represents an ontolegy entity
 class Entity(object):
+    """
+    Represents an ontolegy entity
+    """
+
     def __init__(self, name:str):
+        """
+        Initialize Entity
+
+        Parameters:
+            name (str): name of entity
+        """
+
         if not isinstance(name, str) or name == "":
             raise Exception("Entity name must be a none empty string")
 
@@ -37,8 +47,18 @@ class Entity(object):
 
         return (self.name == other.name and self.attributes == other.attributes)
 
-    # Add attribute to entity
-    def add_attribute(self, name:str, type:type, desc=None, unique=False, mandatory=False):
+    def add_attribute(self, name:str, type:type, desc:str|None=None, unique:bool=False, mandatory:bool=False) -> None:
+        """
+        Add attribute to entity
+
+        Parameters:
+            name (str): attribute name
+            type (type): attribute type
+            desc (str): short description for attribute
+            unique (bool): is the attribute value unique
+            mandatory (bool): is the attribute mandatory
+        """
+
         # Validate arguments
         if not isinstance(name, str) or name == "":
             raise Exception("Attribute name must be a none empty string")
@@ -55,8 +75,14 @@ class Entity(object):
         desc = f"{self.name}'s {name}" if desc is None else desc
         self.attributes.add(Attribute(name, type, desc, unique, mandatory))
 
-    # Remove attribute from entity
-    def remove_attribute(self, name:str):
+    def remove_attribute(self, name:str) ->None:
+        """
+        Remove attribute from entity
+
+        Parameters:
+            name (str): name of attribute to remove
+        """
+
         # Validate argument
         if not isinstance(name, str) or name == "":
             raise Exception("Attribute name must be a none empty string")
@@ -66,7 +92,17 @@ class Entity(object):
                 self.attributes.remove(attr)
                 return
 
-    def get_attribute(self, name:str):
+    def get_attribute(self, name:str) -> Attribute|None:
+        """
+        Get attribute
+
+        Parameters:
+            name (str): name of attribute to get
+
+        Returns:
+            attribute
+        """
+
         # Validate argument
         if not isinstance(name, str) or name == "":
             raise Exception("Attribute name must be a none empty string")
@@ -77,8 +113,14 @@ class Entity(object):
 
         return None
 
-    # returns a list of Entity's unique attributes
-    def unique_attributes(self):
+    def unique_attributes(self) -> list[Attribute]:
+        """
+        Get a list of Entity's unique attributes
+
+        Returns:
+            list of unique attributes
+        """
+
         unique_attrs = []
         for attr in self.attributes:
             if attr.unique:
