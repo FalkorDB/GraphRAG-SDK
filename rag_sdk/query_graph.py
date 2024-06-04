@@ -22,8 +22,6 @@ tools = [
     }
 ]
 
-client   = OpenAI()
-
 def run_cypher_query(g, q):
     return g.query(q).result_set
 
@@ -80,6 +78,8 @@ def _graph_schema_to_prompt(s) -> str:
     return desc;
 
 def run_conversation(g, question, messages, model) -> str:
+    client = OpenAI()
+
     # Step 1: send the conversation and available functions to the model
     messages.append({"role": "user", "content": question})
 

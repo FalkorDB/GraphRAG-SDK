@@ -18,6 +18,7 @@ pytest = "^8.2.1"
 
 [tool.poetry.group.dev.dependencies]
 sphinx = "^7.3.7"
+sphinx-rtd-theme = "^2.0.0"
 
 [build-system]
 requires = ["poetry-core"]
