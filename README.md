@@ -7,7 +7,7 @@ RAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and works 
 
 Start FalkorDB locally:
 ```sh
-docker run -p 6379:6379 -p 3000:3000 -it --rm falkordb/falkordb:latest
+docker run -p 6379:6379 -it --rm -v ./data:/data falkordb/falkordb:edge --dir /data
 ```
 
 Export your OpenAI API KEY:
@@ -50,13 +50,10 @@ A `schema` represents the types of entities and relationships within your data.
 For example, the main entities in your data are:  Movies, Actors, and Directors.
 These are interconnected via `ACT` and `DIRECTED` edges.
 
-Although not mandatory, the specification of a knowledge graph schema helps with
-the extraction of knowledge from unstructured data.
-
-We provide two approaches to schema creation:
+Two approaches to schema creation are available:
 
 #### Manual schema creation
-Use this method when you know exactly what your data looks like.
+Use this method when you know exactly how your data should be structured.
 
 ```python
 s = Schema()
@@ -84,7 +81,14 @@ Once the schema is discovered, you can adjust it to your liking.
 ```python
 sources = [Source("./data/madoff.txt")]
 s = Schema.auto_detect(sources)
-print(f"Schema: {s.to_JSON()}")
+json_schema = s.to_JSON()
+print(f"Schema: {json_schema}")
+
+# Adjust json to your liking and reload the schema from JSON
+json_schema['entities'].append({"name": "Movie", "attributes": [ {"name": "Title", "type": "str", "desc": "Movie's title", "unique": true, "mandatory": true}])
+
+# Recreate refined schema
+s = Schema.from_JSON(json_schema)
 
 # Output:
 # Schema: {"entities": [

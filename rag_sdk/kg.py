@@ -33,6 +33,9 @@ class KnowledgeGraph(object):
             model (str): OpenAI model to use.
         """
 
+        if not isinstance(name, str) or name == "":
+            raise Exception("name should be a non empty string")
+
         # connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
@@ -43,6 +46,14 @@ class KnowledgeGraph(object):
         self.client = None # OpenAI client
         self.sources = set([])
         self.ontolegy_ratio = 0.1 # Sampaling ratio for ontolegy detection
+
+        # in case schema is None
+        # try to load schema from FalkorDB
+        if schema is None:
+            schema_name = self._schema_name()
+            if schema_name in self.db.list_graphs():
+                schema_graph = self.db.select_graph()
+                self.schema = self.schema.from_graph(schema_graph)
 
     def list_sources(self) -> list[AbstractSource]:
         """
@@ -73,9 +84,16 @@ class KnowledgeGraph(object):
         for src in sources:
             self.sources.add(src)
 
+    def _schema_name(self) -> str:
+        """
+        Generate a name for the schema based on the Knowledge Graph name
+        """
+
+        return f"{self.name}_schema"
+
     def _createKGWithSchema(self):
         # Save schema as an ontology graph
-        schema_graph = self.db.select_graph(f"{self.name}_schema")
+        schema_graph = self.db.select_graph(self._schema_name())
         self.schema.save_graph(schema_graph)
 
         # Create Knowledge Graph construction assistant
@@ -102,7 +120,7 @@ class KnowledgeGraph(object):
         exec(code, globals())
 
     def _createKGWithoutSchema(self):
-        pass
+        raise Exception("Can not create knowledge graph, schema missing")
 
     def _create(self) -> None:
         """

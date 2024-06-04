@@ -3,23 +3,17 @@ import requests
 from bs4 import BeautifulSoup
 from abc import ABC, abstractmethod
 
-def download_resource(url):
-    print(f"Downloading: {url}")
+def Source(source:str) ->'AbstractSource':
+    """
+    Creates a source object
 
-    # Send an HTTP GET request to the URL
-    response = requests.get(url)
+    Parameters:
+        source (str): path to source
 
-    # Check if the request was successful (status code 200)
-    content = None
-    if response.status_code == 200:
-        # Retrieve content
-        content = response.text
-    else:
-        print(f"Failed to retrieve content. Status code: {response.status_code}")
+    Returns:
+        AbstractSource: source
+    """
 
-    return content
-
-def Source(source:str):
     if not isinstance(source, str) or source == "":
         raise Exception("Invalid argument, source should be a none empty string.")
 
@@ -31,6 +25,10 @@ def Source(source:str):
         return TEXT(source)
 
 class AbstractSource(ABC):
+    """
+    Abstract class representing a source file
+    """
+
     def __init__(self, source:str):
         self.source = source
         self.content = None
@@ -49,14 +47,23 @@ class AbstractSource(ABC):
         return hash(self.source)
 
 class PDF(AbstractSource):
+    """
+    PDF resource
+    """
+
     def __init__(self, source):
         super().__init__(source)
 
     def load(self):
+        raise Exception("Not implemented")
         # extract text from PDF, populate self.content
         self.content = None
 
 class TEXT(AbstractSource):
+    """
+    TEXT resource
+    """
+
     def __init__(self, source):
         super().__init__(source)
 
@@ -69,6 +76,10 @@ class TEXT(AbstractSource):
         return self.content
 
 class HTML(AbstractSource):
+    """
+    HTML resource
+    """
+
     def __init__(self, source):
         super().__init__(source)
 
