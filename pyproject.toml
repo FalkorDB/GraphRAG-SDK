@@ -9,8 +9,15 @@ readme = "README.md"
 python = "^3.12"
 falkordb = "^1.0.4"
 openai = "^1.30.3"
+
+[tool.poetry.group.test]  # This part can be left out
+
+[tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
 
+
+[tool.poetry.group.dev.dependencies]
+sphinx = "^7.3.7"
 
 [build-system]
 requires = ["poetry-core"]
