@@ -1,8 +1,9 @@
 [tool.poetry]
-name = "GraphRAG-SDK"
+name = "graphrag_sdk"
 version = "0.1.0"
+license = "MIT"
 description = ""
-authors = ["Roi Lipman <roi.lipman@falkordb.com>"]
+authors = ["FalkorDB <info@falkordb.com>"]
 readme = "README.md"
 repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 homepage = "http://RAG-SDK.readthedocs.io"

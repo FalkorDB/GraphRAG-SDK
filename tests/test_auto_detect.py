@@ -1,6 +1,6 @@
 import unittest
-from rag_sdk import Source
-from rag_sdk.Schema import Schema
+from graphrag_sdk import Source
+from graphrag_sdk.schema import Schema
 
 class TestSchemaAutoDetect(unittest.TestCase):
     def test_schema(self):

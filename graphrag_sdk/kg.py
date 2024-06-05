@@ -8,10 +8,10 @@ from .template import TEMPLATE
 from openai import OpenAI
 from falkordb import FalkorDB
 from .query_graph import query
-from .Schema.schema import Schema
+from .schema.schema import Schema
 from .source import Source, AbstractSource
-from .Schema.tools_gen import schema_to_tools
-from .Schema.functions_gen import schema_to_functions
+from .schema.tools_gen import schema_to_tools
+from .schema.functions_gen import schema_to_functions
 
 class KnowledgeGraph(object):
     """Knowledge Graph model data as a network of entities and relations

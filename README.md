@@ -16,8 +16,8 @@ export OPENAI_API_KEY=<YOUR_OPENAI_KEY>
 ```
 
 ```python
-from rag_sdk.Schema import Schema
-from rag_sdk import KnowledgeGraph, Source
+from graphrag_sdk.schema import Schema
+from graphrag_sdk import KnowledgeGraph, Source
 
 # Auto generate graph schema from unstructured data
 sources = [Source("./data/the_matrix.txt")]

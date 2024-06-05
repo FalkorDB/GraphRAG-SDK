@@ -1,9 +1,9 @@
 import unittest
 from falkordb import FalkorDB
-from rag_sdk import Source
-from rag_sdk.Schema import Schema
-from rag_sdk.Schema.tools_gen import schema_to_tools
-from rag_sdk.Schema.functions_gen import schema_to_functions
+from graphrag_sdk import Source
+from graphrag_sdk.schema import Schema
+from graphrag_sdk.schema.tools_gen import schema_to_tools
+from graphrag_sdk.schema.functions_gen import schema_to_functions
 
 class TestSchema(unittest.TestCase):
     def test_schema(self):

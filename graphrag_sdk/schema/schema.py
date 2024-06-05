@@ -1,5 +1,5 @@
 from falkordb import Graph
-from rag_sdk.source import AbstractSource
+from graphrag_sdk.source import AbstractSource
 from .entity import Entity
 from .relation import Relation
 from .encoder import SchemaEncoder

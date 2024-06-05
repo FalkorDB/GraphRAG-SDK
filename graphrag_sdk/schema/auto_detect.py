@@ -5,7 +5,7 @@ import queue
 import sqlite3
 import concurrent.futures
 
-from rag_sdk.prompts import *
+from graphrag_sdk.prompts import *
 from openai import OpenAI
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, inspect, MetaData, Table, types

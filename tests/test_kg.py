@@ -1,6 +1,6 @@
 import unittest
-from rag_sdk import KnowledgeGraph, Source
-from rag_sdk.Schema import Schema
+from graphrag_sdk import KnowledgeGraph, Source
+from graphrag_sdk.schema import Schema
 
 class TestKG(unittest.TestCase):
     def test_kg_creation(self):
