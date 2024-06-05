@@ -12,6 +12,9 @@ keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
 python = "^3.12"
 falkordb = "^1.0.4"
 openai = "^1.30.3"
+typing-extensions = "^4.12.1"
+bs4 = "^0.0.2"
+sqlalchemy = "^2.0.30"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
