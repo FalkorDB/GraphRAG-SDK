@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(".."))
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'RAG-SDK'
+project = 'GraphRAG-SDK'
 copyright = '2024, FalkorDB'
 author = 'FalkorDB'
 release = '1.0.0'

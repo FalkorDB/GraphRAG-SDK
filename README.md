@@ -1,9 +1,9 @@
-# RAG-SDK
+# GraphRAG-SDK
 
 ## Example
 
 ### Prerequisites
-RAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and works with OpenAI.
+GraphRAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and works with OpenAI.
 
 Start FalkorDB locally:
 ```sh
@@ -41,7 +41,7 @@ print(f"Answer: {answer}")
 ```
 
 ## Introduction
-RAG-SDK provides easy-to-use tooling to get you up and running with your own
+GraphRAG-SDK provides easy-to-use tooling to get you up and running with your own
 Graph-RAG solution.
 
 There are two main components:

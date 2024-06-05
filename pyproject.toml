@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "rag-sdk"
+name = "GraphRAG-SDK"
 version = "0.1.0"
 description = ""
 authors = ["Roi Lipman <roi.lipman@falkordb.com>"]
 readme = "README.md"
-repository = "https://github.com/FalkorDB/RAG-SDK"
+repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 homepage = "http://RAG-SDK.readthedocs.io"
 keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
 

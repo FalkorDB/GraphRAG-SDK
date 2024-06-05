@@ -1,4 +1,4 @@
-rag-sdk
+GraphRAG-SDK
 =======
 
 .. toctree::
