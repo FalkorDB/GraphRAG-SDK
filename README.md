@@ -7,7 +7,7 @@ GraphRAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and w
 
 Start FalkorDB locally:
 ```sh
-docker run -p 6379:6379 -it --rm -v ./data:/data falkordb/falkordb:edge --dir /data
+docker run -p 6379:6379 -it --rm -v ./data:/data falkordb/falkordb:edge
 ```
 
 Export your OpenAI API KEY:
