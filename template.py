@@ -2,7 +2,7 @@ import json
 import time
 import concurrent.futures
 from openai import OpenAI
-from rag_sdk.prompts import KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT
+from graphrag_sdk.prompts import KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT
 from falkordb import FalkorDB
 
 g      = None # graph
