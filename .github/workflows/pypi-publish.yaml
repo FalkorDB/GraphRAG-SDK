@@ -4,19 +4,14 @@ on:
   push:
     tags:
       - "v*.*.*"
-
-# .github/workflows/ci-cd.yml
 jobs:
-  pypi-publish:
-    name: Upload release to PyPI
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/graphrag_sdk
-    permissions:
-      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
     steps:
-    # retrieve your distributions here
-
-    - name: Publish package distributions to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/checkout@v4
+      - name: Build and publish to pypi
+        uses: JRubics/poetry-publish@v2.0
+        with:
+          pypi_token: ${{ secrets.PYPI_API_TOKEN }}
+          build_format: "sdist"
+          ignore_dev_requirements: "yes"
