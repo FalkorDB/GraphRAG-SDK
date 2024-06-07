@@ -1,4 +1,3 @@
-import os
 import queue
 from openai import OpenAI
 import concurrent.futures
@@ -16,10 +15,6 @@ from .schema.functions_gen import schema_to_functions
 
 import logging
 logger = logging.getLogger(__name__)
-
-# Make sure OpenAI API key is set.
-if "OPENAI_API_KEY" not in os.environ:
-    raise Exception("Missing 'OPENAI_API_KEY' environment variable, please make sure to set it: 'export OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>'")
 
 class KnowledgeGraph(object):
     """Knowledge Graph model data as a network of entities and relations
