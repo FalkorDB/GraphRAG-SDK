@@ -10,6 +10,9 @@ from openai import OpenAI
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, inspect, MetaData, Table, types
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Convert from SQLAlchemy type to Python type
 def sqlalchemy_to_python_type(sqlalchemy_type):
     if isinstance(sqlalchemy_type, types.Integer):
@@ -143,7 +146,7 @@ def convert_table(s, client, model, tbl, columns, foreign_keys):
         pass
         create_relation(s, tbl, foreign_keys)
     else:
-        print("can't process table with more then 2 forigen keys")
+        logger.error("can't process table with more then 2 forigen keys")
 
 def convert_tables(s, client, model, inspector, table_names):
     # Start by converting tabels without foreign keys
@@ -212,7 +215,7 @@ def generate_graph_schema(s, client, model):
 # queue sql statment
 def run_sql(arg, queue):
     sql = arg["sql"]
-    print(f"SQL: {sql}")
+    logger.debug(f"SQL: {sql}")
 
     queue.put(sql)
 
@@ -224,13 +227,9 @@ available_functions = {
 # Get OpenAI ontology detection assistant
 def get_assistant(client, assistant_name, model):
     # Try reusing existing assistant
-    if os.path.exists("./ONTOLOGY_ASSISTANT_ID"):
-        with open("./ONTOLOGY_ASSISTANT_ID", 'r') as f:
-                ASSISTANT_ID = f.read()
-        try:
-            return client.beta.assistants.retrieve(ASSISTANT_ID)
-        except:
-            pass
+    for assistant in client.beta.assistants.list():
+        if assistant.name == assistant_name:
+            return client.beta.assistants.retrieve(assistant.id)
 
     # Create OpenAI assistant
     assistant = client.beta.assistants.create(
@@ -253,10 +252,6 @@ def get_assistant(client, assistant_name, model):
             }]
         )
 
-    # Save assistant ID to local file
-    with open("./ONTOLOGY_ASSISTANT_ID", 'w') as f:
-        f.write(assistant.id)
-
     return assistant
 
 # Start an interaction with OpenAI assistant
@@ -274,15 +269,15 @@ def handle_run(client, run, queue):
         run = client.beta.threads.runs.retrieve(thread_id=run.thread_id, run_id=run.id)
 
         if run.status == "completed":
-            print("Done processing document")
+            logger.debug("Done processing document")
             return
 
         if run.status == "expired":
-            print(f"Processing expired")
+            logger.debug(f"Processing expired")
             return
 
         if run.status == "cancelling" or run.status == "cancelled" or run.status == "failed":
-            print(f"Processing failed")
+            logger.debug(f"Processing failed")
             return
 
         # wait for run to complete
@@ -309,7 +304,7 @@ def handle_run(client, run, queue):
                                     f = available_functions[func_name]
                                     f(args, queue)
                             except:
-                                print(f"tool_call: {tool_call}")
+                                logger.debug(f"tool_call: {tool_call}")
                                 pass
 
             last_step_id = run_steps.last_id
@@ -384,14 +379,14 @@ def schema_auto_detect(schema, sources, model="gpt-3.5-turbo-0125"):
     tables = {}
     for i in range(n):
         stmt = q.get()
-        print(f"sql: {stmt}")
+        logger.debug(f"sql: {stmt}")
 
         # group by table name
         # CREATE TABLE MoviePersonnel (
         s = stmt.index("CREATE TABLE ") + len("CREATE TABLE ")
         e = stmt.index("(") - 1
         tbl = stmt[s:e]
-        print(f"tbl: {tbl}")
+        logger.debug(f"tbl: {tbl}")
 
         if tbl not in tables:
             tables[tbl] = []
@@ -414,7 +409,7 @@ def schema_auto_detect(schema, sources, model="gpt-3.5-turbo-0125"):
             )
 
             merged_stmt = response.choices[0].message.content
-            print(f"merged_stmt: {merged_stmt}")
+            logger.debug(f"merged_stmt: {merged_stmt}")
             tables[k].append(merged_stmt)
 
     # Switch back from dict to array
@@ -425,7 +420,7 @@ def schema_auto_detect(schema, sources, model="gpt-3.5-turbo-0125"):
     cur = con.cursor()
 
     for stmt in tables:
-        print(f"Executing: {stmt}")
+        logger.debug(f"Executing: {stmt}")
         cur.execute(stmt)
         con.commit()
 

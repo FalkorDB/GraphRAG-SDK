@@ -20,8 +20,8 @@ class Schema(object):
         Initialize Schema
         """
 
-        self.entities = {}
-        self.relations = {}
+        self.entities = set([])
+        self.relations = set([])
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, Schema):
@@ -54,7 +54,8 @@ class Schema(object):
             raise Exception(f"Entity {name} already exists")
 
         e = Entity(name)
-        self.entities[name] = e
+        self.entities.add(e)
+
         return e
 
     def get_entity(self, name:str) -> Entity | None:
@@ -68,10 +69,11 @@ class Schema(object):
         if not isinstance(name, str) or name == "":
             raise Exception("Invalid argument, name should be a none empty string")
 
-        if name in self.entities:
-            return self.entities[name]
-        else:
-            return None
+        for e in self.entities:
+            if e.name == name:
+                return e
+
+        return None
 
     def add_relation(self, name:str, src:Entity, dest:Entity) -> Relation:
         """
@@ -97,12 +99,6 @@ class Schema(object):
         if name in self.relations:
             raise Exception(f"Relation {name} already exists")
 
-        # fetch entities
-        if isinstance(src, str):
-            src = self.entities[src]
-        if isinstance(dest, str):
-            dest = self.entities[dest]
-
         # Both src and dest must have at least one unique attribute
         if len(src.unique_attributes()) == 0:
             raise Exception(f"{src.name} must have at least one unique attribute")
@@ -111,7 +107,7 @@ class Schema(object):
 
         # Create relation and add it to schema
         r = Relation(name, src, dest)
-        self.relations[name] = r
+        self.relations.add(r)
 
         return r
 
@@ -126,19 +122,15 @@ class Schema(object):
         # Make sure each Relation reference existing Entities
         # And each referenced entity has at least one unique attribute
         for r in self.relations:
-            r = self.relations[r]
-            src = r.src.name
-            dest = r.dest.name
+            src = r.src
+            dest = r.dest
+
             if src not in self.entities:
                 raise Exception(f"Relation {r.name} reference a none existing entity {src}")
             if dest not in self.entities:
                 raise Exception(f"Relation {r.name} reference a none existing entity {dest}")
-
-            src = self.entities[src]
             if len(src.unique_attributes()) == 0:
                 raise Exception(f"Relation {r.name} src endpoint {src.name} is missing a unique attribute")
-
-            dest = self.entities[dest]
             if len(dest.unique_attributes()) == 0:
                 raise Exception(f"Relation {r.name} src endpoint {dest.name} is missing a unique attribute")
 

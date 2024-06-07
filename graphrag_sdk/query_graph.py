@@ -1,6 +1,9 @@
 import json
 from openai import OpenAI
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Equipet assistant with tools:
 tools = [
     {
@@ -37,12 +40,10 @@ def _graph_schema_to_prompt(s) -> str:
     # list labels
     desc = desc + "The graph contains the following node labels:\n";
     for e in s.entities:
-        desc += e + "\n"
+        desc += e.name + "\n"
 
     # specify attributes associated with each entity
     for e in s.entities:
-        e = s.entities[e]
-
         lbl_name   = e.name
         attributes = e.attributes
         attr_count = len(attributes)
@@ -64,8 +65,6 @@ def _graph_schema_to_prompt(s) -> str:
 
     # list relations
     for rel in s.relations:
-        rel = s.relations[rel]
-
         src               = rel.src.name
         relationship_type = rel.name
         dest              = rel.dest.name
@@ -107,7 +106,8 @@ def run_conversation(g, question, messages, model) -> str:
             function_to_call = available_functions[function_name]
             function_args = json.loads(tool_call.function.arguments)
             q = function_args.get("query")
-            print(f"OpenAI suggested query: {q}")
+            logger.debug(f"Model suggested query: {q}")
+
             function_response = function_to_call(g, q)
             messages.append(
                 {

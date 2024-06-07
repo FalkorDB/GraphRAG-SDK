@@ -3,12 +3,13 @@ import requests
 from bs4 import BeautifulSoup
 from abc import ABC, abstractmethod
 
-def Source(source:str) ->'AbstractSource':
+def Source(source:str, instruction:str|None=None) ->'AbstractSource':
     """
     Creates a source object
 
     Parameters:
         source (str): path to source
+        instruction (str): source specific instruction for the LLM
 
     Returns:
         AbstractSource: source
@@ -17,12 +18,19 @@ def Source(source:str) ->'AbstractSource':
     if not isinstance(source, str) or source == "":
         raise Exception("Invalid argument, source should be a none empty string.")
 
+    s = None
+
     if ".pdf" in source.lower():
-        return PDF(source)
-    elif ".html" in source.lower():
-        return HTML(source)
+        s = PDF(source)
+    elif ".html" in source.lower() or "http" in source.lower():
+        s = HTML(source)
     else:
-        return TEXT(source)
+        s = TEXT(source)
+
+    # Set source instructions
+    s.instruction = instruction
+
+    return s
 
 class AbstractSource(ABC):
     """
@@ -83,9 +91,17 @@ class HTML(AbstractSource):
     def __init__(self, source):
         super().__init__(source)
 
+    def _download(self):
+        try:
+            response = requests.get(self.source)
+            response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
+            self.content = response.text
+        except requests.exceptions.RequestException as e:
+            print(f"An error occurred: {e}")
+
     def load(self):
-        with open(self.source, 'r') as f:
-            self.content = f.read()
+        # Download URL
+        self._download()
 
         # extract text from HTML, populate self.content
         soup = BeautifulSoup(self.content, 'html.parser')
@@ -95,3 +111,5 @@ class HTML(AbstractSource):
 
         # Remove extra newlines
         self.content = re.sub(r'\n{2,}', '\n', self.content)
+
+        return f"{self.source}\n{self.content}"

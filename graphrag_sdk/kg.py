@@ -1,5 +1,6 @@
 import os
 import queue
+from openai import OpenAI
 import concurrent.futures
 from typing_extensions import AbstractSet
 
@@ -12,6 +13,13 @@ from .schema.schema import Schema
 from .source import Source, AbstractSource
 from .schema.tools_gen import schema_to_tools
 from .schema.functions_gen import schema_to_functions
+
+import logging
+logger = logging.getLogger(__name__)
+
+# Make sure OpenAI API key is set.
+if "OPENAI_API_KEY" not in os.environ:
+    raise Exception("Missing 'OPENAI_API_KEY' environment variable, please make sure to set it: 'export OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>'")
 
 class KnowledgeGraph(object):
     """Knowledge Graph model data as a network of entities and relations
@@ -40,9 +48,9 @@ class KnowledgeGraph(object):
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
 
-        self.name = name
         self.model = model
-        self.schema = schema
+        self._name = name
+        self._schema = schema
         self.client = None # OpenAI client
         self.sources = set([])
         self.ontolegy_ratio = 0.1 # Sampaling ratio for ontolegy detection
@@ -52,8 +60,29 @@ class KnowledgeGraph(object):
         if schema is None:
             schema_name = self._schema_name()
             if schema_name in self.db.list_graphs():
-                schema_graph = self.db.select_graph()
-                self.schema = self.schema.from_graph(schema_graph)
+                schema_graph = self.db.select_graph(schema_name)
+                self._schema = Schema.from_graph(schema_graph)
+
+                logger.info(f"Schema detected")
+                logger.debug(f"Schema: {self.schema.to_JSON()}")
+
+    # Attributes
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        raise AttributeError("Cannot modify the 'name' attribute")
+
+    @property
+    def schema(self):
+        return self._schema
+
+    @schema.setter
+    def schame(self, value):
+        raise AttributeError("Cannot modify the 'schema' attribute")
 
     def list_sources(self) -> list[AbstractSource]:
         """
@@ -119,20 +148,20 @@ class KnowledgeGraph(object):
         # TODO: note multiple calls to _createKGWithSchema will overide one another.
         exec(code, globals())
 
-    def _createKGWithoutSchema(self):
-        raise Exception("Can not create knowledge graph, schema missing")
-
     def _create(self) -> None:
         """
         Create knowledge graph
         Extract entities and relations from sources
         """
-        self.client = OpenAI()
 
-        if self.schema is not None:
-            self._createKGWithSchema()
-        else:
-            self._createKGWithoutSchema()
+        if self.schema is None:
+            raise Exception("Can not create knowledge graph, schema missing")
+
+        # Create OpenAI client
+        if self.client is None:
+            self.client = OpenAI()
+
+        self._createKGWithSchema()
 
     def ask(self, question:str, history:list|None=None) -> tuple[str, list]:
         """
@@ -153,3 +182,37 @@ class KnowledgeGraph(object):
 
         answer = query(self, question, history, self.model)
         return (answer, history)
+
+    def delete(self) -> None:
+        """
+        Deletes the knowledge graph and any other related resource
+        e.g. Schema, OpenAI assistant
+        """
+
+        # Delete OpenAI KnowledgeGraph creation assistant
+        client = OpenAI()
+        assistant_ids = []
+        for assistant in client.beta.assistants.list():
+            if assistant.name == self.name:
+                # Do not break, there might be multiple assistants with the same name.
+                assistant_ids.append(assistant.id)
+
+        for assistant_id in assistant_ids:
+            # Delete assistant
+            client.beta.assistants.delete(assistant_id)
+
+        # List available graphs
+        available_graphs = self.db.list_graphs()
+
+        # Delete KnowledgeGraph
+        if self.name in available_graphs:
+            self.graph.delete()
+
+        # Delete schema graph
+        if self._schema_name() in available_graphs:
+            schema_graph = self.db.select_graph(self._schema_name())
+            schema_graph.delete()
+
+        # Nullify all attributes
+        for key in self.__dict__.keys():
+            setattr(self, key, None)

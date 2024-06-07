@@ -36,8 +36,8 @@ def relation_to_tool(r:Relation):
     tool = {}
     tool['type'] = "function"
     tool['function'] = {}
-    tool['function']['name'] = r.name
-    tool['function']['description'] = "Form a connection between " + src.name + " and " + dest.name
+    tool['function']['name'] = f"{src.name}_{r.name}_{dest.name}"
+    tool['function']['description'] = f"Form a connection of type {r.name} between {src.name} and {dest.name}"
 
     tool['function']['parameters'] = {}
     tool['function']['parameters']['type'] = "object"
@@ -49,25 +49,27 @@ def relation_to_tool(r:Relation):
     # see if src node has a unique attribute
     attrs = src.unique_attributes()
     for attr in attrs:
-        tool['function']['parameters']['properties'][attr.name] = {}
-        tool['function']['parameters']['properties'][attr.name]['type'] = type_mapping(attr.type)
+        property_name = f"{src.name}_{attr.name}"
+        tool['function']['parameters']['properties'][property_name] = {}
+        tool['function']['parameters']['properties'][property_name]['type'] = type_mapping(attr.type)
         if attr.desc is not None:
-            tool['function']['parameters']['properties'][attr.name]['description'] = attr.desc
+            tool['function']['parameters']['properties'][property_name]['description'] = attr.desc
         else:
-            tool['function']['parameters']['properties'][attr.name]['description'] = src.name + "'s " + attr.name
-        required.append(attr.name)
+            tool['function']['parameters']['properties'][property_name]['description'] = src.name + "'s " + attr.name
+        required.append(property_name)
 
     # process edge's destination
     # see if dest node has a unique attribute
     attrs = dest.unique_attributes()
     for attr in attrs:
-        tool['function']['parameters']['properties'][attr.name] = {}
-        tool['function']['parameters']['properties'][attr.name]['type'] = type_mapping(attr.type)
+        property_name = f"{dest.name}_{attr.name}"
+        tool['function']['parameters']['properties'][property_name] = {}
+        tool['function']['parameters']['properties'][property_name]['type'] = type_mapping(attr.type)
         if attr.desc is not None:
-            tool['function']['parameters']['properties'][attr.name]['description'] = attr.desc
+            tool['function']['parameters']['properties'][property_name]['description'] = attr.desc
         else:
-            tool['function']['parameters']['properties'][attr.name]['description'] = dest.name + "'s " + attr.name
-        required.append(attr.name)
+            tool['function']['parameters']['properties'][property_name]['description'] = dest.name + "'s " + attr.name
+        required.append(property_name)
 
     tool['function']['parameters']['required'] = required
 
@@ -128,11 +130,11 @@ def schema_to_tools(s:Schema):
 
     tools = []
     for e in s.entities:
-        tool = entity_to_tool(s.entities[e])
+        tool = entity_to_tool(e)
         tools.append(tool)
 
     for r in s.relations:
-        tool = relation_to_tool(s.relations[r])
+        tool = relation_to_tool(r)
         tools.append(tool)
 
     return tools

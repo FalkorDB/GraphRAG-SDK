@@ -1,10 +1,10 @@
-from json import JSONEncoder
+import json
 
 # Encode Schema into JSON
 class SchemaEncoder():
     # encode schema to JSON string
     def to_JSON(self, schema) -> str:
-        return JSONEncoder().encode(self.encode(schema))
+        return json.dumps(self.encode(schema), indent=4)
 
     # encode schema as dict
     def encode(self, schema) -> dict:
@@ -14,11 +14,9 @@ class SchemaEncoder():
         dict = {'entities': [], 'relations': []}
 
         for e in schema.entities:
-            e = schema.entities[e]
             dict['entities'].append(self._encode_entity(e))
 
         for r in schema.relations:
-            r = schema.relations[r]
             dict['relations'].append(self._encode_relation(r))
 
         return dict

@@ -20,8 +20,6 @@ def schema_to_graph(s, g:Graph) -> None:
     # Create graph entities
     entity_ids = {}
     for e in s.entities:
-        e = s.entities[e]
-
         # Construct entity creation query
         q = f"""CREATE (n:{e.name})
                 SET n = $args
@@ -40,8 +38,6 @@ def schema_to_graph(s, g:Graph) -> None:
 
     # Create graph relations
     for r in s.relations:
-        r = s.relations[r]
-
         # Construct relationship creation query
         q = f"""MATCH (src), (dest)
                 WHERE ID(src) = $src AND ID(dest) = $dest

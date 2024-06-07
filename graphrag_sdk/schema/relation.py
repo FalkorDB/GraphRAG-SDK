@@ -19,6 +19,9 @@ class Relation(object):
         self.dest = dest
         self.name = name
 
+    def __str__(self) -> str:
+        return f"(:{self.src.name})-[:{self.name}]->(:{self.dest.name})"
+
     def __eq__(self, other) -> bool:
         if not isinstance(other, Relation):
             return False
@@ -26,3 +29,9 @@ class Relation(object):
         return (self.src == other.src and
                 self.dest == other.dest and
                 self.name == other.name)
+
+    def __lt__(self, other):
+        return (self.src, self.name, self.dest) < (other.src, other.name, other.dest)
+
+    def __hash__(self) -> int:
+        return hash((self.src, self.name, self.dest))

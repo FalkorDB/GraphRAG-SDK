@@ -47,7 +47,13 @@ class Entity(object):
 
         return (self.name == other.name and self.attributes == other.attributes)
 
-    def add_attribute(self, name:str, type:type, desc:str|None=None, unique:bool=False, mandatory:bool=False) -> None:
+    def __hash__(self):
+        return hash(self.name)
+
+    def __str__(self):
+        return f"(:{self.name})"
+
+    def add_attribute(self, name:str, type:type, desc:str|None=None, unique:bool=False, mandatory:bool=False) -> 'Entity':
         """
         Add attribute to entity
 
@@ -57,6 +63,9 @@ class Entity(object):
             desc (str): short description for attribute
             unique (bool): is the attribute value unique
             mandatory (bool): is the attribute mandatory
+
+        Returns:
+            Entity
         """
 
         # Validate arguments
@@ -75,12 +84,17 @@ class Entity(object):
         desc = f"{self.name}'s {name}" if desc is None else desc
         self.attributes.add(Attribute(name, type, desc, unique, mandatory))
 
-    def remove_attribute(self, name:str) ->None:
+        return self
+
+    def remove_attribute(self, name:str) -> 'Entity':
         """
         Remove attribute from entity
 
         Parameters:
             name (str): name of attribute to remove
+
+        Returns:
+            Entity
         """
 
         # Validate argument
@@ -90,7 +104,9 @@ class Entity(object):
         for attr in self.attributes:
             if attr.name == name:
                 self.attributes.remove(attr)
-                return
+                break
+
+        return self
 
     def get_attribute(self, name:str) -> Attribute|None:
         """
