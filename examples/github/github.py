@@ -1,3 +1,4 @@
+import argparse
 from graphrag_sdk.schema import Schema
 from graphrag_sdk import KnowledgeGraph, Source
 
@@ -11,6 +12,16 @@ logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
 
 def main():
+    # Create the parser
+    parser = argparse.ArgumentParser(description="Github Knowledge Graph")
+
+    # Add arguments
+    parser.add_argument('-r', '--repository', type=str, help='Repository URL', default='https://github.com/FalkorDB/FalkorDB')
+
+    # Parse the arguments
+    args = parser.parse_args()
+    repo_url = args.repository
+
     # Manually define schema
     s = Schema()
 
@@ -54,7 +65,7 @@ def main():
     # 1. (Repository)-[CONTAINS]->(File)
     # 2. (Repository)-[CONTAINS]->(Directory)
     # 3. (Repository)-[CONTAINS]->(Commit)
-    # 4. (Repository)-[CONTAINS]->(bracnh)
+    # 4. (Repository)-[CONTAINS]->(branch)
     # 5. (Organization)-[OWNS]->(Repository)
     # 6. (User)-[STAR]->(Repository)
     # 7. (User)-[PART_OF]->(Organization)
@@ -76,12 +87,12 @@ def main():
     # Ingest
     # Define sources from which knowledge will be extracted
     sources = [
-        Source("https://github.com/FalkorDB/FalkorDB",
+        Source(repo_url,
             instruction="Extract organization, repository, users, files and directories. make sure to form connections"),
-        Source("https://github.com/FalkorDB/FalkorDB/stargazers",
+        Source(f"{repo_url}/stargazers",
             instruction="Extract users who've stared this repo, make sure to create each user and connect it via an edge to the repo node."),
-        Source("https://github.com/FalkorDB/FalkorDB/branches", instruction="Extract branches and connect them to the repository"),
-        Source("https://github.com/FalkorDB/FalkorDB/commits", instruction="Extract commits and connect them to the repository")]
+        Source(f"{repo_url}/branches", instruction="Extract branches and connect them to the repository"),
+        Source(f"{repo_url}/commits", instruction="Extract commits and connect them to the repository")]
 
     g.process_sources(sources)
 
@@ -94,8 +105,14 @@ def main():
         "Any of the Stargazers are also associated with the repo's organization?",
         "Does the FalkorDB repository has a 'main' branch?"]
 
+    print("List of predefined questions:")
     for q in questions:
-        print(f"Question: {q}")
+        print(f"Question: {q}\n")
+        ans, msgs = g.ask(q, history=msgs)
+        print(f"\nAnswer: {ans}")
+
+    while True:
+        q = input("How can I help you with?\n")
         ans, msgs = g.ask(q, history=msgs)
         print(f"Answer: {ans}")
 

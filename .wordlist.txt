@@ -3,3 +3,4 @@ SDK
 GraphRAG
 OpenAI
 FalkorDB
+github
