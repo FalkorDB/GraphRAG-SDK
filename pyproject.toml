@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graphrag_sdk"
-version = "0.1.0"
+version = "0.1.1-beta"
 license = "MIT"
 description = ""
 authors = ["FalkorDB <info@falkordb.com>"]
