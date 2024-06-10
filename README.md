@@ -1,5 +1,10 @@
 # GraphRAG-SDK
 
+## Install
+```sh
+pip install graphrag_sdk
+```
+
 ## Example
 
 ### Prerequisites
