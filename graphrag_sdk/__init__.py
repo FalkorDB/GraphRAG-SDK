@@ -1,5 +1,5 @@
-from .kg import KnowledgeGraph
 from .source import Source
+from .kg import KnowledgeGraph
 
 # Setup Null handler
 import logging

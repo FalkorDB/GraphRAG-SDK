@@ -164,7 +164,7 @@ class KnowledgeGraph(object):
         if the query is asked as part of a longer conversation make sure to
         include past history.
 
-        Rreturns:
+        Returns:
             tuple[str, list]: answer, conversation history
 
          Example:

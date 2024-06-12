@@ -342,14 +342,15 @@ def handle_run(client, run, queue):
 # process source
 # present content to LLM for graph ontology detection
 def process_source(client, assistant, src, queue):
-    text = src.load()[:32000]
-    user_message = "Extract schema from following text:" + text
+    for doc in src.load():
+        text = doc.content[:32000]
+        user_message = "Extract schema from following text:" + text
 
-    run = initiate_interaction(client, assistant, user_message)
+        run = initiate_interaction(client, assistant, user_message)
 
-    handle_run(client, run, queue)
+        handle_run(client, run, queue)
 
-    client.beta.threads.delete(run.thread_id)
+        client.beta.threads.delete(run.thread_id)
 
 # Detect graph ontology from a set of sources
 def schema_auto_detect(schema, sources, model="gpt-3.5-turbo-0125"):

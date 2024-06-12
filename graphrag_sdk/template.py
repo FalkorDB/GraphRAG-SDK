@@ -134,16 +134,19 @@ def handle_run(client, run):
             continue
 
 def process_source(client, assistant, src):
-    text = src.load()[:32000]
-    user_message = f"Extracts entities and relations from the following text: {text}"
-    if src.instruction is not None:
-        user_message = f"{src.instruction}\\n{user_message}"
+    for doc in src.load():
+        text = doc.content[:32000]
 
-    run = initiate_interaction(client, assistant, user_message)
+        user_message = f"Extracts entities and relations from the following text: {text}"
+        if src.instruction is not None:
+            user_message = f"{src.instruction}\\n{user_message}"
 
-    handle_run(client, run)
+        run = initiate_interaction(client, assistant, user_message)
 
-    client.beta.threads.delete(run.thread_id)
+        handle_run(client, run)
+
+        client.beta.threads.delete(run.thread_id)
+
     logger.debug(f"Done processing {src.source}")
 
 def build_graph_from_sources(kg, client, srcs:set):

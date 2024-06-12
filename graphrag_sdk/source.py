@@ -1,31 +1,31 @@
-import re
-import requests
-from bs4 import BeautifulSoup
+from typing import Iterator
 from abc import ABC, abstractmethod
+from graphrag_sdk.Document import Document
+from graphrag_sdk.document_loaders import *
 
-def Source(source:str, instruction:str|None=None) ->'AbstractSource':
+def Source(path:str, instruction:str|None=None) ->'AbstractSource':
     """
     Creates a source object
 
     Parameters:
-        source (str): path to source
+        path (str): path to source
         instruction (str): source specific instruction for the LLM
 
     Returns:
         AbstractSource: source
     """
 
-    if not isinstance(source, str) or source == "":
-        raise Exception("Invalid argument, source should be a none empty string.")
+    if not isinstance(path, str) or path == "":
+        raise Exception("Invalid argument, path should be a none empty string.")
 
     s = None
 
-    if ".pdf" in source.lower():
-        s = PDF(source)
-    elif ".html" in source.lower() or "http" in source.lower():
-        s = HTML(source)
+    if ".pdf" in path.lower():
+        s = PDF(path)
+    elif ".html" in path.lower() or "http" in path.lower():
+        s = HTML(path)
     else:
-        s = TEXT(source)
+        s = TEXT(path)
 
     # Set source instructions
     s.instruction = instruction
@@ -37,79 +37,45 @@ class AbstractSource(ABC):
     Abstract class representing a source file
     """
 
-    def __init__(self, source:str):
-        self.source = source
-        self.content = None
+    def __init__(self, path:str):
+        self.path = path
+        self.loader = None
 
-    @abstractmethod
-    def load(self) -> str:
-        pass
+    def load(self) -> Iterator[Document]:
+        return self.loader.load()
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, AbstractSource):
             return False
 
-        return self.source == other.source
+        return self.path == other.path
 
     def __hash__(self):
-        return hash(self.source)
+        return hash(self.path)
 
 class PDF(AbstractSource):
     """
     PDF resource
     """
 
-    def __init__(self, source):
-        super().__init__(source)
-
-    def load(self):
-        raise Exception("Not implemented")
-        # extract text from PDF, populate self.content
-        self.content = None
+    def __init__(self, path):
+        super().__init__(path)
+        self.loader = PDFLoader(self.path)
 
 class TEXT(AbstractSource):
     """
     TEXT resource
     """
 
-    def __init__(self, source):
-        super().__init__(source)
-
-    def load(self):
-        if self.content is None:
-            # populate self.content
-            with open(self.source, 'r') as f:
-                self.content = f.read()
-
-        return self.content
+    def __init__(self, path):
+        super().__init__(path)
+        self.loader = TextLoader(self.path)
 
 class HTML(AbstractSource):
     """
     HTML resource
     """
 
-    def __init__(self, source):
-        super().__init__(source)
-
-    def _download(self):
-        try:
-            response = requests.get(self.source)
-            response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
-            self.content = response.text
-        except requests.exceptions.RequestException as e:
-            print(f"An error occurred: {e}")
-
-    def load(self):
-        # Download URL
-        self._download()
-
-        # extract text from HTML, populate self.content
-        soup = BeautifulSoup(self.content, 'html.parser')
-
-        # Extract text from the HTML
-        self.content = soup.get_text()
-
-        # Remove extra newlines
-        self.content = re.sub(r'\n{2,}', '\n', self.content)
-
-        return f"{self.source}\n{self.content}"
+    def __init__(self, path):
+        super().__init__(path)
+        self.loader = HTMLLoader(self.path)
