@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graphrag_sdk"
-version = "0.1.2-beta"
+version = "0.1.3-beta"
 license = "MIT"
 description = ""
 authors = ["FalkorDB <info@falkordb.com>"]
@@ -10,7 +10,7 @@ homepage = "http://RAG-SDK.readthedocs.io"
 keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = "^3.9"
 falkordb = "^1.0.4"
 openai = "^1.30.3"
 typing-extensions = "^4.12.1"
