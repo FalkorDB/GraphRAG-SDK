@@ -1,6 +1,7 @@
-KnowledgeGraph
-SDK
-GraphRAG
-OpenAI
 FalkorDB
+GraphRAG
+KnowledgeGraph
+OpenAI
+SDK
 github
+schemas
