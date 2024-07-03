@@ -1,5 +1,13 @@
 # GraphRAG-SDK
 
+GraphRAG-SDK is designed to facilitate the creation of graph-based Retrieval-Augmented Generation (RAG) solutions. Built on top of FalkorDB, it offers seamless integration with OpenAI to enable advanced data querying and knowledge graph construction.
+
+## Features
+
+* Schema Management: Define and manage data schemas either manually or automatically from unstructured data.
+* Knowledge Graph: Construct and query knowledge graphs for efficient data retrieval.
+* OpenAI Integration: Enhance your RAG solutions with AI-driven insights.
+
 ## Install
 ```sh
 pip install graphrag_sdk
