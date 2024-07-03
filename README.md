@@ -13,6 +13,7 @@ GraphRAG-SDK is designed to facilitate the creation of graph-based Retrieval-Aug
 * OpenAI Integration: Enhance your RAG solutions with AI-driven insights.
 
 ## Install
+
 ```sh
 pip install graphrag_sdk
 ```
@@ -23,11 +24,13 @@ pip install graphrag_sdk
 GraphRAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and works with OpenAI.
 
 Start FalkorDB locally:
+
 ```sh
 docker run -p 6379:6379 -it --rm -v ./data:/data falkordb/falkordb:edge
 ```
 
 Export your OpenAI API KEY:
+
 ```sh
 export OPENAI_API_KEY=<YOUR_OPENAI_KEY>
 ```
@@ -58,11 +61,14 @@ print(f"Answer: {answer}")
 ```
 
 ## Introduction
+
 GraphRAG-SDK provides easy-to-use tooling to get you up and running with your own
 Graph-RAG solution.
 
 There are two main components:
+
 ### Schema
+
 A `schema` represents the types of entities and relationships within your data.
 For example, the main entities in your data are:  Movies, Actors, and Directors.
 These are interconnected via `ACT` and `DIRECTED` edges.
@@ -70,6 +76,7 @@ These are interconnected via `ACT` and `DIRECTED` edges.
 Two approaches to schema creation are available:
 
 #### Manual schema creation
+
 Use this method when you know exactly how your data should be structured.
 
 ```python
@@ -92,6 +99,7 @@ print(f"Schema: {s.to_JSON()}")
 ```
 
 #### Automatic schema creation
+
 Use this method to discover the main entities and relationships within your data.
 Once the schema is discovered, you can adjust it to your liking.
 
@@ -118,6 +126,7 @@ s = Schema.from_JSON(json_schema)
 ```
 
 ### KnowledgeGraph
+
 A `KnowledgeGraph` holds the actual entities and relationships within your data.
 Once constructed, it serves as the backbone of your RAG solution. A Large Language Model will query your knowledge-graph to build a precise context on which its answer will be based.
 
