@@ -1,8 +1,8 @@
-# GraphRAG-SDK-V2
+# GraphRAG-SDK
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 [![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
-
+V2
 
 GraphRAG-SDK is a comprehensive solution for building Graph Retrieval-Augmented Generation (GraphRAG) applications, leveraging [FalkorDB](https://www.falkordb.com/) for optimal performance.
 
@@ -110,7 +110,7 @@ The SDK supports the following file formats:
 * URL
 * HTML
 * CSV
-
+V2
 ```python
 import os
 from graphrag_sdk.classes.source import Source
