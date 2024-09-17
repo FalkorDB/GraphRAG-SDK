@@ -51,7 +51,7 @@ Make sure that a `.env` file is present with all required credentials.
    </details>
 
 ## Basic Usage
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/master/examples/movies/demo-movies.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
 
 The following example demonstrates the basic usage of this SDK to create a GraphRAG using URLs with auto-detected ontology.
 ```python
@@ -99,7 +99,7 @@ print(chat.send_message("How this director connected to Keanu Reeves?"))
 
 ```
 ## Tools
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/master/examples/ufc/demo-ufc.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/ufc/demo-ufc.ipynb)
 
 ### Import source data
 The SDK supports the following file formats:
@@ -197,7 +197,7 @@ print(response)
 ```
 
 ## Multi Agent - Orchestrator
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/master/examples/trip/demo_orchestrator_trip.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
 
 The GraphRAG-SDK supports KG agents. Each agent is an expert in the data it has learned, and the orchestrator orchestrates the agents.
 ### Agents
