@@ -1,0 +1,281 @@
+{
+  "entities": [
+    {
+      "label": "Fighter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "nickname",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "Fight",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "details",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "rounds",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "decision",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "winner",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "loser",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "FightTotals",
+      "attributes": [
+        {
+          "name": "fight_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "fighter",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "knockdowns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "significant_strikes",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "significant_strikes_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "significant_strikes_percentage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_strikes",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_strikes_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "takedowns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "takedowns_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "takedown_percentage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "submissions_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "passes",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "reversals",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "Event",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "WeightClass",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "Referee",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "label": "FOUGHT_IN",
+      "source": {
+        "label": "Fighter"
+      },
+      "target": {
+        "label": "Fight"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TOOK_PLACE_AT",
+      "source": {
+        "label": "Fight"
+      },
+      "target": {
+        "label": "Event"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FIGHT_WEIGHT_CLASS",
+      "source": {
+        "label": "Fight"
+      },
+      "target": {
+        "label": "WeightClass"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FIGHTER_WEIGHT_CLASS",
+      "source": {
+        "label": "Fighter"
+      },
+      "target": {
+        "label": "WeightClass"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REFERRED",
+      "source": {
+        "label": "Referee"
+      },
+      "target": {
+        "label": "Fight"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FIGHT_TOTAL_STATS",
+      "source": {
+        "label": "Fight"
+      },
+      "target": {
+        "label": "FightTotals"
+      }
+    }
+  ]
+}

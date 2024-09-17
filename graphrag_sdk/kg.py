@@ -1,39 +1,48 @@
-import queue
-from openai import OpenAI
-import concurrent.futures
-from typing_extensions import AbstractSet
-
-from .prompts import *
-from .template import TEMPLATE
-from openai import OpenAI
-from falkordb import FalkorDB
-from .query_graph import query
-from .schema.schema import Schema
-from .source import Source, AbstractSource
-from .schema.tools_gen import schema_to_tools
-from .schema.functions_gen import schema_to_functions
-
 import logging
-logger = logging.getLogger(__name__)
+from graphrag_sdk.ontology import Ontology
+from falkordb import FalkorDB
+from graphrag_sdk.source import AbstractSource
+from graphrag_sdk.model_config import KnowledgeGraphModelConfig
+from graphrag_sdk.steps.extract_data_step import ExtractDataStep
+from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
+from graphrag_sdk.fixtures.prompts import GRAPH_QA_SYSTEM, CYPHER_GEN_SYSTEM
+from graphrag_sdk.steps.qa_step import QAStep
+from graphrag_sdk.chat_session import ChatSession
+from graphrag_sdk.helpers import map_dict_to_cypher_properties
+from graphrag_sdk.attribute import AttributeType, Attribute
+from graphrag_sdk.models import GenerativeModelChatSession
 
-class KnowledgeGraph(object):
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+
+class KnowledgeGraph:
     """Knowledge Graph model data as a network of entities and relations
-    To create one it is best to provide a schema which will define the graph's ontology
+    To create one it is best to provide a ontology which will define the graph's ontology
     In addition to a set of sources from which entities and relations will be extracted.
     """
 
-    def __init__(self, name:str, host:str="127.0.0.1", port:int=6379, username:str|None=None, password:str|None=None,
-        model:str="gpt-4-1106-preview", schema:Schema|None=None):
+    def __init__(
+        self,
+        name: str,
+        model_config: KnowledgeGraphModelConfig,
+        ontology: Ontology,
+        host: str = "127.0.0.1",
+        port: int = 6379,
+        username: str | None = None,
+        password: str | None = None,
+    ):
         """
         Initialize Knowledge Graph
 
         Parameters:
             name (str): Knowledge graph name.
+            model (GenerativeModel): The Google GenerativeModel to use.
             host (str): FalkorDB hostname.
             port (int): FalkorDB port number.
             username (str|None): FalkorDB username.
             password (str|None): FalkorDB password.
-            model (str): OpenAI model to use.
+            ontology (Ontology|None): Ontology to use.
         """
 
         if not isinstance(name, str) or name == "":
@@ -43,23 +52,10 @@ class KnowledgeGraph(object):
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
 
-        self.model = model
         self._name = name
-        self._schema = schema
-        self.client = None # OpenAI client
+        self._ontology = ontology
+        self._model_config = model_config
         self.sources = set([])
-        self.ontolegy_ratio = 0.1 # Sampaling ratio for ontolegy detection
-
-        # in case schema is None
-        # try to load schema from FalkorDB
-        if schema is None:
-            schema_name = self._schema_name()
-            if schema_name in self.db.list_graphs():
-                schema_graph = self.db.select_graph(schema_name)
-                self._schema = Schema.from_graph(schema_graph)
-
-                logger.info(f"Schema detected")
-                logger.debug(f"Schema: {self.schema.to_JSON()}")
 
     # Attributes
 
@@ -72,12 +68,12 @@ class KnowledgeGraph(object):
         raise AttributeError("Cannot modify the 'name' attribute")
 
     @property
-    def schema(self):
-        return self._schema
+    def ontology(self):
+        return self._ontology
 
-    @schema.setter
-    def schame(self, value):
-        raise AttributeError("Cannot modify the 'schema' attribute")
+    @ontology.setter
+    def ontology(self, value):
+        self._ontology = value
 
     def list_sources(self) -> list[AbstractSource]:
         """
@@ -89,7 +85,9 @@ class KnowledgeGraph(object):
 
         return [s.source for s in self.sources]
 
-    def process_sources(self, sources: list[AbstractSource]) -> None:
+    def process_sources(
+        self, sources: list[AbstractSource], instructions: str = None
+    ) -> None:
         """
         Add entities and relations found in sources into the knowledge-graph
 
@@ -97,105 +95,83 @@ class KnowledgeGraph(object):
             sources (list[AbstractSource]): list of sources to extract knowledge from
         """
 
-        # Make sure knowledge graph is created.
-        if not 'build_graph_from_sources' in globals() or self.client is None:
-            self._create()
+        if self.ontology is None:
+            raise Exception("Ontology is not defined")
 
-        # Run assistant
-        result = build_graph_from_sources(self, self.client, sources)
+        # Create graph with sources
+        self._create_graph_with_sources(sources, instructions)
 
         # Add processed sources
         for src in sources:
             self.sources.add(src)
 
-    def _schema_name(self) -> str:
+    def _create_graph_with_sources(
+        self, sources: list[AbstractSource] | None = None, instructions: str = None
+    ):
+
+        step = ExtractDataStep(
+            sources=list(sources),
+            ontology=self.ontology,
+            model=self._model_config.extract_data,
+            graph=self.graph,
+        )
+
+        step.run(instructions)
+
+    def ask(
+        self, question: str, qa_chat_session: GenerativeModelChatSession | None = None
+    ) -> tuple[str, GenerativeModelChatSession]:
         """
-        Generate a name for the schema based on the Knowledge Graph name
-        """
+        Query the knowledge graph using natural language.
+        Optionally, you can provide a qa_chat_session to use for the query.
 
-        return f"{self.name}_schema"
-
-    def _createKGWithSchema(self):
-        # Save schema as an ontology graph
-        schema_graph = self.db.select_graph(self._schema_name())
-        self.schema.save_graph(schema_graph)
-
-        # Create Knowledge Graph construction assistant
-
-        # Generate assistant's toolings
-        tools = schema_to_tools(self.schema)
-
-        # Generate functions from schema
-        funcs = schema_to_functions(self.schema)
-        functions_names = [func[0] for func in funcs]
-        functions_impl  = [func[1] for func in funcs]
-
-        # Generate assistant
-        # Generate code from template
-        code = TEMPLATE
-        code = code.replace("<TOOLS>", ",\n".join([str(tool) for tool in tools]))
-        code = code.replace("<GRAPH_ID>", "\"" + self.name + "\"")
-        code = code.replace("<FUNCTIONS>", "\n".join(functions_impl))
-        code = code.replace("<AVAILABLE_FUNCTIONS>", '{' + ",\n".join([f"'{f}': {f}" for f in functions_names]) +'}')
-
-        # Execute the code string in the global namespace
-        # Introduces the 'build_graph_from_sources' function
-        # TODO: note multiple calls to _createKGWithSchema will overide one another.
-        exec(code, globals())
-
-    def _create(self) -> None:
-        """
-        Create knowledge graph
-        Extract entities and relations from sources
-        """
-
-        if self.schema is None:
-            raise Exception("Can not create knowledge graph, schema missing")
-
-        # Create OpenAI client
-        if self.client is None:
-            self.client = OpenAI()
-
-        self._createKGWithSchema()
-
-    def ask(self, question:str, history:list|None=None) -> tuple[str, list]:
-        """
-        Query the knowledge graph using natural language
-        if the query is asked as part of a longer conversation make sure to
-        include past history.
+        Parameters:
+            question (str): question to ask the knowledge graph
+            qa_chat_session (GenerativeModelChatSession|None): qa_chat_session to use for the query
 
         Returns:
-            tuple[str, list]: answer, conversation history
+            tuple[str, GenerativeModelChatSession]: answer, qa_chat_session
 
          Example:
-            >>> ans, history = kg.ask("Which actor has the most oscars")
-            >>> ans, history = kg.ask("List a few movies in which that actored played in", history)
+            >>> (ans, qa_chat_session) = kg.ask("List a few movies in which that actor played in")
+            >>> print(ans)
         """
 
-        if history is None:
-            history = []
+        cypher_chat_session = (
+            self._model_config.cypher_generation.with_system_instruction(
+                CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json())),
+            ).start_chat()
+        )
+        cypher_step = GraphQueryGenerationStep(
+            ontology=self.ontology,
+            chat_session=cypher_chat_session,
+            graph=self.graph,
+        )
 
-        answer = query(self, question, history, self.model)
-        return (answer, history)
+        (context, cypher) = cypher_step.run(question)
+
+        if not cypher or len(cypher) == 0:
+            return "I am sorry, I could not find the answer to your question"
+
+        qa_chat_session = (
+            qa_chat_session
+            or self._model_config.qa.with_system_instruction(
+                GRAPH_QA_SYSTEM
+            ).start_chat()
+        )
+        qa_step = QAStep(
+            chat_session=qa_chat_session,
+        )
+
+        answer = qa_step.run(question, cypher, context)
+
+        return (answer, qa_chat_session)
 
     def delete(self) -> None:
         """
         Deletes the knowledge graph and any other related resource
-        e.g. Schema, OpenAI assistant
+        e.g. Ontology, data graphs
         """
-
-        # Delete OpenAI KnowledgeGraph creation assistant
-        client = OpenAI()
-        assistant_ids = []
-        for assistant in client.beta.assistants.list():
-            if assistant.name == self.name:
-                # Do not break, there might be multiple assistants with the same name.
-                assistant_ids.append(assistant.id)
-
-        for assistant_id in assistant_ids:
-            # Delete assistant
-            client.beta.assistants.delete(assistant_id)
-
         # List available graphs
         available_graphs = self.db.list_graphs()
 
@@ -203,11 +179,118 @@ class KnowledgeGraph(object):
         if self.name in available_graphs:
             self.graph.delete()
 
-        # Delete schema graph
-        if self._schema_name() in available_graphs:
-            schema_graph = self.db.select_graph(self._schema_name())
-            schema_graph.delete()
-
         # Nullify all attributes
         for key in self.__dict__.keys():
             setattr(self, key, None)
+
+    def chat_session(self) -> ChatSession:
+        return ChatSession(self._model_config, self.ontology, self.graph)
+
+    def add_node(self, entity: str, attributes: dict):
+        """
+        Add a node to the knowledge graph, checking if it matches the ontology
+
+        Parameters:
+            label (str): label of the node
+            attributes (dict): node attributes
+        """
+
+        self._validate_entity(entity, attributes)
+
+        # Add node to graph
+        self.graph.query(
+            f"MERGE (n:{entity} {map_dict_to_cypher_properties(attributes)})"
+        )
+
+    def add_edge(
+        self,
+        relation: str,
+        source: str,
+        target: str,
+        source_attr: dict = None,
+        target_attr: dict = None,
+        attributes: dict = None,
+    ):
+        """
+        Add an edge to the knowledge graph, checking if it matches the ontology
+
+        Parameters:
+            relation (str): relation label
+            source (str): source entity label
+            target (str): target entity label
+            source_attr (dict): source entity attributes
+            target_attr (dict): target entity attributes
+            attributes (dict): relation attributes
+        """
+
+        source_attr = source_attr or {}
+        target_attr = target_attr or {}
+        attributes = attributes or {}
+
+        self._validate_relation(
+            relation, source, target, source_attr, target_attr, attributes
+        )
+
+        # Add relation to graph
+        self.graph.query(
+            f"MATCH (s:{source} {map_dict_to_cypher_properties(source_attr)}) MATCH (t:{target} {map_dict_to_cypher_properties(target_attr)}) MERGE (s)-[r:{relation} {map_dict_to_cypher_properties(attributes)}]->(t)"
+        )
+
+    def _validate_entity(self, entity: str, attributes: str):
+        ontology_entity = self.ontology.get_entity_with_label(entity)
+
+        if ontology_entity is None:
+            raise Exception(f"Entity {entity} not found in ontology")
+
+        self._validate_attributes_dict(attributes, ontology_entity.attributes)
+
+    def _validate_relation(
+        self,
+        relation: str,
+        source: str,
+        target: str,
+        source_attr: dict,
+        target_attr: dict,
+        attributes: dict,
+    ):
+        ontology_relations = self.ontology.get_relations_with_label(relation)
+
+        found_relation = [
+            relation
+            for relation in ontology_relations
+            if relation.source.label == source and relation.target.label == target
+        ]
+        if len(ontology_relations) == 0 or len(found_relation) == 0:
+            raise Exception(f"Relation {relation} not found in ontology")
+
+        self._validate_attributes_dict(attributes, found_relation[0].attributes)
+
+        self._validate_entity(source, source_attr)
+        self._validate_entity(target, target_attr)
+
+    def _validate_attributes_dict(
+        self, attr_dict: dict, attributes_list: list[Attribute]
+    ):
+        # validate attributes
+        for attr in attributes_list:
+            if attr.name not in attr_dict:
+                if attr.required or attr.unique:
+                    raise Exception(f"Attribute {attr.name} is required")
+
+        for attr in attr_dict.keys():
+            valid_attr = [a for a in attributes_list if a.name == attr]
+            if len(valid_attr) == 0:
+                raise Exception(f"Invalid attribute {attr}")
+            valid_attr = valid_attr[0]
+
+            if valid_attr.type == AttributeType.STRING:
+                if not isinstance(attr_dict[attr], str):
+                    raise Exception(f"Attribute {attr} should be a string")
+            elif valid_attr.type == AttributeType.NUMBER:
+                if not isinstance(attr_dict[attr], int) and not isinstance(
+                    attr_dict[attr], float
+                ):
+                    raise Exception(f"Attribute {attr} should be an number")
+            elif valid_attr.type == AttributeType.BOOLEAN:
+                if not isinstance(attr_dict[attr], bool):
+                    raise Exception(f"Attribute {attr} should be a boolean")

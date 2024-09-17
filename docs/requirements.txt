@@ -1,6 +1,0 @@
-bs4==0.0.2
-openai==1.30.3
-falkordb==1.0.4
-sqlalchemy==2.0.30
-sphinx_rtd_theme==2.0.0
-typing-extensions==4.12.1

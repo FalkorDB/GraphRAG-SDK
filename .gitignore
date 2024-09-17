@@ -1,0 +1,9 @@
+.env
+__pycache__
+cache
+output
+.venv
+
+logs
+falkordb-data
+weaviate-data

@@ -1,5 +1,5 @@
 from typing import Iterator
-from graphrag_sdk.Document import Document
+from graphrag_sdk.document import Document
 
 class PDFLoader():
     """
@@ -30,8 +30,8 @@ class PDFLoader():
         Returns:
             Iterator[Document]: document iterator
         """
-
-        from pypdf import PdfReader
+        
+        from pypdf import PdfReader # pylint: disable=import-outside-toplevel
 
         reader = PdfReader(self.path)
         yield from [

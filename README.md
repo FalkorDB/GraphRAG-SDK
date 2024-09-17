@@ -1,160 +1,265 @@
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/master/examples/getting_started.ipynb)
+# GraphRAG-SDK-V2
+[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 [![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
 
-# GraphRAG-SDK
-[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 
-GraphRAG-SDK is designed to facilitate the creation of graph-based Retrieval-Augmented Generation (RAG) solutions. Built on top of FalkorDB, it offers seamless integration with OpenAI to enable advanced data querying and knowledge graph construction.
+GraphRAG-SDK is a comprehensive solution for building Graph Retrieval-Augmented Generation (GraphRAG) applications, leveraging [FalkorDB](https://www.falkordb.com/) for optimal performance.
 
 ## Features
 
-* Schema Management: Define and manage data schemas either manually or automatically from unstructured data.
-* Knowledge Graph: Construct and query knowledge graphs for efficient data retrieval.
-* OpenAI Integration: Enhance your RAG solutions with AI-driven insights.
+* Ontology Management: Manage ontologies either manually or automatically from unstructured data.
+* Knowledge Graph (KG): Construct and query knowledge graphs for efficient data retrieval.
+* LLMs Integration: Support for OpenAI and Google Gemini models.
+* Multi-Agent System: Multi-agent orchestrators using KG-based agents.
 
-## Install
+## Get Started
+
+### Install
 
 ```sh
 pip install graphrag_sdk
 ```
 
-## Example
-
 ### Prerequisites
-GraphRAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and works with OpenAI.
 
-Start FalkorDB locally:
+#### Graph Database
+GraphRAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and works with OpenAI/Gemini.
 
-```sh
-docker run -p 6379:6379 -it --rm -v ./data:/data falkordb/falkordb:edge
-```
-
-Export your OpenAI API KEY:
+Use [FalkorDB Cloud](https://app.falkordb.cloud/) to get credentials or start FalkorDB locally:
 
 ```sh
-export OPENAI_API_KEY=<YOUR_OPENAI_KEY>
+docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb:latest
 ```
+#### LLM Models
+Currently, this SDK supports the following LLMs API:
+
+* [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
+* [google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-1.5-flash-001`
+
+Make sure that a `.env` file is present with all required credentials.
+
+   <details>
+     <summary>.env</summary>
+  
+   ```
+   OPENAI_API_KEY="OPENAI_API_KEY"
+   GOOGLE_API_KEY="GOOGLE_API_KEY"
+
+   ```
+  
+   </details>
+
+## Basic Usage
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
+
+The following example demonstrates the basic usage of this SDK to create a GraphRAG using URLs with auto-detected ontology.
+```python
+from dotenv import load_dotenv
+
+from graphrag_sdk.classes.source import URL
+from graphrag_sdk import KnowledgeGraph, Ontology
+from graphrag_sdk.models.openai import OpenAiGenerativeModel
+from graphrag_sdk.classes.model_config import KnowledgeGraphModelConfig
+load_dotenv()
+
+# Import Data
+urls = ["https://www.rottentomatoes.com/m/side_by_side_2012",
+"https://www.rottentomatoes.com/m/matrix",
+"https://www.rottentomatoes.com/m/matrix_revolutions",
+"https://www.rottentomatoes.com/m/matrix_reloaded",
+"https://www.rottentomatoes.com/m/speed_1994",
+"https://www.rottentomatoes.com/m/john_wick_chapter_4"]
+
+sources = [URL(url) for url in urls]
+
+# Model
+model = OpenAiGenerativeModel(model_name="gpt-4o")
+
+# Ontology Auto-Detection
+ontology = Ontology.from_sources(
+    sources=sources,
+    model=model,
+)
+
+# Knowledge Graph
+kg = KnowledgeGraph(
+    name="movies",
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+    ontology=ontology,
+)
+
+# GraphRAG System and Questioning
+kg.process_sources(sources)
+
+chat = kg.chat_session()
+
+print(chat.send_message("Who is the director of the movie The Matrix?"))
+print(chat.send_message("How this director connected to Keanu Reeves?"))
+
+```
+## Tools
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/ufc/demo-ufc.ipynb)
+
+### Import source data
+The SDK supports the following file formats:
+
+* PDF
+* TEXT
+* JSONL
+* URL
+* HTML
+* CSV
 
 ```python
-from graphrag_sdk.schema import Schema
-from graphrag_sdk import KnowledgeGraph, Source
+import os
+from graphrag_sdk.classes.source import Source
 
-# Auto generate graph schema from unstructured data
-sources = [Source("./data/the_matrix.txt")]
-s = Schema.auto_detect(sources)
+src_files = "data_folder"
+sources = []
 
-# Create a knowledge graph based on schema
-g = KnowledgeGraph("IMDB", schema=s)
-g.process_sources(sources)
-
-# Query your data
-question = "Name a few actors who've played in 'The Matrix'"
-answer, messages = g.ask(question)
-print(f"Answer: {answer}")
-
-# Output:
-# Answer: A few actors who've played in 'The Matrix' are:
-# - Keanu Reeves
-# - Laurence Fishburne
-# - Carrie-Anne Moss
-# - Hugo Weaving
+# Create a Source object.
+for file in os.listdir(src_files):
+    sources.append(Source(os.path.join(src_files, file)))
 ```
+### Ontology
+You can either auto-detect the ontology from your data or define it manually. Additionally, you can set `Boundaries` for ontology auto-detection.
 
-## Introduction
-
-GraphRAG-SDK provides easy-to-use tooling to get you up and running with your own
-Graph-RAG solution.
-
-There are two main components:
-
-### Schema
-
-A `schema` represents the types of entities and relationships within your data.
-For example, the main entities in your data are:  Movies, Actors, and Directors.
-These are interconnected via `ACT` and `DIRECTED` edges.
-
-Two approaches to schema creation are available:
-
-#### Manual schema creation
-
-Use this method when you know exactly how your data should be structured.
+Once the ontology is created, you can review, modify, and update it as needed before using it to build the Knowledge Graph (KG).
 
 ```python
-s = Schema()
-s.add_entity('Actor').add_attribute('name', str, unique=True)
-s.add_entity('Movie').add_attribute('title', str, unique=True)
-s.add_relation("ACTED", 'Actor', 'Movie')
+import random
+from falkordb import FalkorDB
+from graphrag_sdk import KnowledgeGraph, Ontology
+from graphrag_sdk.models.openai import OpenAiGenerativeModel
 
-print(f"Schema: {s.to_JSON()}")
+# Define the percentage of files that will be used to auto-create the ontology.
+percent = 0.1  # This represents 10%. You can adjust this value (e.g., 0.2 for 20%).
 
-# Output:
-# Schema: {"entities": [
-#   {"name": "Actor",
-#    "attributes": [
-#       {"name": "name", "type": "str", "desc": "Actor's name", "unique": true, "mandatory": false}]},
-#   {"name": "Movie",
-#    "attributes": [
-#       {"name": "title", "type": "str", "desc": "Movie's title", "unique": true, "mandatory": false}]}],
-#   "relations": [{"name": "ACTED", "src": "Actor", "dest": "Movie"}]}
+boundaries = """
+    Extract only the most relevant information about UFC fighters, fights, and events.
+    Avoid creating entities for details that can be expressed as attributes.
+"""
+
+# Define the model to be used for the ontology
+model = OpenAiGenerativeModel(model_name="gpt-4o")
+
+# Randomly select a percentage of files from sources.
+sampled_sources = random.sample(sources, round(len(sources) * percent))
+
+ontology = Ontology.from_sources(
+    sources=sampled_sources,
+    boundaries=boundaries,
+    model=model,
+)
+
+# Save the ontology to the disk as a json file.
+with open("ontology.json", "w", encoding="utf-8") as file:
+    file.write(json.dumps(ontology.to_json(), indent=2))
 ```
+After generating the initial ontology, you can review it and make any necessary modifications to better fit your data and requirements. This might include refining entity types or adjusting relationships.
 
-#### Automatic schema creation
+Once you are satisfied with the ontology, you can proceed to use it for creating and managing your Knowledge Graph (KG).
 
-Use this method to discover the main entities and relationships within your data.
-Once the schema is discovered, you can adjust it to your liking.
+### Knowledge Graph
+Now, you can use the SDK to create a Knowledge Graph (KG) from your sources and ontology.
 
 ```python
-sources = [Source("./data/madoff.txt")]
-s = Schema.auto_detect(sources)
-json_schema = s.to_JSON()
-print(f"Schema: {json_schema}")
+# After approving the ontology, load it from disk.
+ontology_file = "ontology.json"
+with open(ontology_file, "r", encoding="utf-8") as file:
+    ontology = Ontology.from_json(json.loads(file.read()))
 
-# Adjust json to your liking and reload the schema from JSON
-json_schema['entities'].append({"name": "Movie", "attributes": [ {"name": "Title", "type": "str", "desc": "Movie's title", "unique": true, "mandatory": true}])
+kg = KnowledgeGraph(
+    name="kg_name",
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+    ontology=ontology,
+)
 
-# Recreate refined schema
-s = Schema.from_JSON(json_schema)
-
-# Output:
-# Schema: {"entities": [
-#   {"name": "Actor", "attributes": [
-#       {"name": "Name", "type": "str", "desc": "Actor's Name", "unique": true, "mandatory": true}]},
-#   {"name": "Critic", "attributes": [
-#       {"name": "TopCritic", "type": "bool", "desc": "Critic's TopCritic", "unique": false, "mandatory": false},
-#       {"name": "Name", "type": "str", "desc": "Critic's Name", "unique": true, "mandatory": true},
-#       {"name": "Publication", "type": "str", "desc": "Critic's Publication", "unique": false, "mandatory": false}]}...
+kg.process_sources(sources)
 ```
+You can update the KG at any time by processing more sources with the `process_sources` method.
 
-### KnowledgeGraph
-
-A `KnowledgeGraph` holds the actual entities and relationships within your data.
-Once constructed, it serves as the backbone of your RAG solution. A Large Language Model will query your knowledge-graph to build a precise context on which its answer will be based.
+### Graph RAG
+At this point, you have a Knowledge Graph that can be queried using this SDK. You can use the `ask` method for single questions or `chat_session` for conversations.
 
 ```python
-# Create a knowledge graph based on a schema.
-g = KnowledgeGraph("IMDB", host="127.0.0.1", port=6379, schema=s)
-g.process_sources([Source("./data/the_matrix.txt"), Source("./data/wework.txt")])
+# Single question.
+response = kg.ask("What were the last five fights? When were they? How many rounds did they have?")
+print(response)
 
-# Query your data
-question = "Name a few actors who've played in 'The Matrix'"
-answer, messages = g.ask(question)
-print(f"Answer: {answer}")
-
-question = "List additional actors"
-answer, messages = g.ask(question, messages)
-print(f"Answer: {answer}")
-
-# Outputs:
-# Answer: A few actors who've played in 'The Matrix' are:
-# - Keanu Reeves
-# - Laurence Fishburne
-# - Carrie-Anne Moss
-# - Hugo Weaving
-#
-# Answer: A few additional actors who've played in 'The Matrix' are:
-# - Joe Pantoliano
-# - Marcus Chong
-# - Paul Goddard
-# - Gloria Foster
+# Conversation.
+chat = kg.chat_session()
+response = chat.send_message("Who is Salsa Boy?")
+print(response)
+response = chat.send_message("Tell me about one of his fights?")
+print(response)
 ```
+
+## Multi Agent - Orchestrator
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
+
+The GraphRAG-SDK supports KG agents. Each agent is an expert in the data it has learned, and the orchestrator orchestrates the agents.
+### Agents
+See the [Basic Usage](#basic-usage) section to understand how to create KG objects for the agents.
+
+```python
+# Define the model
+model = OpenAiGenerativeModel("gpt-4o")
+
+# Create the KG from the predefined ontology.
+# In this example, we will use the restaurants agent and the attractions agent.
+restaurants_kg = KnowledgeGraph(
+    name="restaurants",
+    ontology=restaurants_ontology,
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+)
+attractions_kg = KnowledgeGraph(
+    name="attractions",
+    ontology=attractions_ontology,
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+)
+
+
+# The following agent is specialized in finding restaurants.
+restaurants_agent = KGAgent(
+    agent_id="restaurants_agent",
+    kg=restaurants_kg,
+    introduction="I'm a restaurant agent, specialized in finding the best restaurants for you.",
+)
+
+# The following agent is specialized in finding tourist attractions.
+attractions_agent = KGAgent(
+    agent_id="attractions_agent",
+    kg=attractions_kg,
+    introduction="I'm an attractions agent, specialized in finding the best tourist attractions for you.",
+)
+
+```
+
+### Orchestrator - Multi-Agent System
+The orchestrator manages the usage of agents and handles questioning.
+
+```python
+# Initialize the orchestrator while giving it the backstory.
+orchestrator = Orchestrator(
+    model,
+    backstory="You are a trip planner, and you want to provide the best possible itinerary for your clients.",
+)
+
+# Register the agents that we created above.
+orchestrator.register_agent(restaurants_agent)
+orchestrator.register_agent(attractions_agent)
+
+# Query the orchestrator.
+runner = orchestrator.ask("Create a two-day itinerary for a trip to Rome. Please don't ask me any questions; just provide the best itinerary you can.")
+print(runner.output)
+```
+
+## Support
+Connect with our community for support and discussions. If you have any questions, don’t hesitate to contact us through one of the methods below:
+
+* [Discord](https://discord.com/invite/6M4QwDXn2w)
+* [Email](support@falkordb.com)
+* [Discussions](https://github.com/orgs/FalkorDB/discussions)
+
