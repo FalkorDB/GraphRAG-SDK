@@ -1,8 +1,8 @@
 # GraphRAG-SDK
+
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 [![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
-V2
 
 GraphRAG-SDK is a comprehensive solution for building Graph Retrieval-Augmented Generation (GraphRAG) applications, leveraging [FalkorDB](https://www.falkordb.com/) for optimal performance.
 
@@ -24,6 +24,7 @@ pip install graphrag_sdk
 ### Prerequisites
 
 #### Graph Database
+
 GraphRAG-SDK relies on [FalkorDB](http://falkordb.com) as its graph engine and works with OpenAI/Gemini.
 
 Use [FalkorDB Cloud](https://app.falkordb.cloud/) to get credentials or start FalkorDB locally:
@@ -31,7 +32,9 @@ Use [FalkorDB Cloud](https://app.falkordb.cloud/) to get credentials or start Fa
 ```sh
 docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb:latest
 ```
+
 #### LLM Models
+
 Currently, this SDK supports the following LLMs API:
 
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
@@ -45,15 +48,16 @@ Make sure that a `.env` file is present with all required credentials.
    ```
    OPENAI_API_KEY="OPENAI_API_KEY"
    GOOGLE_API_KEY="GOOGLE_API_KEY"
-
    ```
   
    </details>
 
 ## Basic Usage
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
 
 The following example demonstrates the basic usage of this SDK to create a GraphRAG using URLs with auto-detected ontology.
+
 ```python
 from dotenv import load_dotenv
 
@@ -98,10 +102,13 @@ print(chat.send_message("Who is the director of the movie The Matrix?"))
 print(chat.send_message("How this director connected to Keanu Reeves?"))
 
 ```
+
 ## Tools
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/ufc/demo-ufc.ipynb)
 
 ### Import source data
+
 The SDK supports the following file formats:
 
 * PDF
@@ -110,7 +117,7 @@ The SDK supports the following file formats:
 * URL
 * HTML
 * CSV
-V2
+
 ```python
 import os
 from graphrag_sdk.classes.source import Source
@@ -122,7 +129,9 @@ sources = []
 for file in os.listdir(src_files):
     sources.append(Source(os.path.join(src_files, file)))
 ```
+
 ### Ontology
+
 You can either auto-detect the ontology from your data or define it manually. Additionally, you can set `Boundaries` for ontology auto-detection.
 
 Once the ontology is created, you can review, modify, and update it as needed before using it to build the Knowledge Graph (KG).
@@ -157,11 +166,13 @@ ontology = Ontology.from_sources(
 with open("ontology.json", "w", encoding="utf-8") as file:
     file.write(json.dumps(ontology.to_json(), indent=2))
 ```
+
 After generating the initial ontology, you can review it and make any necessary modifications to better fit your data and requirements. This might include refining entity types or adjusting relationships.
 
 Once you are satisfied with the ontology, you can proceed to use it for creating and managing your Knowledge Graph (KG).
 
 ### Knowledge Graph
+
 Now, you can use the SDK to create a Knowledge Graph (KG) from your sources and ontology.
 
 ```python
@@ -178,9 +189,11 @@ kg = KnowledgeGraph(
 
 kg.process_sources(sources)
 ```
+
 You can update the KG at any time by processing more sources with the `process_sources` method.
 
 ### Graph RAG
+
 At this point, you have a Knowledge Graph that can be queried using this SDK. You can use the `ask` method for single questions or `chat_session` for conversations.
 
 ```python
@@ -197,10 +210,13 @@ print(response)
 ```
 
 ## Multi Agent - Orchestrator
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
 
 The GraphRAG-SDK supports KG agents. Each agent is an expert in the data it has learned, and the orchestrator orchestrates the agents.
+
 ### Agents
+
 See the [Basic Usage](#basic-usage) section to understand how to create KG objects for the agents.
 
 ```python
@@ -234,10 +250,10 @@ attractions_agent = KGAgent(
     kg=attractions_kg,
     introduction="I'm an attractions agent, specialized in finding the best tourist attractions for you.",
 )
-
 ```
 
 ### Orchestrator - Multi-Agent System
+
 The orchestrator manages the usage of agents and handles questioning.
 
 ```python
@@ -257,6 +273,7 @@ print(runner.output)
 ```
 
 ## Support
+
 Connect with our community for support and discussions. If you have any questions, don’t hesitate to contact us through one of the methods below:
 
 * [Discord](https://discord.com/invite/6M4QwDXn2w)
