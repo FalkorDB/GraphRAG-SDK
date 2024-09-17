@@ -1,5 +1,5 @@
 from typing import Iterator
-from graphrag_sdk.Document import Document
+from graphrag_sdk.document import Document
 
 class TextLoader():
     """

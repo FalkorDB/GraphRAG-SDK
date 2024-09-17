@@ -2,9 +2,10 @@ import re
 import requests
 from typing import Iterator
 from bs4 import BeautifulSoup
-from graphrag_sdk.Document import Document
+from graphrag_sdk.document import Document
 
-class HTMLLoader():
+
+class HTMLLoader:
     """
     Load HTML
     """
@@ -19,11 +20,10 @@ class HTMLLoader():
 
         self.path = path
 
-    def _download(self) -> str:
+    def _get_file(self) -> str:
         try:
-            response = requests.get(self.path)
-            response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
-            return response.text
+            with open(self.path, "r") as f:
+                return f.read()
         except requests.exceptions.RequestException as e:
             print(f"An error occurred: {e}")
 
@@ -36,16 +36,16 @@ class HTMLLoader():
         """
 
         # Download URL
-        content = self._download()
+        content = self._get_file()
 
         # extract text from HTML, populate content
-        soup = BeautifulSoup(content, 'html.parser')
+        soup = BeautifulSoup(content, "html.parser")
 
         # Extract text from the HTML
         content = soup.get_text()
 
         # Remove extra newlines
-        content = re.sub(r'\n{2,}', '\n', content)
+        content = re.sub(r"\n{2,}", "\n", content)
 
         yield Document(content)
-        #return f"{self.source}\n{self.content}"
+        # return f"{self.source}\n{self.content}"

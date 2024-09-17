@@ -1,51 +1,119 @@
+from dotenv import load_dotenv
+
+load_dotenv()
+from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.entity import Entity
+from graphrag_sdk.relation import Relation
+from graphrag_sdk.attribute import Attribute, AttributeType
 import unittest
-from openai import OpenAI
-from falkordb import FalkorDB
-from graphrag_sdk import KnowledgeGraph, Source
-from graphrag_sdk.schema import Schema
+from graphrag_sdk.models.gemini import GeminiGenerativeModel
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 
 class TestKG(unittest.TestCase):
-    def test_kg_creation(self):
-        # Create schema
-        s = Schema()
-        actor = s.add_entity('Actor').add_attribute('name', str, unique=True)
-        movie = s.add_entity('Movie').add_attribute('title', str, unique=True)
-        s.add_relation("ACTED", actor, movie)
+    """
+    Test Knowledge Graph
+    """
 
-        g = KnowledgeGraph("IMDB", schema=s)
-        g.process_sources([Source("./data/madoff.txt")])
+    @classmethod
+    def setUpClass(cls):
 
-        answer, messages = g.ask("List a few actors")
-        print(f"answer: {answer}")
+        cls.ontology = Ontology([], [])
 
-        answer, messages = g.ask("list additional actors", messages)
-        print(f"answer: {answer}")
+        cls.ontology.add_entity(
+            Entity(
+                label="Actor",
+                attributes=[
+                    Attribute(
+                        name="name",
+                        attr_type=AttributeType.STRING,
+                        unique=True,
+                        required=True,
+                    ),
+                ],
+            )
+        )
+        cls.ontology.add_entity(
+            Entity(
+                label="Movie",
+                attributes=[
+                    Attribute(
+                        name="title",
+                        attr_type=AttributeType.STRING,
+                        unique=True,
+                        required=True,
+                    ),
+                ],
+            )
+        )
+        cls.ontology.add_relation(
+            Relation(
+                label="ACTED_IN",
+                source="Actor",
+                target="Movie",
+                attributes=[
+                    Attribute(
+                        name="role",
+                        attr_type=AttributeType.STRING,
+                        unique=False,
+                        required=False,
+                    ),
+                ],
+            )
+        )
 
-    def test_kg_delete(self):
-        s = Schema()
-        actor = s.add_entity('Actor').add_attribute('name', str, unique=True)
-        movie = s.add_entity('Movie').add_attribute('title', str, unique=True)
-        s.add_relation("ACTED", actor, movie)
+        cls.graph_name = "test_kg"
 
-        g = KnowledgeGraph("IMDB", schema=s)
-        g.process_sources([Source("./data/madoff.txt")])
+        model = GeminiGenerativeModel(model_name="gemini-1.5-flash-001")
+        cls.kg = KnowledgeGraph(
+            name=cls.graph_name,
+            ontology=cls.ontology,
+            model_config=KnowledgeGraphModelConfig.with_model(model),
+        )
 
-        g.delete()
+    # Delete graph after tests
+    @classmethod
+    def tearDownClass(cls):
+        cls.kg.delete()
 
-        # Check that:
-        # 1. KnowledgeGraph has been removed from FalkorDB.
-        # 2. SchemaGraph has been removed from FalkorDB.
-        # 3. OpenAI assistant has been deleted.
+    def test_add_node_valid(self):
+        self.kg.add_node("Actor", {"name": "Tom Hanks"})
 
-        db = FalkorDB()
-        graphs = db.list_graphs()
-        self.assertNotIn("IMDB", graphs)
-        self.assertNotIn("IMDB_schema", graphs)
+    def test_add_node_invalid(self):
+        with self.assertRaises(Exception):
+            self.kg.add_node("Actor", {"title": "Tom Hanks"})
 
-        client = OpenAI()
-        assistant_id = None
-        for assistant in client.beta.assistants.list():
-            self.assertNotEqual(assistant.name, "IMDB")
+    def test_add_relation_valid(self):
+        self.kg.add_edge(
+            "ACTED_IN",
+            "Actor",
+            "Movie",
+            {"name": "Tom Hanks"},
+            {"title": "Forrest Gump"},
+            {"role": "Forrest Gump"},
+        )
 
-if __name__ == '__main__':
-    unittest.main()
+    def test_add_relation_invalid(self):
+        with self.assertRaises(Exception):
+            self.kg.add_edge(
+                "ACTED_IN",
+                "Actor",
+                "Movie",
+                {"title": "Tom Hanks"},
+                {"title": "Forrest Gump"},
+                {"role": "Forrest Gump"},
+            )
+
+        with self.assertRaises(Exception):
+            self.kg.add_edge(
+                "ACTED_IN",
+                "Actor",
+                "Movie",
+                {"name": "Tom Hanks"},
+                {"name": "Forrest Gump"},
+                {},
+            )
