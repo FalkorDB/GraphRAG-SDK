@@ -64,10 +64,10 @@ The following example demonstrates the basic usage of this SDK to create a Graph
 ```python
 from dotenv import load_dotenv
 
-from graphrag_sdk.classes.source import URL
+from graphrag_sdk.source import URL
 from graphrag_sdk import KnowledgeGraph, Ontology
 from graphrag_sdk.models.openai import OpenAiGenerativeModel
-from graphrag_sdk.classes.model_config import KnowledgeGraphModelConfig
+from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 load_dotenv()
 
 # Import Data
@@ -123,7 +123,7 @@ The SDK supports the following file formats:
 
 ```python
 import os
-from graphrag_sdk.classes.source import Source
+from graphrag_sdk.source import Source
 
 src_files = "data_folder"
 sources = []
