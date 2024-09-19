@@ -1,16 +1,16 @@
 [tool.poetry]
 name = "graphrag_sdk"
-version = "0.2.0"
+version = "0.2.1"
 license = "MIT"
 description = ""
 authors = ["FalkorDB <info@falkordb.com>"]
 readme = "README.md"
-repository = "https://github.com/FalkorDB/falkordb-gemini-kg"
+repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 homepage = "http://RAG-SDK.readthedocs.io"
 keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
 
 [tool.poetry.dependencies]
-python = "^3.11.4"
+python = "^3.9.0"
 falkordb = "^1.0.4"
 typing-extensions = "^4.12.1"
 bs4 = "^0.0.2"
