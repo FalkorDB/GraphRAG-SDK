@@ -338,30 +338,42 @@ Ontology:
 """
 
 EXTRACT_DATA_PROMPT = """
-Extract all possible entities and relations from the text below.
-Use the ontology provided in the system prompt.
-Assign textual IDs whenever required.
-Use double quotes for string values.
-It's imperative that string values are properly escaped.
-All formats should be consistent, for example, dates should be in the format "YYYY-MM-DD".
-If needed, add the correct spacing for text fields, where the text is not properly formatted.
+You are tasked with extracting entities and relationships from the text below, using the ontology provided in the system prompt. Assign textual IDs where required.
 
-User instructions:
+**Output Format:**
+- Provide the extracted data as a JSON object with two keys: "entities" and "relationships".
+
+**Guidelines:**
+- **Limit**: Extract up to **10 entities** and their associated relationships.
+- **Avoid Duplicates**: Ensure that each entity and relationship is unique. Do not include duplicates.
+- **Formatting**:
+  - Use double quotes for all string values, and properly escape any special characters.
+  - Dates should be in the format **"YYYY-MM-DD"**.
+  - Correct any spacing or formatting issues in text fields as necessary.
+- **Precision**: Be concise and precise in your extraction.
+- **Token Limit**: Ensure that your response does not exceed **500 tokens**.
+
+**User Instructions**:
 {instructions}
 
-Raw Text:
+**Raw Text**:
 {text}
 """
 
+# FIX_JSON_PROMPT = """
+# Given the following JSON, correct any mistakes or missing information in the JSON.
+
+# The error when parsing the JSON is:
+# {error}
+
+# JSON:
+# {json}
+# """
+
 FIX_JSON_PROMPT = """
-Given the following JSON, correct any mistakes or missing information in the JSON.
-
-The error when parsing the JSON is:
-{error}
-
-JSON:
-{json}
+You are Bery, a JSON fixer. Please fix the following string and return a correct JSON without any other text: {broken_json}
 """
+
 
 CYPHER_GEN_SYSTEM = """
 Task: Generate OpenCypher statement to query a graph database.

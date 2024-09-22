@@ -140,7 +140,7 @@ class ExtractDataStep(Step):
             while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS:
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
-                responses.append(self._call_model(chat_session, "continue"))
+                responses.append(self._call_model(chat_session, 'Please complete your answer. Ensure that each entity and relationship is unique. Do not include duplicates. Please be precise.'))
                 _task_logger.debug(
                     f"Model response after continue: {responses[response_idx].text}"
                 )
@@ -153,7 +153,7 @@ class ExtractDataStep(Step):
                     f"Model stopped unexpectedly: {responses[response_idx].finish_reason}"
                 )
 
-            combined_text = " ".join([r.text for r in responses])
+            combined_text = responses[-1].text #" ".join([r.text for r in responses])
 
             try:
                 data = json.loads(extract_json(combined_text))
@@ -162,7 +162,7 @@ class ExtractDataStep(Step):
                 _task_logger.debug(f"Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
-                    FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
+                    FIX_JSON_PROMPT.format(broken_json=combined_text),
                 )
                 data = json.loads(extract_json(json_fix_response.text))
                 _task_logger.debug(f"Fixed JSON: {data}")

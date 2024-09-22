@@ -110,11 +110,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
                 if self._model.generation_config is not None
                 else None
             ),
-            temperature=(
-                self._model.generation_config.temperature
-                if self._model.generation_config is not None
-                else None
-            ),
+            temperature=0,
             top_p=(
                 self._model.generation_config.top_p
                 if self._model.generation_config is not None
@@ -125,8 +121,39 @@ class OpenAiChatSession(GenerativeModelChatSession):
                 if self._model.generation_config is not None
                 else None
             ),
+            response_format={ "type": "json_object" }
         )
         content = self._model.parse_generate_content_response(response)
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": content.text})
         return content
+
+ADD_MESSAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "add_query",
+        "description": "Add new entities and relationships to the graph based on the provided query.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_node": {"type": "string"},
+                            "source_type": {"type": "string"},
+                            "relation": {"type": "string"},
+                            "destination_node": {"type": "string"},
+                            "destination_type": {"type": "string"}
+                        },
+                        "required": ["source_node", "source_type", "relation", "destination_node", "destination_type"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["entities"],
+            "additionalProperties": False
+        }
+    }
+}
