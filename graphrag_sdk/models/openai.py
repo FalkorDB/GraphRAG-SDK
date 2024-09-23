@@ -111,6 +111,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
                 else None
             ),
             temperature=(
+                0 if output_method=='json' else
                 self._model.generation_config.temperature
                 if self._model.generation_config is not None
                 else None

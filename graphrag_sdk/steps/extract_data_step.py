@@ -155,16 +155,17 @@ class ExtractDataStep(Step):
                     f"Model stopped unexpectedly: {responses[response_idx].finish_reason}"
                 )
 
-            combined_text = responses[-1].text
+            # only extract the last response
+            last_respond = responses[-1].text
 
             try:
-                data = json.loads(extract_json(combined_text))
+                data = json.loads(extract_json(last_respond))
             except Exception as e:
                 _task_logger.debug(f"Error extracting JSON: {e}")
                 _task_logger.debug(f"Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
-                    FIX_JSON_PROMPT.format(broken_json=combined_text),
+                    FIX_JSON_PROMPT.format(broken_json=last_respond),
                     output_method="json",
                 )
                 data = json.loads(extract_json(json_fix_response.text))
