@@ -108,6 +108,6 @@ class GeminiChatSession(GenerativeModelChatSession):
             history=args.get("history", []) if args is not None else [],
         )
 
-    def send_message(self, message: str) -> GenerationResponse:
-        response = self._chat_session.send_message(message)
+    def send_message(self, message: str, output_method: str = None) -> GenerationResponse:
+        response = self._chat_session.send_message(message, generation_config={"response_mime_type": "application/json", "temperature": 0} if output_method=='json' else None)
         return self._model.parse_generate_content_response(response)

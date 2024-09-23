@@ -82,7 +82,7 @@ class GenerativeModelChatSession(ABC):
         self.model = model
 
     @abstractmethod
-    def send_message(self, message: str) -> GenerationResponse:
+    def send_message(self, message: str, output_method: str = None) -> GenerationResponse:
         pass
 
 

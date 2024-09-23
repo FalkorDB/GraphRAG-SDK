@@ -330,7 +330,7 @@ Schema:
 }
 ```
 
-For example:
+Output example:
 ```{"entities":[{"label":"Person","attributes":{"name":"John Doe","age":30}},{"label":"Movie","attributes":{"title":"Inception","releaseYear":2010}}],"relations":[{"label":"ACTED_IN","source":{"label":"Person","attributes":{"name":"JohnDoe"}},"target":{"label":"Movie","attributes":{"title":"Inception"}},"attributes":{"role":"Cobb"}}]}```
 
 Ontology:
@@ -338,42 +338,57 @@ Ontology:
 """
 
 EXTRACT_DATA_PROMPT = """
-You are tasked with extracting entities and relationships from the text below, using the ontology provided in the system prompt. Assign textual IDs where required.
+You are tasked with extracting entities and relations from the text below, using the ontology provided.
 
 **Output Format:**
-- Provide the extracted data as a JSON object with two keys: "entities" and "relationships".
+
+- Provide the extracted data as a JSON object with two keys: `"entities"` and `"relations"`.
+
+- **Entities**: Represent entities and concepts. Each entity should have a `"label"` and `"attributes"` field.
+
+- **Relations**: Represent relations between entities or concepts. Each relation should have a `"label"`, `"source"`, `"target"`, and `"attributes"` field.
 
 **Guidelines:**
-- **Limit**: Extract up to **10 entities** and their associated relationships.
-- **Avoid Duplicates**: Ensure that each entity and relationship is unique. Do not include duplicates.
+- **Extract all entities and relations**: Capture all entities and relations mentioned in the text.
+
+- **Use Only the Provided Ontology**: Utilize only the types of entities, relations, and attributes defined in the ontology.
+
+- **Assign IDs Where Required**: Assign textual IDs to entities and relations as specified.
+
+- **Avoid Duplicates**: Ensure each entity and relation is unique; do not include duplicates.
+
 - **Formatting**:
-  - Use double quotes for all string values, and properly escape any special characters.
-  - Dates should be in the format **"YYYY-MM-DD"**.
+  - Do not include any intrudction or explanation in the response, only the JSON.
+  
+  - Use double quotes for all string values.
+
+  - Properly escape any special characters.
+
+  - Dates should be in the format `"YYYY-MM-DD"`.
+
   - Correct any spacing or formatting issues in text fields as necessary.
+
 - **Precision**: Be concise and precise in your extraction.
-- **Token Limit**: Ensure that your response does not exceed **500 tokens**.
+
+- **Token Limit**: Ensure your response does not exceed **{max_tokens} tokens**.
 
 **User Instructions**:
 {instructions}
+
+**Ontology**:
+{ontology}
 
 **Raw Text**:
 {text}
 """
 
-# FIX_JSON_PROMPT = """
-# Given the following JSON, correct any mistakes or missing information in the JSON.
-
-# The error when parsing the JSON is:
-# {error}
-
-# JSON:
-# {json}
-# """
-
 FIX_JSON_PROMPT = """
-You are Bery, a JSON fixer. Please fix the following string and return a correct JSON without any other text: {broken_json}
+You are Bery, a JSON fixer. Please fix the following string and return a correct JSON format without any other text:
+{broken_json}
 """
-
+COMPLETE_DATA_EXTRACTION = """
+Please complete your answer. Ensure that each entity and relationship is unique. Do not include duplicates. Please be precise.
+"""
 
 CYPHER_GEN_SYSTEM = """
 Task: Generate OpenCypher statement to query a graph database.
