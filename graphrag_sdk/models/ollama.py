@@ -14,7 +14,7 @@ class OllamaGenerativeModel(GenerativeModel):
         host: str = None,
     ):
         self.model_name = model_name
-        self.generation_config = generation_config
+        self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
         self._host = host
 
@@ -88,32 +88,24 @@ class OllamaChatSession(GenerativeModelChatSession):
         )
 
     def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+        generation_config = self._get_generation_config(output_method)
         prompt = []
         prompt.extend(self._history)
         prompt.append({"role": "user", "content": message[:14385]})
-        print("OLLAMA chat prompt: " + str(prompt))
         response = self._model.client.chat(
             model=self._model.model_name,
             messages=prompt,
-            options=Options(
-                temperature=(
-                    self._model.generation_config.temperature
-                    if self._model.generation_config is not None
-                    else None
-                ),
-                top_p=(
-                    self._model.generation_config.top_p
-                    if self._model.generation_config is not None
-                    else None
-                ),
-                stop=(
-                    self._model.generation_config.stop_sequences
-                    if self._model.generation_config is not None
-                    else None
-                ),
-            ),
+            options=Options(**generation_config)
         )
         content = self._model.parse_generate_content_response(response)
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": content.text})
         return content
+    
+    def _get_generation_config(self, output_method: OutputMethod):
+        config = self._model.generation_config.to_json()
+        if output_method == OutputMethod.JSON:
+            config['temperature'] = 0
+            config['format'] = 'json'
+        
+        return config

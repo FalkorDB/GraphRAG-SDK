@@ -342,7 +342,7 @@ You are tasked with extracting entities and relations from the text below, using
 
 **Output Format:**
 
-- Provide the extracted data as a JSON object with two keys: `"entities"` and `"relations"`.
+- Provide the extracted data as a JSON object with only two keys: `"entities"` and `"relations"`.
 
 - **Entities**: Represent entities and concepts. Each entity should have a `"label"` and `"attributes"` field.
 
