@@ -10,7 +10,6 @@ from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.openai import OpenAiGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
-from falkordb import FalkorDB
 
 load_dotenv()
 
@@ -84,13 +83,14 @@ class TestKGOpenAI(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        answer = self.kg.ask("How much actors acted in a movie?")
+        answer = kg.ask("How many actors acted in a movie?")
 
         logger.info(f"Answer: {answer}")
-        
-        actors_n = re.findall(r'\d+', answer[0])
 
-        assert len(actors_n) != 0, "No actors found"
+        actors_count = re.search(r'(\d+)\s*(actor|performer)s?', answer[0], re.IGNORECASE)
+        num_actors = int(actors_count.group(1)) if actors_count else None
+
+        assert num_actors is not None or num_actors > 10, "The number of actors found should be greater than 10"
 
     def test_kg_delete(self):
 

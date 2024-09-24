@@ -358,7 +358,7 @@ You are tasked with extracting entities and relations from the text below, using
 - **Avoid Duplicates**: Ensure each entity and relation is unique; do not include duplicates.
 
 - **Formatting**:
-  - Do not include any intrudction or explanation in the response, only the JSON.
+  - Do not include any introduction or explanation in the response, only the JSON.
   
   - Use double quotes for all string values.
 
@@ -383,11 +383,16 @@ You are tasked with extracting entities and relations from the text below, using
 """
 
 FIX_JSON_PROMPT = """
-You are Bery, a JSON fixer. Please fix the following string and return a correct JSON format without any other text:
-{broken_json}
+Given the following JSON, correct any mistakes or missing information in the JSON.
+
+The error when parsing the JSON is:
+{error}
+
+JSON:
+{json}
 """
 COMPLETE_DATA_EXTRACTION = """
-Please complete your answer. Ensure that each entity and relationship is unique. Do not include duplicates. Please be precise.
+Please complete your answer. Ensure that each entity and relations is unique. Do not include duplicates. Please be precise.
 """
 
 CYPHER_GEN_SYSTEM = """

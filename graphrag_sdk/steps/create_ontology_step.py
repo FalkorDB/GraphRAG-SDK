@@ -122,7 +122,7 @@ class CreateOntologyStep(Step):
             logger.debug(f"Prompting model to fix JSON")
             json_fix_response = self._call_model(
                 self._create_chat(),
-                FIX_JSON_PROMPT.format(broken_json=combined_text),
+                FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
             )
             try:
                 data = json.loads(extract_json(json_fix_response.text))
@@ -177,7 +177,7 @@ class CreateOntologyStep(Step):
             logger.debug(f"Prompting model to fix JSON")
             json_fix_response = self._call_model(
                 self._create_chat(),
-                FIX_JSON_PROMPT.format(broken_json=combined_text),
+                FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
             )
             try:
                 data = json.loads(extract_json(json_fix_response.text))

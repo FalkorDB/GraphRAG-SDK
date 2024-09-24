@@ -1,4 +1,5 @@
 from .model import (
+    OutputMethod,
     GenerativeModel,
     GenerativeModelConfig,
     GenerationResponse,
@@ -15,7 +16,7 @@ class OpenAiGenerativeModel(GenerativeModel):
     def __init__(
         self,
         model_name: str,
-        generation_config: GenerativeModelConfig | None = None,
+        generation_config: GenerativeModelConfig=GenerativeModelConfig(),
         system_instruction: str | None = None,
     ):
         self.model_name = model_name
@@ -98,37 +99,25 @@ class OpenAiChatSession(GenerativeModelChatSession):
             else []
         )
 
-    def send_message(self, message: str, output_method: str = None) -> GenerationResponse:
+    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+        generation_config = self._get_generation_config(output_method)
         prompt = []
         prompt.extend(self._history)
         prompt.append({"role": "user", "content": message[:14385]})
         response = self._model.client.chat.completions.create(
             model=self._model.model_name,
             messages=prompt,
-            max_tokens=(
-                self._model.generation_config.max_output_tokens
-                if self._model.generation_config is not None
-                else None
-            ),
-            temperature=(
-                0 if output_method=='json' else
-                self._model.generation_config.temperature
-                if self._model.generation_config is not None
-                else None
-            ),
-            top_p=(
-                self._model.generation_config.top_p
-                if self._model.generation_config is not None
-                else None
-            ),
-            stop=(
-                self._model.generation_config.stop_sequences
-                if self._model.generation_config is not None
-                else None
-            ),
-            response_format={ "type": "json_object" } if output_method=='json' else None,
+            **generation_config
         )
         content = self._model.parse_generate_content_response(response)
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": content.text})
         return content
+    
+    def _get_generation_config(self, output_method: OutputMethod):
+        config = self._model.generation_config.to_json()
+        if output_method == OutputMethod.JSON:
+            config['temperature'] = 0
+            config['response_format'] = { "type": "json_object" }
+        
+        return config

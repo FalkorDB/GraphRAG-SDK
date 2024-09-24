@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from enum import Enum
 
 
 class FinishReason:
@@ -6,6 +7,9 @@ class FinishReason:
     STOP = "STOP"
     OTHER = "OTHER"
 
+class OutputMethod(Enum):
+    JSON = 'json'
+    DEFAULT = 'default'
 
 class GenerativeModelConfig:
     """
@@ -17,6 +21,7 @@ class GenerativeModelConfig:
         top_k (int): The top-k value to use for sampling.
         max_output_tokens (int): The maximum number of tokens to generate.
         stop_sequences (list[str]): The stop sequences to use for sampling.
+        response_format (dict): The format of the response.
 
     Examples:
 
@@ -30,12 +35,14 @@ class GenerativeModelConfig:
         top_k: int | None = None,
         max_output_tokens: int | None = None,
         stop_sequences: list[str] | None = None,
+        response_format: dict | None = None,
     ):
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         self.max_output_tokens = max_output_tokens
         self.stop_sequences = stop_sequences
+        self.response_format = response_format
 
     def __str__(self) -> str:
         return f"GenerativeModelConfig(temperature={self.temperature}, top_p={self.top_p}, top_k={self.top_k}, max_output_tokens={self.max_output_tokens}, stop_sequences={self.stop_sequences})"
@@ -44,9 +51,9 @@ class GenerativeModelConfig:
         return {
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "top_k": self.top_k,
-            "max_output_tokens": self.max_output_tokens,
-            "stop_sequences": self.stop_sequences,
+            "max_tokens": self.max_output_tokens,
+            "stop": self.stop_sequences,
+            "response_format": self.response_format,
         }
 
     @staticmethod
@@ -82,7 +89,7 @@ class GenerativeModelChatSession(ABC):
         self.model = model
 
     @abstractmethod
-    def send_message(self, message: str, output_method: str = None) -> GenerationResponse:
+    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
         pass
 
 

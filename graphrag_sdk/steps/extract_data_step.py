@@ -24,6 +24,7 @@ from uuid import uuid4
 import os
 import time
 from ratelimit import limits, sleep_and_retry
+from graphrag_sdk.models.model import OutputMethod
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -135,14 +136,14 @@ class ExtractDataStep(Step):
             responses: list[GenerationResponse] = []
             response_idx = 0
 
-            responses.append(self._call_model(chat_session, user_message, output_method="json"))
+            responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
             while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS:
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
-                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method="json"))
+                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))
                 _task_logger.debug(
                     f"Model response after continue: {responses[response_idx].text}"
                 )
@@ -155,7 +156,7 @@ class ExtractDataStep(Step):
                     f"Model stopped unexpectedly: {responses[response_idx].finish_reason}"
                 )
 
-            # only extract the last response
+            # Full json response is in the last response
             last_respond = responses[-1].text
 
             try:
@@ -165,8 +166,8 @@ class ExtractDataStep(Step):
                 _task_logger.debug(f"Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
-                    FIX_JSON_PROMPT.format(broken_json=last_respond),
-                    output_method="json",
+                    FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
+                    output_method=OutputMethod.JSON,
                 )
                 data = json.loads(extract_json(json_fix_response.text))
                 _task_logger.debug(f"Fixed JSON: {data}")
@@ -278,8 +279,8 @@ class ExtractDataStep(Step):
         self,
         chat_session: GenerativeModelChatSession,
         prompt: str,
-        retry=6,
-        output_method=None,
+        retry: int = 6,
+        output_method: OutputMethod = OutputMethod.DEFAULT
     ):
         try:
             return chat_session.send_message(prompt, output_method=output_method)
