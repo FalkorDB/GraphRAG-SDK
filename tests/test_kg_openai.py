@@ -83,7 +83,7 @@ class TestKGOpenAI(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        answer = kg.ask("How many actors acted in a movie?")
+        answer = self.kg.ask("How many actors acted in a movie?")
 
         logger.info(f"Answer: {answer}")
 
