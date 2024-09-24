@@ -391,6 +391,9 @@ The error when parsing the JSON is:
 JSON:
 {json}
 """
+
+# This constant is used as a follow-up prompt when the initial data extraction is incomplete or contains duplicates.
+# It instructs the model to complete the answer and ensure uniqueness of entities and relations.
 COMPLETE_DATA_EXTRACTION = """
 Please complete your answer. Ensure that each entity and relations is unique. Do not include duplicates. Please be precise.
 """

@@ -16,11 +16,11 @@ class OpenAiGenerativeModel(GenerativeModel):
     def __init__(
         self,
         model_name: str,
-        generation_config: GenerativeModelConfig=GenerativeModelConfig(),
+        generation_config: GenerativeModelConfig | None = None,
         system_instruction: str | None = None,
     ):
         self.model_name = model_name
-        self.generation_config = generation_config
+        self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
 
     def _get_model(self) -> OpenAI:

@@ -59,11 +59,11 @@ class GenerativeModelConfig:
     @staticmethod
     def from_json(json: dict) -> "GenerativeModelConfig":
         return GenerativeModelConfig(
-            temperature=json["temperature"],
-            top_p=json["top_p"],
-            top_k=json["top_k"],
-            max_output_tokens=json["max_output_tokens"],
-            stop_sequences=json["stop_sequences"],
+            temperature=json.get("temperature"),
+            top_p=json.get("top_p"),
+            top_k=json.get("top_k"),
+            max_output_tokens=json.get("max_tokens"),
+            stop_sequences=json.get("stop"),
         )
 
 

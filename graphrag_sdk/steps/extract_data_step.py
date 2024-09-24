@@ -166,7 +166,7 @@ class ExtractDataStep(Step):
                 _task_logger.debug(f"Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
-                    FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
+                    FIX_JSON_PROMPT.format(json=last_respond, error=str(e)),
                     output_method=OutputMethod.JSON,
                 )
                 data = json.loads(extract_json(json_fix_response.text))
