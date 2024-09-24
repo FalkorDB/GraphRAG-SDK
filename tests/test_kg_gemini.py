@@ -93,10 +93,10 @@ class TestKGGemini(unittest.TestCase):
 
         logger.info(f"Answer: {answer}")
 
-        actors_count = re.search(r'(\d+)\s*(actor|performer)s?', answer[0], re.IGNORECASE)
-        num_actors = int(actors_count.group(1)) if actors_count else None
+        actors_count = re.findall(r'\d+', answer[0])
+        num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
-        assert num_actors is not None or num_actors > 10, "The number of actors found should be greater than 10"
+        assert num_actors > 10, "The number of actors found should be greater than 10"
 
     def test_kg_delete(self):
         self.kg.delete()
