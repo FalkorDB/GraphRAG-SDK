@@ -1,20 +1,20 @@
-from dotenv import load_dotenv
-
-load_dotenv()
-from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.entity import Entity
-from graphrag_sdk.relation import Relation
-from graphrag_sdk.attribute import Attribute, AttributeType
+import re
+import logging
 import unittest
+from falkordb import FalkorDB
+from dotenv import load_dotenv
+from graphrag_sdk.entity import Entity
 from graphrag_sdk.source import Source
+from graphrag_sdk.relation import Relation
+from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.openai import OpenAiGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
-import logging
-from falkordb import FalkorDB
+
+load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
 
 class TestKGOpenAI(unittest.TestCase):
     """
@@ -83,14 +83,16 @@ class TestKGOpenAI(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        answer = self.kg.ask("List a few actors")
+        answer = self.kg.ask("How many actors acted in a movie?")
 
         logger.info(f"Answer: {answer}")
 
-        assert "Joseph Scotto" in answer[0], "Joseph Scotto not found in answer"
+        actors_count = re.findall(r'\d+', answer[0])
+        num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
+
+        assert num_actors > 10, "The number of actors found should be greater than 10"
 
     def test_kg_delete(self):
-
         self.kg.delete()
 
         db = FalkorDB()

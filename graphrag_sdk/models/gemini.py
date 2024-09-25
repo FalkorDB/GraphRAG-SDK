@@ -1,5 +1,6 @@
 import os
 from .model import (
+    OutputMethod,
     GenerativeModel,
     GenerativeModelConfig,
     GenerationResponse,
@@ -108,6 +109,15 @@ class GeminiChatSession(GenerativeModelChatSession):
             history=args.get("history", []) if args is not None else [],
         )
 
-    def send_message(self, message: str) -> GenerationResponse:
-        response = self._chat_session.send_message(message)
+    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+        generation_config = self._get_generation_config(output_method)
+        response = self._chat_session.send_message(message, generation_config=generation_config)
         return self._model.parse_generate_content_response(response)
+    
+    def _get_generation_config(self, output_method: OutputMethod):
+        if output_method == OutputMethod.JSON:
+            return {
+                "response_mime_type": "application/json",
+                "temperature": 0
+            }
+        return self._model._generation_config

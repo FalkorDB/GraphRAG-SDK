@@ -1,20 +1,19 @@
-from dotenv import load_dotenv
-
-load_dotenv()
-from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.entity import Entity
-from graphrag_sdk.relation import Relation
-from graphrag_sdk.attribute import Attribute, AttributeType
-import unittest
-from graphrag_sdk.source import Source
-from graphrag_sdk.models.gemini import GeminiGenerativeModel
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
-import vertexai
+import re
 import os
 import logging
+import unittest
+import vertexai
 from falkordb import FalkorDB
-import pytest
+from dotenv import load_dotenv
+from graphrag_sdk.entity import Entity
+from graphrag_sdk.source import Source
+from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.relation import Relation
+from graphrag_sdk.attribute import Attribute, AttributeType
+from graphrag_sdk.models.gemini import GeminiGenerativeModel
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
 
+load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -83,7 +82,6 @@ class TestKGGemini(unittest.TestCase):
             model_config=KnowledgeGraphModelConfig.with_model(model),
         )
 
-    @pytest.mark.skipif(condition=True, reason="Not ready for testing")
     def test_kg_creation(self):
         file_path = "tests/data/madoff.txt"
 
@@ -91,13 +89,15 @@ class TestKGGemini(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        (answer, chat_session) = self.kg.ask("List a few actors")
+        answer = self.kg.ask("How many actors acted in a movie?")
 
         logger.info(f"Answer: {answer}")
 
-        assert "Joseph Scotto" in answer[0], "Joseph Scotto not found in answer"
+        actors_count = re.findall(r'\d+', answer[0])
+        num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
-    @pytest.mark.skipif(condition=True, reason="Not ready for testing")
+        assert num_actors > 10, "The number of actors found should be greater than 10"
+
     def test_kg_delete(self):
         self.kg.delete()
 

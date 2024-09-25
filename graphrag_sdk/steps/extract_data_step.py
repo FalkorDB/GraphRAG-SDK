@@ -13,6 +13,7 @@ from graphrag_sdk.fixtures.prompts import (
     EXTRACT_DATA_SYSTEM,
     EXTRACT_DATA_PROMPT,
     FIX_JSON_PROMPT,
+    COMPLETE_DATA_EXTRACTION,
 )
 import logging
 from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
@@ -23,6 +24,7 @@ from uuid import uuid4
 import os
 import time
 from ratelimit import limits, sleep_and_retry
+from graphrag_sdk.models.model import OutputMethod
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -125,22 +127,23 @@ class ExtractDataStep(Step):
                         instructions if instructions is not None else "",
                     ]
                 ),
+                max_tokens=self.config["max_output_tokens"],
+                ontology=str(ontology.to_json()),
             )
 
-            # logger.debug(f"User message: {user_message}")
             _task_logger.debug("User message: " + user_message.replace("\n", " "))
 
             responses: list[GenerationResponse] = []
             response_idx = 0
 
-            responses.append(self._call_model(chat_session, user_message))
+            responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
             while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS:
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
-                responses.append(self._call_model(chat_session, "continue"))
+                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))
                 _task_logger.debug(
                     f"Model response after continue: {responses[response_idx].text}"
                 )
@@ -153,16 +156,18 @@ class ExtractDataStep(Step):
                     f"Model stopped unexpectedly: {responses[response_idx].finish_reason}"
                 )
 
-            combined_text = " ".join([r.text for r in responses])
+            # Full json response is in the last response
+            last_respond = responses[-1].text
 
             try:
-                data = json.loads(extract_json(combined_text))
+                data = json.loads(extract_json(last_respond))
             except Exception as e:
                 _task_logger.debug(f"Error extracting JSON: {e}")
                 _task_logger.debug(f"Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
-                    FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
+                    FIX_JSON_PROMPT.format(json=last_respond, error=str(e)),
+                    output_method=OutputMethod.JSON,
                 )
                 data = json.loads(extract_json(json_fix_response.text))
                 _task_logger.debug(f"Fixed JSON: {data}")
@@ -274,10 +279,11 @@ class ExtractDataStep(Step):
         self,
         chat_session: GenerativeModelChatSession,
         prompt: str,
-        retry=6,
+        retry: int = 6,
+        output_method: OutputMethod = OutputMethod.DEFAULT
     ):
         try:
-            return chat_session.send_message(prompt)
+            return chat_session.send_message(prompt, output_method=output_method)
         except Exception as e:
             # If exception is caused by quota exceeded, wait 10 seconds and try again for 6 times
             if "Quota exceeded" in str(e) and retry > 0:

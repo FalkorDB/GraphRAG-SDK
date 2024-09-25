@@ -87,7 +87,7 @@ class OllamaChatSession(GenerativeModelChatSession):
             else []
         )
 
-    def send_message(self, message: str) -> GenerationResponse:
+    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
         prompt = []
         prompt.extend(self._history)
         prompt.append({"role": "user", "content": message[:14385]})
