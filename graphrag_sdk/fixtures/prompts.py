@@ -461,6 +461,19 @@ Do not include any apologies or other texts, except the generated OpenCypher sta
 Question: {question}
 """
 
+CYPHER_GEN_PROMPT_WITH_HISTORY = """
+Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
+
+First, determine if the last answer provided to the user is relevant to the current question. If it is relevant, you may consider incorporating information from it into the query. If it is not relevant, ignore it and generate the query based solely on the question.
+
+If you cannot generate an OpenCypher statement for any reason, return an empty string.
+
+Respect the order of the relationships; the arrows should always point from the "source" to the "target".
+
+Last Answer: {last_answer}
+
+Question: {question}
+"""
 
 GRAPH_QA_SYSTEM = """
 You are an assistant that helps to form nice and human understandable answers.

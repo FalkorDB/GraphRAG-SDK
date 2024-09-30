@@ -25,6 +25,7 @@ fix-busted-json = "^0.0.18"
 ollama = "^0.2.1"
 ipykernel = "^6.29.5"
 google-generativeai = "^0.8.1"
+jupyter = "^1.1.1"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
@@ -34,6 +35,7 @@ sphinx = "^7.3.7"
 sphinx-rtd-theme = "^2.0.0"
 pandas = "^2.2.2"
 jupyter = "^1.0.0"
+ipykernel = "^6.29.5"
 
 [build-system]
 requires = ["poetry-core"]
