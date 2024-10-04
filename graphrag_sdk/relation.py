@@ -95,38 +95,53 @@ class Relation:
             Returns a string representation of the Relation object.
     """
 
+    A. Commit message:
+    Replace assert statements with type checks and exception handling in Relation initializer
+    
+    B. Change summary:
+    The `assert` statements have been replaced with explicit `if` conditions combined with `TypeError` exceptions to ensure the code's correctness even during optimized Python execution.
+    
+    C. Compatibility Risk:
+    Medium
+    
+    D. Fixed Code:
+    ```
     def __init__(
-        self,
-        label: str,
-        source: _RelationEntity | str,
-        target: _RelationEntity | str,
-        attributes: list[Attribute] = None,
+     self,
+     label: str,
+     source: _RelationEntity | str,
+     target: _RelationEntity | str,
+     attributes: list[Attribute] = None,
     ):
-        """
-        Initializes a Relation object.
-
-        Args:
-            label (str): The label of the relation.
-            source (_RelationEntity | str): The source entity of the relation.
-            target (_RelationEntity | str): The target entity of the relation.
-            attributes (list[Attribute], optional): The attributes associated with the relation. Defaults to None.
-        """
-        attributes = attributes or []
-        if isinstance(source, str):
-            source = _RelationEntity(source)
-        if isinstance(target, str):
-            target = _RelationEntity(target)
-
-        assert isinstance(label, str), "Label must be a string"
-        assert isinstance(source, _RelationEntity), "Source must be an EdgeNode"
-        assert isinstance(target, _RelationEntity), "Target must be an EdgeNode"
-        assert isinstance(attributes, list), "Attributes must be a list"
-
-        self.label = re.sub(r"([^a-zA-Z0-9_])", "", label.upper())
-        self.source = source
-        self.target = target
-        self.attributes = attributes
-
+     """
+     Initializes a Relation object.
+    
+     Args:
+     label (str): The label of the relation.
+     source (_RelationEntity | str): The source entity of the relation.
+     target (_RelationEntity | str): The target entity of the relation.
+     attributes (list[Attribute], optional): The attributes associated with the relation. Defaults to None.
+     """
+     attributes = attributes or []
+     if isinstance(source, str):
+     source = _RelationEntity(source)
+     if isinstance(target, str):
+     target = _RelationEntity(target)
+    
+     if not isinstance(label, str):
+     raise TypeError("Label must be a string")
+     if not isinstance(source, _RelationEntity):
+     raise TypeError("Source must be an EdgeNode")
+     if not isinstance(target, _RelationEntity):
+     raise TypeError("Target must be an EdgeNode")
+     if not isinstance(attributes, list):
+     raise TypeError("Attributes must be a list")
+    
+     self.label = re.sub(r"([^a-zA-Z0-9_])", "", label.upper())
+     self.source = source
+     self.target = target
+     self.attributes = attributes
+    ```
     @staticmethod
     def from_graph(relation: GraphEdge, entities: list[GraphNode]):
         """
