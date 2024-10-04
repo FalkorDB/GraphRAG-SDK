@@ -1,3 +1,13 @@
+A. Commit message:
+Add timeout to requests to prevent resource exhaustion.
+
+B. Change summary:
+Added a timeout to the `requests.get` call to protect against uncontrolled resource consumption and potential Denial of Service (DoS).
+
+C. Compatibility Risk:
+Low
+
+D. Fixed Code:
 import re
 import requests
 from typing import Iterator
@@ -21,7 +31,7 @@ class URLLoader():
 
     def _download(self) -> str:
         try:
-            response = requests.get(self.url, headers={'User-Agent': 'Mozilla/5.0'})
+            response = requests.get(self.url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
             response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
             return response.text
         except requests.exceptions.RequestException as e:
