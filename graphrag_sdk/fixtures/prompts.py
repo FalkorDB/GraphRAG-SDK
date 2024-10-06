@@ -188,7 +188,7 @@ Raw text:
 """
 
 BOUNDARIES_PREFIX = """
-Use the following instructions as boundaries for the ontology extraction process.
+Use the following instructions as boundaries for the ontology extraction process:
 {user_boundaries}
 """
 
@@ -588,7 +588,7 @@ Choose between the following steps to create the execution plan:
 
 
 ORCHESTRATOR_SUMMARY_PROMPT = """
-Given the following execution log, generate the final answer to the user's question.
+Given the following execution log and the history of this chat, generate the final answer to the user's question.
 Be very polite and detailed in your response, always providing the reasoning behind the answer.
 
 User question:
