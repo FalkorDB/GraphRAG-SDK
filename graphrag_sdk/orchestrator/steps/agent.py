@@ -116,7 +116,7 @@ class AgentStep(PlanStep):
         if agent is None:
             raise ValueError(f"Agent with id {self.properties.agent_id} not found")
 
-        (response, chat_session) = agent.run(self.properties.payload, session)
+        (response, chat_session) = agent.run(self.properties.payload)
         runner.set_session(self.properties.session_id, chat_session)
         logger.debug(f"Agent response: {response}")
         return AgentStepResult(AgentResponseCode.AGENT_RESPONSE, {"output": response})

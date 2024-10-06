@@ -149,16 +149,16 @@ class KnowledgeGraph:
         )
 
         (context, cypher) = cypher_step.run(question)
-
-        if not cypher or len(cypher) == 0:
-            return "I am sorry, I could not find the answer to your question"
-
         qa_chat_session = (
             qa_chat_session
             or self._model_config.qa.with_system_instruction(
                 GRAPH_QA_SYSTEM
             ).start_chat()
         )
+        if not cypher or len(cypher) == 0:
+            return ("I am sorry, I could not find the answer to your question", qa_chat_session)
+
+        
         qa_step = QAStep(
             chat_session=qa_chat_session,
         )

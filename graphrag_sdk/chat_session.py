@@ -52,6 +52,7 @@ class ChatSession:
         self.qa_chat_session = model_config.qa.with_system_instruction(
             GRAPH_QA_SYSTEM
         ).start_chat()
+        self.last_answer = None
 
     def send_message(self, message: str):
         """
@@ -67,6 +68,7 @@ class ChatSession:
             graph=self.graph,
             chat_session=self.cypher_chat_session,
             ontology=self.ontology,
+            last_answer=self.last_answer,
         )
 
         (context, cypher) = cypher_step.run(message)
@@ -79,5 +81,5 @@ class ChatSession:
         )
 
         answer = qa_step.run(message, cypher, context)
-
+        self.last_answer = answer
         return answer
