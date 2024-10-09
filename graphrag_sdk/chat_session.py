@@ -69,6 +69,7 @@ class ChatSession:
             chat_session=self.cypher_chat_session,
             ontology=self.ontology,
             last_answer=self.last_answer,
+            model_embedding=self.model_config.embeddings,
         )
 
         (context, cypher) = cypher_step.run(message)

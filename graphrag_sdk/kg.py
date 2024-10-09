@@ -114,6 +114,7 @@ class KnowledgeGraph:
             ontology=self.ontology,
             model=self._model_config.extract_data,
             graph=self.graph,
+            model_embedding=self._model_config.embeddings,
         )
 
         step.run(instructions)
@@ -146,6 +147,7 @@ class KnowledgeGraph:
             ontology=self.ontology,
             chat_session=cypher_chat_session,
             graph=self.graph,
+            model_embedding=self._model_config.embeddings,
         )
 
         (context, cypher) = cypher_step.run(question)

@@ -1,4 +1,5 @@
 from graphrag_sdk.models import GenerativeModel
+from graphrag_sdk.embeddings import EmbeddingsGenerativeModel
 
 
 class KnowledgeGraphModelConfig:
@@ -17,6 +18,7 @@ class KnowledgeGraphModelConfig:
         extract_data: GenerativeModel,
         cypher_generation: GenerativeModel,
         qa: GenerativeModel,
+        embeddings: EmbeddingsGenerativeModel = None,
     ):
         """
         Initialize a KnowledgeGraphModelConfig object.
@@ -29,9 +31,10 @@ class KnowledgeGraphModelConfig:
         self.extract_data = extract_data
         self.cypher_generation = cypher_generation
         self.qa = qa
+        self.embeddings = embeddings
 
     @staticmethod
-    def with_model(model: GenerativeModel):
+    def with_model(model: GenerativeModel, model_embedding: EmbeddingsGenerativeModel = None) -> "KnowledgeGraphModelConfig":
         """
         Creates a new KnowledgeGraphModelConfig instance with the given generative model.
 
@@ -46,6 +49,8 @@ class KnowledgeGraphModelConfig:
             extract_data=model,
             cypher_generation=model,
             qa=model,
+            embeddings=model_embedding,
+            
         )
     
     @staticmethod

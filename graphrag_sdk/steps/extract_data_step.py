@@ -41,6 +41,7 @@ class ExtractDataStep(Step):
         ontology: Ontology,
         model: GenerativeModel,
         graph: Graph,
+        model_embedding: GenerativeModel,
         config: dict = {
             "max_workers": 16,
             "max_input_tokens": 500000,
@@ -54,6 +55,8 @@ class ExtractDataStep(Step):
             EXTRACT_DATA_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json()))
         )
         self.graph = graph
+        
+        self.model_embedding = model_embedding
 
         if not os.path.exists("logs"):
             os.makedirs("logs")
@@ -185,7 +188,19 @@ class ExtractDataStep(Step):
                 except Exception as e:
                     _task_logger.error(f"Error creating entity: {e}")
                     continue
-
+            
+            # create index:
+            labels_and_attributes = list(set((d['label'], next(iter(d['attributes']))) for d in data["entities"]))
+            indexes = graph.query("call db.indexes()").result_set
+            for label, attribute in labels_and_attributes:
+                create_new_index = True
+                for index in indexes:
+                    if label in index and [attribute] in index:
+                        create_new_index = False
+                if create_new_index:
+                    self.graph.query(f"CALL db.idx.fulltext.createNodeIndex('{label}', '{attribute}')")
+                
+                
             for relation in data["relations"]:
                 try:
                     self._create_relation(graph, relation, ontology)
@@ -216,6 +231,12 @@ class ExtractDataStep(Step):
             for attr in entity.attributes
             if not attr.unique and attr.name in args["attributes"]
         }
+        
+        if self.model_embedding is not None:
+            text_to_embed = " ".join([attr for attr in unique_attributes.values()])
+            embeddings = self.model_embedding.embed(text_to_embed)
+            # non_unique_attributes['embeddings'] = embeddings
+        
         non_unique_attributes_text = map_dict_to_cypher_properties(
             non_unique_attributes
         )
@@ -224,6 +245,9 @@ class ExtractDataStep(Step):
             if len(non_unique_attributes.keys()) > 0
             else ""
         )
+        
+        # set_statement_embeddings = f" SET n.embeddings = vecf32({embeddings})" if self.model_embedding is not None else ""
+        
         query = f"MERGE (n:{args['label']} {unique_attributes_text}) {set_statement}"
         logger.debug(f"Query: {query}")
         result = graph.query(query)
