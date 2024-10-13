@@ -24,18 +24,18 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
         self.system_instruction = system_instruction
         
         # Credentials
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        azure_deployment = os.getenv("AZURE_DEPLOYMENT")
-        azure_endpoint = os.getenv("AZURE_ENDPOINT")
-        api_version = os.getenv("AZURE_API_VERSION")
+        self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        self.azure_deployment = os.getenv("AZURE_DEPLOYMENT")
+        self.azure_endpoint = os.getenv("AZURE_ENDPOINT")
+        self.api_version = os.getenv("AZURE_API_VERSION")
 
 
     def _get_model(self) -> AzureOpenAI:
         if self.client is None:
-            self.client = AzureOpenAI(azure_deployment=azure_deployment,
-            azure_endpoint=azure_endpoint,
-            api_version=api_version,
-            api_key=api_key,
+            self.client = AzureOpenAI(azure_deployment=self.azure_deployment,
+            azure_endpoint=self.azure_endpoint,
+            api_version=self.api_version,
+            api_key=self.api_key,
             http_client=self.config.http_client,
         )
         return self.client
