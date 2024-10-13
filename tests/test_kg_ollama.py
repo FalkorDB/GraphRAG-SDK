@@ -1,18 +1,18 @@
+import re
+import pytest
+import logging
+import unittest
+from falkordb import FalkorDB
 from dotenv import load_dotenv
-
-load_dotenv()
-from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.entity import Entity
+from graphrag_sdk.source import Source
+from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
-import unittest
-from graphrag_sdk.source import Source
 from graphrag_sdk.models.ollama import OllamaGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
-import os
-import logging
-from falkordb import FalkorDB
-import pytest
+
+load_dotenv()
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -155,11 +155,14 @@ class TestKGOllama(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        answer = self.kg.ask("List a few actors")
+        answer = self.kg.ask("How many actors acted in a movie?")
 
         logger.info(f"Answer: {answer}")
 
-        assert "Joseph Scotto" in answer[0], "Joseph Scotto not found in answer"
+        actors_count = re.findall(r'\d+', answer[0])
+        num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
+
+        assert num_actors > 10, "The number of actors found should be greater than 10"
 
     @pytest.mark.skipif(condition=True, reason="Not ready for testing")
     def test_kg_delete(self):
