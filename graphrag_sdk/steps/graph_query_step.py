@@ -34,14 +34,17 @@ class GraphQueryGenerationStep(Step):
         chat_session: GenerativeModelChatSession,
         config: dict = None,
         last_answer: str = None,
-        model_embedding: str = None,
+        indexing: bool = False,
     ) -> None:
         self.ontology = ontology
         self.config = config or {}
         self.graph = graph
         self.chat_session = chat_session
         self.last_answer = last_answer
-        self.model_embedding = model_embedding
+        if indexing:
+            self.indexes = self.graph.query("call db.indexes()").result_set
+        else:
+            self.indexes = None
 
     def run(self, question: str, retries: int = 5):
         error = False
@@ -75,7 +78,8 @@ class GraphQueryGenerationStep(Step):
                     raise Exception("\n".join(validation_errors))
 
                 if cypher is not None:
-                    cypher = self.rephrase_entities(cypher)
+                    if self.indexes is not None:
+                        cypher = self.rephrase_entities(cypher)
                     result_set = self.graph.query(cypher).result_set
                     context = stringify_falkordb_response(result_set)
                     logger.debug(f"Context: {context}")
@@ -91,20 +95,27 @@ class GraphQueryGenerationStep(Step):
         raise Exception("Failed to generate Cypher query: " + str(error))
 
     
-    def rephrase_entities(self, cypher_query: str):
+    def rephrase_entities(self, cypher_query: str) -> str:
         """
         Rephrase entities in the cypher query to make them more human-readable.
         """
-        
         triplets = self.extract_triplets(cypher_query)
-        for triplet in triplets:
-            res = self.graph.query(f"CALL db.idx.fulltext.queryNodes('{triplet[1]}', '{triplet[0]}') YIELD node, score RETURN node.{triplet[2]}, score")
-            print(triplet, res.result_set)
-            if res.result_set is not None:
-                cypher_query = cypher_query.replace(f"'{triplet[0]}'", f"'{res.result_set[0][0]}'")
+        
+        for entity, label, property_name, var in triplets:
+            if (index := next((idx for idx in self.indexes if label in idx and property_name in idx[1]), None)) is None:
+                # Create a new index if it does not exist
+                self.graph.query(f"CALL db.idx.fulltext.createNodeIndex('{label}', '{property_name}')")
+                self.indexes.append((label, [property_name]))
+            else:
+                # Query the fulltext index
+                res = self.graph.query(f"CALL db.idx.fulltext.queryNodes('{label}', '{entity}') YIELD node, score RETURN node.{property_name}, score")
+                if res.result_set:
+                    matched_value = [i[0] for i in res.result_set]
+                    if entity not in matched_value:
+                        print('Changed from: ', entity, '->',matched_value[0])
+                        cypher_query = cypher_query.replace(f"'{entity}'", f"'{matched_value[0]}'")
+        
         return cypher_query
-        # results = self.graph.query(query, params=params)
-        # print(results.result_set)
         
         
     def extract_triplets(self, cypher_query: str):
@@ -113,7 +124,7 @@ class GraphQueryGenerationStep(Step):
         """
         string_matches = re.findall(r"'(.*?)'", cypher_query)
         label_matches = re.findall(r"\((\w+):(\w+)(?:\s*{([^}]*)})?\)", cypher_query)
-        attribute_matches = re.findall(r"(\w+)\.(\w+)", cypher_query)
+        attribute_conditions = re.findall(r"(\w+)\.(\w+)\s*CONTAINS\s*'(.+?)'", cypher_query)
 
         var_to_label = {var: label for var, label, _ in label_matches}
         var_to_properties = {
@@ -121,12 +132,14 @@ class GraphQueryGenerationStep(Step):
             for var, _, props in label_matches
         }
 
-        results = {(val.strip().strip("'"), var_to_label[var], key) 
-                for var, props in var_to_properties.items() 
-                for key, val in props.items()}
+        results = set()
+        for var, props in var_to_properties.items():
+            for key, val in props.items():
+                results.add((val.strip().strip("'"), var_to_label[var], key, var))
 
-        results.update((string, var_to_label[var], attr) 
-                    for var, attr in attribute_matches 
-                    for string in string_matches if string in cypher_query)
+
+        for var, attr, value in attribute_conditions:
+            if var in var_to_label and value in string_matches:
+                results.add((value, var_to_label[var], attr, var))
         
         return list(results)

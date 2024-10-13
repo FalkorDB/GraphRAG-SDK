@@ -189,18 +189,6 @@ class ExtractDataStep(Step):
                     _task_logger.error(f"Error creating entity: {e}")
                     continue
             
-            # create index:
-            labels_and_attributes = list(set((d['label'], next(iter(d['attributes']))) for d in data["entities"]))
-            indexes = graph.query("call db.indexes()").result_set
-            for label, attribute in labels_and_attributes:
-                create_new_index = True
-                for index in indexes:
-                    if label in index and [attribute] in index:
-                        create_new_index = False
-                if create_new_index:
-                    self.graph.query(f"CALL db.idx.fulltext.createNodeIndex('{label}', '{attribute}')")
-                
-                
             for relation in data["relations"]:
                 try:
                     self._create_relation(graph, relation, ontology)

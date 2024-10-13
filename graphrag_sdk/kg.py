@@ -31,6 +31,7 @@ class KnowledgeGraph:
         port: int = 6379,
         username: str | None = None,
         password: str | None = None,
+        indexing: bool = False,
     ):
         """
         Initialize Knowledge Graph
@@ -56,6 +57,7 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._model_config = model_config
         self.sources = set([])
+        self.indexing = indexing
 
     # Attributes
 
@@ -147,7 +149,7 @@ class KnowledgeGraph:
             ontology=self.ontology,
             chat_session=cypher_chat_session,
             graph=self.graph,
-            model_embedding=self._model_config.embeddings,
+            indexing = self.indexing,
         )
 
         (context, cypher) = cypher_step.run(question)
@@ -186,7 +188,7 @@ class KnowledgeGraph:
             setattr(self, key, None)
 
     def chat_session(self) -> ChatSession:
-        return ChatSession(self._model_config, self.ontology, self.graph)
+        return ChatSession(self._model_config, self.ontology, self.graph, self.indexing)
 
     def add_node(self, entity: str, attributes: dict):
         """

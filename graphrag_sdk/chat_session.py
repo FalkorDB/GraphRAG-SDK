@@ -25,7 +25,7 @@ class ChatSession:
         >>> chat_session.send_message("What is the capital of France?")
     """
 
-    def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph):
+    def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph, indexing: bool = False):
         """
         Initializes a new ChatSession object.
 
@@ -53,6 +53,7 @@ class ChatSession:
             GRAPH_QA_SYSTEM
         ).start_chat()
         self.last_answer = None
+        self.indexing = indexing
 
     def send_message(self, message: str):
         """
@@ -69,7 +70,7 @@ class ChatSession:
             chat_session=self.cypher_chat_session,
             ontology=self.ontology,
             last_answer=self.last_answer,
-            model_embedding=self.model_config.embeddings,
+            indexing=self.indexing,
         )
 
         (context, cypher) = cypher_step.run(message)
