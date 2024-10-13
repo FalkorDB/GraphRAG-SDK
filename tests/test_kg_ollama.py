@@ -10,6 +10,7 @@ from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.ollama import OllamaGenerativeModel
+from graphrag_sdk.models.openai import OpenAiGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
 
 load_dotenv()
@@ -64,11 +65,12 @@ ontology.add_relation(
 
 graph_name = "IMDB_ollama"
 
-model = OllamaGenerativeModel(model_name="gemma2:9b")
+ollama_model = OllamaGenerativeModel(model_name="gemma2:9b")
+openai_model = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
 kg = KnowledgeGraph(
     name=graph_name,
     ontology=ontology,
-    model_config=KnowledgeGraphModelConfig.with_model(model),
+    model_config=KnowledgeGraphModelConfig(extract_data=openai_model, cypher_generation=openai_model, qa=ollama_model),
 )
 
 
