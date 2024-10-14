@@ -46,7 +46,7 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             )
 
 
-    def _connect_to_model(self):
+    def _connect_to_model(self) -> None:
         """
         Establish a connection to the Azure OpenAI model by initializing the AzureOpenAI client.
         """
@@ -104,9 +104,9 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             top_k=self.generation_config.top_k,
             stop=self.generation_config.stop_sequences,
         )
-        return self.parse_generate_content_response(response)
+        return self._parse_generate_content_response(response)
 
-    def parse_generate_content_response(self, response: any) -> GenerationResponse:
+    def _parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
         Parse the model's response and extract content for the user.
 
@@ -206,7 +206,7 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
             messages=prompt,
             **generation_config
         )
-        content = self._model.parse_generate_content_response(response)
+        content = self._model._parse_generate_content_response(response)
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": content.text})
         return content
