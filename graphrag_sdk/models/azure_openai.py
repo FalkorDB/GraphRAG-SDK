@@ -25,18 +25,15 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
         
         # Credentials
         self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        self.azure_deployment = os.getenv("AZURE_DEPLOYMENT")
         self.azure_endpoint = os.getenv("AZURE_ENDPOINT")
         self.api_version = os.getenv("AZURE_API_VERSION")
 
 
     def _get_model(self) -> AzureOpenAI:
         if self.client is None:
-            self.client = AzureOpenAI(azure_deployment=self.azure_deployment,
-            azure_endpoint=self.azure_endpoint,
+            self.client = AzureOpenAI(azure_endpoint=self.azure_endpoint,
             api_version=self.api_version,
             api_key=self.api_key,
-            http_client=self.config.http_client,
         )
         return self.client
 
@@ -48,7 +45,7 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
         return self
 
     def start_chat(self, args: dict | None = None) -> GenerativeModelChatSession:
-        return OpenAiChatSession(self, args)
+        return AzureOpenAiChatSession(self, args)
 
     def ask(self, message: str) -> GenerationResponse:
         response = self.client.chat.completions.create(
@@ -97,7 +94,7 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
         )
 
 
-class OpenAiChatSession(GenerativeModelChatSession):
+class AzureOpenAiChatSession(GenerativeModelChatSession):
 
     _history = []
 
