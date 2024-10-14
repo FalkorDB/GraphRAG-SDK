@@ -1,3 +1,5 @@
+import os
+from openai import AzureOpenAI
 from .model import (
     OutputMethod,
     GenerativeModel,
@@ -6,8 +8,6 @@ from .model import (
     FinishReason,
     GenerativeModelChatSession,
 )
-from openai import AzureOpenAI
-import os
 
 class AzureOpenAiGenerativeModel(GenerativeModel):
 
