@@ -82,7 +82,6 @@ class TestKGOllama(unittest.TestCase):
             model_config=KnowledgeGraphModelConfig(extract_data=model_openai, cypher_generation=model_gemma, qa=model_gemma),
         )
 
-    @pytest.mark.skipif(condition=True, reason="Not ready for testing")
     def test_kg_creation(self):
 
         file_path = "tests/data/madoff.txt"
@@ -100,7 +99,6 @@ class TestKGOllama(unittest.TestCase):
 
         assert num_actors > 10, "The number of actors found should be greater than 10"
 
-    @pytest.mark.skipif(condition=True, reason="Not ready for testing")
     def test_kg_delete(self):
 
         self.kg.delete()
