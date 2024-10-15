@@ -19,74 +19,6 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-ontology = Ontology([], [])
-
-ontology.add_entity(
-    Entity(
-        label="Actor",
-        attributes=[
-            Attribute(
-                name="name",
-                attr_type=AttributeType.STRING,
-                unique=True,
-                required=True,
-            ),
-        ],
-    )
-)
-ontology.add_entity(
-    Entity(
-        label="Movie",
-        attributes=[
-            Attribute(
-                name="title",
-                attr_type=AttributeType.STRING,
-                unique=True,
-                required=True,
-            ),
-        ],
-    )
-)
-ontology.add_relation(
-    Relation(
-        label="ACTED_IN",
-        source="Actor",
-        target="Movie",
-        attributes=[
-            Attribute(
-                name="role",
-                attr_type=AttributeType.STRING,
-                unique=False,
-                required=False,
-            ),
-        ],
-    )
-)
-
-graph_name = "IMDB_ollama"
-
-ollama_model = OllamaGenerativeModel(model_name="gemma2:9b")
-openai_model = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
-kg = KnowledgeGraph(
-    name=graph_name,
-    ontology=ontology,
-    model_config=KnowledgeGraphModelConfig(extract_data=openai_model, cypher_generation=openai_model, qa=ollama_model),
-)
-
-
-file_path = "tests/data/madoff.txt"
-
-sources = [Source(file_path)]
-
-kg.process_sources(sources)
-
-answer = kg.ask("List a few actors")
-
-logger.info(f"Answer: {answer}")
-
-assert "Joseph Scotto" in answer[0], "Joseph Scotto not found in answer"
-
-
 class TestKGOllama(unittest.TestCase):
     """
     Test Knowledge Graph
@@ -141,11 +73,13 @@ class TestKGOllama(unittest.TestCase):
 
         cls.graph_name = "IMDB_ollama"
 
-        model = OllamaGenerativeModel(model_name="gemma2:2b")
+        model_gemma = OllamaGenerativeModel(model_name="llama3:8b")
+        model_openai = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
+
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
-            model_config=KnowledgeGraphModelConfig.with_model(model),
+            model_config=KnowledgeGraphModelConfig(extract_data=model_openai, cypher_generation=model_gemma, qa=model_gemma),
         )
 
     @pytest.mark.skipif(condition=True, reason="Not ready for testing")
