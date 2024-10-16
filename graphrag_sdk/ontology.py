@@ -1,13 +1,12 @@
 import json
+import logging
 from falkordb import Graph
+from .entity import Entity
+from typing import Union, Optional
+from .relation import Relation
+from graphrag_sdk import CreateOntologyStep
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
-import graphrag_sdk
-import logging
-from .relation import Relation
-from .entity import Entity
-from typing import Optional
-
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +20,13 @@ class Ontology(object):
         relations (list[Relation]): The list of relations in the ontology.
     """
 
-    def __init__(self, entities: list[Entity] = None, relations: list[Relation] = None):
+    def __init__(self, entities: Optional[list[Entity]] = None, relations: Optional[list[Relation]] = None):
         """
         Initialize the Ontology class.
 
         Args:
-            entities (list[Entity], optional): List of Entity objects. Defaults to None.
-            relations (list[Relation], optional): List of Relation objects. Defaults to None.
+            entities (Optional[list[Entity]], optional): List of Entity objects. Defaults to None.
+            relations (Optional[list[Relation]], optional): List of Relation objects. Defaults to None.
         """
         self.entities = entities or []
         self.relations = relations or []
@@ -49,7 +48,7 @@ class Ontology(object):
         Returns:
             The created Ontology object.
         """
-        step = graphrag_sdk.CreateOntologyStep(
+        step = CreateOntologyStep(
             sources=sources,
             ontology=Ontology(),
             model=model,
@@ -58,12 +57,12 @@ class Ontology(object):
         return step.run(boundaries=boundaries)
 
     @staticmethod
-    def from_json(txt: dict | str):
+    def from_json(txt: Union[dict, str]) -> "Ontology":
         """
         Creates an Ontology object from a JSON representation.
 
         Args:
-            txt (dict | str): The JSON representation of the ontology. It can be either a dictionary or a string.
+            txt (Union[dict, str]): The JSON representation of the ontology. It can be either a dictionary or a string.
 
         Returns:
             The Ontology object created from the JSON representation.
@@ -78,7 +77,7 @@ class Ontology(object):
         )
 
     @staticmethod
-    def from_graph(graph: Graph):
+    def from_graph(graph: Graph) -> "Ontology":
         """
         Creates an Ontology object from a given graph.
 
@@ -101,16 +100,16 @@ class Ontology(object):
 
         return ontology
 
-    def add_entity(self, entity: Entity):
+    def add_entity(self, entity: Entity) -> None:
         """
         Adds an entity to the ontology.
 
-        Parameters:
+        Args:
             entity: The entity object to be added.
         """
         self.entities.append(entity)
 
-    def add_relation(self, relation: Relation):
+    def add_relation(self, relation: Relation) -> None:
         """
         Adds a relation to the ontology.
 
@@ -119,7 +118,7 @@ class Ontology(object):
         """
         self.relations.append(relation)
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Converts the ontology object to a JSON representation.
 
@@ -131,7 +130,7 @@ class Ontology(object):
             "relations": [relation.to_json() for relation in self.relations],
         }
 
-    def merge_with(self, o: "Ontology"):
+    def merge_with(self, o: "Ontology") -> "Ontology":
         """
         Merges the given ontology `o` with the current ontology.
 
@@ -165,7 +164,7 @@ class Ontology(object):
 
         return self
 
-    def discard_entities_without_relations(self):
+    def discard_entities_without_relations(self) -> "Ontology":
         """
         Discards entities that do not have any relations in the ontology.
 
@@ -201,7 +200,7 @@ class Ontology(object):
 
         return self
 
-    def discard_relations_without_entities(self):
+    def discard_relations_without_entities(self) -> "Ontology":
         """
         Discards relations that have entities not present in the ontology.
 
@@ -226,7 +225,7 @@ class Ontology(object):
 
         return self
 
-    def validate_entities(self):
+    def validate_entities(self) -> bool:
         """
         Validates the entities in the ontology.
 
@@ -252,7 +251,7 @@ The following entities do not have unique attributes:
             return False
         return True
 
-    def get_entity_with_label(self, label: str):
+    def get_entity_with_label(self, label: str) -> Optional[Entity]:
         """
         Retrieves the entity with the specified label.
 
@@ -264,11 +263,11 @@ The following entities do not have unique attributes:
         """
         return next((n for n in self.entities if n.label == label), None)
 
-    def get_relations_with_label(self, label: str):
+    def get_relations_with_label(self, label: str) -> list[Relation]:
         """
         Returns a list of relations with the specified label.
 
-        Parameters:
+        Args:
             label (str): The label to search for.
 
         Returns:
@@ -276,11 +275,11 @@ The following entities do not have unique attributes:
         """
         return [e for e in self.relations if e.label == label]
 
-    def has_entity_with_label(self, label: str):
+    def has_entity_with_label(self, label: str) -> bool:
         """
         Checks if the ontology has an entity with the given label.
 
-        Parameters:
+        Args:
             label (str): The label to search for.
 
         Returns:
@@ -288,11 +287,11 @@ The following entities do not have unique attributes:
         """
         return any(n.label == label for n in self.entities)
 
-    def has_relation_with_label(self, label: str):
+    def has_relation_with_label(self, label: str) -> bool:
         """
         Checks if the ontology has a relation with the given label.
 
-        Parameters:
+        Args:
             label (str): The label of the relation to check.
 
         Returns:
@@ -314,7 +313,7 @@ The following entities do not have unique attributes:
             relations="\n- ".join([str(relation) for relation in self.relations]),
         )
 
-    def save_to_graph(self, graph: Graph):
+    def save_to_graph(self, graph: Graph) -> None:
         """
         Saves the entities and relations to the specified graph.
 

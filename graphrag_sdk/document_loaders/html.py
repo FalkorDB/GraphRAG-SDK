@@ -14,10 +14,9 @@ class HTMLLoader:
         """
         Initialize loader
 
-        Parameters:
+        Args:
             path (str): path to HTML.
         """
-
         self.path = path
 
     def _get_file(self) -> str:
@@ -34,7 +33,6 @@ class HTMLLoader:
         Returns:
             Iterator[Document]: document iterator
         """
-
         # Download URL
         content = self._get_file()
 

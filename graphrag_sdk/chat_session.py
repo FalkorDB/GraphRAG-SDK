@@ -1,9 +1,9 @@
+from falkordb import Graph
 from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.steps.qa_step import QAStep
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
-from graphrag_sdk.steps.qa_step import QAStep
 from graphrag_sdk.fixtures.prompts import GRAPH_QA_SYSTEM, CYPHER_GEN_SYSTEM
-from falkordb import Graph
 
 
 class ChatSession:
@@ -53,7 +53,7 @@ class ChatSession:
             GRAPH_QA_SYSTEM
         ).start_chat()
 
-    def send_message(self, message: str):
+    def send_message(self, message: str) -> str:
         """
         Sends a message to the chat session.
 

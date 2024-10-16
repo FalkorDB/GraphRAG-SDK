@@ -1,5 +1,22 @@
+import os
+import json
+import time
+import logging
+from uuid import uuid4
+from falkordb import Graph
+from typing import Optional
 from graphrag_sdk.steps.Step import Step
+from graphrag_sdk.document import Document
+from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
+from graphrag_sdk.models.model import OutputMethod
+from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
+from graphrag_sdk.fixtures.prompts import (
+    EXTRACT_DATA_SYSTEM,
+    EXTRACT_DATA_PROMPT,
+    FIX_JSON_PROMPT,
+    COMPLETE_DATA_EXTRACTION,
+)
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models import (
@@ -8,23 +25,6 @@ from graphrag_sdk.models import (
     GenerationResponse,
     FinishReason,
 )
-
-from graphrag_sdk.fixtures.prompts import (
-    EXTRACT_DATA_SYSTEM,
-    EXTRACT_DATA_PROMPT,
-    FIX_JSON_PROMPT,
-    COMPLETE_DATA_EXTRACTION,
-)
-import logging
-from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
-import json
-from falkordb import Graph
-from graphrag_sdk.document import Document
-from uuid import uuid4
-import os
-import time
-from ratelimit import limits, sleep_and_retry
-from graphrag_sdk.models.model import OutputMethod
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -41,12 +41,22 @@ class ExtractDataStep(Step):
         ontology: Ontology,
         model: GenerativeModel,
         graph: Graph,
-        config: dict = {
+        config: Optional[dict] = {
             "max_workers": 16,
             "max_input_tokens": 500000,
             "max_output_tokens": 8192,
         },
     ) -> None:
+        """
+        Initialize the ExtractDataStep.
+
+        Args:
+            sources (list[AbstractSource]): List of data sources to process.
+            ontology (Ontology): The ontology associated with the knowledge graph.
+            model (GenerativeModel): The generative model used for data extraction.
+            graph (Graph): The FalkorDB graph instance.
+            config (Optional[dict]): Configuration options for the step.
+        """
         self.sources = sources
         self.ontology = ontology
         self.config = config
@@ -58,11 +68,16 @@ class ExtractDataStep(Step):
         if not os.path.exists("logs"):
             os.makedirs("logs")
 
-    def _create_chat(self):
+    def _create_chat(self) -> GenerativeModelChatSession:
         return self.model.start_chat({"response_validation": False})
 
-    def run(self, instructions: str = None):
+    def run(self, instructions: Optional[str] = None):
+        """
+        Run the data extraction process.
 
+        Args:
+            instructions (Optional[str]): Optional additional instructions for data extraction.
+        """
         tasks: list[Future[Ontology]] = []
         with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
             # extract entities and relationships from each page
@@ -99,9 +114,21 @@ class ExtractDataStep(Step):
         document: Document,
         ontology: Ontology,
         graph: Graph,
-        source_instructions: str = "",
-        instructions: str = "",
-    ):
+        source_instructions: Optional[str] = "",
+        instructions: Optional[str] = "",
+    ) -> None:
+        """
+        Process a single source document and extract entities and relations.
+
+        Args:
+            task_id (str): The unique ID for the task.
+            chat_session (GenerativeModelChatSession): The chat session for the extraction.
+            document (Document): The document to process.
+            ontology (Ontology): The ontology associated with the graph.
+            graph (Graph): The FalkorDB graph instance.
+            source_instructions (Optional[str]): Instructions specific to the source.
+            instructions (Optional[str]): Additional instructions.
+        """
         try:
             _task_logger = logging.getLogger(task_id)
             _task_logger.setLevel(logging.DEBUG)
@@ -197,8 +224,15 @@ class ExtractDataStep(Step):
             logger.exception(e)
             raise e
 
-    def _create_entity(self, graph: Graph, args: dict, ontology: Ontology):
-        # Get unique attributes from entity
+    def _create_entity(self, graph: Graph, args: dict, ontology: Ontology) -> None:
+        """
+        Create an entity in the graph based on the extracted data.
+
+        Args:
+            graph (Graph): The graph instance to create the entity in.
+            args (dict): The entity data extracted from the source.
+            ontology (Ontology): The ontology to validate the entity type.
+        """
         entity = ontology.get_entity_with_label(args["label"])
         if entity is None:
             print(f"Entity with label {args['label']} not found in ontology")
@@ -229,7 +263,15 @@ class ExtractDataStep(Step):
         result = graph.query(query)
         return result
 
-    def _create_relation(self, graph: Graph, args: dict, ontology: Ontology):
+    def _create_relation(self, graph: Graph, args: dict, ontology: Ontology) -> None:
+        """
+        Create a relation in the graph based on the extracted data.
+
+        Args:
+            graph (Graph): The graph instance to create the relation in.
+            args (dict): The relation data extracted from the source.
+            ontology (Ontology): The ontology to validate the relation type.
+        """
         relations = ontology.get_relations_with_label(args["label"])
         if len(relations) == 0:
             print(f"Relations with label {args['label']} not found in ontology")
@@ -279,9 +321,24 @@ class ExtractDataStep(Step):
         self,
         chat_session: GenerativeModelChatSession,
         prompt: str,
-        retry: int = 6,
-        output_method: OutputMethod = OutputMethod.DEFAULT
-    ):
+        retry: Optional[int] = 6,
+        output_method: Optional[OutputMethod] = OutputMethod.DEFAULT
+    ) -> GenerationResponse:
+        """
+        Call the generative model with rate limiting and retries.
+
+        Args:
+            chat_session (GenerativeModelChatSession): The chat session for interacting with the model.
+            prompt (str): The prompt to send to the model.
+            retry (Optional[int]): Number of retries in case of quota exceeded or errors.
+            output_method (Optional[OutputMethod]): The output method for the response.
+        
+        Returns:
+            GenerationResponse: The model's response.
+        
+        Raises:
+            Exception: If an error occurs after exhausting retries.
+        """
         try:
             return chat_session.send_message(prompt, output_method=output_method)
         except Exception as e:

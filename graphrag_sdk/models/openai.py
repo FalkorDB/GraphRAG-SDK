@@ -1,3 +1,6 @@
+import os
+from openai import OpenAI
+from typing import Optional
 from .model import (
     OutputMethod,
     GenerativeModel,
@@ -6,40 +9,82 @@ from .model import (
     FinishReason,
     GenerativeModelChatSession,
 )
-from openai import OpenAI
 
 
 class OpenAiGenerativeModel(GenerativeModel):
+    """
+    A generative model that interfaces with OpenAI's API for chat completions.
+    """
 
     client: OpenAI = None
 
     def __init__(
         self,
         model_name: str,
-        generation_config: GenerativeModelConfig | None = None,
-        system_instruction: str | None = None,
+        generation_config: Optional[GenerativeModelConfig] = None,
+        system_instruction: Optional[str] = None,
     ):
+        """
+        Initialize the OpenAiGenerativeModel with required parameters.
+
+        Args:
+            model_name (str): Name of the OpenAI model.
+            generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
+            system_instruction (Optional[str]): System-level instruction for the model.
+        """
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
+        
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError("Missing OpenAI API key in the environment: OPENAI_API_KEY")
+        self.client = OpenAI()
 
-    def _get_model(self) -> OpenAI:
-        if self.client is None:
-            self.client = OpenAI()
+    def _connect_to_model(self) -> None:
+        """
+        Establish a connection to the OpenAI model by initializing the OpenAI client.
+        """
+        self.client = OpenAI()
 
         return self.client
 
     def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
+        """
+        Set or update the system instruction and connect to the OpenAI model.
+
+        Args:
+            system_instruction (str): System instructions for the model.
+        
+        Returns:
+            GenerativeModel: The updated model instance.
+        """
         self.system_instruction = system_instruction
-        self.client = None
-        self._get_model()
+        self._connect_to_model()
 
         return self
 
-    def start_chat(self, args: dict | None = None) -> GenerativeModelChatSession:
+    def start_chat(self, args: Optional[dict] = None) -> GenerativeModelChatSession:
+        """
+        Start a new chat session.
+
+        Args:
+            args (Optional[dict]): Additional arguments for the chat session.
+
+        Returns:
+            GenerativeModelChatSession: A new instance of the chat session.
+        """
         return OpenAiChatSession(self, args)
 
     def ask(self, message: str) -> GenerationResponse:
+        """
+        Send a message to the model and receive a response.
+
+        Args:
+            message (str): The user's message input.
+
+        Returns:
+            GenerationResponse: The model's generated response.
+        """
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=[
@@ -54,7 +99,16 @@ class OpenAiGenerativeModel(GenerativeModel):
         )
         return self.parse_generate_content_response(response)
 
-    def parse_generate_content_response(self, response: any) -> GenerationResponse:
+    def _parse_generate_content_response(self, response: any) -> GenerationResponse:
+        """
+        Parse the model's response and extract content for the user.
+
+        Args:
+            response (any): The raw response from the model.
+
+        Returns:
+            GenerationResponse: Parsed response containing the generated text and finish reason.
+        """
         return GenerationResponse(
             text=response.choices[0].message.content,
             finish_reason=(
@@ -69,6 +123,12 @@ class OpenAiGenerativeModel(GenerativeModel):
         )
 
     def to_json(self) -> dict:
+        """
+        Serialize the model's configuration and state to JSON format.
+
+        Returns:
+            dict: The serialized JSON data.
+        """
         return {
             "model_name": self.model_name,
             "generation_config": self.generation_config.to_json(),
@@ -77,6 +137,15 @@ class OpenAiGenerativeModel(GenerativeModel):
 
     @staticmethod
     def from_json(json: dict) -> "GenerativeModel":
+        """
+        Deserialize a JSON object to create an instance of OpenAiGenerativeModel.
+
+        Args:
+            json (dict): The serialized JSON data.
+
+        Returns:
+            GenerativeModel: A new instance of the model.
+        """
         return OpenAiGenerativeModel(
             json["model_name"],
             generation_config=GenerativeModelConfig.from_json(
@@ -87,10 +156,20 @@ class OpenAiGenerativeModel(GenerativeModel):
 
 
 class OpenAiChatSession(GenerativeModelChatSession):
-
+    """
+    A chat session for interacting with the OpenAI model, maintaining conversation history.
+    """
+    
     _history = []
 
-    def __init__(self, model: OpenAiGenerativeModel, args: dict | None = None):
+    def __init__(self, model: OpenAiGenerativeModel, args: Optional[dict] = None) -> None:
+        """
+        Initialize the chat session and set up the conversation history.
+
+        Args:
+            model (OpenAiGenerativeModel): The model instance for the session.
+            args (Optional[dict]): Additional arguments for customization.
+        """
         self._model = model
         self._args = args
         self._history = (
@@ -100,6 +179,16 @@ class OpenAiChatSession(GenerativeModelChatSession):
         )
 
     def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+        """
+        Send a message in the chat session and receive the model's response.
+
+        Args:
+            message (str): The message to send.
+            output_method (OutputMethod): Format for the model's output.
+
+        Returns:
+            GenerationResponse: The generated response.
+        """
         generation_config = self._get_generation_config(output_method)
         prompt = []
         prompt.extend(self._history)
@@ -109,12 +198,21 @@ class OpenAiChatSession(GenerativeModelChatSession):
             messages=prompt,
             **generation_config
         )
-        content = self._model.parse_generate_content_response(response)
+        content = self._model._parse_generate_content_response(response)
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": content.text})
         return content
     
-    def _get_generation_config(self, output_method: OutputMethod):
+    def _get_generation_config(self, output_method: OutputMethod) -> dict:
+        """
+        Adjust the generation configuration based on the output method.
+
+        Args:
+            output_method (OutputMethod): The desired output method (e.g., default or JSON).
+
+        Returns:
+            dict: The configuration settings for generation.
+        """
         config = self._model.generation_config.to_json()
         if output_method == OutputMethod.JSON:
             config['temperature'] = 0

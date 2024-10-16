@@ -1,16 +1,17 @@
 import logging
-from graphrag_sdk.ontology import Ontology
+from typing import Optional
 from falkordb import FalkorDB
+from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.steps.qa_step import QAStep
 from graphrag_sdk.source import AbstractSource
+from graphrag_sdk.chat_session import ChatSession
+from graphrag_sdk.models import GenerativeModelChatSession
+from graphrag_sdk.attribute import AttributeType, Attribute
+from graphrag_sdk.helpers import map_dict_to_cypher_properties
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.steps.extract_data_step import ExtractDataStep
 from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
 from graphrag_sdk.fixtures.prompts import GRAPH_QA_SYSTEM, CYPHER_GEN_SYSTEM
-from graphrag_sdk.steps.qa_step import QAStep
-from graphrag_sdk.chat_session import ChatSession
-from graphrag_sdk.helpers import map_dict_to_cypher_properties
-from graphrag_sdk.attribute import AttributeType, Attribute
-from graphrag_sdk.models import GenerativeModelChatSession
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -29,20 +30,20 @@ class KnowledgeGraph:
         ontology: Ontology,
         host: str = "127.0.0.1",
         port: int = 6379,
-        username: str | None = None,
-        password: str | None = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         """
         Initialize Knowledge Graph
 
-        Parameters:
+        Args:
             name (str): Knowledge graph name.
             model (GenerativeModel): The Google GenerativeModel to use.
+            ontology (Ontology): Ontology to use.
             host (str): FalkorDB hostname.
             port (int): FalkorDB port number.
-            username (str|None): FalkorDB username.
-            password (str|None): FalkorDB password.
-            ontology (Ontology|None): Ontology to use.
+            username (Optional[str]): FalkorDB username.
+            password (Optional[str]): FalkorDB password.
         """
 
         if not isinstance(name, str) or name == "":
@@ -58,9 +59,9 @@ class KnowledgeGraph:
         self.sources = set([])
 
     # Attributes
-
     @property
-    def name(self):
+    def name(self) -> str:
+        """Get the name of the knowledge graph."""
         return self._name
 
     @name.setter
@@ -68,7 +69,8 @@ class KnowledgeGraph:
         raise AttributeError("Cannot modify the 'name' attribute")
 
     @property
-    def ontology(self):
+    def ontology(self) -> Ontology:
+        """Get the ontology of the knowledge graph."""
         return self._ontology
 
     @ontology.setter
@@ -82,17 +84,17 @@ class KnowledgeGraph:
         Returns:
             list[AbstractSource]: sources
         """
-
         return [s.source for s in self.sources]
 
     def process_sources(
-        self, sources: list[AbstractSource], instructions: str = None
+        self, sources: list[AbstractSource], instructions: Optional[str] = None
     ) -> None:
         """
         Add entities and relations found in sources into the knowledge-graph
 
-        Parameters:
+        Args:
             sources (list[AbstractSource]): list of sources to extract knowledge from
+            instructions (Optional[str]): Instructions for processing.
         """
 
         if self.ontology is None:
@@ -106,8 +108,15 @@ class KnowledgeGraph:
             self.sources.add(src)
 
     def _create_graph_with_sources(
-        self, sources: list[AbstractSource] | None = None, instructions: str = None
-    ):
+        self, sources: Optional[list[AbstractSource]] = None, instructions: Optional[str] = None
+    ) -> None:
+        """
+        Create a graph using the provided sources.
+
+        Args:
+            sources (Optional[list[AbstractSource]]): List of sources.
+            instructions (Optional[str]): Instructions for the graph creation.
+        """
 
         step = ExtractDataStep(
             sources=list(sources),
@@ -119,24 +128,23 @@ class KnowledgeGraph:
         step.run(instructions)
 
     def ask(
-        self, question: str, qa_chat_session: GenerativeModelChatSession | None = None
+        self, question: str, qa_chat_session: Optional[GenerativeModelChatSession] = None
     ) -> tuple[str, GenerativeModelChatSession]:
         """
         Query the knowledge graph using natural language.
         Optionally, you can provide a qa_chat_session to use for the query.
 
-        Parameters:
+        Args:
             question (str): question to ask the knowledge graph
-            qa_chat_session (GenerativeModelChatSession|None): qa_chat_session to use for the query
+            qa_chat_session (Optional[GenerativeModelChatSession]): QA chat session to use for the query.
 
         Returns:
             tuple[str, GenerativeModelChatSession]: answer, qa_chat_session
 
-         Example:
+        Example:
             >>> (ans, qa_chat_session) = kg.ask("List a few movies in which that actor played in")
             >>> print(ans)
         """
-
         cypher_chat_session = (
             self._model_config.cypher_generation.with_system_instruction(
                 CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json())),
@@ -184,17 +192,22 @@ class KnowledgeGraph:
             setattr(self, key, None)
 
     def chat_session(self) -> ChatSession:
+        """
+        Create a new chat session.
+
+        Returns:
+            ChatSession: A new chat session instance.
+        """
         return ChatSession(self._model_config, self.ontology, self.graph)
 
-    def add_node(self, entity: str, attributes: dict):
+    def add_node(self, entity: str, attributes: dict) -> None:
         """
         Add a node to the knowledge graph, checking if it matches the ontology
 
-        Parameters:
+        Args:
             label (str): label of the node
             attributes (dict): node attributes
         """
-
         self._validate_entity(entity, attributes)
 
         # Add node to graph
@@ -207,22 +220,21 @@ class KnowledgeGraph:
         relation: str,
         source: str,
         target: str,
-        source_attr: dict = None,
-        target_attr: dict = None,
-        attributes: dict = None,
-    ):
+        source_attr: Optional[dict] = None,
+        target_attr: Optional[dict] = None,
+        attributes: Optional[dict] = None,
+    ) -> None:
         """
         Add an edge to the knowledge graph, checking if it matches the ontology
 
-        Parameters:
+        Args:
             relation (str): relation label
             source (str): source entity label
             target (str): target entity label
-            source_attr (dict): source entity attributes
-            target_attr (dict): target entity attributes
-            attributes (dict): relation attributes
+            source_attr (Optional[dict]): Source entity attributes.
+            target_attr (Optional[dict]): Target entity attributes.
+            attributes (Optional[dict]): Relation attributes.
         """
-
         source_attr = source_attr or {}
         target_attr = target_attr or {}
         attributes = attributes or {}
@@ -236,7 +248,14 @@ class KnowledgeGraph:
             f"MATCH (s:{source} {map_dict_to_cypher_properties(source_attr)}) MATCH (t:{target} {map_dict_to_cypher_properties(target_attr)}) MERGE (s)-[r:{relation} {map_dict_to_cypher_properties(attributes)}]->(t)"
         )
 
-    def _validate_entity(self, entity: str, attributes: str):
+    def _validate_entity(self, entity: str, attributes: str) -> None:
+        """
+        Validate if the entity exists in the ontology and check its attributes.
+
+        Args:
+            entity (str): Entity label.
+            attributes (dict): Entity attributes.
+        """
         ontology_entity = self.ontology.get_entity_with_label(entity)
 
         if ontology_entity is None:
@@ -252,7 +271,18 @@ class KnowledgeGraph:
         source_attr: dict,
         target_attr: dict,
         attributes: dict,
-    ):
+    ) -> None:
+        """
+        Validate if the relation exists in the ontology and check its attributes.
+
+        Args:
+            relation (str): Relation label.
+            source (str): Source entity label.
+            target (str): Target entity label.
+            source_attr (dict): Source entity attributes.
+            target_attr (dict): Target entity attributes.
+            attributes (dict): Relation attributes.
+        """
         ontology_relations = self.ontology.get_relations_with_label(relation)
 
         found_relation = [

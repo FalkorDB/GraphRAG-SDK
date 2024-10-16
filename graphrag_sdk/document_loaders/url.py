@@ -13,10 +13,9 @@ class URLLoader():
         """
         Initialize loader
 
-        Parameters:
+        Args:
             url (str): url.
         """
-
         self.url = url
 
     def _download(self) -> str:
@@ -34,7 +33,6 @@ class URLLoader():
         Returns:
             Iterator[Document]: document iterator
         """
-
         # Download URL
         content = self._download()
 

@@ -10,6 +10,7 @@ from .model import (
     GenerativeModelChatSession,
 )
 
+
 class AzureOpenAiGenerativeModel(GenerativeModel):
     """
     A generative model that interfaces with Azure's OpenAI API for chat completions.
@@ -167,7 +168,6 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
     A chat session for interacting with the Azure OpenAI model, maintaining conversation history.
     """
 
-
     _history = []
 
     def __init__(self, model: AzureOpenAiGenerativeModel, args: Optional[dict] = None):
@@ -211,7 +211,7 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
         self._history.append({"role": "assistant", "content": content.text})
         return content
     
-    def _get_generation_config(self, output_method: OutputMethod):
+    def _get_generation_config(self, output_method: OutputMethod) -> dict:
         """
         Adjust the generation configuration based on the output method.
 
