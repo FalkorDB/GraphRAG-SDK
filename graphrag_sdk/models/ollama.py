@@ -106,7 +106,6 @@ class OllamaGenerativeModel(GenerativeModel):
         Returns:
             GenerationResponse: Parsed response containing the generated text.
         """
-        print(response)
         return GenerationResponse(
             text=response["message"]["content"],
             finish_reason=FinishReason.STOP
@@ -149,7 +148,7 @@ class OllamaChatSession(GenerativeModelChatSession):
     A chat session for interacting with the Ollama model, maintaining conversation history.
     """
 
-    _history = []
+    chat_history = []
 
     def __init__(self, model: OllamaGenerativeModel, args: Optional[dict] = None):
         """
@@ -161,7 +160,7 @@ class OllamaChatSession(GenerativeModelChatSession):
         """
         self._model = model
         self._args = args
-        self._history = (
+        self.chat_history = (
             [{"role": "system", "content": self._model.system_instruction}]
             if self._model.system_instruction is not None
             else []
@@ -179,17 +178,14 @@ class OllamaChatSession(GenerativeModelChatSession):
             GenerationResponse: The generated response.
         """
         generation_config = self._get_generation_config(output_method)
-        prompt = []
-        prompt.extend(self._history)
-        prompt.append({"role": "user", "content": message[:14385]})
+        self.chat_history.append({"role": "user", "content": message[:14385]})
         response = self._model.client.chat(
             model=self._model.model_name,
-            messages=prompt,
+            messages=self.chat_history,
             options=Options(**generation_config)
         )
         content = self._model._parse_generate_content_response(response)
-        self._history.append({"role": "user", "content": message})
-        self._history.append({"role": "assistant", "content": content.text})
+        self.chat_history.append({"role": "assistant", "content": content.text})
         return content
     
     def _get_generation_config(self, output_method: OutputMethod):
