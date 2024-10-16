@@ -73,13 +73,13 @@ class TestKGOllama(unittest.TestCase):
 
         cls.graph_name = "IMDB_ollama"
 
-        model_gemma = OllamaGenerativeModel(model_name="llama3:8b")
+        model_ollama = OllamaGenerativeModel(model_name="llama3:8b")
         model_openai = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
 
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
-            model_config=KnowledgeGraphModelConfig(extract_data=model_openai, cypher_generation=model_gemma, qa=model_gemma),
+            model_config=KnowledgeGraphModelConfig(extract_data=model_openai, cypher_generation=model_ollama, qa=model_ollama),
         )
 
     def test_kg_creation(self):
