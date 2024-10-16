@@ -21,14 +21,9 @@ jobs:
       ollama:
         image: ollama/ollama:latest
         ports:
-          - 1434:11434
+          - 11434:11434
         volumes:
           - ollama:/root/.ollama
-        healthcheck:
-          test: ["CMD", "curl", "-f", "http://localhost:11434/health"]
-          interval: 30s
-          timeout: 10s
-          retries: 5
 
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +62,7 @@ jobs:
 
       - name: Wait for Ollama to be ready
         run: |
-          until curl -s http://localhost:1434/health; do
+          until curl -s http://localhost:11434; do
             echo "Waiting for Ollama..."
             sleep 10
           done
@@ -79,7 +74,3 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: poetry run pytest
-
-      - name: Check Ollama logs (if failure)
-        if: failure()
-        run: docker logs $(docker ps -q --filter "ancestor=ollama/ollama:latest")
