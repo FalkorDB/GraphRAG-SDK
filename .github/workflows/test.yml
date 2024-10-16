@@ -21,7 +21,7 @@ jobs:
       ollama:
         image: ollama/ollama:latest
         ports:
-          - 1434:11434
+          - 11434:11434
         volumes:
           - ollama:/root/.ollama
 
@@ -59,6 +59,13 @@ jobs:
 
       - name: Install dependencies
         run: poetry install
+
+      - name: Wait for Ollama to be ready
+        run: |
+          until curl -s http://localhost:11434; do
+            echo "Waiting for Ollama..."
+            sleep 10
+          done
 
       - name: Run tests
         env:
