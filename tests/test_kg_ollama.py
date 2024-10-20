@@ -1,18 +1,18 @@
+import re
+import logging
+import unittest
+from falkordb import FalkorDB
 from dotenv import load_dotenv
-
-load_dotenv()
-from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.entity import Entity
+from graphrag_sdk.source import Source
+from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
-import unittest
-from graphrag_sdk.source import Source
 from graphrag_sdk.models.ollama import OllamaGenerativeModel
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
-import os
-import logging
-from falkordb import FalkorDB
-import pytest
+from graphrag_sdk.models.openai import OpenAiGenerativeModel
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig, GenerativeModelConfig
+
+load_dotenv()
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -72,14 +72,15 @@ class TestKGOllama(unittest.TestCase):
 
         cls.graph_name = "IMDB_ollama"
 
-        model = OllamaGenerativeModel(model_name="gemma2:2b")
+        model_ollama = OllamaGenerativeModel(model_name="llama3:8b", generation_config=GenerativeModelConfig(temperature=0))
+        model_openai = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
+
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
-            model_config=KnowledgeGraphModelConfig.with_model(model),
+            model_config=KnowledgeGraphModelConfig(extract_data=model_openai, cypher_generation=model_ollama, qa=model_ollama),
         )
 
-    @pytest.mark.skipif(condition=True, reason="Not ready for testing")
     def test_kg_creation(self):
 
         file_path = "tests/data/madoff.txt"
@@ -88,13 +89,15 @@ class TestKGOllama(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        answer = self.kg.ask("List a few actors")
+        answer = self.kg.ask("How many actors acted in a movie?")
 
         logger.info(f"Answer: {answer}")
 
-        assert "Joseph Scotto" in answer[0], "Joseph Scotto not found in answer"
+        actors_count = re.findall(r'\d+', answer[0])
+        num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
-    @pytest.mark.skipif(condition=True, reason="Not ready for testing")
+        assert num_actors > 5, "The number of actors found should be greater than 5"
+
     def test_kg_delete(self):
 
         self.kg.delete()
