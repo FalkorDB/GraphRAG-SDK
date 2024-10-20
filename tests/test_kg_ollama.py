@@ -10,7 +10,7 @@ from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.ollama import OllamaGenerativeModel
 from graphrag_sdk.models.openai import OpenAiGenerativeModel
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig, GenerativeModelConfig
 
 load_dotenv()
 
@@ -72,7 +72,7 @@ class TestKGOllama(unittest.TestCase):
 
         cls.graph_name = "IMDB_ollama"
 
-        model_ollama = OllamaGenerativeModel(model_name="llama3:8b")
+        model_ollama = OllamaGenerativeModel(model_name="llama3:8b", generation_config=GenerativeModelConfig(temperature=0))
         model_openai = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
 
         cls.kg = KnowledgeGraph(
