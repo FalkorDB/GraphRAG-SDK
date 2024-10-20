@@ -1,5 +1,4 @@
 import re
-import pytest
 import logging
 import unittest
 from falkordb import FalkorDB
