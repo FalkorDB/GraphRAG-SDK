@@ -163,8 +163,9 @@ class OpenAiChatSession(GenerativeModelChatSession):
         Returns:
             GenerationResponse: The generated response.
         """
-        generation_config = self._get_generation_config(output_method)
+        generation_config = self._adjust_generation_config(output_method)
         self._chat_history.append({"role": "user", "content": message[:14385]})
+        print(self._chat_history[0]['content'])
         response = self._model.client.chat.completions.create(
             model=self._model.model_name,
             messages=self._chat_history,
@@ -174,7 +175,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     
-    def _get_generation_config(self, output_method: OutputMethod) -> dict:
+    def _adjust_generation_config(self, output_method: OutputMethod) -> dict:
         """
         Adjust the generation configuration based on the output method.
 

@@ -39,29 +39,8 @@ class OllamaGenerativeModel(GenerativeModel):
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
-        self._host = host
-
-    def _connect_to_client(self) -> None:
-        """
-        Initializing the connection to the Ollama client.
-        """
-        self.client = Client(host=self._host)
-
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
-        """
-        Set or update the system instruction and connect to the Ollama model.
-
-        Args:
-            system_instruction (str): Instruction for guiding the model's behavior.
-        
-        Returns:
-            GenerativeModel: The updated model instance.
-        """
-        self.system_instruction = system_instruction
-        self._connect_to_client()
+        self.client = Client(host)
         self.check_and_pull_model()
-
-        return self
 
     def check_and_pull_model(self) -> None:
         """
@@ -89,17 +68,17 @@ class OllamaGenerativeModel(GenerativeModel):
             except Exception as e:
                 logger.error(f"Failed to pull the model '{self.model_name}': {e}")
     
-    def start_chat(self, args: Optional[dict] = None) -> GenerativeModelChatSession:
-        """
-        Start a new chat session.
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
+        # """
+        # Start a new chat session.
 
-        Args:
-            args (Optional[dict]): Additional arguments for the chat session.
+        # Args:
+        #     args (Optional[dict]): Additional arguments for the chat session.
 
-        Returns:
-            GenerativeModelChatSession: A new instance of the chat session.
-        """
-        return OllamaChatSession(self, args)
+        # Returns:
+        #     GenerativeModelChatSession: A new instance of the chat session.
+        # """
+        return OllamaChatSession(self, system_instruction)
 
     def ask(self, message: str) -> GenerationResponse:
         """
@@ -178,7 +157,7 @@ class OllamaChatSession(GenerativeModelChatSession):
     A chat session for interacting with the Ollama model, maintaining conversation history.
     """
     
-    def __init__(self, model: OllamaGenerativeModel, args: Optional[dict] = None):
+    def __init__(self, model: OllamaGenerativeModel, system_instruction: Optional[str] = None):
         """
         Initialize the chat session and set up the conversation history.
 
@@ -187,10 +166,9 @@ class OllamaChatSession(GenerativeModelChatSession):
             args (Optional[dict]): Additional arguments for customization.
         """
         self._model = model
-        self._args = args
         self._chat_history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
+            [{"role": "system", "content": system_instruction}]
+            if system_instruction is not None
             else []
         )
     

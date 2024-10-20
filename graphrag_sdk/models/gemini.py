@@ -48,21 +48,7 @@ class GeminiGenerativeModel(GenerativeModel):
         """
         Establish a connection to the GoogleAI model.
         """
-        self._model = GoogleGenerativeModel(
-            self._model_name,
-            generation_config=(
-                GoogleGenerationConfig(
-                    temperature=self._generation_config.temperature,
-                    top_p=self._generation_config.top_p,
-                    top_k=self._generation_config.top_k,
-                    max_output_tokens=self._generation_config.max_output_tokens,
-                    stop_sequences=self._generation_config.stop_sequences,
-                )
-                if self._generation_config is not None
-                else None
-            ),
-            system_instruction=self._system_instruction,
-        )
+        
 
 
     def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
@@ -80,7 +66,7 @@ class GeminiGenerativeModel(GenerativeModel):
 
         return self
 
-    def start_chat(self, args: Optional[dict] = None) -> GenerativeModelChatSession:
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
         Start a new chat session.
 
@@ -90,7 +76,11 @@ class GeminiGenerativeModel(GenerativeModel):
         Returns:
             GeminiChatSession: A new instance of the chat session.
         """
-        return GeminiChatSession(self, args)
+        self._model = GoogleGenerativeModel(
+            self._model_name,
+            system_instruction=system_instruction,
+        )
+        return GeminiChatSession(self, system_instruction)
 
     def ask(self, message: str) -> GenerationResponse:
         """
@@ -169,7 +159,7 @@ class GeminiChatSession(GenerativeModelChatSession):
     A chat session for interacting with the GoogleAI model, maintaining conversation history.
     """
 
-    def __init__(self, model: GeminiGenerativeModel, args: Optional[dict] = None):
+    def __init__(self, model: GeminiGenerativeModel, system_instruction: Optional[str] = None):
         """
         Initialize the chat session and set up the conversation history.
 
@@ -178,9 +168,8 @@ class GeminiChatSession(GenerativeModelChatSession):
             args (Optional[dict]): Additional arguments for customization.
         """
         self._model = model
-        self._chat_session = self._model._model.start_chat(
-            history=args.get("history", []) if args is not None else [],
-        )
+        self._chat_session = self._model._model.start_chat()
+        
 
     def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
         """
@@ -193,11 +182,11 @@ class GeminiChatSession(GenerativeModelChatSession):
         Returns:
             GenerationResponse: The generated response.
         """
-        generation_config = self._get_generation_config(output_method)
+        generation_config = self._adjust_generation_config(output_method)
         response = self._chat_session.send_message(message, generation_config=generation_config)
         return self._model._parse_generate_content_response(response)
     
-    def _get_generation_config(self, output_method: OutputMethod) -> dict:
+    def _adjust_generation_config(self, output_method: OutputMethod) -> dict:
         """
         Adjust the generation configuration based on the output method.
 

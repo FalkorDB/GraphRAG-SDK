@@ -2,7 +2,6 @@ import re
 import os
 import logging
 import unittest
-import vertexai
 from falkordb import FalkorDB
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
@@ -17,9 +16,6 @@ load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-vertexai.init(project=os.getenv("PROJECT_ID"), location=os.getenv("REGION"))
-
 
 class TestKGGemini(unittest.TestCase):
     """

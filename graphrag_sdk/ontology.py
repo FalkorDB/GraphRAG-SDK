@@ -4,7 +4,7 @@ from falkordb import Graph
 from .entity import Entity
 from typing import Union, Optional
 from .relation import Relation
-from graphrag_sdk import CreateOntologyStep
+import graphrag_sdk
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
 
@@ -48,7 +48,7 @@ class Ontology(object):
         Returns:
             The created Ontology object.
         """
-        step = CreateOntologyStep(
+        step = graphrag_sdk.CreateOntologyStep(
             sources=sources,
             ontology=Ontology(),
             model=model,
@@ -57,7 +57,7 @@ class Ontology(object):
         return step.run(boundaries=boundaries)
 
     @staticmethod
-    def from_json(txt: Union[dict, str]) -> "Ontology":
+    def from_json(txt: Union[dict, str]):
         """
         Creates an Ontology object from a JSON representation.
 
@@ -77,7 +77,7 @@ class Ontology(object):
         )
 
     @staticmethod
-    def from_graph(graph: Graph) -> "Ontology":
+    def from_graph(graph: Graph):
         """
         Creates an Ontology object from a given graph.
 
@@ -130,7 +130,7 @@ class Ontology(object):
             "relations": [relation.to_json() for relation in self.relations],
         }
 
-    def merge_with(self, o: "Ontology") -> "Ontology":
+    def merge_with(self, o: "Ontology"):
         """
         Merges the given ontology `o` with the current ontology.
 
@@ -164,7 +164,7 @@ class Ontology(object):
 
         return self
 
-    def discard_entities_without_relations(self) -> "Ontology":
+    def discard_entities_without_relations(self):
         """
         Discards entities that do not have any relations in the ontology.
 
@@ -200,7 +200,7 @@ class Ontology(object):
 
         return self
 
-    def discard_relations_without_entities(self) -> "Ontology":
+    def discard_relations_without_entities(self):
         """
         Discards relations that have entities not present in the ontology.
 
