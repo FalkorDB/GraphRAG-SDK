@@ -145,11 +145,9 @@ class KnowledgeGraph:
             >>> (ans, qa_chat_session) = kg.ask("List a few movies in which that actor played in")
             >>> print(ans)
         """
-        cypher_chat_session = (
-            self._model_config.cypher_generation.with_system_instruction(
-                CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json())),
-            ).start_chat()
-        )
+        cypher_chat_session = (self._model_config.cypher_generation.start_chat(
+            CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json()))
+            ))
         cypher_step = GraphQueryGenerationStep(
             ontology=self.ontology,
             chat_session=cypher_chat_session,
@@ -163,9 +161,7 @@ class KnowledgeGraph:
 
         qa_chat_session = (
             qa_chat_session
-            or self._model_config.qa.with_system_instruction(
-                GRAPH_QA_SYSTEM
-            ).start_chat()
+            or self._model_config.qa.start_chat(GRAPH_QA_SYSTEM)
         )
         qa_step = QAStep(
             chat_session=qa_chat_session,

@@ -60,16 +60,14 @@ class ExtractDataStep(Step):
         self.sources = sources
         self.ontology = ontology
         self.config = config
-        self.model = model.with_system_instruction(
-            EXTRACT_DATA_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json()))
-        )
+        self.model = model
         self.graph = graph
 
         if not os.path.exists("logs"):
             os.makedirs("logs")
 
     def _create_chat(self) -> GenerativeModelChatSession:
-        return self.model.start_chat({"response_validation": False})
+        return self.model.start_chat(EXTRACT_DATA_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json())))
 
     def run(self, instructions: Optional[str] = None):
         """

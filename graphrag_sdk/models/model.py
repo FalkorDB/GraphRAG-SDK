@@ -102,11 +102,7 @@ class GenerativeModel(ABC):
     """
 
     @abstractmethod
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
-        pass
-
-    @abstractmethod
-    def start_chat(self, args: Optional[dict]) -> GenerativeModelChatSession:
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         pass
 
     @abstractmethod

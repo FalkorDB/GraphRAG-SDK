@@ -40,40 +40,17 @@ class OpenAiGenerativeModel(GenerativeModel):
             raise ValueError("Missing OpenAI API key in the environment: OPENAI_API_KEY")
         self.client = OpenAI()
 
-    def _connect_to_model(self) -> None:
-        """
-        Establish a connection to the OpenAI model by initializing the OpenAI client.
-        """
-        self.client = OpenAI()
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
+        # """
+        # Start a new chat session.
 
-        return self.client
+        # Args:
+        #     args (Optional[dict]): Additional arguments for the chat session.
 
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
-        """
-        Set or update the system instruction and connect to the OpenAI model.
-
-        Args:
-            system_instruction (str): System instructions for the model.
-        
-        Returns:
-            GenerativeModel: The updated model instance.
-        """
-        self.system_instruction = system_instruction
-        self._connect_to_model()
-
-        return self
-
-    def start_chat(self, args: Optional[dict] = None) -> GenerativeModelChatSession:
-        """
-        Start a new chat session.
-
-        Args:
-            args (Optional[dict]): Additional arguments for the chat session.
-
-        Returns:
-            GenerativeModelChatSession: A new instance of the chat session.
-        """
-        return OpenAiChatSession(self, args)
+        # Returns:
+        #     GenerativeModelChatSession: A new instance of the chat session.
+        # """
+        return OpenAiChatSession(self, system_instruction)
 
     def ask(self, message: str) -> GenerationResponse:
         """
@@ -160,9 +137,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
     A chat session for interacting with the OpenAI model, maintaining conversation history.
     """
     
-    _history = []
-
-    def __init__(self, model: OpenAiGenerativeModel, args: Optional[dict] = None) -> None:
+    def __init__(self, model: OpenAiGenerativeModel, system_instruction: Optional[str] = None) -> None:
         """
         Initialize the chat session and set up the conversation history.
 
@@ -171,10 +146,9 @@ class OpenAiChatSession(GenerativeModelChatSession):
             args (Optional[dict]): Additional arguments for customization.
         """
         self._model = model
-        self._args = args
-        self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
+        self._chat_history = (
+            [{"role": "system", "content": system_instruction}]
+            if system_instruction is not None
             else []
         )
 
@@ -190,17 +164,14 @@ class OpenAiChatSession(GenerativeModelChatSession):
             GenerationResponse: The generated response.
         """
         generation_config = self._get_generation_config(output_method)
-        prompt = []
-        prompt.extend(self._history)
-        prompt.append({"role": "user", "content": message[:14385]})
+        self._chat_history.append({"role": "user", "content": message[:14385]})
         response = self._model.client.chat.completions.create(
             model=self._model.model_name,
-            messages=prompt,
+            messages=self._chat_history,
             **generation_config
         )
         content = self._model._parse_generate_content_response(response)
-        self._history.append({"role": "user", "content": message})
-        self._history.append({"role": "assistant", "content": content.text})
+        self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     
     def _get_generation_config(self, output_method: OutputMethod) -> dict:

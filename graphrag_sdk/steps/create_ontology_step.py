@@ -54,7 +54,7 @@ class CreateOntologyStep(Step):
         """
         self.sources = sources
         self.ontology = ontology
-        self.model = model.with_system_instruction(CREATE_ONTOLOGY_SYSTEM)
+        self.model = model
         self.config = config
 
     def _create_chat(self) -> GenerativeModelChatSession:
@@ -64,7 +64,7 @@ class CreateOntologyStep(Step):
         Returns:
             GenerativeModelChatSession: A session for interacting with the generative model.
         """
-        return self.model.start_chat({"response_validation": False})
+        return self.model.start_chat(CREATE_ONTOLOGY_SYSTEM)
 
     def run(self, boundaries: Optional[str] = None):
         """

@@ -50,12 +50,11 @@ class Orchestrator:
             GenerativeModelChatSession: The chat session used for communication with the model.
         """
         if self._chat is None:
-            self._chat = self._model.with_system_instruction(
+            self._chat = self._model.start_chat(
                 ORCHESTRATOR_SYSTEM.replace("#BACKSTORY", self._backstory).replace(
                     "#AGENTS",
-                    ",".join([str(agent) for agent in self._agents]),
-                )
-            ).start_chat({"response_validation": False})
+                    ",".join([str(agent) for agent in self._agents]))
+            )
 
         return self._chat
 
