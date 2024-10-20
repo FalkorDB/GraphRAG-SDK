@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 from ollama import Client, Options
 from .model import (
@@ -8,6 +9,9 @@ from .model import (
     FinishReason,
     GenerativeModelChatSession,
 )
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) 
 
 class OllamaGenerativeModel(GenerativeModel):
     """
@@ -37,7 +41,7 @@ class OllamaGenerativeModel(GenerativeModel):
         self.system_instruction = system_instruction
         self._host = host
 
-    def _connect_to_model(self) -> None:
+    def _connect_to_client(self) -> None:
         """
         Initializing the connection to the Ollama client.
         """
@@ -54,11 +58,37 @@ class OllamaGenerativeModel(GenerativeModel):
             GenerativeModel: The updated model instance.
         """
         self.system_instruction = system_instruction
-        self._connect_to_model()
-        self.client.pull(self.model_name)
+        self._connect_to_client()
+        self.check_and_pull_model()
 
         return self
 
+    def check_and_pull_model(self) -> None:
+        """
+        Checks if the specified model is available locally, and pulls it if not.
+
+        Logs:
+            - Info: If the model is already available or after successfully pulling the model.
+            - Error: If there is a failure in pulling the model.
+
+        Raises:
+            Exception: If there is an error during the model pull process.
+        """
+        # Get the list of available models
+        response = self.client.list()  # This returns a dictionary
+        available_models = [model['name'] for model in response['models']]  # Extract model names
+
+        # Check if the model is already pulled
+        if self.model_name in available_models:
+            logger.info(f"The model '{self.model_name}' is already available.")
+        else:
+            logger.info(f"Pulling the model '{self.model_name}'...")
+            try:
+                self.client.pull(self.model_name)  # Pull the model
+                logger.info(f"Model '{self.model_name}' pulled successfully.")
+            except Exception as e:
+                logger.error(f"Failed to pull the model '{self.model_name}': {e}")
+    
     def start_chat(self, args: Optional[dict] = None) -> GenerativeModelChatSession:
         """
         Start a new chat session.
@@ -184,7 +214,7 @@ class OllamaChatSession(GenerativeModelChatSession):
         Returns:
             GenerationResponse: The generated response.
         """
-        generation_config = self._get_generation_config(output_method)
+        generation_config = self._adjust_generation_config(output_method)
         self._chat_history.append({"role": "user", "content": message[:14385]})
         response = self._model.client.chat(
             model=self._model.model_name,
@@ -195,15 +225,15 @@ class OllamaChatSession(GenerativeModelChatSession):
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     
-    def _get_generation_config(self, output_method: OutputMethod):
+    def _adjust_generation_config(self, output_method: OutputMethod) -> dict:
         """
-        Adjust the generation configuration based on the output method.
+        Adjust the generation configuration based on the specified output method.
 
         Args:
             output_method (OutputMethod): The desired output method (e.g., default or JSON).
 
         Returns:
-            dict: The configuration settings for generation.
+            dict: The adjusted configuration settings for generation.
         """
         config = self._model.generation_config.to_json()
         if output_method == OutputMethod.JSON:
