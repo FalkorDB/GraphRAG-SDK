@@ -1,7 +1,8 @@
-import json
-from graphrag_sdk.fixtures.regex import *
-import logging
 import re
+import json
+import logging
+from typing import Union, Optional
+from graphrag_sdk.fixtures.regex import *
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class AttributeType:
     BOOLEAN = "boolean"
 
     @staticmethod
-    def from_string(txt: str):
+    def from_string(txt: str) -> "AttributeType":
         """
         Converts a string representation of an attribute type to its corresponding AttributeType value.
 
@@ -54,7 +55,7 @@ class Attribute:
     """
 
     def __init__(
-        self, name: str, attr_type: AttributeType, unique: bool, required: bool = False
+        self, name: str, attr_type: AttributeType, unique: bool, required: Optional[bool] = False
     ):
         """
         Initialize a new Attribute object.
@@ -63,7 +64,7 @@ class Attribute:
             name (str): The name of the attribute.
             attr_type (AttributeType): The type of the attribute.
             unique (bool): Indicates whether the attribute should be unique.
-            required (bool, optional): Indicates whether the attribute is required. Defaults to False.
+            required (optional[bool]): Indicates whether the attribute is required. Defaults to False.
         """
         self.name = re.sub(r"([^a-zA-Z0-9_])", "_", name)
         self.type = attr_type
@@ -71,12 +72,12 @@ class Attribute:
         self.required = required
 
     @staticmethod
-    def from_json(txt: str | dict):
+    def from_json(txt: Union[str, dict]) -> "Attribute":
         """
         Creates an Attribute object from a JSON string or dictionary.
 
         Args:
-            txt (str | dict): The JSON string or dictionary representing the Attribute.
+            txt (Union[str, dict]): The JSON string or dictionary representing the Attribute.
 
         Returns:
             Attribute: The created Attribute object.
@@ -92,7 +93,7 @@ class Attribute:
         )
 
     @staticmethod
-    def from_string(txt: str):
+    def from_string(txt: str) -> "Attribute":
         """
         Parses an attribute from a string.
         The "!" symbol indicates that the attribute is unique.
@@ -126,7 +127,7 @@ class Attribute:
 
         return Attribute(name, AttributeType.from_string(attr_type), unique, required)
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Converts the attribute object to a JSON representation.
 

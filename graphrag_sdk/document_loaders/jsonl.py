@@ -1,4 +1,5 @@
 from typing import Iterator
+from typing import Optional
 from graphrag_sdk.document import Document
 
 
@@ -7,7 +8,7 @@ class JSONLLoader:
     JSONL loader
     """
 
-    def __init__(self, path: str, rows_per_document: int = 500):
+    def __init__(self, path: str, rows_per_document: Optional[int] = 500):
         self.path = path
         self.rows_per_document = rows_per_document
 

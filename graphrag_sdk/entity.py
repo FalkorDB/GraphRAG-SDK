@@ -1,8 +1,9 @@
+import re
 import json
 import logging
+from typing import Union
 from .attribute import Attribute
 from falkordb import Node as GraphNode
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class Entity:
         self.description = description
 
     @staticmethod
-    def from_graph(entity: GraphNode):
+    def from_graph(entity: GraphNode) -> "Entity":
         """
         Converts a GraphNode object to an Entity object.
 
@@ -64,12 +65,12 @@ class Entity:
         )
 
     @staticmethod
-    def from_json(txt: dict | str):
+    def from_json(txt: Union[str, dict]) -> "Entity":
         """
         Create an Entity object from a JSON representation.
 
         Args:
-            txt (dict | str): The JSON representation of the Entity. It can be either a dictionary or a string.
+            txt (Union[str, dict]): The JSON representation of the Entity. It can be either a dictionary or a string.
 
         Returns:
             Entity: The Entity object created from the JSON representation.
@@ -82,7 +83,7 @@ class Entity:
             txt.get("description", ""),
         )
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Convert the entity object to a JSON representation.
 
@@ -99,7 +100,7 @@ class Entity:
             "description": self.description,
         }
 
-    def merge(self, entity2: "Entity"):
+    def merge(self, entity2: "Entity") -> "Entity":
         """Overwrite attributes of self with attributes of entity2.
 
         Args:
@@ -121,7 +122,7 @@ class Entity:
 
         return self
 
-    def get_unique_attributes(self):
+    def get_unique_attributes(self) -> list[Attribute]:
         """
         Returns a list of unique attributes for the entity.
 
@@ -130,7 +131,7 @@ class Entity:
         """
         return [attr for attr in self.attributes if attr.unique]
 
-    def to_graph_query(self):
+    def to_graph_query(self) -> str:
         """
         Generates a Cypher query string for creating or updating a node in a graph database.
 
