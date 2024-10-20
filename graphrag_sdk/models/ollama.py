@@ -147,9 +147,7 @@ class OllamaChatSession(GenerativeModelChatSession):
     """
     A chat session for interacting with the Ollama model, maintaining conversation history.
     """
-
-    chat_history = []
-
+    
     def __init__(self, model: OllamaGenerativeModel, args: Optional[dict] = None):
         """
         Initialize the chat session and set up the conversation history.
@@ -160,11 +158,20 @@ class OllamaChatSession(GenerativeModelChatSession):
         """
         self._model = model
         self._args = args
-        self.chat_history = (
+        self._chat_history = (
             [{"role": "system", "content": self._model.system_instruction}]
             if self._model.system_instruction is not None
             else []
         )
+    
+    def get_chat_history(self) -> list[dict]:
+        """
+        Retrieve the conversation history for the current chat session.
+
+        Returns:
+            list[dict]: The chat session's conversation history.
+        """
+        return self._chat_history.copy()
 
     def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
         """
@@ -178,14 +185,14 @@ class OllamaChatSession(GenerativeModelChatSession):
             GenerationResponse: The generated response.
         """
         generation_config = self._get_generation_config(output_method)
-        self.chat_history.append({"role": "user", "content": message[:14385]})
+        self._chat_history.append({"role": "user", "content": message[:14385]})
         response = self._model.client.chat(
             model=self._model.model_name,
-            messages=self.chat_history,
+            messages=self._chat_history,
             options=Options(**generation_config)
         )
         content = self._model._parse_generate_content_response(response)
-        self.chat_history.append({"role": "assistant", "content": content.text})
+        self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     
     def _get_generation_config(self, output_method: OutputMethod):
