@@ -85,9 +85,9 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             top_k=self.generation_config.top_k,
             stop=self.generation_config.stop_sequences,
         )
-        return self._parse_generate_content_response(response)
+        return self.parse_generate_content_response(response)
 
-    def _parse_generate_content_response(self, response: any) -> GenerationResponse:
+    def parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
         Parse the model's response and extract content for the user.
 
@@ -181,7 +181,7 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
             messages=self._chat_history,
             **generation_config
         )
-        content = self._model._parse_generate_content_response(response)
+        content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     

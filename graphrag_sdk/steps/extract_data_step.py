@@ -41,11 +41,7 @@ class ExtractDataStep(Step):
         ontology: Ontology,
         model: GenerativeModel,
         graph: Graph,
-        config: Optional[dict] = {
-            "max_workers": 16,
-            "max_input_tokens": 500000,
-            "max_output_tokens": 8192,
-        },
+        config: Optional[dict] = None,
     ) -> None:
         """
         Initialize the ExtractDataStep.
@@ -59,7 +55,14 @@ class ExtractDataStep(Step):
         """
         self.sources = sources
         self.ontology = ontology
-        self.config = config
+        if config is None:
+            config = {
+                "max_workers": 16,
+                "max_input_tokens": 500000,
+                "max_output_tokens": 8192,
+            }
+        else:
+            self.config = config
         self.model = model
         self.graph = graph
 
@@ -112,8 +115,8 @@ class ExtractDataStep(Step):
         document: Document,
         ontology: Ontology,
         graph: Graph,
-        source_instructions: Optional[str] = "",
-        instructions: Optional[str] = "",
+        source_instructions: Optional[str] = None,
+        instructions: Optional[str] = None,
     ) -> None:
         """
         Process a single source document and extract entities and relations.
@@ -319,8 +322,8 @@ class ExtractDataStep(Step):
         self,
         chat_session: GenerativeModelChatSession,
         prompt: str,
-        retry: Optional[int] = 6,
-        output_method: Optional[OutputMethod] = OutputMethod.DEFAULT
+        retry: int = 6,
+        output_method: OutputMethod = OutputMethod.DEFAULT
     ) -> GenerationResponse:
         """
         Call the generative model with rate limiting and retries.

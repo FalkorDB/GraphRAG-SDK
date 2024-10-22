@@ -75,7 +75,7 @@ class Orchestrator:
             question (str): The user's question.
 
         Returns:
-            OrchestratorRunner: The Runner with the result of executing the plan.
+            OrchestratorRunner: The result of executing the plan.
         """
         return self.runner(question).run()
 

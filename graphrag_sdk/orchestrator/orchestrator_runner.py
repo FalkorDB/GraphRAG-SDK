@@ -229,6 +229,8 @@ class OrchestratorRunner:
 
         if decision.code == OrchestratorDecisionCode.UPDATE_STEP:
             return self._handle_update_step_decision(decision.new_step)
+        else:
+            raise ValueError(f"Unhandled OrchestratorDecisionCode: {decision.code}")
 
     def _handle_end_decision(self) -> StepResult:
         """
@@ -239,7 +241,7 @@ class OrchestratorRunner:
         """
         last_step = self._runner_log[-1][0] if len(self._runner_log) > 0 else None
         if last_step is None:
-            return OrchestratorResult("No steps to run")
+            return OrchestratorResult("Execution plan contains no steps to execute.")
         if last_step.block != StepBlockType.SUMMARY:
             return self._call_summary_step()
         last_result = self._runner_log[-1][1] if len(self._runner_log) > 0 else None

@@ -70,9 +70,9 @@ class GeminiGenerativeModel(GenerativeModel):
             GenerationResponse: The model's generated response.
         """
         response = self._model.generate_content(message)
-        return self._parse_generate_content_response(response)
+        return self.parse_generate_content_response(response)
 
-    def _parse_generate_content_response(
+    def parse_generate_content_response(
         self, response: types.generation_types.GenerateContentResponse
     ) -> GenerationResponse:
         """
@@ -160,7 +160,7 @@ class GeminiChatSession(GenerativeModelChatSession):
         """
         generation_config = self._adjust_generation_config(output_method)
         response = self._chat_session.send_message(message, generation_config=generation_config)
-        return self._model._parse_generate_content_response(response)
+        return self._model.parse_generate_content_response(response)
     
     def _adjust_generation_config(self, output_method: OutputMethod) -> dict:
         """
