@@ -124,7 +124,7 @@ class KGAgent(Agent):
         """
         self._kg = value
 
-    def run(self, params: dict) -> tuple[str, GenerativeModelChatSession]:
+    def run(self, params: dict) -> str:
         """
         Ask the agent a question.
 
@@ -132,11 +132,11 @@ class KGAgent(Agent):
             params (dict): The parameters for the agent.
 
         Returns:
-            tuple[str, GenerativeModelChatSession]: The agent's response and the updated chat session.
+            str: The agent's response.
 
         """
         output = self.chat_session.send_message(params["prompt"])
-        return (output, self.chat_session.qa_chat_session)
+        return output
 
     def __repr__(self):
         """

@@ -197,12 +197,9 @@ You can update the KG at any time by processing more sources with the `process_s
 
 ### Graph RAG
 
-At this point, you have a Knowledge Graph that can be queried using this SDK. You can use the `ask` method for single questions or `chat_session` for conversations.
+At this point, you have a Knowledge Graph that can be queried using this SDK. Use the method `chat_session` for start a conversation.
 
 ```python
-# Single question.
-response = kg.ask("What were the last five fights? When were they? How many rounds did they have?")
-print(response)
 
 # Conversation.
 chat = kg.chat_session()

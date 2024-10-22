@@ -104,19 +104,13 @@ class AgentStep(PlanStep):
     def run(
         self,
         runner: "OrchestratorRunner",
-        config: dict = None,
     ) -> AgentStepResult:
         logger.info(f"Running agent {self.properties.agent_id}, step: {self.id}, payload: {self.properties.payload}")
-        session = (
-            runner.get_session(self.properties.session_id)
-            if self.properties.session_id
-            else None
-        )
+
         agent = runner.get_agent(self.properties.agent_id)
         if agent is None:
             raise ValueError(f"Agent with id {self.properties.agent_id} not found")
 
-        (response, chat_session) = agent.run(self.properties.payload)
-        runner.set_session(self.properties.session_id, chat_session)
+        response = agent.run(self.properties.payload)
         logger.debug(f"Agent response: {response}")
         return AgentStepResult(AgentResponseCode.AGENT_RESPONSE, {"output": response})

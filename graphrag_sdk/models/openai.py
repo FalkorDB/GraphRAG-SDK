@@ -39,21 +39,6 @@ class OpenAiGenerativeModel(GenerativeModel):
     def start_chat(self, args: dict | None = None) -> GenerativeModelChatSession:
         return OpenAiChatSession(self, args)
 
-    def ask(self, message: str) -> GenerationResponse:
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": self.system_instruction},
-                {"role": "user", "content": message[:14385]},
-            ],
-            max_tokens=self.generation_config.max_output_tokens,
-            temperature=self.generation_config.temperature,
-            top_p=self.generation_config.top_p,
-            top_k=self.generation_config.top_k,
-            stop=self.generation_config.stop_sequences,
-        )
-        return self.parse_generate_content_response(response)
-
     def parse_generate_content_response(self, response: any) -> GenerationResponse:
         return GenerationResponse(
             text=response.choices[0].message.content,

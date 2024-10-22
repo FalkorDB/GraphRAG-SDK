@@ -74,7 +74,6 @@ class SummaryStep(graphrag_sdk.orchestrator.step.PlanStep):
     def run(
         self,
         runner: OrchestratorRunner,
-        config: dict = None,
     ) -> SummaryResult:
         response = runner.chat.send_message(
             ORCHESTRATOR_SUMMARY_PROMPT.replace(

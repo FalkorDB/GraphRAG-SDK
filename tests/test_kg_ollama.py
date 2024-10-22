@@ -88,7 +88,9 @@ class TestKGOllama(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        answer = self.kg.ask("List a few actors")
+        chat = self.kg.chat_session()
+        answer = chat.send_message("How many actors acted in a movie?")
+
 
         logger.info(f"Answer: {answer}")
 
