@@ -11,7 +11,7 @@ keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
 
 [tool.poetry.dependencies]
 python = "^3.9.0"
-falkordb = "^1.0.4"
+falkordb = "^1.0.9"
 typing-extensions = "^4.12.1"
 bs4 = "^0.0.2"
 pypdf = "^4.2.0"
