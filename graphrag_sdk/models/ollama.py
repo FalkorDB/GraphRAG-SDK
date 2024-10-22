@@ -101,31 +101,6 @@ class OllamaGenerativeModel(GenerativeModel):
         """
         return OllamaChatSession(self, args)
 
-    def ask(self, message: str) -> GenerationResponse:
-        """
-        Send a message to the model and receive a response.
-
-        Args:
-            message (str): The user's message input.
-
-        Returns:
-            GenerationResponse: The model's generated response.
-        """
-        response = self.client.chat(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": self.system_instruction},
-                {"role": "user", "content": message[:14385]},
-            ],
-            options=Options(
-                temperature=self.generation_config.temperature,
-                top_p=self.generation_config.top_p,
-                top_k=self.generation_config.top_k,
-                stop=self.generation_config.stop_sequences,
-            ),
-        )
-        return self._parse_generate_content_response(response)
-
     def _parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
         Parse the model's response and extract content for the user.

@@ -62,10 +62,6 @@ class GeminiGenerativeModel(GenerativeModel):
     def start_chat(self, args: dict | None = None) -> GenerativeModelChatSession:
         return GeminiChatSession(self, args)
 
-    def ask(self, message: str) -> GenerationResponse:
-        response = self._model.generate_content(message)
-        return self.parse_generate_content_response(response)
-
     def parse_generate_content_response(
         self, response: types.generation_types.GenerateContentResponse
     ) -> GenerationResponse:

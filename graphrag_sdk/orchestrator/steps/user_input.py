@@ -96,7 +96,6 @@ class UserInputStep(PlanStep):
     def run(
         self,
         runner: OrchestratorRunner,
-        config: dict = None,
     ) -> UserInputResult:
         logger.info(f"Running user input step: {self.id}")
         return UserInputResult(runner.get_user_input(self.properties.question))

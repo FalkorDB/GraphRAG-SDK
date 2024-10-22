@@ -78,5 +78,13 @@
     "city": "Sorrento",
     "rating": 4.7,
     "food_type": "Seafood"
+  },
+  {
+    "id": 11,
+    "name": "Tonnarello",
+    "description": "Casual stop for pasta, meatballs & other simple Roman dishes, plus patio seating & acoustic guitar.",
+    "city": "Rome",
+    "rating": 4.7,
+    "food_type": "Italian"
   }
 ]

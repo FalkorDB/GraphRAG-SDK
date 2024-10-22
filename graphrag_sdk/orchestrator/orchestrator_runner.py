@@ -92,7 +92,7 @@ class OrchestratorRunner:
         if first_step is None:
             return OrchestratorResult("No steps to run")
 
-        first_step_result = first_step.run(self, self._config)
+        first_step_result = first_step.run(self)
 
         self._runner_log.append((first_step, first_step_result))
 
@@ -136,12 +136,12 @@ class OrchestratorRunner:
             return self._handle_end_decision()
 
         next_step = steps[0]
-        next_step_result = next_step.run(self, self._config)
+        next_step_result = next_step.run(self)
         self._runner_log.append((next_step, next_step_result))
         return self._run_loop(steps[1:])
 
     def _handle_update_step_decision(self, new_step: PlanStep) -> StepResult:
-        next_step_result = new_step.run(self, self._config)
+        next_step_result = new_step.run(self)
         self._runner_log.append((new_step, next_step_result))
         return self._run_loop([])
 

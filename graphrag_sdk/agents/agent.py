@@ -144,18 +144,15 @@ class Agent(ABC):
         pass
 
     @abstractmethod
-    def run(
-        self, params: dict, session: GenerativeModelChatSession
-    ) -> tuple[str, GenerativeModelChatSession]:
+    def run(self, params: dict) -> str:
         """
         Run the agent with the given parameters and chat session.
 
         Args:
             params (Dict): The parameters for the agent.
-            session (GenerativeModelChatSession): The chat session.
 
         Returns:
-            Tuple[str, GenerativeModelChatSession]: The agent's response and the updated chat session.
+            str: The agent's response.
         """
         pass
 

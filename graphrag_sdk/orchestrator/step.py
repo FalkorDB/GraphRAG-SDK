@@ -55,6 +55,5 @@ class PlanStep(ABC):
     def run(
         self,
         runner: any,
-        config: dict = None,
     ) -> StepResult:
         pass
