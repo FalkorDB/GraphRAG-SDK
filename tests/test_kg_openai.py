@@ -88,7 +88,7 @@ class TestKGOpenAI(unittest.TestCase):
 
         logger.info(f"Answer: {answer}")
 
-        actors_count = re.findall(r'\d+', answer[0])
+        actors_count = re.findall(r'\d+', answer)
         num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
         assert num_actors > 10, "The number of actors found should be greater than 10"
