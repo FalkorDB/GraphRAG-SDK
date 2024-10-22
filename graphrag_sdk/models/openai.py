@@ -41,15 +41,15 @@ class OpenAiGenerativeModel(GenerativeModel):
         self.client = OpenAI()
 
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
-        # """
-        # Start a new chat session.
+        """
+        Start a new chat session.
+            
+        Args:
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
 
-        # Args:
-        #     args (Optional[dict]): Additional arguments for the chat session.
-
-        # Returns:
-        #     GenerativeModelChatSession: A new instance of the chat session.
-        # """
+        Returns:
+            GenerativeModelChatSession: A new instance of the chat session.
+        """
         return OpenAiChatSession(self, system_instruction)
 
     def ask(self, message: str) -> GenerationResponse:
@@ -74,7 +74,7 @@ class OpenAiGenerativeModel(GenerativeModel):
             top_k=self.generation_config.top_k,
             stop=self.generation_config.stop_sequences,
         )
-        return self.parse_generate_content_response(response)
+        return self._parse_generate_content_response(response)
 
     def _parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
@@ -143,7 +143,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
 
         Args:
             model (OpenAiGenerativeModel): The model instance for the session.
-            args (Optional[dict]): Additional arguments for customization.
+            system_instruction (Optional[str]): Optional system instruction.
         """
         self._model = model
         self._chat_history = (
@@ -165,7 +165,6 @@ class OpenAiChatSession(GenerativeModelChatSession):
         """
         generation_config = self._adjust_generation_config(output_method)
         self._chat_history.append({"role": "user", "content": message[:14385]})
-        print(self._chat_history[0]['content'])
         response = self._model.client.chat.completions.create(
             model=self._model.model_name,
             messages=self._chat_history,

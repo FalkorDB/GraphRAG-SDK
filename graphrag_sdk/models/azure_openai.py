@@ -56,7 +56,7 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
         Start a new chat session.
 
         Args:
-            args (Optional[dict]): Additional arguments for the chat session.
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
 
         Returns:
             GenerativeModelChatSession: A new instance of the chat session.
@@ -154,7 +154,7 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
 
         Args:
             model (AzureOpenAiGenerativeModel): The model instance for the session.
-            args (Optional[dict]): Additional arguments for customization.
+            system_instruction (Optional[str]): Optional system instruction.
         """
         self._model = model
         self._chat_history = (
@@ -176,7 +176,6 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
         """
         generation_config = self._adjust_generation_config(output_method)
         self._chat_history.append({"role": "user", "content": message[:14385]})
-        print(self._chat_history[0]['content'])
         response = self._model.client.chat.completions.create(
             model=self._model.model_name,
             messages=self._chat_history,

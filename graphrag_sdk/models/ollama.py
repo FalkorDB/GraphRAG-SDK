@@ -69,15 +69,15 @@ class OllamaGenerativeModel(GenerativeModel):
                 logger.error(f"Failed to pull the model '{self.model_name}': {e}")
     
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
-        # """
-        # Start a new chat session.
+        """
+        Start a new chat session.
 
-        # Args:
-        #     args (Optional[dict]): Additional arguments for the chat session.
+        Args:
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
 
-        # Returns:
-        #     GenerativeModelChatSession: A new instance of the chat session.
-        # """
+        Returns:
+            GenerativeModelChatSession: A new instance of the chat session.
+        """
         return OllamaChatSession(self, system_instruction)
 
     def ask(self, message: str) -> GenerationResponse:
@@ -163,7 +163,7 @@ class OllamaChatSession(GenerativeModelChatSession):
 
         Args:
             model (OllamaGenerativeModel): The model instance for the session.
-            args (Optional[dict]): Additional arguments for customization.
+            system_instruction (Optional[str]): Optional system instruction.
         """
         self._model = model
         self._chat_history = (

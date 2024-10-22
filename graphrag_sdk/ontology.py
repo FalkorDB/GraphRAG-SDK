@@ -57,7 +57,7 @@ class Ontology(object):
         return step.run(boundaries=boundaries)
 
     @staticmethod
-    def from_json(txt: Union[dict, str]):
+    def from_json(txt: Union[dict, str]) -> "Ontology":
         """
         Creates an Ontology object from a JSON representation.
 
@@ -77,7 +77,7 @@ class Ontology(object):
         )
 
     @staticmethod
-    def from_graph(graph: Graph):
+    def from_graph(graph: Graph) -> "Ontology":
         """
         Creates an Ontology object from a given graph.
 

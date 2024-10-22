@@ -43,35 +43,12 @@ class GeminiGenerativeModel(GenerativeModel):
         self._system_instruction = system_instruction
         configure(api_key=os.environ["GOOGLE_API_KEY"])
 
-
-    def _connect_to_model(self) -> GoogleGenerativeModel:
-        """
-        Establish a connection to the GoogleAI model.
-        """
-        
-
-
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
-        """
-        Set or update the system instruction and connect to the GoogleAI model.
-
-        Args:
-            system_instruction (str): System instructions for the model.
-        
-        Returns:
-            GenerativeModel: The updated model instance.
-        """
-        self._system_instruction = system_instruction
-        self._connect_to_model()
-
-        return self
-
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
         Start a new chat session.
 
         Args:
-            args (Optional[dict]): Additional arguments for the chat session.
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
 
         Returns:
             GeminiChatSession: A new instance of the chat session.
@@ -80,7 +57,7 @@ class GeminiGenerativeModel(GenerativeModel):
             self._model_name,
             system_instruction=system_instruction,
         )
-        return GeminiChatSession(self, system_instruction)
+        return GeminiChatSession(self)
 
     def ask(self, message: str) -> GenerationResponse:
         """
@@ -159,13 +136,12 @@ class GeminiChatSession(GenerativeModelChatSession):
     A chat session for interacting with the GoogleAI model, maintaining conversation history.
     """
 
-    def __init__(self, model: GeminiGenerativeModel, system_instruction: Optional[str] = None):
+    def __init__(self, model: GeminiGenerativeModel):
         """
         Initialize the chat session and set up the conversation history.
 
         Args:
             model (GeminiGenerativeModel): The model instance for the session.
-            args (Optional[dict]): Additional arguments for customization.
         """
         self._model = model
         self._chat_session = self._model._model.start_chat()
