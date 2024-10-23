@@ -52,40 +52,7 @@ class OpenAiGenerativeModel(GenerativeModel):
         """
         return OpenAiChatSession(self, system_instruction)
 
-    def ask(self, message: str) -> GenerationResponse:
-        """
-        Send a message to the model and receive a response.
-
-        Args:
-            message (str): The user's message input.
-
-        Returns:
-            GenerationResponse: The model's generated response.
-        """
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": self.system_instruction},
-                {"role": "user", "content": message[:14385]},
-            ],
-            max_tokens=self.generation_config.max_output_tokens,
-            temperature=self.generation_config.temperature,
-            top_p=self.generation_config.top_p,
-            top_k=self.generation_config.top_k,
-            stop=self.generation_config.stop_sequences,
-        )
-        return self._parse_generate_content_response(response)
-
-    def _parse_generate_content_response(self, response: any) -> GenerationResponse:
-        """
-        Parse the model's response and extract content for the user.
-
-        Args:
-            response (any): The raw response from the model.
-
-        Returns:
-            GenerationResponse: Parsed response containing the generated text and finish reason.
-        """
+    def parse_generate_content_response(self, response: any) -> GenerationResponse:
         return GenerationResponse(
             text=response.choices[0].message.content,
             finish_reason=(

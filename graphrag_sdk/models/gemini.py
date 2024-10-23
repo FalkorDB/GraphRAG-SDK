@@ -59,19 +59,6 @@ class GeminiGenerativeModel(GenerativeModel):
         )
         return GeminiChatSession(self)
 
-    def ask(self, message: str) -> GenerationResponse:
-        """
-        Send a message to the model and receive a response.
-
-        Args:
-            message (str): The user's message input.
-
-        Returns:
-            GenerationResponse: The model's generated response.
-        """
-        response = self._model.generate_content(message)
-        return self.parse_generate_content_response(response)
-
     def parse_generate_content_response(
         self, response: types.generation_types.GenerateContentResponse
     ) -> GenerationResponse:

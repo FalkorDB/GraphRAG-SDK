@@ -105,10 +105,6 @@ class GenerativeModel(ABC):
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         pass
 
-    @abstractmethod
-    def ask(self, message: str) -> GenerationResponse:
-        pass
-
     @staticmethod
     @abstractmethod
     def from_json(json: dict) -> "GenerativeModel":

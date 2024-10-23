@@ -161,7 +161,6 @@ class UserInputStep(PlanStep):
     def run(
         self,
         runner: OrchestratorRunner,
-        config: Optional[dict] = None,
     ) -> UserInputResult:
         """
         Run the user input step, prompting the user for input.

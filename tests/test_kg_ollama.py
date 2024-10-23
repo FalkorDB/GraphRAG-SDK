@@ -89,11 +89,12 @@ class TestKGOllama(unittest.TestCase):
 
         self.kg.process_sources(sources)
 
-        answer = self.kg.ask("How many actors acted in a movie?")
+        chat = self.kg.chat_session()
+        answer = chat.send_message("How many actors acted in a movie?")
 
         logger.info(f"Answer: {answer}")
 
-        actors_count = re.findall(r'\d+', answer[0])
+        actors_count = re.findall(r'\d+', answer)
         num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
         assert num_actors > 5, "The number of actors found should be greater than 5"

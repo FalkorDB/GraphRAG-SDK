@@ -127,50 +127,6 @@ class KnowledgeGraph:
 
         step.run(instructions)
 
-    def ask(
-        self, question: str, qa_chat_session: Optional[GenerativeModelChatSession] = None
-    ) -> tuple[str, GenerativeModelChatSession]:
-        """
-        Query the knowledge graph using natural language.
-        Optionally, you can provide a qa_chat_session to use for the query.
-
-        Args:
-            question (str): question to ask the knowledge graph
-            qa_chat_session (Optional[GenerativeModelChatSession]): QA chat session to use for the query.
-
-        Returns:
-            tuple[str, GenerativeModelChatSession]: answer, qa_chat_session
-
-        Example:
-            >>> (ans, qa_chat_session) = kg.ask("List a few movies in which that actor played in")
-            >>> print(ans)
-        """
-        cypher_chat_session = (self._model_config.cypher_generation.start_chat(
-            CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json()))
-            ))
-        cypher_step = GraphQueryGenerationStep(
-            ontology=self.ontology,
-            chat_session=cypher_chat_session,
-            graph=self.graph,
-        )
-
-        (context, cypher) = cypher_step.run(question)
-
-        if not cypher or len(cypher) == 0:
-            return "I am sorry, I could not find the answer to your question"
-
-        qa_chat_session = (
-            qa_chat_session
-            or self._model_config.qa.start_chat(GRAPH_QA_SYSTEM)
-        )
-        qa_step = QAStep(
-            chat_session=qa_chat_session,
-        )
-
-        answer = qa_step.run(question, cypher, context)
-
-        return (answer, qa_chat_session)
-
     def delete(self) -> None:
         """
         Deletes the knowledge graph and any other related resource

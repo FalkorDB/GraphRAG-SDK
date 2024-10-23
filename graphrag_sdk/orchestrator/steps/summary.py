@@ -116,7 +116,6 @@ class SummaryStep(graphrag_sdk.orchestrator.step.PlanStep):
     def run(
         self,
         runner: OrchestratorRunner,
-        config: Optional[dict] = None,
     ) -> SummaryResult:
         """
         Run the summary step, generating a summary based on execution logs.

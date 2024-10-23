@@ -188,7 +188,7 @@ Raw text:
 """
 
 BOUNDARIES_PREFIX = """
-Use the following instructions as boundaries for the ontology extraction process.
+Use the following instructions as boundaries for the ontology extraction process:
 {user_boundaries}
 """
 
@@ -461,6 +461,19 @@ Do not include any apologies or other texts, except the generated OpenCypher sta
 Question: {question}
 """
 
+CYPHER_GEN_PROMPT_WITH_HISTORY = """
+Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
+
+First, determine if the last answers provided to the user over the entire conversation is relevant to the current question. If it is relevant, you may consider incorporating information from it into the query. If it is not relevant, ignore it and generate the query based solely on the question.
+
+If you cannot generate an OpenCypher statement for any reason, return an empty string.
+
+Respect the order of the relationships; the arrows should always point from the "source" to the "target".
+
+Last Answer: {last_answer}
+
+Question: {question}
+"""
 
 GRAPH_QA_SYSTEM = """
 You are an assistant that helps to form nice and human understandable answers.
@@ -575,7 +588,7 @@ Choose between the following steps to create the execution plan:
 
 
 ORCHESTRATOR_SUMMARY_PROMPT = """
-Given the following execution log, generate the final answer to the user's question.
+Given the following execution log and the history of this chat, generate the final answer to the user's question.
 Be very polite and detailed in your response, always providing the reasoning behind the answer.
 
 User question:
