@@ -1,3 +1,6 @@
+import logging
+from falkordb import Graph
+from typing import Optional
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models import (
@@ -9,13 +12,11 @@ from graphrag_sdk.fixtures.prompts import (
     CYPHER_GEN_PROMPT_WITH_ERROR,
     CYPHER_GEN_PROMPT_WITH_HISTORY,
 )
-import logging
 from graphrag_sdk.helpers import (
     extract_cypher,
     validate_cypher,
     stringify_falkordb_response,
 )
-from falkordb import Graph
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -31,8 +32,8 @@ class GraphQueryGenerationStep(Step):
         graph: Graph,
         ontology: Ontology,
         chat_session: GenerativeModelChatSession,
-        config: dict = None,
-        last_answer: str = None,
+        config: Optional[dict] = None,
+        last_answer: Optional[str] = None,
     ) -> None:
         self.ontology = ontology
         self.config = config or {}
@@ -41,6 +42,16 @@ class GraphQueryGenerationStep(Step):
         self.last_answer = last_answer
 
     def run(self, question: str, retries: int = 5):
+        """
+        Run the step to generate and validate a Cypher query.
+
+        Args:
+            question (str): The question being asked to generate the query.
+            retries (int): Number of retries allowed in case of errors.
+
+        Returns:
+            tuple[Optional[str], Optional[str]]: The context and the generated Cypher query.
+        """
         error = False
 
         cypher = ""
@@ -67,7 +78,6 @@ class GraphQueryGenerationStep(Step):
                     return (None, None)
 
                 validation_errors = validate_cypher(cypher, self.ontology)
-                # print(f"Is valid: {is_valid}")
                 if validation_errors is not None:
                     raise Exception("\n".join(validation_errors))
 

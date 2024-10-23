@@ -9,7 +9,6 @@ class KnowledgeGraphModelConfig:
         extract_data (GenerativeModel): The generative model for extracting data.
         cypher_generation (GenerativeModel): The generative model for cypher generation.
         qa (GenerativeModel): The generative model for question answering.
-
     """
 
     def __init__(
@@ -31,7 +30,7 @@ class KnowledgeGraphModelConfig:
         self.qa = qa
 
     @staticmethod
-    def with_model(model: GenerativeModel):
+    def with_model(model: GenerativeModel) -> "KnowledgeGraphModelConfig":
         """
         Creates a new KnowledgeGraphModelConfig instance with the given generative model.
 

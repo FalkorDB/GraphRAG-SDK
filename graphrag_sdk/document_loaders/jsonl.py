@@ -1,4 +1,5 @@
 from typing import Iterator
+from typing import Optional
 from graphrag_sdk.document import Document
 
 
