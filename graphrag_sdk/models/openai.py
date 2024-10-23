@@ -137,7 +137,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
             messages=self._chat_history,
             **generation_config
         )
-        content = self._model._parse_generate_content_response(response)
+        content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     

@@ -84,7 +84,7 @@ class OllamaGenerativeModel(GenerativeModel):
         """
         return OllamaChatSession(self, system_instruction)
 
-    def _parse_generate_content_response(self, response: any) -> GenerationResponse:
+    def parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
         Parse the model's response and extract content for the user.
 
@@ -178,7 +178,7 @@ class OllamaChatSession(GenerativeModelChatSession):
             messages=self._chat_history,
             options=Options(**generation_config)
         )
-        content = self._model._parse_generate_content_response(response)
+        content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     
