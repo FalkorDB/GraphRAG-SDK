@@ -56,7 +56,7 @@ class ExtractDataStep(Step):
         self.sources = sources
         self.ontology = ontology
         if config is None:
-            config = {
+            self.config = {
                 "max_workers": 16,
                 "max_input_tokens": 500000,
                 "max_output_tokens": 8192,

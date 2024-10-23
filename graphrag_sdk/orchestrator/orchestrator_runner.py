@@ -87,7 +87,7 @@ class OrchestratorRunner:
         chat: GenerativeModelChatSession,
         agents: list[Agent],
         plan: ExecutionPlan,
-        user_question: Optional[str] = "",
+        user_question: Optional[str] = None,
         config: Optional[dict] = None,
     ):
         self._chat = chat
@@ -190,11 +190,14 @@ class OrchestratorRunner:
 
         Returns:
             OrchestratorResult: The result of the orchestrator execution.
-        """
-        first_step = self._plan.steps[0] if len(self._plan.steps) > 0 else None
 
-        if first_step is None:
-            return OrchestratorResult("No steps to run")
+        Raises:
+            ValueError: If the execution plan is empty.
+        """
+        if not self._plan.steps:
+            raise ValueError("Execution plan contains no steps to execute.")
+    
+        first_step = self._plan.steps[0]
 
         first_step_result = first_step.run(self)
 

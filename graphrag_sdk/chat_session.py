@@ -46,6 +46,7 @@ class ChatSession:
         self.ontology = ontology
         self.cypher_chat_session = model_config.cypher_generation.start_chat(CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(ontology.to_json())))
         self.qa_chat_session = model_config.qa.start_chat(GRAPH_QA_SYSTEM)
+        self.last_answer = None
 
     def send_message(self, message: str) -> str:
         """

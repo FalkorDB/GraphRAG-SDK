@@ -1,5 +1,5 @@
 from json import loads
-from typing import Union, Optional
+from typing import Union
 from abc import ABC, abstractmethod
 from .step_result import StepResult
 

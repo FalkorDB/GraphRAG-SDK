@@ -39,7 +39,11 @@ class OllamaGenerativeModel(GenerativeModel):
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
-        self.client = Client(host)
+        try:
+            self.client = Client(host)
+        except Exception as e:
+            logger.error(f"Failed to initialize the Ollama client: {e}")
+            raise e
         self.check_and_pull_model()
 
     def check_and_pull_model(self) -> None:

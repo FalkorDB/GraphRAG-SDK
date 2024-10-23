@@ -1,5 +1,6 @@
 from typing import Optional
 import graphrag_sdk.orchestrator.step
+from graphrag_sdk.orchestrator.step import PlanStep
 from concurrent.futures import ThreadPoolExecutor, wait
 from graphrag_sdk.orchestrator.step_result import StepResult
 from graphrag_sdk.orchestrator.orchestrator_runner import OrchestratorRunner

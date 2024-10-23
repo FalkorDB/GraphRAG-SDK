@@ -178,7 +178,6 @@ class AgentStep(PlanStep):
 
         Args:
             runner (OrchestratorRunner): The orchestrator runner instance.
-            config (Optional[dict]): Configuration options. Defaults to None.
 
         Returns:
             AgentStepResult: The result of the agent step execution.

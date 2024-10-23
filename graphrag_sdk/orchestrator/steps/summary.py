@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 import graphrag_sdk.orchestrator.step
 from graphrag_sdk.orchestrator.step_result import StepResult
 from graphrag_sdk.orchestrator.orchestrator_runner import OrchestratorRunner
@@ -122,7 +121,6 @@ class SummaryStep(graphrag_sdk.orchestrator.step.PlanStep):
 
         Args:
             runner (OrchestratorRunner): The orchestrator runner instance.
-            config (Optional[dict]): Configuration options. Defaults to None.
 
         Returns:
             SummaryResult: The result of the summary step.

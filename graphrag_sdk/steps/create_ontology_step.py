@@ -37,11 +37,7 @@ class CreateOntologyStep(Step):
         sources: list[AbstractSource],
         ontology: Ontology,
         model: GenerativeModel,
-        config: Optional[dict] = {
-            "max_workers": 16,
-            "max_input_tokens": 500000,
-            "max_output_tokens": 8192,
-        },
+        config: Optional[dict] = None,
     ) -> None:
         """
         Initialize the CreateOntologyStep.
@@ -55,7 +51,14 @@ class CreateOntologyStep(Step):
         self.sources = sources
         self.ontology = ontology
         self.model = model
-        self.config = config
+        if config is None:
+            self.config = {
+                "max_workers": 16,
+                "max_input_tokens": 500000,
+                "max_output_tokens": 8192,
+            }
+        else:
+            self.config = config
 
     def _create_chat(self) -> GenerativeModelChatSession:
         """
@@ -256,7 +259,7 @@ class CreateOntologyStep(Step):
         self,
         chat_session: GenerativeModelChatSession,
         prompt: str,
-        retry: Optional[int] = 6,
+        retry: int = 6,
     ):
         """
         Call the generative model with retries and rate limiting.
@@ -264,7 +267,7 @@ class CreateOntologyStep(Step):
         Args:
             chat_session (GenerativeModelChatSession): The chat session for interacting with the model.
             prompt (str): The prompt to send to the model.
-            retry (Optional[int]): Number of retries if quota is exceeded or errors occur.
+            retry (int): Number of retries if quota is exceeded or errors occur.
 
         Returns:
             GenerationResponse: The model's response.

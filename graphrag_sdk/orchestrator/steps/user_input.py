@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 from graphrag_sdk.orchestrator.step import PlanStep, StepBlockType
 from graphrag_sdk.orchestrator.step_result import StepResult
 from graphrag_sdk.orchestrator.orchestrator_runner import OrchestratorRunner
@@ -167,7 +166,6 @@ class UserInputStep(PlanStep):
 
         Args:
             runner (OrchestratorRunner): The orchestrator runner instance.
-            config (Optional[dict]): Configuration options. Defaults to None.
 
         Returns:
             UserInputResult: The result of the user input step.
