@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 from graphrag_sdk.agents import Agent
 from graphrag_sdk.helpers import extract_json
 from graphrag_sdk.models import GenerativeModel, GenerativeModelChatSession

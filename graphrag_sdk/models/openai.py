@@ -141,6 +141,15 @@ class OpenAiChatSession(GenerativeModelChatSession):
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     
+    def get_chat_history(self) -> list[dict]:
+        """
+        Retrieve the conversation history for the current chat session.
+
+        Returns:
+            list[dict]: The chat session's conversation history.
+        """
+        return self._chat_history.copy()
+    
     def _adjust_generation_config(self, output_method: OutputMethod) -> dict:
         """
         Adjust the generation configuration based on the output method.
