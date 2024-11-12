@@ -27,7 +27,7 @@ openai = { version = "^1.35.9", optional = true }
 google-generativeai = { version = "^0.8.1", optional = true }
 
 [tool.poetry.extras]
-all = ["vertexai", "vertexai", "openai", "google-generativeai"]
+all = ["vertexai", "ollama", "openai", "google-generativeai"]
 ollama = ["ollama"]
 openai = ["openai"]
 vertexai = ["vertexai"]
