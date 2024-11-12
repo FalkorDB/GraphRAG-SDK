@@ -3764,7 +3764,7 @@ test = ["big-O", "importlib-resources", "jaraco.functools", "jaraco.itertools", 
 type = ["pytest-mypy"]
 
 [extras]
-all = ["google-generativeai", "openai", "vertexai", "vertexai"]
+all = ["google-generativeai", "ollama", "openai", "vertexai"]
 google-generativeai = ["google-generativeai"]
 ollama = ["ollama"]
 openai = ["openai"]
@@ -3773,4 +3773,4 @@ vertexai = ["vertexai"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9.0"
-content-hash = "a1ad5c73f22346bace7ca6eef2ad29e397d42c409b470a82faad5be05773cc0d"
+content-hash = "90fec2ee9fae86d068efb71dba173791d5bc3a2526427697426af36004735ee1"
