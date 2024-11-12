@@ -21,7 +21,13 @@ GraphRAG-SDK is a comprehensive solution for building Graph Retrieval-Augmented 
 ### Install
 
 ```sh
-pip install graphrag_sdk
+pip install graphrag_sdk[all]
+```
+
+or (if only OpenAI is required)
+
+```sh
+pip install graphrag_sdk[openai]
 ```
 
 ### Prerequisites

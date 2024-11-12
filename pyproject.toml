@@ -15,16 +15,23 @@ falkordb = "^1.0.9"
 typing-extensions = "^4.12.1"
 bs4 = "^0.0.2"
 pypdf = "^4.2.0"
-vertexai = "^1.49.0"
 backoff = "^2.2.1"
 python-abc = "^0.2.0"
 ratelimit = "^2.2.1"
 python-dotenv = "^1.0.1"
-openai = "^1.35.9"
 fix-busted-json = "^0.0.18"
-ollama = "^0.2.1"
 ipykernel = "^6.29.5"
-google-generativeai = "^0.8.1"
+vertexai = { version = "^1.49.0", optional = true } 
+ollama = { version = "^0.2.1", optional = true }
+openai = { version = "^1.35.9", optional = true }
+google-generativeai = { version = "^0.8.1", optional = true }
+
+[tool.poetry.extras]
+all = ["vertexai", "ollama", "openai", "google-generativeai"]
+ollama = ["ollama"]
+openai = ["openai"]
+vertexai = ["vertexai"]
+google-generativeai = ["google-generativeai"]
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
