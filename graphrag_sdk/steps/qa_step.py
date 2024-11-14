@@ -17,17 +17,19 @@ class QAStep(Step):
         self,
         chat_session: GenerativeModelChatSession,
         config: dict = None,
+        qa_prompt: str = None,
     ) -> None:
         self.config = config or {}
         self.chat_session = chat_session
+        self.qa_prompt = qa_prompt
 
     def run(self, question: str, cypher: str, context: str):
-
-        qa_prompt = GRAPH_QA_PROMPT.format(
+        graph_qa_prompt = self.qa_prompt or GRAPH_QA_SYSTEM
+        qa_prompt = graph_qa_prompt.format(
             context=context, cypher=cypher, question=question
         )
 
-        # logger.debug(f"QA Prompt: {qa_prompt}")
+        logger.debug(f"QA Prompt: {qa_prompt}")
         qa_response = self.chat_session.send_message(qa_prompt)
 
         return qa_response.text

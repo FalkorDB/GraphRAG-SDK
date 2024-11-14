@@ -134,9 +134,11 @@ class KnowledgeGraph:
         for key in self.__dict__.keys():
             setattr(self, key, None)
 
-    def chat_session(self) -> ChatSession:
-        return ChatSession(self._model_config, self.ontology, self.graph)
-
+    def chat_session(self, cypher_system_instruction: str = None, qa_system_instruction: str = None,
+                cypher_gen_prompt: str = None, qa_prompt: str = None) -> ChatSession:
+        chat_session = ChatSession(self._model_config, self.ontology, self.graph, cypher_system_instruction,
+                                   qa_system_instruction, cypher_gen_prompt, qa_prompt)
+        return chat_session
     def add_node(self, entity: str, attributes: dict):
         """
         Add a node to the knowledge graph, checking if it matches the ontology

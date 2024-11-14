@@ -33,12 +33,14 @@ class GraphQueryGenerationStep(Step):
         chat_session: GenerativeModelChatSession,
         config: dict = None,
         last_answer: str = None,
+        cypher_prompt: str = None,
     ) -> None:
         self.ontology = ontology
         self.config = config or {}
         self.graph = graph
         self.chat_session = chat_session
         self.last_answer = last_answer
+        self.cypher_prompt = cypher_prompt
 
     def run(self, question: str, retries: int = 5):
         error = False
@@ -46,15 +48,18 @@ class GraphQueryGenerationStep(Step):
         cypher = ""
         while error is not None and retries > 0:
             try:
-                cypher_prompt = (
-                    (CYPHER_GEN_PROMPT.format(question=question) 
-                    if self.last_answer is None
-                    else CYPHER_GEN_PROMPT_WITH_HISTORY.format(question=question, last_answer=self.last_answer))
-                    if error is False
-                    else CYPHER_GEN_PROMPT_WITH_ERROR.format(
-                        question=question, error=error
-                    )
-                )
+                if self.cypher_prompt is not None:
+                    cypher_prompt = self.cypher_prompt
+                else:
+                    cypher_prompt = (
+                        (CYPHER_GEN_PROMPT.format(question=question) 
+                        if self.last_answer is None
+                        else CYPHER_GEN_PROMPT_WITH_HISTORY.format(question=question, last_answer=self.last_answer))
+                        if error is False
+                        else CYPHER_GEN_PROMPT_WITH_ERROR.format(
+                            question=question, error=error
+                        )
+                    )   
                 logger.debug(f"Cypher Prompt: {cypher_prompt}")
                 cypher_statement_response = self.chat_session.send_message(
                     cypher_prompt,

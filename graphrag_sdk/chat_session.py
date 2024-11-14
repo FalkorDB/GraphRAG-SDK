@@ -25,7 +25,9 @@ class ChatSession:
         >>> chat_session.send_message("What is the capital of France?")
     """
 
-    def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph):
+    def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph,
+                cypher_system_instruction: str = None, qa_system_instruction: str = None,
+                cypher_gen_prompt: str = None, qa_prompt: str = None):
         """
         Initializes a new ChatSession object.
 
@@ -44,13 +46,21 @@ class ChatSession:
         self.model_config = model_config
         self.graph = graph
         self.ontology = ontology
+        if cypher_system_instruction is None:
+            cypher_system_instruction = CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(ontology.to_json()))
+        else:
+            cypher_system_instruction = cypher_system_instruction + "\nOntology:\n" + str(ontology.to_json())
+        
+        self.cypher_prompt = cypher_gen_prompt
+        self.qa_prompt = qa_prompt
+        
         self.cypher_chat_session = (
             model_config.cypher_generation.with_system_instruction(
                 CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(ontology.to_json()))
             ).start_chat()
         )
         self.qa_chat_session = model_config.qa.with_system_instruction(
-            GRAPH_QA_SYSTEM
+            qa_system_instruction or GRAPH_QA_SYSTEM
         ).start_chat()
         self.last_answer = None
 
@@ -69,6 +79,7 @@ class ChatSession:
             chat_session=self.cypher_chat_session,
             ontology=self.ontology,
             last_answer=self.last_answer,
+            cypher_prompt=self.cypher_prompt,
         )
 
         (context, cypher) = cypher_step.run(message)
@@ -78,6 +89,7 @@ class ChatSession:
 
         qa_step = QAStep(
             chat_session=self.qa_chat_session,
+            qa_prompt=self.qa_prompt,
         )
 
         answer = qa_step.run(message, cypher, context)
