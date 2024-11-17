@@ -47,7 +47,9 @@ docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb
 Currently, this SDK supports the following LLMs API:
 
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
-* [google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-1.5-flash-001`
+* [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-1.5-flash-001`
+* [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
+* [Ollama](https://ollama.com/) Available only to the Q&A step. Ollama models are suitable for cases where the knowledge graph (KG) is predefined.
 
 Make sure that a `.env` file is present with all required credentials.
 
@@ -57,6 +59,9 @@ Make sure that a `.env` file is present with all required credentials.
    ```
    OPENAI_API_KEY="OPENAI_API_KEY"
    GOOGLE_API_KEY="GOOGLE_API_KEY"
+   AZURE_OPENAI_API_KEY = "AZURE_OPENAI_API_KEY"
+   AZURE_ENDPOINT = "AZURE_ENDPOINT"
+   AZURE_API_VERSION = "AZURE_API_VERSION"
    ```
   
    </details>
