@@ -59,9 +59,12 @@ Make sure that a `.env` file is present with all required credentials.
    ```
    OPENAI_API_KEY="OPENAI_API_KEY"
    GOOGLE_API_KEY="GOOGLE_API_KEY"
-   AZURE_OPENAI_API_KEY = "AZURE_OPENAI_API_KEY"
-   AZURE_ENDPOINT = "AZURE_ENDPOINT"
-   AZURE_API_VERSION = "AZURE_API_VERSION"
+   # API Key from Azure Portal
+   AZURE_OPENAI_API_KEY="AZURE_OPENAI_API_KEY"
+   # Endpoint format: https://{your-resource-name}.openai.azure.com
+   AZURE_ENDPOINT="AZURE_ENDPOINT"
+   # API Version (e.g., 2023-05-15)
+   AZURE_API_VERSION="AZURE_API_VERSION"
    ```
   
    </details>
