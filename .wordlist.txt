@@ -4,6 +4,7 @@ FalkorDB
 GraphRAG
 KnowledgeGraph
 OpenAI
+openai
 SDK
 github
 schemas
