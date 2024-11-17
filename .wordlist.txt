@@ -24,3 +24,4 @@ html
 https
 www
 faq
+Ollama
