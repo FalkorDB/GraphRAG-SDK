@@ -216,3 +216,6 @@ class OllamaChatSession(GenerativeModelChatSession):
             config['format'] = 'json'
         
         return config
+    
+    def delete_last_message(self):
+        self._chat_history = self._chat_history[:-2]

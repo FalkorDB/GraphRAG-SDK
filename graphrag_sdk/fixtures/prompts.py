@@ -441,9 +441,10 @@ RETURN m, s
 """
 
 CYPHER_GEN_PROMPT = """
-Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below:
+Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
 If you cannot generate a OpenCypher statement for any reason, return an empty string.
 Respect the order of the relationships, the arrows should always point from the "source" to the "target".
+Please think if your answer is a valid Cypher query, and correct it if it is not.
 
 Question: {question}
 """

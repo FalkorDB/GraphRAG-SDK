@@ -1,5 +1,6 @@
-from graphrag_sdk.models import GenerativeModel
 from graphrag_sdk.agents import Agent
+from graphrag_sdk.models import GenerativeModel
+from graphrag_sdk.models.model import OutputMethod
 from .orchestrator_runner import OrchestratorRunner
 from graphrag_sdk.fixtures.prompts import (
     ORCHESTRATOR_SYSTEM,
@@ -16,13 +17,12 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
 
-    _agents = []
-    _chat = None
-
     def __init__(self, model: GenerativeModel, backstory: str = ""):
         self._model = model
         self._backstory = backstory
-
+        self._agents = []
+        self._chat = None
+        
     def _get_chat(self):
         if self._chat is None:
             self._chat = self._model.with_system_instruction(

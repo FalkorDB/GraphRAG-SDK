@@ -117,3 +117,6 @@ class GeminiChatSession(GenerativeModelChatSession):
                 "temperature": 0
             }
         return self._model._generation_config
+    
+    def delete_last_message(self):
+        self._chat_session.history = self._chat_session.history[:-2]

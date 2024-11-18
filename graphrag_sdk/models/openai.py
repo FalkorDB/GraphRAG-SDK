@@ -106,3 +106,6 @@ class OpenAiChatSession(GenerativeModelChatSession):
             config['response_format'] = { "type": "json_object" }
         
         return config
+    
+    def delete_last_message(self):
+        self._history = self._history[:-2]
