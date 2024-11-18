@@ -119,4 +119,14 @@ class GeminiChatSession(GenerativeModelChatSession):
         return self._model._generation_config
     
     def delete_last_message(self):
-        self._chat_session.history = self._chat_session.history[:-2]
+        """
+        Deletes the last message exchange (user message and assistant response) from the chat history.
+        Preserves the system message if present.
+        
+        Note: Does nothing if the chat history is empty or contains only a system message.
+        """
+        if len(self._chat_session.history) >= 2:
+            self._chat_session.history = self._chat_session.history[:-2]
+        else:
+            self._chat_session.history = []
+

@@ -218,4 +218,20 @@ class OllamaChatSession(GenerativeModelChatSession):
         return config
     
     def delete_last_message(self):
-        self._chat_history = self._chat_history[:-2]
+        """
+        Deletes the last message exchange (user message and assistant response) from the chat history.
+        Preserves the system message if present.
+        
+        Note: Does nothing if the chat history is empty or contains only a system message.
+        """
+        # Keep at least the system message if present
+        min_length = 1 if self._model.system_instruction else 0
+        if len(self._chat_history) - 2 >= min_length:
+            self._chat_history = self._chat_history[:-2]
+        else:
+            # Reset to initial state with just system message if present
+            self._chat_history = (
+            [{"role": "system", "content": self._model.system_instruction}]
+            if self._model.system_instruction is not None
+            else []
+        )
