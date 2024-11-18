@@ -49,9 +49,11 @@ Currently, this SDK supports the following LLMs API:
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
 * [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-1.5-flash-001`
 * [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
-* [Ollama](https://ollama.com/) Available only to the Q&A step. Ollama models are suitable for cases where the knowledge graph (KG) is predefined.
-
-Make sure that a `.env` file is present with all required credentials.
+* [Ollama](https://ollama.com/) Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for cases where the knowledge graph (KG) is predefined.
+  
+    To get started with Ollama:
+    1. Install Ollama from https://ollama.com/
+    2. Pull your preferred model: `ollama pull llama3`
 
    <details>
      <summary>.env</summary>
