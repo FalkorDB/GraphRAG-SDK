@@ -123,13 +123,14 @@ class OpenAiChatSession(GenerativeModelChatSession):
             [
                 {"role": "system", "content": "System message"},
             ]
-        
+
         Note: Does nothing if the chat history is empty or contains only a system message.
         """
         # Keep at least the system message if present
         min_length = 1 if self._model.system_instruction else 0
         if len(self._history) - 2 >= min_length:
-            self._history = self._history[:-2]
+            self._history.pop()
+            self._history.pop()
         else:
             # Reset to initial state with just system message if present
             self._history = (

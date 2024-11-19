@@ -239,7 +239,8 @@ class OllamaChatSession(GenerativeModelChatSession):
         # Keep at least the system message if present
         min_length = 1 if self._model.system_instruction else 0
         if len(self._chat_history) - 2 >= min_length:
-            self._chat_history = self._chat_history[:-2]
+            self._chat_history.pop()
+            self._chat_history.pop()
         else:
             # Reset to initial state with just system message if present
             self._chat_history = (
