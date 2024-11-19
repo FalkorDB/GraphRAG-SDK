@@ -26,3 +26,4 @@ https
 www
 faq
 Ollama
+ollama
