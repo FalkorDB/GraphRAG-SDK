@@ -106,3 +106,35 @@ class OpenAiChatSession(GenerativeModelChatSession):
             config['response_format'] = { "type": "json_object" }
         
         return config
+    
+    def delete_last_message(self):
+        """
+        Deletes the last message exchange (user message and assistant response) from the chat history.
+        Preserves the system message if present.
+        
+        Example:
+            Before:
+            [
+                {"role": "system", "content": "System message"},
+                {"role": "user", "content": "User message"},
+                {"role": "assistant", "content": "Assistant response"},
+            ]
+            After:
+            [
+                {"role": "system", "content": "System message"},
+            ]
+
+        Note: Does nothing if the chat history is empty or contains only a system message.
+        """
+        # Keep at least the system message if present
+        min_length = 1 if self._model.system_instruction else 0
+        if len(self._history) - 2 >= min_length:
+            self._history.pop()
+            self._history.pop()
+        else:
+            # Reset to initial state with just system message if present
+            self._history = (
+            [{"role": "system", "content": self._model.system_instruction}]
+            if self._model.system_instruction is not None
+            else []
+        )
