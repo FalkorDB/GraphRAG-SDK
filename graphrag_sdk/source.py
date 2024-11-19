@@ -1,5 +1,5 @@
-from typing import Iterator
 from abc import ABC, abstractmethod
+from typing import Iterator, Optional
 from graphrag_sdk.document import Document
 from graphrag_sdk.document_loaders import (
     PDFLoader,
@@ -10,19 +10,17 @@ from graphrag_sdk.document_loaders import (
     JSONLLoader,
 )
 
-
-def Source(path: str, instruction: str | None = None) -> "AbstractSource":
+def Source(path: str, instruction: Optional[str] = None) -> "AbstractSource":
     """
     Creates a source object
 
-    Parameters:
+    Args:
         path (str): path to source
-        instruction (str): source specific instruction for the LLM
+        instruction (Optional[str]): source specific instruction for the LLM
 
     Returns:
         AbstractSource: source
     """
-
     if not isinstance(path, str) or path == "":
         raise Exception("Invalid argument, path should be a none empty string.")
 

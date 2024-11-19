@@ -10,10 +10,9 @@ class TextLoader():
         """
         Initialize loader
 
-        Parameters:
+        Args:
             path (str): path to Text.
         """
-
         self.path = path
 
     def load(self) -> Iterator[Document]:
@@ -23,7 +22,6 @@ class TextLoader():
         Returns:
             Iterator[Document]: document iterator
         """
-
         with open(self.path, 'r') as f:
             yield Document(
                 f.read()

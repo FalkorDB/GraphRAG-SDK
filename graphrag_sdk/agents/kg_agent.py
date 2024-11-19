@@ -1,5 +1,6 @@
-from graphrag_sdk.kg import KnowledgeGraph
 from .agent import Agent
+from typing import Optional
+from graphrag_sdk.kg import KnowledgeGraph
 from graphrag_sdk.models import GenerativeModelChatSession
 
 
@@ -18,9 +19,8 @@ class KGAgent(Agent):
         >>> kg = KnowledgeGraph("test_kg", ontology, model)
         >>> agent = KGAgent("test_agent", kg, "This is a test agent.")
         >>> orchestrator.register_agent(agent)
-
     """
-
+    
     _interface = [
         {
             "name": "prompt",
@@ -56,11 +56,11 @@ class KGAgent(Agent):
         return self._agent_id
 
     @agent_id.setter
-    def agent_id(self, value):
+    def agent_id(self, value) -> None:
         """
         Sets the agent ID.
 
-        Parameters:
+        Args:
         value (str): The ID of the agent.
 
         Returns:
@@ -79,11 +79,11 @@ class KGAgent(Agent):
         return self._introduction
 
     @introduction.setter
-    def introduction(self, value):
+    def introduction(self, value) -> None:
         """
         Sets the introduction of the agent.
 
-        Parameters:
+        Args:
         value (str): The introduction of the agent.
 
         Returns:
@@ -116,7 +116,7 @@ class KGAgent(Agent):
         """
         Sets the knowledge graph for the agent.
 
-        Parameters:
+        Args:
             value (KnowledgeGraph): The knowledge graph to be set.
 
         Returns:
