@@ -112,6 +112,18 @@ class OpenAiChatSession(GenerativeModelChatSession):
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
         
+        Example:
+            Before:
+            [
+                {"role": "system", "content": "System message"},
+                {"role": "user", "content": "User message"},
+                {"role": "assistant", "content": "Assistant response"},
+            ]
+            After:
+            [
+                {"role": "system", "content": "System message"},
+            ]
+        
         Note: Does nothing if the chat history is empty or contains only a system message.
         """
         # Keep at least the system message if present
