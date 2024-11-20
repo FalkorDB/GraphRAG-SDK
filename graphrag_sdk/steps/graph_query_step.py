@@ -4,9 +4,7 @@ from graphrag_sdk.models import (
     GenerativeModelChatSession,
 )
 from graphrag_sdk.fixtures.prompts import (
-    CYPHER_GEN_SYSTEM,
     CYPHER_GEN_PROMPT,
-    CYPHER_GEN_PROMPT_WITH_ERROR,
     CYPHER_GEN_PROMPT_WITH_HISTORY,
 )
 import logging
@@ -42,11 +40,9 @@ class GraphQueryGenerationStep(Step):
         self.last_answer = last_answer
         self.cypher_prompt = cypher_prompt
 
-    def run(self, question: str, retries: int = 5):
-        error = False
-
+    def run(self, question: str, retries: int = 10):
         cypher = ""
-        while error is not None and retries > 0:
+        for i in range(retries):
             try:
                 if self.cypher_prompt is not None:
                     cypher_prompt = self.cypher_prompt
@@ -55,10 +51,6 @@ class GraphQueryGenerationStep(Step):
                         (CYPHER_GEN_PROMPT.format(question=question) 
                         if self.last_answer is None
                         else CYPHER_GEN_PROMPT_WITH_HISTORY.format(question=question, last_answer=self.last_answer))
-                        if error is False
-                        else CYPHER_GEN_PROMPT_WITH_ERROR.format(
-                            question=question, error=error
-                        )
                     )   
                 logger.debug(f"Cypher Prompt: {cypher_prompt}")
                 cypher_statement_response = self.chat_session.send_message(
@@ -72,7 +64,6 @@ class GraphQueryGenerationStep(Step):
                     return (None, None)
 
                 validation_errors = validate_cypher(cypher, self.ontology)
-                # print(f"Is valid: {is_valid}")
                 if validation_errors is not None:
                     raise Exception("\n".join(validation_errors))
 
@@ -87,6 +78,6 @@ class GraphQueryGenerationStep(Step):
             except Exception as e:
                 logger.debug(f"Error: {e}")
                 error = e
-                retries -= 1
+                self.chat_session.delete_last_message()
 
         raise Exception("Failed to generate Cypher query: " + str(error))

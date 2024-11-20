@@ -4,6 +4,7 @@ FalkorDB
 GraphRAG
 KnowledgeGraph
 OpenAI
+openai
 SDK
 github
 schemas
@@ -24,3 +25,5 @@ html
 https
 www
 faq
+Ollama
+ollama
