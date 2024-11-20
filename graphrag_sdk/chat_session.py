@@ -56,12 +56,12 @@ class ChatSession:
         
         self.cypher_chat_session = (
             model_config.cypher_generation.with_system_instruction(
-                CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(ontology.to_json()))
+                cypher_system_instruction
             ).start_chat()
         )
         self.qa_chat_session = model_config.qa.with_system_instruction(
-            qa_system_instruction or GRAPH_QA_SYSTEM
-        ).start_chat()
+                qa_system_instruction or GRAPH_QA_SYSTEM
+            ).start_chat()
         self.last_answer = None
 
     def send_message(self, message: str):
