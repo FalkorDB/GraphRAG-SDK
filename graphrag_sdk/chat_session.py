@@ -1,9 +1,8 @@
+from falkordb import Graph
 from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.steps.qa_step import QAStep
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
-from graphrag_sdk.steps.qa_step import QAStep
-from graphrag_sdk.fixtures.prompts import GRAPH_QA_SYSTEM, CYPHER_GEN_SYSTEM
-from falkordb import Graph
 
 
 class ChatSession:
@@ -26,8 +25,8 @@ class ChatSession:
     """
 
     def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph,
-                cypher_system_instruction: str = None, qa_system_instruction: str = None,
-                cypher_gen_prompt: str = None, qa_prompt: str = None):
+                cypher_system_instruction: str, qa_system_instruction: str,
+                cypher_gen_prompt: str, qa_prompt: str, cypher_gen_prompt_history: str):
         """
         Initializes a new ChatSession object.
 
@@ -46,13 +45,12 @@ class ChatSession:
         self.model_config = model_config
         self.graph = graph
         self.ontology = ontology
-        if cypher_system_instruction is None:
-            cypher_system_instruction = CYPHER_GEN_SYSTEM.replace("#ONTOLOGY", str(ontology.to_json()))
-        else:
-            cypher_system_instruction = cypher_system_instruction + "\nOntology:\n" + str(ontology.to_json())
+        cypher_system_instruction = cypher_system_instruction.replace("#ONTOLOGY", str(ontology.to_json()))
+
         
         self.cypher_prompt = cypher_gen_prompt
         self.qa_prompt = qa_prompt
+        self.cypher_prompt_with_history = cypher_gen_prompt_history
         
         self.cypher_chat_session = (
             model_config.cypher_generation.with_system_instruction(
@@ -60,7 +58,7 @@ class ChatSession:
             ).start_chat()
         )
         self.qa_chat_session = model_config.qa.with_system_instruction(
-                qa_system_instruction or GRAPH_QA_SYSTEM
+                qa_system_instruction
             ).start_chat()
         self.last_answer = None
 
@@ -80,6 +78,7 @@ class ChatSession:
             ontology=self.ontology,
             last_answer=self.last_answer,
             cypher_prompt=self.cypher_prompt,
+            cypher_prompt_with_history=self.cypher_prompt_with_history
         )
 
         (context, cypher) = cypher_step.run(message)

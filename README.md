@@ -170,9 +170,9 @@ After generating the initial ontology, you can review it and make any necessary 
 
 Once you are satisfied with the ontology, you can proceed to use it for creating and managing your Knowledge Graph (KG).
 
-### Knowledge Graph
+### Knowledge Graph Agent
 
-Now, you can use the SDK to create a Knowledge Graph (KG) from your sources and ontology.
+Now, you can use the SDK to create a Knowledge Graph (KG) from your sources and ontology for Q&A.
 
 ```python
 # After approving the ontology, load it from disk.
@@ -190,6 +190,45 @@ kg.process_sources(sources)
 ```
 
 You can update the KG at any time by processing more sources with the `process_sources` method.
+
+#### Configurable Prompts
+When creating your Knowledge Graph (KG) agent, you can customize the prompts to tailor its behavior. This step is optional but can enhance functionality.
+
+There are five types of prompts:
+
+1. **`cypher_system_instruction`**  
+   - System instructions for the Cypher generation step.  
+   - **Note:** Ensure your prompt includes `#ONTOLOGY`.
+
+2. **`qa_system_instruction`**  
+   - System instructions for the Q&A step.
+
+3. **`cypher_gen_prompt`**  
+   - The prompt used during the Cypher generation step.  
+   - **Note:** Include `{question}` in your prompt.
+
+4. **`cypher_gen_prompt_history`**  
+   - The prompt for Cypher generation when history needs to be considered.  
+   - **Note:** Include `{question}` and `{last_answer}` in your prompt.
+
+5. **`qa_prompt`**  
+   - The prompt used during the Q&A step.  
+   - **Note:** Include `{question}`, `{context}`, and `{cypher}` in your prompt.
+
+Here’s an example configuration:
+
+```python
+kg = KnowledgeGraph(
+    name="kg_name",
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+    ontology=ontology,
+    cypher_system_instruction=cypher_system_instruction,
+    qa_system_instruction=qa_system_instruction,
+    cypher_gen_prompt=cypher_gen_prompt,
+    cypher_gen_prompt_history=cypher_gen_prompt_history,
+    qa_prompt=qa_prompt
+)
+```
 
 ### Graph RAG
 

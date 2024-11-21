@@ -1,16 +1,14 @@
 import logging
-from graphrag_sdk.ontology import Ontology
 from falkordb import FalkorDB
+from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
+from graphrag_sdk.chat_session import ChatSession
+from graphrag_sdk.attribute import AttributeType, Attribute
+from graphrag_sdk.helpers import map_dict_to_cypher_properties
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.steps.extract_data_step import ExtractDataStep
-from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
-from graphrag_sdk.fixtures.prompts import GRAPH_QA_SYSTEM, CYPHER_GEN_SYSTEM
-from graphrag_sdk.steps.qa_step import QAStep
-from graphrag_sdk.chat_session import ChatSession
-from graphrag_sdk.helpers import map_dict_to_cypher_properties
-from graphrag_sdk.attribute import AttributeType, Attribute
-from graphrag_sdk.models import GenerativeModelChatSession
+from graphrag_sdk.fixtures.prompts import (GRAPH_QA_SYSTEM, CYPHER_GEN_SYSTEM,
+                                CYPHER_GEN_PROMPT, GRAPH_QA_PROMPT, CYPHER_GEN_PROMPT_WITH_HISTORY)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -31,6 +29,11 @@ class KnowledgeGraph:
         port: int = 6379,
         username: str | None = None,
         password: str | None = None,
+        cypher_system_instruction: str = None,
+        qa_system_instruction: str = None,
+        cypher_gen_prompt: str = None,
+        qa_prompt: str = None,
+        cypher_gen_prompt_history: str = None,
     ):
         """
         Initialize Knowledge Graph
@@ -43,6 +46,11 @@ class KnowledgeGraph:
             username (str|None): FalkorDB username.
             password (str|None): FalkorDB password.
             ontology (Ontology|None): Ontology to use.
+            cypher_system_instruction (str|None): Cypher system instruction. Make sure you have #ONTOLOGY in the instruction.
+            qa_system_instruction (str|None): QA system instruction.
+            cypher_gen_prompt (str|None): Cypher generation prompt. Make sure you have {question} in the prompt.
+            qa_prompt (str|None): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.
+            cypher_gen_prompt_history (str|None): Cypher generation prompt with history. Make sure you have {question} and {last_answer} in the prompt.
         """
 
         if not isinstance(name, str) or name == "":
@@ -56,6 +64,11 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._model_config = model_config
         self.sources = set([])
+        self.cypher_system_instruction = cypher_system_instruction or CYPHER_GEN_SYSTEM
+        self.qa_system_instruction = qa_system_instruction or GRAPH_QA_SYSTEM
+        self.cypher_gen_prompt = cypher_gen_prompt or CYPHER_GEN_PROMPT
+        self.qa_prompt = qa_prompt or GRAPH_QA_PROMPT
+        self.cypher_gen_prompt_history = cypher_gen_prompt_history or CYPHER_GEN_PROMPT_WITH_HISTORY
 
     # Attributes
 
@@ -134,10 +147,9 @@ class KnowledgeGraph:
         for key in self.__dict__.keys():
             setattr(self, key, None)
 
-    def chat_session(self, cypher_system_instruction: str = None, qa_system_instruction: str = None,
-                cypher_gen_prompt: str = None, qa_prompt: str = None) -> ChatSession:
-        chat_session = ChatSession(self._model_config, self.ontology, self.graph, cypher_system_instruction,
-                                   qa_system_instruction, cypher_gen_prompt, qa_prompt)
+    def chat_session(self) -> ChatSession:
+        chat_session = ChatSession(self._model_config, self.ontology, self.graph, self.cypher_system_instruction,
+                                   self.qa_system_instruction, self.cypher_gen_prompt, self.qa_prompt, self.cypher_gen_prompt_history)
         return chat_session
     def add_node(self, entity: str, attributes: dict):
         """

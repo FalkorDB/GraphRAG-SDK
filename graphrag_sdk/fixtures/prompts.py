@@ -442,7 +442,7 @@ RETURN m, s
 
 CYPHER_GEN_PROMPT = """
 Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
-If you cannot generate a OpenCypher statement for any reason, return an empty string.
+If you cannot generate a OpenCypher statement for any reason, return an empty response.
 Respect the order of the relationships, the arrows should always point from the "source" to the "target".
 Please think if your answer is a valid Cypher query, and correct it if it is not.
 
@@ -482,8 +482,8 @@ The information part contains the provided information that you must use to cons
 The provided information is authoritative, you must never doubt it or try to use your internal knowledge to correct it.
 Make the answer sound as a response to the question. Do not mention that you based the result on the given information.
 Do not answer more than the question asks for.
-Here is an example:
 
+Here is an example:
 Question: Which managers own Neo4j stocks?
 Context:[manager:CTL LLC, manager:JANE STREET GROUP LLC]
 Helpful Answer: CTL LLC, JANE STREET GROUP LLC owns Neo4j stocks.

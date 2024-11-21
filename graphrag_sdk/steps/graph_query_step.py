@@ -1,19 +1,15 @@
+import logging
+from falkordb import Graph
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models import (
     GenerativeModelChatSession,
 )
-from graphrag_sdk.fixtures.prompts import (
-    CYPHER_GEN_PROMPT,
-    CYPHER_GEN_PROMPT_WITH_HISTORY,
-)
-import logging
 from graphrag_sdk.helpers import (
     extract_cypher,
     validate_cypher,
     stringify_falkordb_response,
 )
-from falkordb import Graph
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -32,6 +28,7 @@ class GraphQueryGenerationStep(Step):
         config: dict = None,
         last_answer: str = None,
         cypher_prompt: str = None,
+        cypher_prompt_with_history: str = None,
     ) -> None:
         self.ontology = ontology
         self.config = config or {}
@@ -39,19 +36,17 @@ class GraphQueryGenerationStep(Step):
         self.chat_session = chat_session
         self.last_answer = last_answer
         self.cypher_prompt = cypher_prompt
+        self.cypher_prompt_with_history = cypher_prompt_with_history
 
     def run(self, question: str, retries: int = 10):
         cypher = ""
         for i in range(retries):
             try:
-                if self.cypher_prompt is not None:
-                    cypher_prompt = self.cypher_prompt
-                else:
-                    cypher_prompt = (
-                        (CYPHER_GEN_PROMPT.format(question=question) 
-                        if self.last_answer is None
-                        else CYPHER_GEN_PROMPT_WITH_HISTORY.format(question=question, last_answer=self.last_answer))
-                    )   
+                cypher_prompt = (
+                    (self.cypher_prompt.format(question=question) 
+                    if self.last_answer is None
+                    else self.cypher_prompt_with_history.format(question=question, last_answer=self.last_answer))
+                )   
                 logger.debug(f"Cypher Prompt: {cypher_prompt}")
                 cypher_statement_response = self.chat_session.send_message(
                     cypher_prompt,
