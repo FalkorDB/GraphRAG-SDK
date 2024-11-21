@@ -27,4 +27,4 @@ www
 faq
 Ollama
 ollama
-Cyhper
+Cypher
