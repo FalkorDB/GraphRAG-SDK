@@ -29,7 +29,7 @@ google-generativeai = { version = "^0.8.1", optional = true }
 litellm = { version = "^1.52.14", optional = true }
 
 [tool.poetry.extras]
-all = ["vertexai", "ollama", "openai", "google-generativeai"]
+all = ["vertexai", "ollama", "openai", "google-generativeai", "litellm"]
 ollama = ["ollama"]
 openai = ["openai"]
 vertexai = ["vertexai"]
