@@ -61,6 +61,7 @@ class ChatSession:
                 qa_system_instruction
             ).start_chat()
         self.last_answer = None
+        self.context = []
 
     def send_message(self, message: str):
         """
@@ -85,6 +86,8 @@ class ChatSession:
 
         if not cypher or len(cypher) == 0:
             return "I am sorry, I could not find the answer to your question"
+        else:
+            self.context.append({"message": message, "cypher": cypher, "context": context})
 
         qa_step = QAStep(
             chat_session=self.qa_chat_session,

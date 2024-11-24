@@ -64,11 +64,11 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._model_config = model_config
         self.sources = set([])
-        self.cypher_system_instruction = cypher_system_instruction or CYPHER_GEN_SYSTEM
-        self.qa_system_instruction = qa_system_instruction or GRAPH_QA_SYSTEM
-        self.cypher_gen_prompt = cypher_gen_prompt or CYPHER_GEN_PROMPT
-        self.qa_prompt = qa_prompt or GRAPH_QA_PROMPT
-        self.cypher_gen_prompt_history = cypher_gen_prompt_history or CYPHER_GEN_PROMPT_WITH_HISTORY
+        self.cypher_system_instruction = CYPHER_GEN_SYSTEM if cypher_system_instruction is None else cypher_system_instruction
+        self.qa_system_instruction = GRAPH_QA_SYSTEM if qa_system_instruction is None else qa_system_instruction
+        self.cypher_gen_prompt = CYPHER_GEN_PROMPT if cypher_gen_prompt is None else cypher_gen_prompt
+        self.qa_prompt = GRAPH_QA_PROMPT if qa_prompt is None else qa_prompt
+        self.cypher_gen_prompt_history = CYPHER_GEN_PROMPT_WITH_HISTORY if cypher_gen_prompt_history is None else cypher_gen_prompt_history
 
     # Attributes
 
