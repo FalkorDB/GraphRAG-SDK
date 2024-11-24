@@ -91,6 +91,7 @@ class TestKGOllama(unittest.TestCase):
 
         chat = self.kg.chat_session()
         answer = chat.send_message("Count the number of actors acted in a movie?")
+        answer = answer['response']
 
         logger.info(f"Answer: {answer}")
 

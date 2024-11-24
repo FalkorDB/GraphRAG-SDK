@@ -1,4 +1,5 @@
 import logging
+import warnings
 from falkordb import FalkorDB
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
@@ -64,11 +65,44 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._model_config = model_config
         self.sources = set([])
-        self.cypher_system_instruction = CYPHER_GEN_SYSTEM if cypher_system_instruction is None else cypher_system_instruction
-        self.qa_system_instruction = GRAPH_QA_SYSTEM if qa_system_instruction is None else qa_system_instruction
-        self.cypher_gen_prompt = CYPHER_GEN_PROMPT if cypher_gen_prompt is None else cypher_gen_prompt
-        self.qa_prompt = GRAPH_QA_PROMPT if qa_prompt is None else qa_prompt
-        self.cypher_gen_prompt_history = CYPHER_GEN_PROMPT_WITH_HISTORY if cypher_gen_prompt_history is None else cypher_gen_prompt_history
+
+        if cypher_system_instruction is None:
+            cypher_system_instruction = CYPHER_GEN_SYSTEM
+        else:
+            if "{ontology}" not in cypher_system_instruction:
+                warnings.warn("Cypher system instruction should contain {ontology}", category=UserWarning)
+
+        if qa_system_instruction is None:
+            qa_system_instruction = GRAPH_QA_SYSTEM
+
+        if cypher_gen_prompt is None:
+            cypher_gen_prompt = CYPHER_GEN_PROMPT
+        else:
+            if "{question}" not in cypher_gen_prompt:
+                raise Exception("Cypher generation prompt should contain {question}")
+
+        if qa_prompt is None:
+            qa_prompt = GRAPH_QA_PROMPT
+        else:
+            if "{question}" not in qa_prompt or "{context}" not in qa_prompt:
+                raise Exception("QA prompt should contain {question} and {context}")
+            if "{cypher}" not in qa_prompt:
+                warnings.warn("QA prompt should contain {cypher}", category=UserWarning)
+
+        if cypher_gen_prompt_history is None:
+            cypher_gen_prompt_history = CYPHER_GEN_PROMPT_WITH_HISTORY
+        else:
+            if "{question}" not in cypher_gen_prompt_history:
+                raise Exception("Cypher generation prompt with history should contain {question}")
+            if "{last_answer}" not in cypher_gen_prompt_history:
+                warnings.warn("Cypher generation prompt with history should contain {last_answer}", category=UserWarning)
+
+        # Assign the validated values
+        self.cypher_system_instruction = cypher_system_instruction
+        self.qa_system_instruction = qa_system_instruction
+        self.cypher_gen_prompt = cypher_gen_prompt
+        self.qa_prompt = qa_prompt
+        self.cypher_gen_prompt_history = cypher_gen_prompt_history
 
     # Attributes
 

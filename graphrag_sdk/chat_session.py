@@ -61,7 +61,6 @@ class ChatSession:
                 qa_system_instruction
             ).start_chat()
         self.last_answer = None
-        self.context = []
 
     def send_message(self, message: str):
         """
@@ -71,7 +70,11 @@ class ChatSession:
             message (str): The message to send.
 
         Returns:
-            str: The response to the message.
+            dict: The response to the message in the following format:
+                    {"question": message, 
+                    "response": answer, 
+                    "context": context, 
+                    "cypher": cypher}
         """
         cypher_step = GraphQueryGenerationStep(
             graph=self.graph,
@@ -86,8 +89,6 @@ class ChatSession:
 
         if not cypher or len(cypher) == 0:
             return "I am sorry, I could not find the answer to your question"
-        else:
-            self.context.append({"message": message, "cypher": cypher, "context": context})
 
         qa_step = QAStep(
             chat_session=self.qa_chat_session,
@@ -96,4 +97,10 @@ class ChatSession:
 
         answer = qa_step.run(message, cypher, context)
         self.last_answer = answer
-        return answer
+        
+        return {
+            "question": message, 
+            "response": answer, 
+            "context": context, 
+            "cypher": cypher
+            }
