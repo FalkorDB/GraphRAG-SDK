@@ -198,7 +198,7 @@ There are five types of prompts:
 
 1. **`cypher_system_instruction`**  
    - System instructions for the Cypher generation step.  
-   - **Note:** Ensure your prompt includes `#ONTOLOGY`.
+   - **Note:** Ensure your prompt includes `{ontology}`.
 
 2. **`qa_system_instruction`**  
    - System instructions for the Q&A step.

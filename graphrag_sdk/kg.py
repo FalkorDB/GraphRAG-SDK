@@ -46,7 +46,7 @@ class KnowledgeGraph:
             username (str|None): FalkorDB username.
             password (str|None): FalkorDB password.
             ontology (Ontology|None): Ontology to use.
-            cypher_system_instruction (str|None): Cypher system instruction. Make sure you have #ONTOLOGY in the instruction.
+            cypher_system_instruction (str|None): Cypher system instruction. Make sure you have {ontology} in the instruction.
             qa_system_instruction (str|None): QA system instruction.
             cypher_gen_prompt (str|None): Cypher generation prompt. Make sure you have {question} in the prompt.
             qa_prompt (str|None): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.

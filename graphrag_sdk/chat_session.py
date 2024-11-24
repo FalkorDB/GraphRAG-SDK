@@ -45,7 +45,7 @@ class ChatSession:
         self.model_config = model_config
         self.graph = graph
         self.ontology = ontology
-        cypher_system_instruction = cypher_system_instruction.replace("#ONTOLOGY", str(ontology.to_json()))
+        cypher_system_instruction = cypher_system_instruction.format(ontology=str(ontology.to_json()))
 
         
         self.cypher_prompt = cypher_gen_prompt

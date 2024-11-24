@@ -429,7 +429,7 @@ Single-Pair minimal-weight paths: Find minimal-weight paths between a pair of en
 Single-Source minimal-weight paths: Find minimal-weight paths from a given source entity using algo.SSpaths().
 
 Ontology:
-#ONTOLOGY
+{ontology}
 
 
 For example, given the question "Which managers own Neo4j stocks?", the OpenCypher statement should look like this:
