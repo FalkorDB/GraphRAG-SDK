@@ -1,24 +1,19 @@
+import logging
+import unittest
+from json import loads
 from dotenv import load_dotenv
-
-load_dotenv()
-from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.entity import Entity
 from graphrag_sdk.relation import Relation
+from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.agents.kg_agent import KGAgent
+from graphrag_sdk.orchestrator import Orchestrator
 from graphrag_sdk.attribute import Attribute, AttributeType
-import unittest
 from graphrag_sdk.models.gemini import GeminiGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
-from graphrag_sdk.orchestrator import Orchestrator
-from graphrag_sdk.agents.kg_agent import KGAgent
-import vertexai
-import os
-import logging
-from json import loads
 
+load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-vertexai.init(project=os.getenv("PROJECT_ID"), location=os.getenv("REGION"))
 
 
 class TestMultiAgent(unittest.TestCase):

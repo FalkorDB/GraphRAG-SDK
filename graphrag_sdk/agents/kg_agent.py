@@ -136,7 +136,7 @@ class KGAgent(Agent):
 
         """
         output = self.chat_session.send_message(params["prompt"])
-        return output
+        return output['response']
 
     def __repr__(self):
         """
