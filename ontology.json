@@ -1,0 +1,199 @@
+{
+  "entities": [
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "nickname",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FightEvent",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Bout",
+      "attributes": [
+        {
+          "name": "weight_class",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "round",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "time",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "time_format",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "referee",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "FOUGHT_IN",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Bout"
+      },
+      "attributes": [
+        {
+          "name": "result",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "knockdowns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "significant_strikes",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "significant_strikes_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "significant_strikes_percentage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_strikes",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_strikes_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "takedowns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "takedowns_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "takedown_percentage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "submissions_attempted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "passes",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "reversals",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "PART_OF_EVENT",
+      "source": {
+        "label": "Bout"
+      },
+      "target": {
+        "label": "FightEvent"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Bout"
+      },
+      "target": {
+        "label": "FightEvent"
+      },
+      "attributes": []
+    }
+  ]
+}
