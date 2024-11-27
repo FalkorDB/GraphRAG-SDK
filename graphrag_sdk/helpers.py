@@ -124,11 +124,9 @@ def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology
     not_found_relation_labels = []
     relation_labels = re.findall(r"\[:(.*?)\]", cypher)
     for label in relation_labels:
-        label = re.split(r"\d", label)[0].strip()
-        label = label.split(".")[0].strip() if "." in label else label
+        label = label.split("*")[0].strip() if "*" in label else label
         label = label.split(":")[1] if ":" in label else label
         label = label.split("{")[0].strip() if "{" in label else label
-        label = label.split("*")[0].strip() if "*" in label else label
         if label not in [relation.label for relation in ontology.relations]:
             not_found_relation_labels.append(label)
 
