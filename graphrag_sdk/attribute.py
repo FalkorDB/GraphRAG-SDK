@@ -14,6 +14,7 @@ class AttributeType:
     STRING = "string"
     NUMBER = "number"
     BOOLEAN = "boolean"
+    LIST = "list"
 
     @staticmethod
     def from_string(txt: str):
@@ -35,6 +36,8 @@ class AttributeType:
             return AttributeType.NUMBER
         if txt.lower() == AttributeType.BOOLEAN:
             return AttributeType.BOOLEAN
+        if txt.lower() == AttributeType.LIST:
+            return AttributeType.LIST
         raise Exception(f"Invalid attribute type: {txt}")
 
 
@@ -121,6 +124,7 @@ class Attribute:
             AttributeType.STRING,
             AttributeType.NUMBER,
             AttributeType.BOOLEAN,
+            AttributeType.LIST,
         ]:
             raise Exception(f"Invalid attribute type: {attr_type}")
 
