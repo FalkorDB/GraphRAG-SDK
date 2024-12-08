@@ -1,3 +1,6 @@
+import os
+import logging
+from ollama import Client
 from typing import Optional
 from litellm import completion
 from .model import (
@@ -9,8 +12,10 @@ from .model import (
     GenerativeModelChatSession,
 )
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) 
 
-class LiteLLMGenerativeModel(GenerativeModel):
+class LiteModel(GenerativeModel):
     """
     A generative model that interfaces with the LiteLLM for chat completions.
     """
@@ -22,16 +27,74 @@ class LiteLLMGenerativeModel(GenerativeModel):
         system_instruction: Optional[str] = None,
     ):
         """
-        Initialize the LiteLLMGenerativeModel with the required parameters.
+        Initialize the LiteModel with the required parameters.
 
         Args:
-            model_name (str): The name of the litellm model.
+            model_name (str): The name and the provider for the LiteLLM client.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): Instruction to guide the model.
         """
-        self.model_name = model_name
+
+        self.model = model_name
+        if "/" in model_name:
+            self.provider = model_name.split("/")[0]
+            self.model_name = model_name.split("/")[1]
+        else:
+            self.provider = "openai"
+            self.model_name = model_name
+        
+        self.credentials_validation()
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
+        
+    def credentials_validation(self) -> None:
+        """
+        Validate the credentials for the model.
+
+        Returns:
+            bool: True if the credentials are valid, False otherwise.
+        """
+        if self.provider == "openai":
+            if not os.getenv("OPENAI_API_KEY"):
+                raise ValueError("Missing OpenAI API key in the environment.")
+               
+        elif self.provider == "azure":
+            if not os.getenv("AZURE_API_KEY") or not os.getenv("AZURE_API_BASE") or not os.getenv("AZURE_API_VERSION"):
+                raise ValueError("Missing Azure-OpenAI credentials in the environment. See the Github Readme for more information.")
+        
+        elif self.provider == "gemini":
+            if not os.getenv("GEMINI_API_KEY"):
+                raise ValueError("Missing Gemini API key in the environment.")
+        
+        elif self.provider == "ollama":
+            self.ollama_client = Client()
+            self.check_and_pull_model()
+            
+    def check_and_pull_model(self) -> None:
+        """
+        Checks if the specified model is available locally, and pulls it if not.
+
+        Logs:
+            - Info: If the model is already available or after successfully pulling the model.
+            - Error: If there is a failure in pulling the model.
+
+        Raises:
+            Exception: If there is an error during the model pull process.
+        """
+        # Get the list of available models
+        response = self.ollama_client.list()  # This returns a dictionary
+        available_models = [model['name'] for model in response['models']]  # Extract model names
+
+        # Check if the model is already pulled
+        if self.model_name in available_models:
+            logger.info(f"The model '{self.model_name}' is already available.")
+        else:
+            logger.info(f"Pulling the model '{self.model_name}'...")
+            try:
+                self.ollama_client.pull(self.model_name)  # Pull the model
+                logger.info(f"Model '{self.model_name}' pulled successfully.")
+            except Exception as e:
+                logger.error(f"Failed to pull the model '{self.model_name}': {e}")
 
     def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
         """
@@ -56,7 +119,7 @@ class LiteLLMGenerativeModel(GenerativeModel):
         Returns:
             GenerativeModelChatSession: A new instance of the chat session.
         """
-        return LiteLLMChatSession(self, args)
+        return LiteModelChatSession(self, args)
 
     def parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
@@ -105,7 +168,7 @@ class LiteLLMGenerativeModel(GenerativeModel):
         Returns:
             GenerativeModel: A new instance of the model.
         """
-        return LiteLLMGenerativeModel(
+        return LiteModel(
             json["model_name"],
             generation_config=GenerativeModelConfig.from_json(
                 json["generation_config"]
@@ -114,12 +177,12 @@ class LiteLLMGenerativeModel(GenerativeModel):
         )
 
 
-class LiteLLMChatSession(GenerativeModelChatSession):
+class LiteModelChatSession(GenerativeModelChatSession):
     """
     A chat session for interacting with the LiteLLM model, maintaining conversation history.
     """
 
-    def __init__(self, model: LiteLLMGenerativeModel, args: Optional[dict] = None):
+    def __init__(self, model: LiteModel, args: Optional[dict] = None):
         """
         Initialize the chat session and set up the conversation history.
 
@@ -156,9 +219,9 @@ class LiteLLMChatSession(GenerativeModelChatSession):
             GenerationResponse: The generated response.
         """
         generation_config = self._adjust_generation_config(output_method)
-        self._chat_history.append({"role": "user", "content": message[:14385]})
+        self._chat_history.append({"role": "user", "content": message})
         response = completion(
-            model=self._model.model_name,
+            model=self._model.model,
             messages=self._chat_history,
             **generation_config
             )
