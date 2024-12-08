@@ -220,11 +220,15 @@ class LiteModelChatSession(GenerativeModelChatSession):
         """
         generation_config = self._adjust_generation_config(output_method)
         self._chat_history.append({"role": "user", "content": message})
-        response = completion(
-            model=self._model.model,
-            messages=self._chat_history,
-            **generation_config
+        try:
+            response = completion(
+                model=self._model.model,
+                messages=self._chat_history,
+                **generation_config
             )
+        except Exception as e:
+            # Handle exception (e.g., log error, retry, or raise a custom exception)
+            raise RuntimeError("Error during completion request") from e
         content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
