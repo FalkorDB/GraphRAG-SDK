@@ -2,7 +2,7 @@
 name = "graphrag_sdk"
 version = "0.3.3"
 license = "MIT"
-description = ""
+description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
 authors = ["FalkorDB <info@falkordb.com>"]
 readme = "README.md"
 repository = "https://github.com/FalkorDB/GraphRAG-SDK"
