@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="graph-rag-sdk" src="images/graphrag-logo.png" width="1000">
+  <img alt="graph-rag-sdk" src="images/FalkorDB GraphRAG-SDK README Banner.png" width="1000">
 
 [![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
 [![pypi](https://badge.fury.io/py/graphrag_sdk.svg)](https://pypi.org/project/graphrag_sdk/)
