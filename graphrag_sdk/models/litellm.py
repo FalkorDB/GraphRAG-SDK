@@ -40,7 +40,12 @@ class LiteModel(GenerativeModel):
         self.host = host
         self.model = model_name
         
-        # LiteLLM model name format: <provider>/<model_name> - Example: openai/gpt-4o
+        # LiteLLM model name format: <provider>/<model_name>
+        # Examples:
+        # - openai/gpt-4o
+        # - azure/gpt-4o
+        # - gemini/gemini-1.5-pro
+        # - ollama/llama3:8b
         if "/" in model_name:
             self.provider = model_name.split("/")[0]
             self.model_name = model_name.split("/")[1]
