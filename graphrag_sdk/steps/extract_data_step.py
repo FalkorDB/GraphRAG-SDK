@@ -90,7 +90,12 @@ class ExtractDataStep(Step):
                 tasks.append(task)
 
             # Wait for all tasks to complete
-            wait(tasks)
+            done, _ = wait(tasks)  # Get completed tasks
+            for task in done:
+                try:
+                    task.result()  # Re-raise any exceptions from _process_source
+                except Exception as e:
+                    raise ValueError(f"Error in task: {e}")
 
     def _process_source(
         self,
@@ -195,7 +200,7 @@ class ExtractDataStep(Step):
 
         except Exception as e:
             logger.exception(e)
-            raise e
+            raise ValueError(f"Error processing source: {e}")
 
     def _create_entity(self, graph: Graph, args: dict, ontology: Ontology):
         # Get unique attributes from entity

@@ -25,6 +25,7 @@ class LiteModel(GenerativeModel):
         model_name: str,
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
+        host: Optional[str] = None,
     ):
         """
         Initialize the LiteModel with the required parameters.
@@ -33,9 +34,13 @@ class LiteModel(GenerativeModel):
             model_name (str): The name and the provider for the LiteLLM client.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): Instruction to guide the model.
+            host (Optional[str]): Host for connecting to the Ollama API.
         """
 
+        self.host = host
         self.model = model_name
+        
+        # LiteLLM model name format: <provider>/<model_name> - Example: openai/gpt-4o
         if "/" in model_name:
             self.provider = model_name.split("/")[0]
             self.model_name = model_name.split("/")[1]
@@ -67,7 +72,7 @@ class LiteModel(GenerativeModel):
                 raise ValueError("Missing Gemini API key in the environment.")
         
         elif self.provider == "ollama":
-            self.ollama_client = Client()
+            self.ollama_client = Client(self.host)
             self.check_and_pull_model()
             
     def check_and_pull_model(self) -> None:
@@ -224,11 +229,11 @@ class LiteModelChatSession(GenerativeModelChatSession):
             response = completion(
                 model=self._model.model,
                 messages=self._chat_history,
+                api_base=self._model.host,
                 **generation_config
             )
         except Exception as e:
-            # Handle exception (e.g., log error, retry, or raise a custom exception)
-            raise RuntimeError("Error during completion request") from e
+            raise ValueError(f"Error during completion request, please check the credentials - {e}")
         content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content

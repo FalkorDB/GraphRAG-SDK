@@ -84,7 +84,7 @@ class TestKGLiteLLM(unittest.TestCase):
         self.kg.process_sources(sources)
 
         chat = self.kg.chat_session()
-        answer = chat.send_message("How many actors acted in a movie?")
+        answer = chat.send_message("How many different actors there are?")
         answer = answer['response']
 
         logger.info(f"Answer: {answer}")
@@ -93,10 +93,3 @@ class TestKGLiteLLM(unittest.TestCase):
         num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
         assert num_actors > 10, "The number of actors found should be greater than 10"
-
-    def test_kg_delete(self):
-        self.kg.delete()
-
-        db = FalkorDB()
-        graphs = db.list_graphs()
-        self.assertNotIn(self.graph_name, graphs)

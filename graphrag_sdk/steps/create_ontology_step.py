@@ -17,7 +17,6 @@ import time
 from graphrag_sdk.models import (
     GenerativeModel,
     GenerativeModelChatSession,
-    GenerativeModelConfig,
     GenerationResponse,
     FinishReason,
 )
@@ -71,7 +70,12 @@ class CreateOntologyStep(Step):
                 tasks.append(task)
 
             # Wait for all tasks to complete
-            wait(tasks)
+            done, _ = wait(tasks)  # Get completed tasks
+            for task in done:
+                try:
+                    task.result()  # Re-raise any exceptions from _process_source
+                except Exception as e:
+                    raise ValueError(f"Error in task: {e}")
 
         for task in tasks:
             self.ontology = self.ontology.merge_with(task.result())
