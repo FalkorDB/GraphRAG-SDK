@@ -84,7 +84,7 @@ class TestKGLiteLLM(unittest.TestCase):
         self.kg.process_sources(sources)
 
         chat = self.kg.chat_session()
-        answer = chat.send_message("How many different actors there are?")
+        answer = chat.send_message("How many actors are there?")
         answer = answer['response']
 
         logger.info(f"Answer: {answer}")

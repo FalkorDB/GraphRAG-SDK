@@ -2,7 +2,7 @@ import os
 import logging
 from ollama import Client
 from typing import Optional
-from litellm import completion
+from litellm import completion, validate_environment, utils as litellm_utils
 from .model import (
     OutputMethod,
     GenerativeModel,
@@ -25,60 +25,58 @@ class LiteModel(GenerativeModel):
         model_name: str,
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
-        host: Optional[str] = None,
     ):
         """
         Initialize the LiteModel with the required parameters.
+        
+        LiteLLM model_name format: <provider>/<model_name>
+         Examples:
+         - openai/gpt-4o
+         - azure/gpt-4o
+         - gemini/gemini-1.5-pro
+         - ollama/llama3:8b
 
         Args:
             model_name (str): The name and the provider for the LiteLLM client.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): Instruction to guide the model.
-            host (Optional[str]): Host for connecting to the Ollama API.
         """
 
-        self.host = host
+        
+        env_val = validate_environment(model_name)
+        if not env_val['keys_in_environment']:
+            raise ValueError(f"Missing {env_val['missing_keys']} in the environment.")
+        self.model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
         self.model = model_name
         
-        # LiteLLM model name format: <provider>/<model_name>
-        # Examples:
-        # - openai/gpt-4o
-        # - azure/gpt-4o
-        # - gemini/gemini-1.5-pro
-        # - ollama/llama3:8b
-        if "/" in model_name:
-            self.provider = model_name.split("/")[0]
-            self.model_name = model_name.split("/")[1]
-        else:
-            self.provider = "openai"
-            self.model_name = model_name
+        if provider == "ollama":
+            self.ollama_client = Client()
+            self.check_and_pull_model()
+        if not self.check_valid_key(model_name):
+            raise ValueError(f"Invalid keys for model {model_name}.")
         
-        self.credentials_validation()
+
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
         
-    def credentials_validation(self) -> None:
+    def check_valid_key(self, model: str):
         """
-        Validate the credentials for the model.
+        Checks if the environment key is valid for a specific model by making a litellm.completion call with max_tokens=10
+
+        Args:
+            model (str): The name of the model to check the key against.
 
         Returns:
-            bool: True if the credentials are valid, False otherwise.
+            bool: True if the key is valid for the model, False otherwise.
         """
-        if self.provider == "openai":
-            if not os.getenv("OPENAI_API_KEY"):
-                raise ValueError("Missing OpenAI API key in the environment.")
-               
-        elif self.provider == "azure":
-            if not os.getenv("AZURE_API_KEY") or not os.getenv("AZURE_API_BASE") or not os.getenv("AZURE_API_VERSION"):
-                raise ValueError("Missing Azure-OpenAI credentials in the environment. See the Github Readme for more information.")
-        
-        elif self.provider == "gemini":
-            if not os.getenv("GEMINI_API_KEY"):
-                raise ValueError("Missing Gemini API key in the environment.")
-        
-        elif self.provider == "ollama":
-            self.ollama_client = Client(self.host)
-            self.check_and_pull_model()
+        messages = [{"role": "user", "content": "Hey, how's it going?"}]
+        try:
+            completion(
+                model=model, messages=messages, max_tokens=10
+            )
+            return True
+        except:
+            return False
             
     def check_and_pull_model(self) -> None:
         """
@@ -234,7 +232,6 @@ class LiteModelChatSession(GenerativeModelChatSession):
             response = completion(
                 model=self._model.model,
                 messages=self._chat_history,
-                api_base=self._model.host,
                 **generation_config
             )
         except Exception as e:
