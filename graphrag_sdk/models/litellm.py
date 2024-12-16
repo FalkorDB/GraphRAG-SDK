@@ -103,6 +103,7 @@ class LiteModel(GenerativeModel):
                 logger.info(f"Model '{self.model_name}' pulled successfully.")
             except Exception as e:
                 logger.error(f"Failed to pull the model '{self.model_name}': {e}")
+                raise ValueError(f"Failed to pull the model '{self.model_name}': {e}")
 
     def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
         """
