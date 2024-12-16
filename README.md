@@ -155,7 +155,7 @@ print(response)
 ## Next Steps
 With these 3 steps now completed, you're ready to interact and query your knowledge graph.  Here are suggestions for use cases:
 <p align="left">
-  <img alt="GraphRAG-SDK Use Cases Banner from FalkordB" src="images/use-cases.png" width="800">
+  <img alt="GraphRAG-SDK Use Cases Banner from FalkorDB" src="images/use-cases.png" width="800">
 </p>
 
 **Need help with your use case? let's [talk](https://www.falkordb.com/get-demo/)**
@@ -242,11 +242,11 @@ Have questions or feedback? Reach out via:
 ## FAQ
 **Which databases are supported?**
 
-GraphRAD-SDK is optimized for FalkorDB. Other backends may require adapters.
+GraphRAG-SDK is optimized for FalkorDB. Other backends may require adapters.
 
 **How scalable is the SDK?**
 
-GraphRAD-SDK is designed for multi-tenancy and large-scale applications. Performance depends on FalkorDB deployment configuration.
+GraphRAG-SDK is designed for multi-tenancy and large-scale applications. Performance depends on FalkorDB deployment configuration.
 
 **What is GraphRAG?**
 
@@ -255,7 +255,7 @@ efficiency.
 
 **How does this SDK improve retrieval-augmented generation?**
 
-By leveraging knowledge graphs, GraphRAD-SDK enables semantic relationships and ontology-driven queries that go beyond standard vector similarity.
+By leveraging knowledge graphs, GraphRAG-SDK enables semantic relationships and ontology-driven queries that go beyond standard vector similarity.
 
 **Which file formats does the SDK support?**
 
