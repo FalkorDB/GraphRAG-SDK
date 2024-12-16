@@ -28,3 +28,4 @@ faq
 Ollama
 ollama
 Cypher
+LiteLLM

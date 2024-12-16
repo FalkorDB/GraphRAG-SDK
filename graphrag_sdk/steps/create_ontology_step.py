@@ -17,7 +17,6 @@ import time
 from graphrag_sdk.models import (
     GenerativeModel,
     GenerativeModelChatSession,
-    GenerativeModelConfig,
     GenerationResponse,
     FinishReason,
 )
