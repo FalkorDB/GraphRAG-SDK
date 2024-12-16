@@ -248,11 +248,6 @@ GraphRAG-SDK is optimized for FalkorDB. Other backends may require adapters.
 
 GraphRAG-SDK is designed for multi-tenancy and large-scale applications. Performance depends on FalkorDB deployment configuration.
 
-**What is GraphRAG?**
-
-GraphRAG combines traditional retrieval-augmented generation (RAG) systems with the power of knowledge graphs to enhance accuracy, contextual relevance, and 
-efficiency.
-
 **How does this SDK improve retrieval-augmented generation?**
 
 By leveraging knowledge graphs, GraphRAG-SDK enables semantic relationships and ontology-driven queries that go beyond standard vector similarity.
