@@ -38,6 +38,8 @@ pip install graphrag_sdk[openai]
 * [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-1.5-flash-001`
 * [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
 * [Ollama](https://ollama.com/) Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for the Q&A step only (after the knowledge graph (KG) created).
+* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.
+
 
 
 # How to use
