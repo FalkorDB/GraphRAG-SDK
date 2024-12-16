@@ -1,70 +1,38 @@
-
-**GraphRAG** 
+# GraphRAG 
 [![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
 [![pypi](https://badge.fury.io/py/graphrag_sdk.svg)](https://pypi.org/project/graphrag_sdk/)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](code_of_conduct.md) 
 <p align="center">
-  <img alt="graph-rag-sdk" src="images/FalkorDB GraphRAG-SDK README Banner.png" width="1000">
+  <img alt="FalkorDB GraphRAG-SDK README Banner" src="images/FalkorDB GraphRAG-SDK README Banner.png" width="1500">
 </p>
-Build fast and accurate GenAI apps with GraphRAG SDK at scale.
 
-Documentation available at: [LINK](https://www.falkordb.com/)
+### Build fast and accurate GenAI apps with GraphRAG SDK at scale
 
-[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
-
-
-# What’s included?
-
-LLM Support Banner
-
-* **Ontology Management:** Automate ontology creation from unstructured data or define it manually.
-* **Knowledge Graph Integration:** Build, query, and manage knowledge graphs optimized for retrieval and augmentation tasks.
-* **LLM Compatibility:** Supports OpenAI GPT models, Google Gemini, Azure-OpenAI, Ollama, Multi-modality framework LiteLLM.
-* **Multi-Agent Systems:** Orchestrate specialized agents for domain-specific tasks with knowledge graph-driven intelligence.
-* **Scalable Infrastructure:** Leverages FalkorDB for high-performance graph querying and multi-tenancy.
-* **Extensive File Format Support:** Ingest data from PDFs, CSVs, JSONL, HTML, and more.
+Documentation available at: [LINK](https://docs.falkordb.com/)
 
 Simplify the development of your next GenAI application with GraphRAG-SDK, a specialized toolkit for building Graph Retrieval-Augmented Generation (GraphRAG) systems. It integrates knowledge graphs, ontology management, and state-of-the-art LLMs to deliver accurate, efficient, and customizable RAG workflows.
 
-
-## Key Features
-<p align="center">
-  <img alt="key-features" src="images/key-features.png" width="500">
-</p>
-
-* **Ontology Management:** Automate ontology creation from unstructured data or define it manually.
-* **Knowledge Graph Integration:** Build, query, and manage knowledge graphs optimized for retrieval and augmentation tasks.
-* **LLM Compatibility:** Supports OpenAI GPT models, Google Gemini, Azure-OpenAI, Ollama, Multi-modality framework LiteLLM.
-* **Multi-Agent Systems:** Orchestrate specialized agents for domain-specific tasks with knowledge graph-driven intelligence.
-* **Scalable Infrastructure:** Leverages FalkorDB for high-performance graph querying and multi-tenancy.
-* **Extensive File Format Support:** Ingest data from PDFs, CSVs, JSONL, HTML, and more.
-
-<p align="center">
-  <img alt="key-features" src="images/ingestion.png" width="800">
-</p>
-
 # GraphRAG Setup
-### Graph Database Setup
-GraphRAG uses FalkorDB as its graph engine.
-* **[FalkorDB Cloud](https://app.falkordb.cloud/):** Obtain credentials from the cloud dashboard.
-* **Local Deployment:**
+### Database Setup
+
+* **<a href="https://app.falkordb.cloud" target="_blank">FalkorDB Cloud</a>:** Obtain credentials from the cloud dashboard.
+* **Local Deployment with Docker:**
 
 ```sh
 docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb:latest
 ```
 
-### dependencies:
-
-For all dependencies
+### Dependencies:
 ```sh
+# For all LLM providers
 pip install graphrag_sdk[all]
-```
-Only OpenAI
-```sh
+
+# For specific LLM provider (Example: OpenAI)
 pip install graphrag_sdk[openai]
 ```
-### Configure Credentials. See .env.template for examples.
+
+### Configure Credentials. See [.env](.env.template) for examples.
 
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
 * [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-1.5-flash-001`
@@ -73,10 +41,8 @@ pip install graphrag_sdk[openai]
 
 
 # How to use
-### Importing your data
-Banner
 
-### Creating Ontologies
+### Step 1: Creating Ontologies
 Automate ontology creation from unstructured data or define it manually.
 
 ```python
@@ -111,12 +77,11 @@ with open("ontology.json", "w", encoding="utf-8") as file:
     file.write(json.dumps(ontology.to_json(), indent=2))
 ```
 
-### Creating a knowledge graph agent
+### Step 2: Creating a knowledge graph agent
 Build, query, and manage knowledge graphs optimized for retrieval and augmentation tasks. 
 Leverages FalkorDB for high-performance graph querying and multi-tenancy.
 
 ```python
-
 # After approving the ontology, load it from disk.
 ontology_file = "ontology.json"
 with open(ontology_file, "r", encoding="utf-8") as file:
@@ -131,8 +96,10 @@ kg = KnowledgeGraph(
 kg.process_sources(sources)
 ```
 
-### Configuring your prompts
-When creating your Knowledge Graph (KG) agent, you can customize the prompts to tailor its behavior. This step is optional but can enhance functionality.
+### Optional: Configuring your prompts
+When creating your Knowledge Graph (KG) agent, you can customize the prompts to tailor its behavior.
+
+💡 This step is optional but can enhance functionality.
 
 There are five types of prompts:
 
@@ -170,35 +137,48 @@ kg = KnowledgeGraph(
 )
 ```
 
-### Graph RAG
+### Step 3: Query your Graph RAG
 
 At this point, you have a Knowledge Graph that can be queried using this SDK. Use the method `chat_session` for start a conversation.
 
 ```python
-
-# Conversation.
+# Conversation
 chat = kg.chat_session()
-response = chat.send_message("Who is Salsa Boy?")
+response = chat.send_message("Who is the director of the movie The Matrix?")
 print(response)
-response = chat.send_message("Tell me about one of his fights?")
+response = chat.send_message("How this director connected to Keanu Reeves?")
 print(response)
 ```
 
-## Multi Agent - Orchestrator
+## Next Steps
+With these 3 steps now completed, you're ready to interact and query your knowledge graph.  Here are suggestions for use cases:
+<p align="left">
+  <img alt="GraphRAG-SDK Use Cases Banner from FalkordB" src="images/use-cases.png" width="800">
+</p>
+
+**Need help with your use case? let's [talk](https://www.falkordb.com/get-demo/)**
+
+<br />
+
+# AI Agents with GraphRAG
+
+### Orchestrator
+The GraphRAG-SDK supports Knowledge Graph-based agents. Each agent is an expert in the data it has learned, and the orchestrator orchestrates the agents.
+
+Check out the example:
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
 
-The GraphRAG-SDK supports KG agents. Each agent is an expert in the data it has learned, and the orchestrator orchestrates the agents.
 
 ### Agents
 
-See the [Basic Usage](#basic-usage) section to understand how to create KG objects for the agents.
+See the [Step 1](#Step-1:-Creating-Ontologies) section to understand how to create Knowledge Graph objects for the agents.
 
 ```python
 # Define the model
 model = OpenAiGenerativeModel("gpt-4o")
 
-# Create the KG from the predefined ontology.
+# Create the Knowledge Graph from the predefined ontology.
 # In this example, we will use the restaurants agent and the attractions agent.
 restaurants_kg = KnowledgeGraph(
     name="restaurants",
@@ -247,18 +227,15 @@ runner = orchestrator.ask("Create a two-day itinerary for a trip to Rome. Please
 print(runner.output)
 
 ```
+## Community
 
-## Use cases
-Banner
+Have questions or feedback? Reach out via:
+- [GitHub Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues)
+- Join our [Discord](https://discord.com/invite/6M4QwDXn2w)
 
-* Enterprise Search: Enable domain-specific searches with LLM-augmented responses.
-* Customer Support: Automate Q&A systems using domain-trained agents.
-* Research Tools: Build domain-specific research assistants for structured and unstructured data
+⭐️ If you find this repository helpful, please consider giving it a star!
 
-## Use Cases
-* **Enterprise Search:** Enable domain-specific searches with LLM-augmented responses.
-* **Customer Support:** Automate Q&A systems using domain-trained agents.
-* **Research Tools:** Build domain-specific research assistants for structured and unstructured data.
+
 
 ## FAQ
 **Which databases are supported?**
@@ -268,10 +245,6 @@ GraphRAD-SDK is optimized for FalkorDB. Other backends may require adapters.
 **How scalable is the SDK?**
 
 GraphRAD-SDK is designed for multi-tenancy and large-scale applications. Performance depends on FalkorDB deployment configuration.
-
-**Can I define custom embeddings?**
-
-Yes. You can override the default embedding pipeline by defining your own embedding functions.
 
 **What is GraphRAG?**
 
@@ -294,29 +267,10 @@ The SDK is optimized for low-latency operations through FalkorDB, using techniqu
 
 Yes. Multi-graph querying is supported with APIs designed for cross-domain and hierarchical graph exploration.
 
-**Can I use custom embeddings?**
+<br />
 
-Yes. The SDK allows overriding default embedding mechanisms to use custom or domain-specific embeddings.
-
-
-
-## Community
-
-<p align="center">
-  <img alt="key-features" src="images/community.png" width="800">
-</p>
-
-
-Have questions or feedback? Reach out via:
-- [GitHub Issues](https://github.com/orgs/FalkorDB/issues)
-- Join our [Discord](https://discord.com/invite/6M4QwDXn2w)
-
-⭐️ If you find this repository helpful, please consider giving it a star!
-
-Keywords: RAG, graphrag, Retrieval-Augmented Generation, NLP, AI, Information Retrieval, Natural Language Processing, LLM, Embeddings, Semantic Search
-
-### Heading 3: License
+# License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-
+Keywords: RAG, graphrag, Retrieval-Augmented Generation, NLP, AI, Information Retrieval, Natural Language Processing, LLM, Embeddings, Semantic Search
