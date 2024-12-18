@@ -61,16 +61,20 @@ class KnowledgeGraph:
         # connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
-        
+        ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
+
         # Load / Save ontology to database
         if ontology is None:
-            ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
-            self._ontology = Ontology.from_graph(ontology_graph)
+            # load ontology from DB
+            ontology = Ontology.from_graph(ontology_graph)
         else:
-            ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
+            # save ontology to DB
             ontology.save_to_graph(ontology_graph)
-            self._ontology = ontology
+            
+        if ontology is None:
+            raise Exception("Ontology is not defined")
 
+        self._ontology = ontology
         self._name = name
         self._model_config = model_config
         self.sources = set([])
