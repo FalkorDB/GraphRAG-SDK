@@ -29,3 +29,12 @@ Ollama
 ollama
 Cypher
 LiteLLM
+README
+GenAI
+customizable
+backends
+scalable
+APIs
+Embeddings
+NLP
+graphrag
