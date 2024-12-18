@@ -93,7 +93,7 @@ kg = KnowledgeGraph(
     ontology=ontology,
     host="127.0.0.1",
     port=6379,
-    # username=falkor_username,
+    # username=falkor_username, # Not required for on-premises use.
     # password=falkor_password
 )
 
