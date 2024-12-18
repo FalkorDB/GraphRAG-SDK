@@ -9,15 +9,14 @@
 
 ### Build fast and accurate GenAI apps with GraphRAG SDK at scale
 
-Documentation available at: [LINK](https://docs.falkordb.com/)
-
 Simplify the development of your next GenAI application with GraphRAG-SDK, a specialized toolkit for building Graph Retrieval-Augmented Generation (GraphRAG) systems. It integrates knowledge graphs, ontology management, and state-of-the-art LLMs to deliver accurate, efficient, and customizable RAG workflows.
 
 # GraphRAG Setup
 ### Database Setup
 
-* **<a href="https://app.falkordb.cloud" target="_blank">FalkorDB Cloud</a>:** Obtain credentials from the cloud dashboard.
-* **Local Deployment with Docker:**
+[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
+
+Or use on premise with Docker:
 
 ```sh
 docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb:latest
@@ -34,12 +33,11 @@ pip install graphrag_sdk[openai]
 
 ### Configure Credentials. See [.env](.env.template) for examples.
 
+* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
 * [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-1.5-flash-001`
 * [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
 * [Ollama](https://ollama.com/) Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for the Q&A step only (after the knowledge graph (KG) created).
-* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.
-
 
 
 # How to use
@@ -98,47 +96,6 @@ kg = KnowledgeGraph(
 kg.process_sources(sources)
 ```
 
-### Optional: Configuring your prompts
-When creating your Knowledge Graph (KG) agent, you can customize the prompts to tailor its behavior.
-
-💡 This step is optional but can enhance functionality.
-
-There are five types of prompts:
-
-1. **`cypher_system_instruction`**  
-   - System instructions for the Cypher generation step.  
-   - **Note:** Ensure your prompt includes `{ontology}`.
-
-2. **`qa_system_instruction`**  
-   - System instructions for the Q&A step.
-
-3. **`cypher_gen_prompt`**  
-   - The prompt used during the Cypher generation step.  
-   - **Note:** Include `{question}` in your prompt.
-
-4. **`cypher_gen_prompt_history`**  
-   - The prompt for Cypher generation when history needs to be considered.  
-   - **Note:** Include `{question}` and `{last_answer}` in your prompt.
-
-5. **`qa_prompt`**  
-   - The prompt used during the Q&A step.  
-   - **Note:** Include `{question}`, `{context}`, and `{cypher}` in your prompt.
-
-Here’s an example configuration:
-
-```python
-kg = KnowledgeGraph(
-    name="kg_name",
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    ontology=ontology,
-    cypher_system_instruction=cypher_system_instruction,
-    qa_system_instruction=qa_system_instruction,
-    cypher_gen_prompt=cypher_gen_prompt,
-    cypher_gen_prompt_history=cypher_gen_prompt_history,
-    qa_prompt=qa_prompt
-)
-```
-
 ### Step 3: Query your Graph RAG
 
 At this point, you have a Knowledge Graph that can be queried using this SDK. Use the method `chat_session` for start a conversation.
@@ -174,7 +131,7 @@ Check out the example:
 
 ### Agents
 
-See the [Step 1](#Step-1:-Creating-Ontologies) section to understand how to create Knowledge Graph objects for the agents.
+See the [Step 1](#how-to-use) section to understand how to create Knowledge Graph objects for the agents.
 
 ```python
 # Define the model
@@ -237,6 +194,46 @@ Have questions or feedback? Reach out via:
 
 ⭐️ If you find this repository helpful, please consider giving it a star!
 
+## Additional Enhancement: Configuring your prompts
+When creating your Knowledge Graph (KG) agent, you can customize the prompts to tailor its behavior.
+
+💡 This step is optional but can enhance functionality.
+
+There are five types of prompts:
+
+1. **`cypher_system_instruction`**  
+   - System instructions for the Cypher generation step.  
+   - **Note:** Ensure your prompt includes `{ontology}`.
+
+2. **`qa_system_instruction`**  
+   - System instructions for the Q&A step.
+
+3. **`cypher_gen_prompt`**  
+   - The prompt used during the Cypher generation step.  
+   - **Note:** Include `{question}` in your prompt.
+
+4. **`cypher_gen_prompt_history`**  
+   - The prompt for Cypher generation when history needs to be considered.  
+   - **Note:** Include `{question}` and `{last_answer}` in your prompt.
+
+5. **`qa_prompt`**  
+   - The prompt used during the Q&A step.  
+   - **Note:** Include `{question}`, `{context}`, and `{cypher}` in your prompt.
+
+Here’s an example configuration:
+
+```python
+kg = KnowledgeGraph(
+    name="kg_name",
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+    ontology=ontology,
+    cypher_system_instruction=cypher_system_instruction,
+    qa_system_instruction=qa_system_instruction,
+    cypher_gen_prompt=cypher_gen_prompt,
+    cypher_gen_prompt_history=cypher_gen_prompt_history,
+    qa_prompt=qa_prompt
+)
+```
 
 
 ## FAQ
