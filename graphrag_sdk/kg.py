@@ -1,5 +1,6 @@
 import logging
 import warnings
+from typing import Optional
 from falkordb import FalkorDB
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
@@ -25,16 +26,16 @@ class KnowledgeGraph:
         self,
         name: str,
         model_config: KnowledgeGraphModelConfig,
-        ontology: Ontology,
-        host: str = "127.0.0.1",
-        port: int = 6379,
-        username: str | None = None,
-        password: str | None = None,
-        cypher_system_instruction: str = None,
-        qa_system_instruction: str = None,
-        cypher_gen_prompt: str = None,
-        qa_prompt: str = None,
-        cypher_gen_prompt_history: str = None,
+        ontology: Optional[Ontology] = None,
+        host: Optional[str] = "127.0.0.1",
+        port: Optional[int] = 6379,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        cypher_system_instruction: Optional[str] = None,
+        qa_system_instruction: Optional[str] = None,
+        cypher_gen_prompt: Optional[str] = None,
+        qa_prompt: Optional[str] = None,
+        cypher_gen_prompt_history: Optional[str] = None,
     ):
         """
         Initialize Knowledge Graph
@@ -60,9 +61,21 @@ class KnowledgeGraph:
         # connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
+        ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
 
-        self._name = name
+        # Load / Save ontology to database
+        if ontology is None:
+            # load ontology from DB
+            ontology = Ontology.from_graph(ontology_graph)
+        else:
+            # save ontology to DB
+            ontology.save_to_graph(ontology_graph)
+            
+        if ontology is None:
+            raise Exception("Ontology is not defined")
+
         self._ontology = ontology
+        self._name = name
         self._model_config = model_config
         self.sources = set([])
 

@@ -1,4 +1,3 @@
-import os
 import logging
 from ollama import Client
 from typing import Optional

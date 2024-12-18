@@ -34,7 +34,7 @@ ollama = ["ollama"]
 openai = ["openai"]
 vertexai = ["vertexai"]
 google-generativeai = ["google-generativeai"]
-litellm = ["litellm"]
+litellm = ["litellm", "ollama"]
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
