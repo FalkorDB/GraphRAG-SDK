@@ -91,6 +91,10 @@ kg = KnowledgeGraph(
     name="kg_name",
     model_config=KnowledgeGraphModelConfig.with_model(model),
     ontology=ontology,
+    host="127.0.0.1",
+    port=6379,
+    # username=falkor_username,
+    # password=falkor_password
 )
 
 kg.process_sources(sources)
