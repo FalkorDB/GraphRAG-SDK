@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graphrag_sdk"
-version = "0.4.0"
+version = "0.4.1"
 license = "MIT"
 description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
 authors = ["FalkorDB <info@falkordb.com>"]
