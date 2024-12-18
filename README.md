@@ -94,7 +94,7 @@ kg = KnowledgeGraph(
     host="127.0.0.1",
     port=6379,
     # username=falkor_username, # optional
-    # password=falkor_password
+    # password=falkor_password  # optional
 )
 
 kg.process_sources(sources)
@@ -150,7 +150,7 @@ restaurants_kg = KnowledgeGraph(
     host="127.0.0.1",
     port=6379,
     # username=falkor_username, # optional
-    # password=falkor_password
+    # password=falkor_password  # optional
 )
 attractions_kg = KnowledgeGraph(
     name="attractions",
@@ -159,7 +159,7 @@ attractions_kg = KnowledgeGraph(
     host="127.0.0.1",
     port=6379,
     # username=falkor_username, # optional
-    # password=falkor_password
+    # password=falkor_password  # optional
 )
 
 
@@ -247,7 +247,7 @@ kg = KnowledgeGraph(
     host="127.0.0.1",
     port=6379,
     # username=falkor_username, # optional
-    # password=falkor_password
+    # password=falkor_password  # optional
 )
 ```
 
