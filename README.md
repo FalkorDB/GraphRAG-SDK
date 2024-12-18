@@ -27,8 +27,8 @@ docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb
 # For all LLM providers
 pip install graphrag_sdk[all]
 
-# For specific LLM provider (Example: OpenAI)
-pip install graphrag_sdk[openai]
+# For specific LLM provider (Example: LiteLLM)
+pip install graphrag_sdk[litellm]
 ```
 
 ### Configure Credentials. See [.env](.env.template) for examples.
@@ -50,7 +50,7 @@ from dotenv import load_dotenv
 
 from graphrag_sdk.source import URL
 from graphrag_sdk import KnowledgeGraph, Ontology
-from graphrag_sdk.models.openai import OpenAiGenerativeModel
+from graphrag_sdk.models.litellm import LiteModel
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 load_dotenv()
 
@@ -65,7 +65,7 @@ urls = ["https://www.rottentomatoes.com/m/side_by_side_2012",
 sources = [URL(url) for url in urls]
 
 # Model
-model = OpenAiGenerativeModel(model_name="gpt-4o")
+model = LiteModel(model_name="gemini/gemini-2.0-flash-exp")
 
 # Ontology Auto-Detection
 ontology = Ontology.from_sources(
@@ -139,7 +139,7 @@ See the [Step 1](#how-to-use) section to understand how to create Knowledge Grap
 
 ```python
 # Define the model
-model = OpenAiGenerativeModel("gpt-4o")
+model = LiteModel(model_name="gemini/gemini-2.0-flash-exp")
 
 # Create the Knowledge Graph from the predefined ontology.
 # In this example, we will use the restaurants agent and the attractions agent.
@@ -147,11 +147,19 @@ restaurants_kg = KnowledgeGraph(
     name="restaurants",
     ontology=restaurants_ontology,
     model_config=KnowledgeGraphModelConfig.with_model(model),
+    host="127.0.0.1",
+    port=6379,
+    # username=falkor_username, # Not required for on-premises use.
+    # password=falkor_password
 )
 attractions_kg = KnowledgeGraph(
     name="attractions",
     ontology=attractions_ontology,
     model_config=KnowledgeGraphModelConfig.with_model(model),
+    host="127.0.0.1",
+    port=6379,
+    # username=falkor_username, # Not required for on-premises use.
+    # password=falkor_password
 )
 
 
@@ -236,6 +244,10 @@ kg = KnowledgeGraph(
     cypher_gen_prompt=cypher_gen_prompt,
     cypher_gen_prompt_history=cypher_gen_prompt_history,
     qa_prompt=qa_prompt
+    host="127.0.0.1",
+    port=6379,
+    # username=falkor_username, # Not required for on-premises use.
+    # password=falkor_password
 )
 ```
 
