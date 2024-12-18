@@ -93,7 +93,7 @@ kg = KnowledgeGraph(
     ontology=ontology,
     host="127.0.0.1",
     port=6379,
-    # username=falkor_username, # Not required for on-premises use.
+    # username=falkor_username, # optional
     # password=falkor_password
 )
 
@@ -126,7 +126,7 @@ With these 3 steps now completed, you're ready to interact and query your knowle
 # AI Agents with GraphRAG
 
 ### Orchestrator
-The GraphRAG-SDK supports Knowledge Graph-based agents. Each agent is an expert in the data it has learned, and the orchestrator orchestrates the agents.
+The GraphRAG-SDK supports Knowledge Graph-based agents. Each agent is an expert in his domain, and the orchestrator orchestrates the agents.
 
 Check out the example:
 
@@ -149,7 +149,7 @@ restaurants_kg = KnowledgeGraph(
     model_config=KnowledgeGraphModelConfig.with_model(model),
     host="127.0.0.1",
     port=6379,
-    # username=falkor_username, # Not required for on-premises use.
+    # username=falkor_username, # optional
     # password=falkor_password
 )
 attractions_kg = KnowledgeGraph(
@@ -158,7 +158,7 @@ attractions_kg = KnowledgeGraph(
     model_config=KnowledgeGraphModelConfig.with_model(model),
     host="127.0.0.1",
     port=6379,
-    # username=falkor_username, # Not required for on-premises use.
+    # username=falkor_username, # optional
     # password=falkor_password
 )
 
@@ -246,7 +246,7 @@ kg = KnowledgeGraph(
     qa_prompt=qa_prompt
     host="127.0.0.1",
     port=6379,
-    # username=falkor_username, # Not required for on-premises use.
+    # username=falkor_username, # optional
     # password=falkor_password
 )
 ```
