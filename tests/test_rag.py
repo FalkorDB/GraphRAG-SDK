@@ -1,15 +1,17 @@
-import re
 import logging
 import unittest
-from falkordb import FalkorDB
 from dotenv import load_dotenv
+from deepeval import assert_test
 from graphrag_sdk.entity import Entity
 from graphrag_sdk.source import Source
+from deepeval.test_case import LLMTestCase
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.litellm import LiteModel
+from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from deepeval.metrics import AnswerRelevancyMetric, ContextualPrecisionMetric, ContextualRecallMetric, ContextualRelevancyMetric
+
 
 load_dotenv()
 
@@ -67,13 +69,21 @@ class TestKGLiteLLM(unittest.TestCase):
                 ],
             )
         )
-        cls.graph_name = "IMDB_openai"
+        cls.graph_name = "IMDB"
         model = LiteModel(model_name="gpt-4o")
-        cls.kg = KnowledgeGraph(
+        
+        cls.kg_openai = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
             model_config=KnowledgeGraphModelConfig.with_model(model),
         )
+        
+        cls.kg_gemini = KnowledgeGraph(
+            name=cls.graph_name,
+            ontology=cls.ontology,
+            model_config=KnowledgeGraphModelConfig.with_model(model),
+        )
+
 
     def test_kg_creation(self):
 
@@ -81,15 +91,37 @@ class TestKGLiteLLM(unittest.TestCase):
 
         sources = [Source(file_path)]
 
-        self.kg.process_sources(sources)
+        self.kg_gemini.process_sources(sources)
+        input = "How many actors acted in a movie?"
 
-        chat = self.kg.chat_session()
-        answer = chat.send_message("How many actors acted in a movie?")
-        answer = answer['response']
+        chat = self.kg_gemini.chat_session()
+        answer = chat.send_message(input)
+        answer_relevancy_metric = AnswerRelevancyMetric(threshold=0.5)
+        answer_cp_metric = ContextualPrecisionMetric(threshold=0.5)
+        answer_crecall_metric = ContextualRecallMetric(threshold=0.5)
+        answer_crelevancy_metric = ContextualRelevancyMetric(threshold=0.5)
 
-        logger.info(f"Answer: {answer}")
 
-        actors_count = re.findall(r'\d+', answer)
-        num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
-        assert num_actors > 10, "The number of actors found should be greater than 10"
+        test_case = LLMTestCase(
+                input=input,
+                actual_output=answer['response'],
+                retrieval_context=[answer['context']],
+                context=[answer['context']],
+                name="gemini",
+                expected_output="Over than 10 actors acted in a movie."
+            )
+        assert_test(test_case, [answer_relevancy_metric, answer_cp_metric, answer_crecall_metric, answer_crelevancy_metric])
+        
+        chat = self.kg_openai.chat_session()
+        answer = chat.send_message(input)
+        test_case = LLMTestCase(
+                input=input,
+                actual_output=answer['response'],
+                retrieval_context=[answer['context']],
+                context=[answer['context']],
+                name="openai",
+                expected_output="Over than 10 actors acted in a movie."
+            )
+
+        assert_test(test_case, [answer_relevancy_metric,answer_cp_metric, answer_crecall_metric, answer_crelevancy_metric])
