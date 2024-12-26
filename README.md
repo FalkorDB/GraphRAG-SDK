@@ -1,8 +1,18 @@
 # GraphRAG 
-[![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
-[![pypi](https://badge.fury.io/py/graphrag_sdk.svg)](https://pypi.org/project/graphrag_sdk/)
-[![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+<a href="https://hub.docker.com/r/falkordb/falkordb" target="_blank">
+  <img src="https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker" alt="Dockerhub"/>
+</a>
+<a href="https://pypi.org/project/graphrag_sdk/" target="_blank">
+  <img src="https://badge.fury.io/py/graphrag_sdk.svg" alt="pypi"/>
+</a>
+<a href="https://discord.gg/6M4QwDXn2w" target="_blank">
+  <img src="https://img.shields.io/discord/1146782921294884966?style=flat-square" alt="Discord"/>
+</a>
+<a href="CODE_OF_CONDUCT.md" target="_blank">
+  <img src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg" alt="Contributor Covenant"/>
+</a>
+
+
 
 <p align="center">
   <img alt="FalkorDB GraphRAG-SDK README Banner" src="images/FalkorDB GraphRAG-SDK README Banner.png" width="1500">
@@ -15,7 +25,9 @@ Simplify the development of your next GenAI application with GraphRAG-SDK, a spe
 # GraphRAG Setup
 ### Database Setup
 
-[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
+<a href="https://app.falkordb.cloud" target="_blank">
+  <img src="https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud" alt="Try Free"/>
+</a>
 
 Or use on premise with Docker:
 
@@ -34,17 +46,22 @@ pip install graphrag_sdk[litellm]
 
 ### Configure Credentials. See [.env](.env.template) for examples.
 
-* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.  
+* <a href="https://docs.litellm.ai" target="_blank">LiteLLM</a> A framework supporting inference of large language models, allowing flexibility in deployment and use cases.  
   To choose vendor use the prefix "specific_vendor/your_model", for example "gemini/gemini-2.0-flash-exp".
-* [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
-* [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-2.0-flash-exp`
-* [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
-* [Ollama](https://ollama.com/) Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for the Q&A step only (after the knowledge graph (KG) created).
+* <a href="https://openai.com/index/openai-api" target="_blank">OpenAI</a> Recommended model:`gpt-4o`
+* <a href="https://makersuite.google.com/app/apikey" target="_blank">Google</a> Recommended model:`gemini-2.0-flash-exp`
+* <a href="https://ai.azure.com" target="_blank">Azure-OpenAI</a> Recommended model:`gpt-4o`
+* <a href="https://ollama.com/" target="_blank">Ollama</a> Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for the Q&A step only (after the knowledge graph (KG) created).
 
 
 # How to use
-[![Get started](https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg)](https://lightning.ai/muhammadqadora/studios/build-fast-accurate-genai-apps-advanced-rag-with-falkordb)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
+
+<a href="https://lightning.ai/muhammadqadora/studios/build-fast-accurate-genai-apps-advanced-rag-with-falkordb" target="_blank">
+  <img src="https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg" alt="Open In lightning" style="width: 120px; height: auto;" />
+</a>
+<a href="https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb" target="_blank">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" style="width: 150px; height: auto;" />
+</a>
 
 ### Step 1: Creating Ontologies
 Automate ontology creation from unstructured data or define it manually.
@@ -134,7 +151,9 @@ The GraphRAG-SDK supports Knowledge Graph-based agents. Each agent is an expert 
 
 Check out the example:
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
+<a href="https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb" target="_blank">
+  <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" style="width: 150px; height: auto;" />
+</a>
 
 
 ### Agents
@@ -205,8 +224,8 @@ print(runner.output)
 ## Community
 
 Have questions or feedback? Reach out via:
-- [GitHub Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues)
-- Join our [Discord](https://discord.com/invite/6M4QwDXn2w)
+- <a href="https://github.com/FalkorDB/GraphRAG-SDK/issues" target="_blank">GitHub Issues</a>
+- Join our <a href="https://discord.com/invite/6M4QwDXn2w" target="_blank">Discord</a>
 
 ⭐️ If you find this repository helpful, please consider giving it a star!
 
