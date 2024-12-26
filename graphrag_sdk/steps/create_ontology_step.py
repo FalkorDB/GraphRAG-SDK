@@ -1,8 +1,23 @@
+import time
+import json
+import logging
+from tqdm import tqdm
+from typing import Optional
+from datetime import datetime
+from threading import Thread, Event
 from graphrag_sdk.steps.Step import Step
-from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.document import Document
-from concurrent.futures import Future, ThreadPoolExecutor, wait
 from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.helpers import extract_json
+from ratelimit import limits, sleep_and_retry
+from graphrag_sdk.source import AbstractSource
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from graphrag_sdk.models import (
+    GenerativeModel,
+    GenerativeModelChatSession,
+    GenerationResponse,
+    FinishReason,
+)
 from graphrag_sdk.fixtures.prompts import (
     CREATE_ONTOLOGY_SYSTEM,
     CREATE_ONTOLOGY_PROMPT,
@@ -10,18 +25,6 @@ from graphrag_sdk.fixtures.prompts import (
     FIX_JSON_PROMPT,
     BOUNDARIES_PREFIX,
 )
-import logging
-from graphrag_sdk.helpers import extract_json
-from ratelimit import limits, sleep_and_retry
-import time
-from graphrag_sdk.models import (
-    GenerativeModel,
-    GenerativeModelChatSession,
-    GenerationResponse,
-    FinishReason,
-)
-import json
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -53,32 +56,65 @@ class CreateOntologyStep(Step):
 
     def run(self, boundaries: Optional[str] = None):
         tasks: list[Future[Ontology]] = []
-        with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-            # extract entities and relationships from each page
+        progress_update_event = Event()
 
+        def progress_updater(pbar, start_time, total):
+            """Thread to update the TET in the progress bar."""
+            while not progress_update_event.is_set():
+                if pbar.n > 0:
+                    elapsed_time = (datetime.now() - start_time).total_seconds()
+                    TET = total * elapsed_time / pbar.n
+                    TET_str = f'{int(TET // 60)}m {int(TET % 60)}s'
+                    pbar.set_postfix(TET=TET_str)
+                pbar.refresh()  # Refresh the progress bar
+                time.sleep(0.5)  # Update interval
+
+        with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
+            # Load all documents from sources
             documents = [
                 document for source in self.sources for document in source.load()
             ]
-            for source in documents:
-                task = executor.submit(
-                    self._process_source,
-                    self._create_chat(),
-                    source,
-                    self.ontology,
-                    boundaries,
-                )
-                tasks.append(task)
+            total_documents = len(documents)
 
-            # Wait for all tasks to complete
-            wait(tasks)
+            # Initialize progress bar
+            start_time = datetime.now()
+            with tqdm(total=total_documents + len(documents) + 1, desc="Processing to create Ontology") as pbar:
+                # Start the progress updater thread
+                progress_thread = Thread(target=progress_updater, args=(pbar, start_time, total_documents))
+                progress_thread.start()
 
-        for task in tasks:
-            self.ontology = self.ontology.merge_with(task.result())
+                # Submit tasks for processing documents
+                for document in documents:
+                    task = executor.submit(
+                        self._process_source,
+                        self._create_chat(),
+                        document,
+                        self.ontology,
+                        boundaries,
+                    )
+                    tasks.append(task)
 
+                # Update progress bar as tasks complete
+                for _ in as_completed(tasks):
+                    pbar.update(1)
+
+                # Merge results into the ontology
+                for task in tasks:
+                    self.ontology = self.ontology.merge_with(task.result())
+                    pbar.update(1)
+
+                # Signal the progress updater to stop and wait for it to finish
+                progress_update_event.set()
+                progress_thread.join()
+
+                # Final step: Validate and fix the ontology
+                pbar.set_description("Finalizing Ontology")
+                self.ontology = self._fix_ontology(self._create_chat(), self.ontology)
+                pbar.update(1)
+
+        # Validate the ontology
         if len(self.ontology.entities) == 0:
             raise Exception("Failed to create ontology")
-
-        self.ontology = self._fix_ontology(self._create_chat(), self.ontology)
 
         return self.ontology
 

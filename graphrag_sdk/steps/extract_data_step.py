@@ -1,6 +1,19 @@
+import os
+import time
+import json
+import logging
+from tqdm import tqdm
+from uuid import uuid4
+from falkordb import Graph
+from datetime import datetime
+from threading import Thread, Event
 from graphrag_sdk.steps.Step import Step
+from graphrag_sdk.document import Document
+from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from graphrag_sdk.models.model import OutputMethod
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models import (
     GenerativeModel,
@@ -8,23 +21,13 @@ from graphrag_sdk.models import (
     GenerationResponse,
     FinishReason,
 )
-
 from graphrag_sdk.fixtures.prompts import (
     EXTRACT_DATA_SYSTEM,
     EXTRACT_DATA_PROMPT,
     FIX_JSON_PROMPT,
     COMPLETE_DATA_EXTRACTION,
 )
-import logging
-from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
-import json
-from falkordb import Graph
-from graphrag_sdk.document import Document
-from uuid import uuid4
-import os
-import time
-from ratelimit import limits, sleep_and_retry
-from graphrag_sdk.models.model import OutputMethod
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -64,6 +67,17 @@ class ExtractDataStep(Step):
     def run(self, instructions: str = None):
 
         tasks: list[Future[Ontology]] = []
+        progress_update_event = Event()
+        def progress_updater(pbar, start_time, total):
+            while not progress_update_event.is_set():
+                if pbar.n > 0:
+                    elapsed_time = (datetime.now() - start_time).total_seconds()
+                    TET = total*elapsed_time/pbar.n
+                    TET_str = f'{int(TET // 60)}m {int(TET % 60)}s'
+                
+                    pbar.set_postfix(TET=TET_str)
+                pbar.refresh()  # Refresh the progress bar to show the latest progress
+                time.sleep(0.5)  # Wait for half a second Wait for half a second
         with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
             # extract entities and relationships from each page
             documents = [
@@ -75,22 +89,34 @@ class ExtractDataStep(Step):
                 and len(document.content) > 0
             ]
             logger.debug(f"Processing {len(documents)} documents")
-            for document, source_instructions in documents:
-                task_id = "extract_data_step_" + str(uuid4())
-                task = executor.submit(
-                    self._process_source,
-                    task_id,
-                    self._create_chat(),
-                    document,
-                    self.ontology,
-                    self.graph,
-                    source_instructions,
-                    instructions,
-                )
-                tasks.append(task)
+            total_documents = len(documents)
+            start_time = datetime.now()
+            with tqdm(total=len(documents), desc="Processing to create Knowledge Graph") as pbar:
+                progress_thread = Thread(target=progress_updater, args=(pbar, start_time, total_documents))
+                progress_thread.start()  # Start the progress updater thread
+                for document, source_instructions in documents:
+                    task_id = "extract_data_step_" + str(uuid4())
+                    task = executor.submit(
+                        self._process_source,
+                        task_id,
+                        self._create_chat(),
+                        document,
+                        self.ontology,
+                        self.graph,
+                        source_instructions,
+                        instructions,
+                    )
+                    tasks.append(task)
 
-            # Wait for all tasks to complete
-            wait(tasks)
+                    # Update progress bar as each task completes
+                    # task.add_done_callback(lambda _: pbar.update(1))
+                for _ in as_completed(tasks):
+                    pbar.update(1)
+                progress_update_event.set()
+                progress_thread.join()  # Ensure the progress updater thread finishes
+
+            # # Wait for all tasks to complete
+            # wait(tasks)
 
     def _process_source(
         self,
