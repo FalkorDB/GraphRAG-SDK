@@ -225,7 +225,25 @@ print(runner.output)
 
 Have questions or feedback? Reach out via:
 - <a href="https://github.com/FalkorDB/GraphRAG-SDK/issues" target="_blank">GitHub Issues</a>
-- Join our [Discord](https://discord.com/invite/6M4QwDXn2w){:target="_blank" rel="noopener"}
+- Join our [Discord](https://discord.com/invite/6M4QwDXn2w)
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>
+        Markdown Link with Target Blank Example
+    </title>
+</head>
+
+<body>
+    <h1>Click 
+        <a href="https://discord.com/invite/6M4QwDXn2w" 
+           target="_blank">Discord
+        </a>.
+    </h1>
+</body>
+
+</html>
 
 ⭐️ If you find this repository helpful, please consider giving it a star!
 
