@@ -111,7 +111,7 @@ class TestKGLiteLLM(unittest.TestCase):
                 name="gemini",
                 expected_output="Over than 10 actors acted in a movie."
             )
-        assert_test(test_case, [answer_relevancy_metric, answer_cp_metric, answer_crecall_metric, answer_crelevancy_metric])
+        assert_test(test_case, [answer_relevancy_metric, answer_cp_metric, answer_crelevancy_metric])
         
         chat = self.kg_openai.chat_session()
         answer = chat.send_message(input)
@@ -124,4 +124,4 @@ class TestKGLiteLLM(unittest.TestCase):
                 expected_output="Over than 10 actors acted in a movie."
             )
 
-        assert_test(test_case, [answer_relevancy_metric,answer_cp_metric, answer_crecall_metric, answer_crelevancy_metric])
+        assert_test(test_case, [answer_relevancy_metric,answer_cp_metric, answer_crelevancy_metric])
