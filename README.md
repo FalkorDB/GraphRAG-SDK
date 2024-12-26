@@ -225,7 +225,7 @@ print(runner.output)
 
 Have questions or feedback? Reach out via:
 - <a href="https://github.com/FalkorDB/GraphRAG-SDK/issues" target="_blank">GitHub Issues</a>
-- Join our <a href="https://discord.com/invite/6M4QwDXn2w" target="_blank">Discord</a>
+- Join our [Discord](https://discord.com/invite/6M4QwDXn2w){:target="_blank" rel="noopener"}
 
 ⭐️ If you find this repository helpful, please consider giving it a star!
 
