@@ -44,6 +44,7 @@ pip install graphrag_sdk[litellm]
 
 # How to use
 [![Get started](https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg)](https://lightning.ai/docs/pytorch/latest/starter/introduction.html#define-a-lightningmodule)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
 
 ### Step 1: Creating Ontologies
 Automate ontology creation from unstructured data or define it manually.
