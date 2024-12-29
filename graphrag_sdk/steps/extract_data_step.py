@@ -5,7 +5,6 @@ import logging
 from tqdm import tqdm
 from uuid import uuid4
 from falkordb import Graph
-from datetime import datetime
 from threading import Thread, Event
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.document import Document
@@ -13,7 +12,7 @@ from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models.model import OutputMethod
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
+from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties, progress_updater
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models import (
     GenerativeModel,
@@ -68,16 +67,7 @@ class ExtractDataStep(Step):
 
         tasks: list[Future[Ontology]] = []
         progress_update_event = Event()
-        def progress_updater(pbar, start_time, total):
-            while not progress_update_event.is_set():
-                if pbar.n > 0:
-                    elapsed_time = (datetime.now() - start_time).total_seconds()
-                    TET = total*elapsed_time/pbar.n
-                    TET_str = f'{int(TET // 60)}m {int(TET % 60)}s'
                 
-                    pbar.set_postfix(TET=TET_str)
-                pbar.refresh()  # Refresh the progress bar to show the latest progress
-                time.sleep(0.5)  # Wait for half a second Wait for half a second
         with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
             # extract entities and relationships from each page
             documents = [
@@ -88,12 +78,15 @@ class ExtractDataStep(Step):
                 and document.content is not None
                 and len(document.content) > 0
             ]
-            logger.debug(f"Processing {len(documents)} documents")
             total_documents = len(documents)
-            start_time = datetime.now()
-            with tqdm(total=len(documents), desc="Processing to create Knowledge Graph") as pbar:
-                progress_thread = Thread(target=progress_updater, args=(pbar, start_time, total_documents))
+            logger.debug(f"Processing {total_documents} documents")
+            # Initialize progress bar
+            with tqdm(total=total_documents, desc="Processing Knowledge Graph") as pbar:
+                 # Start the progress updater thread
+                progress_thread = Thread(target=progress_updater, args=(pbar, total_documents, progress_update_event))
                 progress_thread.start()  # Start the progress updater thread
+               
+               # Submit tasks for processing documents
                 for document, source_instructions in documents:
                     task_id = "extract_data_step_" + str(uuid4())
                     task = executor.submit(
@@ -107,16 +100,13 @@ class ExtractDataStep(Step):
                         instructions,
                     )
                     tasks.append(task)
-
-                    # Update progress bar as each task completes
-                    # task.add_done_callback(lambda _: pbar.update(1))
+                    
+                # Update progress bar as tasks complete
                 for _ in as_completed(tasks):
                     pbar.update(1)
+                # Ensure progress updater stops and thread joins
                 progress_update_event.set()
-                progress_thread.join()  # Ensure the progress updater thread finishes
-
-            # # Wait for all tasks to complete
-            # wait(tasks)
+                progress_thread.join()
 
     def _process_source(
         self,

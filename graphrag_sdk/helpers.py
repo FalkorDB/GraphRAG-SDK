@@ -1,6 +1,8 @@
 import re
-import graphrag_sdk
+import time
 import logging
+import graphrag_sdk
+from datetime import datetime
 from fix_busted_json import repair_json
 
 logger = logging.getLogger(__name__)
@@ -216,3 +218,15 @@ def validate_cypher_relation_directions(
             continue
 
     return errors
+
+def progress_updater(pbar, total, progress_update_event):
+            """Thread to update the TET in the progress bar."""
+            start_time = datetime.now()
+            while not progress_update_event.is_set():
+                if pbar.n > 0:
+                    elapsed_time = (datetime.now() - start_time).total_seconds()
+                    TET = total * elapsed_time / pbar.n
+                    TET_str = f'{int(TET // 60)}m {int(TET % 60)}s'
+                    pbar.set_postfix(TET=TET_str)
+                pbar.refresh()  # Refresh the progress bar
+                time.sleep(1)  # Update interval

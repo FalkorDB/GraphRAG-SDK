@@ -3,12 +3,11 @@ import json
 import logging
 from tqdm import tqdm
 from typing import Optional
-from datetime import datetime
 from threading import Thread, Event
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.document import Document
 from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.helpers import extract_json
+from graphrag_sdk.helpers import extract_json, progress_updater
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -58,17 +57,6 @@ class CreateOntologyStep(Step):
         tasks: list[Future[Ontology]] = []
         progress_update_event = Event()
 
-        def progress_updater(pbar, start_time, total):
-            """Thread to update the TET in the progress bar."""
-            while not progress_update_event.is_set():
-                if pbar.n > 0:
-                    elapsed_time = (datetime.now() - start_time).total_seconds()
-                    TET = total * elapsed_time / pbar.n
-                    TET_str = f'{int(TET // 60)}m {int(TET % 60)}s'
-                    pbar.set_postfix(TET=TET_str)
-                pbar.refresh()  # Refresh the progress bar
-                time.sleep(0.5)  # Update interval
-
         with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
             # Load all documents from sources
             documents = [
@@ -77,10 +65,9 @@ class CreateOntologyStep(Step):
             total_documents = len(documents)
 
             # Initialize progress bar
-            start_time = datetime.now()
-            with tqdm(total=total_documents + len(documents) + 1, desc="Processing to create Ontology") as pbar:
+            with tqdm(total=total_documents + 1, desc="Processing Ontology") as pbar:
                 # Start the progress updater thread
-                progress_thread = Thread(target=progress_updater, args=(pbar, start_time, total_documents))
+                progress_thread = Thread(target=progress_updater, args=(pbar, total_documents, progress_update_event))
                 progress_thread.start()
 
                 # Submit tasks for processing documents
@@ -98,19 +85,13 @@ class CreateOntologyStep(Step):
                 for _ in as_completed(tasks):
                     pbar.update(1)
 
-                # Merge results into the ontology
-                for task in tasks:
-                    self.ontology = self.ontology.merge_with(task.result())
-                    pbar.update(1)
-
-                # Signal the progress updater to stop and wait for it to finish
-                progress_update_event.set()
-                progress_thread.join()
-
                 # Final step: Validate and fix the ontology
                 pbar.set_description("Finalizing Ontology")
                 self.ontology = self._fix_ontology(self._create_chat(), self.ontology)
                 pbar.update(1)
+                # Ensure progress updater stops and thread joins
+                progress_update_event.set()
+                progress_thread.join()
 
         # Validate the ontology
         if len(self.ontology.entities) == 0:
