@@ -67,7 +67,7 @@ class ExtractDataStep(Step):
     def _create_chat(self):
         return self.model.start_chat({"response_validation": False})
 
-    def run(self, instructions: str = None):
+    def run(self, instructions: str = None) -> list[AbstractSource]:
 
         tasks: list[Future[Ontology]] = []
         tasks_docs: list[Future[AbstractSource]] = []

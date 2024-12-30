@@ -94,6 +94,10 @@ class CreateOntologyStep(Step):
                 # For the case where the progress bar is not updated
                 pbar.n = self.process_files
                 
+                # Validate the ontology
+                if len(self.ontology.entities) == 0:
+                    raise Exception("Failed to create ontology")
+                
                 # Finalize the ontology
                 pbar.set_description("Finalizing the Ontology")
                 task_fin = executor.submit(self._fix_ontology, self._create_chat(), self.ontology)
@@ -104,10 +108,6 @@ class CreateOntologyStep(Step):
                     pbar.refresh()
                 pbar.update(1)
             pbar.set_description("Ontology Processing Completed")
-            
-        # Validate the ontology
-        if len(self.ontology.entities) == 0:
-            raise Exception("Failed to create ontology")
 
         return self.ontology
 

@@ -172,7 +172,7 @@ class KnowledgeGraph:
 
     def _create_graph_with_sources(
         self, sources: list[AbstractSource] | None = None, instructions: str = None
-    ):
+    ) -> list[AbstractSource]:
 
         step = ExtractDataStep(
             sources=list(sources),
