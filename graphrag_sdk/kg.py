@@ -78,6 +78,7 @@ class KnowledgeGraph:
         self._name = name
         self._model_config = model_config
         self.sources = set([])
+        self.failed_sources = set([])
 
         if cypher_system_instruction is None:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
@@ -159,11 +160,15 @@ class KnowledgeGraph:
             raise Exception("Ontology is not defined")
 
         # Create graph with sources
-        self._create_graph_with_sources(sources, instructions)
+        failed_sources = self._create_graph_with_sources(sources, instructions)
 
         # Add processed sources
         for src in sources:
-            self.sources.add(src)
+            if src not in failed_sources:
+                self.sources.add(src)
+                self.failed_sources.discard(src)
+            else:
+                self.failed_sources.add(src)
 
     def _create_graph_with_sources(
         self, sources: list[AbstractSource] | None = None, instructions: str = None
@@ -176,8 +181,10 @@ class KnowledgeGraph:
             graph=self.graph,
         )
 
-        step.run(instructions)
-
+        failed_sources = step.run(instructions)
+        
+        return failed_sources
+        
     def delete(self) -> None:
         """
         Deletes the knowledge graph and any other related resource

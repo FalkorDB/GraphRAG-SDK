@@ -2,15 +2,15 @@ import time
 import json
 import logging
 from tqdm import tqdm
+from threading import Lock
 from typing import Optional
-from threading import Thread, Event
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.document import Document
 from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.helpers import extract_json, progress_updater
+from graphrag_sdk.helpers import extract_json
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor
 from graphrag_sdk.models import (
     GenerativeModel,
     GenerativeModelChatSession,
@@ -24,6 +24,8 @@ from graphrag_sdk.fixtures.prompts import (
     FIX_JSON_PROMPT,
     BOUNDARIES_PREFIX,
 )
+RENDER_STEP_SIZE = 0.5
+
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -44,33 +46,35 @@ class CreateOntologyStep(Step):
             "max_input_tokens": 500000,
             "max_output_tokens": 8192,
         },
+        hide_progress: bool = False,
     ) -> None:
         self.sources = sources
         self.ontology = ontology
         self.model = model.with_system_instruction(CREATE_ONTOLOGY_SYSTEM)
         self.config = config
+        self.hide_progress = hide_progress
+        self.process_files = 0
+        self.counter_lock = Lock()
 
     def _create_chat(self):
         return self.model.start_chat({"response_validation": False})
 
     def run(self, boundaries: Optional[str] = None):
         tasks: list[Future[Ontology]] = []
-        progress_update_event = Event()
+        tasks_docs: list[Future[AbstractSource]] = []
 
-        with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-            # Load all documents from sources
-            documents = [
-                document for source in self.sources for document in source.load()
-            ]
-            total_documents = len(documents)
+        with tqdm(total=len(self.sources) + 1, desc="Load documents", disable=self.hide_progress) as pbar:
+            with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
+                # Load all documents from sources
+                tasks_docs = executor.map(
+                    lambda source: [document for document in source.load()
+                    ],
+                    self.sources
+                )
+                documents = [document for source_documents in tasks_docs for document in source_documents]
 
-            # Initialize progress bar
-            with tqdm(total=total_documents + 1, desc="Processing Ontology") as pbar:
-                # Start the progress updater thread
-                progress_thread = Thread(target=progress_updater, args=(pbar, total_documents, progress_update_event))
-                progress_thread.start()
-
-                # Submit tasks for processing documents
+                pbar.set_description("Process documents")
+                # Process each document in parallel
                 for document in documents:
                     task = executor.submit(
                         self._process_source,
@@ -81,18 +85,26 @@ class CreateOntologyStep(Step):
                     )
                     tasks.append(task)
 
-                # Update progress bar as tasks complete
-                for _ in as_completed(tasks):
-                    pbar.update(1)
-
-                # Final step: Validate and fix the ontology
-                pbar.set_description("Finalizing Ontology")
-                self.ontology = self._fix_ontology(self._create_chat(), self.ontology)
+                # Wait for all tasks to be completed
+                while any(task.running() or not task.done() for task in tasks):
+                    time.sleep(RENDER_STEP_SIZE)
+                    with self.counter_lock:
+                        pbar.n = self.process_files
+                    pbar.refresh()
+                # For the case where the progress bar is not updated
+                pbar.n = self.process_files
+                
+                # Finalize the ontology
+                pbar.set_description("Finalizing the Ontology")
+                task_fin = executor.submit(self._fix_ontology, self._create_chat(), self.ontology)
+                
+                # Wait for the final task to be completed
+                while not task_fin.done():
+                    time.sleep(RENDER_STEP_SIZE)
+                    pbar.refresh()
                 pbar.update(1)
-                # Ensure progress updater stops and thread joins
-                progress_update_event.set()
-                progress_thread.join()
-
+            pbar.set_description("Ontology Processing Completed")
+            
         # Validate the ontology
         if len(self.ontology.entities) == 0:
             raise Exception("Failed to create ontology")
@@ -160,7 +172,8 @@ class CreateOntologyStep(Step):
             o = o.merge_with(new_ontology)
 
         logger.debug(f"Processed document: {document}")
-
+        with self.counter_lock:
+            self.process_files += 1
         return o
 
     def _fix_ontology(self, chat_session: GenerativeModelChatSession, o: Ontology):
