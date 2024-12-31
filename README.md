@@ -44,7 +44,7 @@ pip install graphrag_sdk[litellm]
 # How to use
 
 ### Step 1: Creating Ontologies
-Automate ontology creation from unstructured data or define it manually.
+Automate ontology creation from unstructured data or define it manually - See [example](https://github.com/liorkesos/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
 
 ```python
 from dotenv import load_dotenv
