@@ -48,7 +48,7 @@ Automate ontology creation from unstructured data or define it manually.
 
 ```python
 from dotenv import load_dotenv
-
+import json
 from graphrag_sdk.source import URL
 from graphrag_sdk import KnowledgeGraph, Ontology
 from graphrag_sdk.models.litellm import LiteModel
