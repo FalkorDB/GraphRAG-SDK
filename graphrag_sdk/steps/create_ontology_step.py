@@ -61,25 +61,16 @@ class CreateOntologyStep(Step):
 
     def run(self, boundaries: Optional[str] = None):
         tasks: list[Future[Ontology]] = []
-        tasks_docs: list[Future[AbstractSource]] = []
 
-        with tqdm(total=len(self.sources) + 1, desc="Load documents", disable=self.hide_progress) as pbar:
+        with tqdm(total=len(self.sources) + 1, desc="Process Documents", disable=self.hide_progress) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-                # Load all documents from sources
-                tasks_docs = executor.map(
-                    lambda source: [document for document in source.load()
-                    ],
-                    self.sources
-                )
-                documents = [document for source_documents in tasks_docs for document in source_documents]
 
-                pbar.set_description("Process documents")
-                # Process each document in parallel
-                for document in documents:
+                # Process each source document in parallel
+                for source in self.sources:
                     task = executor.submit(
                         self._process_source,
                         self._create_chat(),
-                        document,
+                        source,
                         self.ontology,
                         boundaries,
                     )
@@ -91,15 +82,12 @@ class CreateOntologyStep(Step):
                     with self.counter_lock:
                         pbar.n = self.process_files
                     pbar.refresh()
-                # For the case where the progress bar is not updated
-                pbar.n = self.process_files
                 
                 # Validate the ontology
                 if len(self.ontology.entities) == 0:
                     raise Exception("Failed to create ontology")
                 
                 # Finalize the ontology
-                pbar.set_description("Finalizing the Ontology")
                 task_fin = executor.submit(self._fix_ontology, self._create_chat(), self.ontology)
                 
                 # Wait for the final task to be completed
@@ -107,74 +95,79 @@ class CreateOntologyStep(Step):
                     time.sleep(RENDER_STEP_SIZE)
                     pbar.refresh()
                 pbar.update(1)
-            pbar.set_description("Ontology Processing Completed")
 
         return self.ontology
 
     def _process_source(
         self,
         chat_session: GenerativeModelChatSession,
-        document: Document,
+        source: list[AbstractSource],
         o: Ontology,
         boundaries: Optional[str] = None,
+        retries: int = 1,
     ):
-        text = document.content[: self.config["max_input_tokens"]]
-
-        user_message = CREATE_ONTOLOGY_PROMPT.format(
-            text = text,
-            boundaries = BOUNDARIES_PREFIX.format(user_boundaries=boundaries) if boundaries is not None else "", 
-        )
-
-        responses: list[GenerationResponse] = []
-        response_idx = 0
-
-        responses.append(self._call_model(chat_session, user_message))
-
-        logger.debug(f"Model response: {responses[response_idx]}")
-
-        while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS:
-            response_idx += 1
-            responses.append(self._call_model(chat_session, "continue"))
-
-        if responses[response_idx].finish_reason != FinishReason.STOP:
-            raise Exception(
-                f"Model stopped unexpectedly: {responses[response_idx].finish_reason}"
-            )
-
-        combined_text = " ".join([r.text for r in responses])
-
         try:
-            data = json.loads(extract_json(combined_text))
-        except json.decoder.JSONDecodeError as e:
-            logger.debug(f"Error extracting JSON: {e}")
-            logger.debug(f"Prompting model to fix JSON")
-            json_fix_response = self._call_model(
-                self._create_chat(),
-                FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
+            document = next(source.load())
+            
+            text = document.content[: self.config["max_input_tokens"]]
+
+            user_message = CREATE_ONTOLOGY_PROMPT.format(
+                text = text,
+                boundaries = BOUNDARIES_PREFIX.format(user_boundaries=boundaries) if boundaries is not None else "", 
             )
+
+            responses: list[GenerationResponse] = []
+            response_idx = 0
+
+            responses.append(self._call_model(chat_session, user_message))
+
+            logger.debug(f"Model response: {responses[response_idx]}")
+
+            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
+                response_idx += 1
+                responses.append(self._call_model(chat_session, "continue"))
+
+            if responses[response_idx].finish_reason != FinishReason.STOP:
+                raise Exception(
+                    f"Model stopped unexpectedly: {responses[response_idx].finish_reason}"
+                )
+
+            combined_text = " ".join([r.text for r in responses])
+
             try:
-                data = json.loads(extract_json(json_fix_response.text))
-                logger.debug(f"Fixed JSON: {data}")
+                data = json.loads(extract_json(combined_text))
             except json.decoder.JSONDecodeError as e:
-                logger.error(f"Failed to fix JSON: {e}  {json_fix_response.text}")
-                data = None
+                logger.debug(f"Error extracting JSON: {e}")
+                logger.debug(f"Prompting model to fix JSON")
+                json_fix_response = self._call_model(
+                    self._create_chat(),
+                    FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
+                )
+                try:
+                    data = json.loads(extract_json(json_fix_response.text))
+                    logger.debug(f"Fixed JSON: {data}")
+                except json.decoder.JSONDecodeError as e:
+                    logger.error(f"Failed to fix JSON: {e}  {json_fix_response.text}")
+                    data = None
 
-        if data is None:
-            return o
-        
-        try:
-            new_ontology = Ontology.from_json(data)
+            if data is not None:
+                try:
+                    new_ontology = Ontology.from_json(data)
+                except Exception as e:
+                    logger.error(f"Exception while extracting JSON: {e}")
+                    new_ontology = None
+
+                if new_ontology is not None:
+                    o = o.merge_with(new_ontology)
+
+                logger.debug(f"Processed document: {document}")
         except Exception as e:
-            logger.error(f"Exception while extracting JSON: {e}")
-            new_ontology = None
-
-        if new_ontology is not None:
-            o = o.merge_with(new_ontology)
-
-        logger.debug(f"Processed document: {document}")
-        with self.counter_lock:
-            self.process_files += 1
-        return o
+            logger.exception(f"Failed - {e}")
+            raise e
+        finally:
+            with self.counter_lock:
+                self.process_files += 1
+            return o
 
     def _fix_ontology(self, chat_session: GenerativeModelChatSession, o: Ontology):
         logger.debug(f"Fixing ontology...")

@@ -70,11 +70,10 @@ class ExtractDataStep(Step):
     def run(self, instructions: str = None) -> list[AbstractSource]:
 
         tasks: list[Future[Ontology]] = []
-        tasks_docs: list[Future[AbstractSource]] = []
         
-        with tqdm(total=len(self.sources), desc="Load documents", disable=self.hide_progress) as pbar:
+        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-                # Load all documents from sources
+
                 tasks_docs = executor.map(
                     lambda source: [
                         (document, source.instruction)
@@ -83,19 +82,16 @@ class ExtractDataStep(Step):
                     self.sources
                 )
                 documents = [document for source_documents in tasks_docs for document in source_documents]
-
-                pbar.set_description("Process documents")
-                # Process each document in parallel
-                for document, source_instructions in documents:
+                # Process each source document in parallel
+                for source in self.sources:
                     task_id = "extract_data_step_" + str(uuid4())
                     task = executor.submit(
                         self._process_source,
                         task_id,
                         self._create_chat(),
-                        document,
+                        source,
                         self.ontology,
                         self.graph,
-                        source_instructions,
                         instructions,
                     )
                     tasks.append(task)
@@ -106,10 +102,6 @@ class ExtractDataStep(Step):
                     with self.counter_lock:
                         pbar.n = self.process_files
                     pbar.refresh()
-                # For the case where the progress bar is not updated
-                pbar.n = self.process_files
-
-            pbar.set_description(f"KG Processing Completed")
 
         failed_sources = [self.sources[idx] for idx, task in enumerate(tasks) if task.exception()]     
         return failed_sources
@@ -118,12 +110,12 @@ class ExtractDataStep(Step):
         self,
         task_id: str,
         chat_session: GenerativeModelChatSession,
-        document: Document,
+        source: list[AbstractSource],
         ontology: Ontology,
         graph: Graph,
         source_instructions: str = "",
         instructions: str = "",
-        retries: int = 3,
+        retries: int = 1,
     ):
         try:
             _task_logger = logging.getLogger(task_id)
@@ -141,12 +133,19 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
+            
+            document = next(source.load())
+            try:
+                source_instructions = source.instruction
+            except:
+                source_instructions = ""
+                
             text = document.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
                 instructions="\n".join(
                     [
-                        source_instructions if source_instructions is not None else "",
+                        source_instructions,
                         instructions if instructions is not None else "",
                     ]
                 ),
@@ -163,7 +162,7 @@ class ExtractDataStep(Step):
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
-            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and retries > response_idx:
+            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
                 responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))

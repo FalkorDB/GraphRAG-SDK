@@ -147,20 +147,22 @@ class KnowledgeGraph:
         return [s.source for s in self.sources]
 
     def process_sources(
-        self, sources: list[AbstractSource], instructions: str = None
+        self, sources: list[AbstractSource], instructions: str = None, hide_progress: bool = False
     ) -> None:
         """
         Add entities and relations found in sources into the knowledge-graph
 
         Parameters:
             sources (list[AbstractSource]): list of sources to extract knowledge from
+            instructions (str): instructions to use for extraction
+            hide_progress (bool): hide progress bar
         """
 
         if self.ontology is None:
             raise Exception("Ontology is not defined")
 
         # Create graph with sources
-        failed_sources = self._create_graph_with_sources(sources, instructions)
+        failed_sources = self._create_graph_with_sources(sources, instructions, hide_progress)
 
         # Add processed sources
         for src in sources:
@@ -171,7 +173,7 @@ class KnowledgeGraph:
                 self.failed_sources.add(src)
 
     def _create_graph_with_sources(
-        self, sources: list[AbstractSource] | None = None, instructions: str = None
+        self, sources: list[AbstractSource] | None = None, instructions: str = None, hide_progress: bool = False
     ) -> list[AbstractSource]:
 
         step = ExtractDataStep(
@@ -179,6 +181,7 @@ class KnowledgeGraph:
             ontology=self.ontology,
             model=self._model_config.extract_data,
             graph=self.graph,
+            hide_progress=hide_progress,
         )
 
         failed_sources = step.run(instructions)
