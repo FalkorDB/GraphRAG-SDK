@@ -135,17 +135,14 @@ class ExtractDataStep(Step):
             _task_logger.debug(f"Processing task: {task_id}")
             
             document = next(source.load())
-            try:
-                source_instructions = source.instruction
-            except:
-                source_instructions = ""
+            source_instructions = source.instruction
                 
             text = document.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
                 instructions="\n".join(
                     [
-                        source_instructions,
+                        source_instructions if source_instructions is not None else "",
                         instructions if instructions is not None else "",
                     ]
                 ),
