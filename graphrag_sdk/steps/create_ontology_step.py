@@ -38,7 +38,7 @@ class CreateOntologyStep(Step):
 
     def __init__(
         self,
-        sources: list[AbstractSource],
+        sources: AbstractSource,
         ontology: Ontology,
         model: GenerativeModel,
         config: dict = {

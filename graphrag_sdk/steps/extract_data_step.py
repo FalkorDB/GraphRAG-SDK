@@ -110,7 +110,7 @@ class ExtractDataStep(Step):
         self,
         task_id: str,
         chat_session: GenerativeModelChatSession,
-        source: list[AbstractSource],
+        source: AbstractSource,
         ontology: Ontology,
         graph: Graph,
         source_instructions: str = "",
