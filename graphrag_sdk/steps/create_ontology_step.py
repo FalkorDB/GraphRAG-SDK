@@ -38,7 +38,7 @@ class CreateOntologyStep(Step):
 
     def __init__(
         self,
-        sources: AbstractSource,
+        sources: list[AbstractSource],
         ontology: Ontology,
         model: GenerativeModel,
         config: dict = {
@@ -101,7 +101,7 @@ class CreateOntologyStep(Step):
     def _process_source(
         self,
         chat_session: GenerativeModelChatSession,
-        source: list[AbstractSource],
+        source: AbstractSource,
         o: Ontology,
         boundaries: Optional[str] = None,
         retries: int = 1,

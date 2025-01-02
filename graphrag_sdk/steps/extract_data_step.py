@@ -74,14 +74,6 @@ class ExtractDataStep(Step):
         with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
 
-                tasks_docs = executor.map(
-                    lambda source: [
-                        (document, source.instruction)
-                        for document in source.load()
-                    ],
-                    self.sources
-                )
-                documents = [document for source_documents in tasks_docs for document in source_documents]
                 # Process each source document in parallel
                 for source in self.sources:
                     task_id = "extract_data_step_" + str(uuid4())
