@@ -1,16 +1,31 @@
 import json
+import logging
+import graphrag_sdk
 from falkordb import Graph
+from .entity import Entity
+from .attribute import Attribute
+from typing import Optional
+from falkordb import FalkorDB
+from .relation import Relation
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
-import graphrag_sdk
-import logging
-from .relation import Relation
-from .entity import Entity
-from typing import Optional
 
 
 logger = logging.getLogger(__name__)
 
+nodes_query = """
+MATCH (n)
+WITH DISTINCT labels(n) AS labels, n
+RETURN DISTINCT labels, [k in keys(n) | [k, typeof(n[k])]]
+"""
+
+rel_query = """
+MATCH (n)-[r]->(m)
+UNWIND labels(n) as src_label
+UNWIND labels(m) as dst_label
+UNWIND type(r) as rel_type
+RETURN DISTINCT {start: src_label, type: rel_type, end: dst_label}, [k in keys(r) | [k, typeof(r[k])]]
+"""
 
 class Ontology(object):
     """
@@ -103,6 +118,46 @@ class Ontology(object):
             )
 
         return ontology
+    
+    @staticmethod
+    def from_kg_graph(name: str,
+        host: Optional[str] = "127.0.0.1",
+        port: Optional[int] = 6379,
+        username: Optional[str] = None,
+        password: Optional[str] = None,):
+        """
+        Creates an Ontology object from a given Knowledge Graph.
+
+        Parameters:
+            name (Optional[str]): The name of the graph.
+            host (str): The host of the graph.
+            port (Optional[int]): The port of the graph.
+            username (Optional[str]): The username of the graph.
+            password (Optional[str]): The password of the graph.
+
+        Returns:
+            The Ontology object created from the Knowledge Graph.
+        """
+        ontology = Ontology()
+        db = FalkorDB(host=host, port=port, username=username, password=password)
+        graph = db.select_graph(name)
+
+        entities = graph.query(nodes_query).result_set
+        if not entities:
+            raise ValueError("No entities found in the Knowledge Graph, check if the graph is empty.")
+        
+        for entity in entities:
+            ontology.add_entity(Entity(entity[0][0], [Attribute(attr[0], attr[1], True, True) for attr in entity[1]]))
+
+        relations = graph.query(rel_query).result_set
+        for relation in relations:
+            label = relation[0]['type']
+            ontology.add_relation(
+                Relation(label, relation[0]['start'], relation[0]['end'], [Attribute(attr[0], attr[1], False, False) for attr in relation[1]])
+            )
+
+        return ontology
+    
 
     def add_entity(self, entity: Entity):
         """
