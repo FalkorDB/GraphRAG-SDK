@@ -2,7 +2,7 @@
 [![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
 [![pypi](https://badge.fury.io/py/graphrag_sdk.svg)](https://pypi.org/project/graphrag_sdk/)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md) 
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
 <p align="center">
   <img alt="FalkorDB GraphRAG-SDK README Banner" src="images/FalkorDB GraphRAG-SDK README Banner.png" width="1500">
@@ -34,7 +34,8 @@ pip install graphrag_sdk[litellm]
 
 ### Configure Credentials. See [.env](.env.template) for examples.
 
-* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.
+* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.  
+  To choose vendor use the prefix "specific_vendor/your_model", for example "gemini/gemini-2.0-flash-exp".
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
 * [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-2.0-flash-exp`
 * [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
@@ -42,6 +43,8 @@ pip install graphrag_sdk[litellm]
 
 
 # How to use
+[![Get started](https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg)](https://lightning.ai/muhammadqadora/studios/build-fast-accurate-genai-apps-advanced-rag-with-falkordb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
 
 ### Step 1: Creating Ontologies
 Automate ontology creation from unstructured data or define it manually - See [example](https://github.com/liorkesos/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
@@ -65,7 +68,7 @@ urls = ["https://www.rottentomatoes.com/m/side_by_side_2012",
 
 sources = [URL(url) for url in urls]
 
-# Model
+# Model - vendor: gemini, model: gemini-2.0-flash-exp -> gemini/gemini-2.0-flash-exp
 model = LiteModel(model_name="gemini/gemini-2.0-flash-exp")
 
 # Ontology Auto-Detection

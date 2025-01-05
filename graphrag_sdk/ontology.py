@@ -25,7 +25,7 @@ class Ontology(object):
         """
         Initialize the Ontology class.
 
-        Args:
+        Parameters:
             entities (list[Entity], optional): List of Entity objects. Defaults to None.
             relations (list[Relation], optional): List of Relation objects. Defaults to None.
         """
@@ -37,14 +37,16 @@ class Ontology(object):
         sources: list[AbstractSource],
         model: GenerativeModel,
         boundaries: Optional[str] = None,
+        hide_progress: bool = False,
     ) -> "Ontology":
         """
         Create an Ontology object from a list of sources.
 
-        Args:
+        Parameters:
             sources (list[AbstractSource]): A list of AbstractSource objects representing the sources.
             boundaries (Optinal[str]): The boundaries for the ontology.
             model (GenerativeModel): The generative model to use.
+            hide_progress (bool): Whether to hide the progress bar.
 
         Returns:
             The created Ontology object.
@@ -53,6 +55,7 @@ class Ontology(object):
             sources=sources,
             ontology=Ontology(),
             model=model,
+            hide_progress=hide_progress,
         )
 
         return step.run(boundaries=boundaries)
@@ -62,7 +65,7 @@ class Ontology(object):
         """
         Creates an Ontology object from a JSON representation.
 
-        Args:
+        Parameters:
             txt (dict | str): The JSON representation of the ontology. It can be either a dictionary or a string.
 
         Returns:
@@ -82,7 +85,7 @@ class Ontology(object):
         """
         Creates an Ontology object from a given graph.
 
-        Args:
+        Parameters:
             graph (Graph): The graph object representing the ontology.
 
         Returns:
@@ -114,7 +117,7 @@ class Ontology(object):
         """
         Adds a relation to the ontology.
 
-        Args:
+        Parameters:
             relation (Relation): The relation to be added.
         """
         self.relations.append(relation)
@@ -135,7 +138,7 @@ class Ontology(object):
         """
         Merges the given ontology `o` with the current ontology.
 
-        Args:
+        Parameters:
             o (Ontology): The ontology to merge with.
 
         Returns:
@@ -256,7 +259,7 @@ The following entities do not have unique attributes:
         """
         Retrieves the entity with the specified label.
 
-        Args:
+        Parameters:
             label (str): The label of the entity to retrieve.
 
         Returns:
@@ -318,7 +321,7 @@ The following entities do not have unique attributes:
         """
         Saves the entities and relations to the specified graph.
 
-        Args:
+        Parameters:
             graph (Graph): The graph to save the entities and relations to.
         """
         for entity in self.entities:

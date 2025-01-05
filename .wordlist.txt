@@ -38,3 +38,4 @@ APIs
 Embeddings
 NLP
 graphrag
+gemini
