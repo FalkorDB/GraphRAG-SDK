@@ -47,11 +47,11 @@ pip install graphrag_sdk[litellm]
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
 
 ### Step 1: Creating Ontologies
-Automate ontology creation from unstructured data or define it manually.
+Automate ontology creation from unstructured data or define it manually - See [example](https://github.com/falkordb/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
 
 ```python
 from dotenv import load_dotenv
-
+import json
 from graphrag_sdk.source import URL
 from graphrag_sdk import KnowledgeGraph, Ontology
 from graphrag_sdk.models.litellm import LiteModel
