@@ -1,6 +1,18 @@
+import os
+import time
+import json
+import logging
+from tqdm import tqdm
+from uuid import uuid4
+from falkordb import Graph
+from threading import Lock
 from graphrag_sdk.steps.Step import Step
+from graphrag_sdk.document import Document
+from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from graphrag_sdk.models.model import OutputMethod
+from concurrent.futures import Future, ThreadPoolExecutor
+from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models import (
     GenerativeModel,
@@ -8,23 +20,14 @@ from graphrag_sdk.models import (
     GenerationResponse,
     FinishReason,
 )
-
 from graphrag_sdk.fixtures.prompts import (
     EXTRACT_DATA_SYSTEM,
     EXTRACT_DATA_PROMPT,
     FIX_JSON_PROMPT,
     COMPLETE_DATA_EXTRACTION,
 )
-import logging
-from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
-import json
-from falkordb import Graph
-from graphrag_sdk.document import Document
-from uuid import uuid4
-import os
-import time
-from ratelimit import limits, sleep_and_retry
-from graphrag_sdk.models.model import OutputMethod
+
+RENDER_STEP_SIZE = 0.5
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -46,6 +49,7 @@ class ExtractDataStep(Step):
             "max_input_tokens": 500000,
             "max_output_tokens": 8192,
         },
+        hide_progress: bool = False,
     ) -> None:
         self.sources = sources
         self.ontology = ontology
@@ -54,53 +58,56 @@ class ExtractDataStep(Step):
             EXTRACT_DATA_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json()))
         )
         self.graph = graph
-
+        self.hide_progress = hide_progress
+        self.process_files = 0
+        self.counter_lock = Lock()
         if not os.path.exists("logs"):
             os.makedirs("logs")
 
     def _create_chat(self):
         return self.model.start_chat({"response_validation": False})
 
-    def run(self, instructions: str = None):
+    def run(self, instructions: str = None) -> list[AbstractSource]:
 
         tasks: list[Future[Ontology]] = []
-        with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-            # extract entities and relationships from each page
-            documents = [
-                (document, source.instruction)
-                for source in self.sources
-                for document in source.load()
-                if document is not None
-                and document.content is not None
-                and len(document.content) > 0
-            ]
-            logger.debug(f"Processing {len(documents)} documents")
-            for document, source_instructions in documents:
-                task_id = "extract_data_step_" + str(uuid4())
-                task = executor.submit(
-                    self._process_source,
-                    task_id,
-                    self._create_chat(),
-                    document,
-                    self.ontology,
-                    self.graph,
-                    source_instructions,
-                    instructions,
-                )
-                tasks.append(task)
+        
+        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
+            with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
 
-            # Wait for all tasks to complete
-            wait(tasks)
+                # Process each source document in parallel
+                for source in self.sources:
+                    task_id = "extract_data_step_" + str(uuid4())
+                    task = executor.submit(
+                        self._process_source,
+                        task_id,
+                        self._create_chat(),
+                        source,
+                        self.ontology,
+                        self.graph,
+                        instructions,
+                    )
+                    tasks.append(task)
+                    
+                # Wait for all tasks to be completed
+                while any(task.running() or not task.done() for task in tasks):
+                    time.sleep(RENDER_STEP_SIZE)
+                    with self.counter_lock:
+                        pbar.n = self.process_files
+                    pbar.refresh()
+
+        failed_sources = [self.sources[idx] for idx, task in enumerate(tasks) if task.exception()]     
+        return failed_sources
 
     def _process_source(
         self,
         task_id: str,
         chat_session: GenerativeModelChatSession,
-        document: Document,
+        source: AbstractSource,
         ontology: Ontology,
         graph: Graph,
         source_instructions: str = "",
         instructions: str = "",
+        retries: int = 1,
     ):
         try:
             _task_logger = logging.getLogger(task_id)
@@ -118,6 +125,10 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
+            
+            document = next(source.load())
+            source_instructions = source.instruction
+                
             text = document.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
@@ -140,7 +151,7 @@ class ExtractDataStep(Step):
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
-            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS:
+            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
                 responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))
@@ -192,10 +203,13 @@ class ExtractDataStep(Step):
                 except Exception as e:
                     _task_logger.error(f"Error creating relation: {e}")
                     continue
-
+            
         except Exception as e:
-            logger.exception(e)
+            logger.exception(f"Task id: {task_id} failed - {e}")
             raise e
+        finally:
+            with self.counter_lock:
+                self.process_files += 1
 
     def _create_entity(self, graph: Graph, args: dict, ontology: Ontology):
         # Get unique attributes from entity

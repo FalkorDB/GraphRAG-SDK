@@ -1,6 +1,6 @@
 import re
-import graphrag_sdk
 import logging
+import graphrag_sdk
 from fix_busted_json import repair_json
 
 logger = logging.getLogger(__name__)
