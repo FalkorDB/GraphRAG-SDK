@@ -1,12 +1,14 @@
 import json
 import logging
 import graphrag_sdk
-from falkordb import Graph
 from .entity import Entity
-from .attribute import Attribute
+
+from falkordb import Graph
 from typing import Optional
 from falkordb import FalkorDB
 from .relation import Relation
+from typing import List, Tuple
+from .attribute import Attribute
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
 
@@ -121,10 +123,11 @@ class Ontology(object):
     
     @staticmethod
     def from_kg_graph(name: str,
-        host: Optional[str] = "127.0.0.1",
+        host: Optional[str] = "127.0.0.1",# user bring the graph
         port: Optional[int] = 6379,
         username: Optional[str] = None,
-        password: Optional[str] = None,):
+        password: Optional[str] = None,
+        limit: int = 100,):
         """
         Creates an Ontology object from a given Knowledge Graph.
 
@@ -142,23 +145,24 @@ class Ontology(object):
         db = FalkorDB(host=host, port=port, username=username, password=password)
         graph = db.select_graph(name)
 
-        entities = graph.query(nodes_query).result_set
-        if not entities:
-            raise ValueError("No entities found in the Knowledge Graph, check if the graph is empty.")
+        e_labels = graph.query("CALL db.labels()").result_set
         
-        for entity in entities:
-            ontology.add_entity(Entity(entity[0][0], [Attribute(attr[0], attr[1], True, True) for attr in entity[1]]))
+        for label in e_labels:
+            nodes_attributes = graph.query(f"MATCH (c:{label[0]}) RETURN properties(c) LIMIT {limit}").result_set
+            attributes = extract_prop_to_ontology(nodes_attributes)
+            ontology.add_entity(Entity(label[0], attributes))
 
-        relations = graph.query(rel_query).result_set
-        for relation in relations:
-            label = relation[0]['type']
-            ontology.add_relation(
-                Relation(label, relation[0]['start'], relation[0]['end'], [Attribute(attr[0], attr[1], False, False) for attr in relation[1]])
-            )
-
+        r_labels = graph.query("CALL db.relationshipTypes()").result_set
+        for r_label in r_labels:
+            for label_s in e_labels:
+                for label_t in e_labels:
+                    relation_attributes = graph.query(f"MATCH (:{label_s[0]})-[r:{r_label[0]}]->(:{label_t[0]}) RETURN properties(r) LIMIT {limit}").result_set
+                    if relation_attributes:
+                        attributes = extract_prop_to_ontology(relation_attributes)
+                        ontology.add_relation(Relation(r_label[0], label_s[0], label_t[0], attributes))
+    
         return ontology
     
-
     def add_entity(self, entity: Entity):
         """
         Adds an entity to the ontology.
@@ -388,3 +392,40 @@ The following entities do not have unique attributes:
             query = relation.to_graph_query()
             logger.debug(f"Query: {query}")
             graph.query(query)
+            
+def extract_prop_to_ontology(result_set) -> List[Attribute]:
+    # Sort by the number of properties
+    result_set = sorted(result_set, key=lambda x: len(x[0]))
+    
+    # Extract attributes
+    attr_unique = set()
+    attributes = []
+    for i, result in enumerate(result_set):
+        is_required = (i == 0)  # Only the first set of attributes is required
+        # ensure that they are in all the set
+        for attr, value in result[0].items():
+            if attr in attr_unique:
+                continue
+            attr_unique.add(attr)
+            
+            # Determine attribute type
+            if isinstance(value, str): # check if the value is a string
+                attr_type = "string"
+            elif isinstance(value, int) or isinstance(value, float): # check if the value is an integer or float
+                attr_type = "number"
+            elif isinstance(value, bool): # check if the value is a boolean
+                attr_type = "boolean"
+            elif isinstance(value, list): # check if the value is a list
+                attr_type = "list"
+            else:
+                continue
+            
+            # Determine uniqueness
+            if is_required:
+                values_for_property = [item[0].get(attr) for item in result_set if attr in item[0]] # without loop
+                is_unique = len(values_for_property) == len(set(values_for_property))
+                
+            # Append the attribute
+            attributes.append(Attribute(attr, attr_type, is_unique, is_required))
+
+    return attributes
