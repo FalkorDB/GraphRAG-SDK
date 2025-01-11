@@ -33,6 +33,13 @@ jobs:
         with:
           python-version: 3.x # Update with desired Python version
 
+      - uses: astral-sh/ruff-action@v3
+        with:
+          src: >-
+            "./graphrag_sdk"
+            "./examples"
+            "./tests"
+            
       - name: Cache Poetry virtualenv
         id: cache
         uses: actions/cache@v4
