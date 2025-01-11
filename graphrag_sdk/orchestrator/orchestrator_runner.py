@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class OrchestratorResult(StepResult):
-
     def __init__(self, output: str):
         self._output = output
 
@@ -86,7 +85,6 @@ class OrchestratorRunner:
         return input(question)
 
     def run(self) -> OrchestratorResult:
-
         first_step = self._plan.steps[0] if len(self._plan.steps) > 0 else None
 
         if first_step is None:
@@ -162,7 +160,6 @@ class OrchestratorRunner:
         self,
         next_step: PlanStep | None = None,
     ) -> OrchestratorDecision:
-
         response = self.chat.send_message(
             ORCHESTRATOR_DECISION_PROMPT.replace(
                 "#LOG_HISTORY",

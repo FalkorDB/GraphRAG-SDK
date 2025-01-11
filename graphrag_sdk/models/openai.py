@@ -10,7 +10,6 @@ from openai import OpenAI
 
 
 class OpenAiGenerativeModel(GenerativeModel):
-
     client: OpenAI = None
 
     def __init__(
@@ -72,7 +71,6 @@ class OpenAiGenerativeModel(GenerativeModel):
 
 
 class OpenAiChatSession(GenerativeModelChatSession):
-
     _history = []
 
     def __init__(self, model: OpenAiGenerativeModel, args: dict | None = None):

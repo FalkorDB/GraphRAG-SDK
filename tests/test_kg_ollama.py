@@ -30,7 +30,6 @@ class TestKGOllama(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls.ontology = Ontology([], [])
 
         cls.ontology.add_entity(
@@ -94,7 +93,6 @@ class TestKGOllama(unittest.TestCase):
         )
 
     def test_kg_creation(self):
-
         file_path = "tests/data/madoff.txt"
 
         sources = [Source(file_path)]
@@ -113,7 +111,6 @@ class TestKGOllama(unittest.TestCase):
         assert num_actors > 5, "The number of actors found should be greater than 5"
 
     def test_kg_delete(self):
-
         self.kg.delete()
 
         db = FalkorDB()

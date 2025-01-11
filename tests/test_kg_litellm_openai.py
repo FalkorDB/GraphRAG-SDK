@@ -1,7 +1,6 @@
 import re
 import logging
 import unittest
-from falkordb import FalkorDB
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
 from graphrag_sdk.source import Source
@@ -24,7 +23,6 @@ class TestKGLiteLLM(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls.ontology = Ontology([], [])
 
         cls.ontology.add_entity(
@@ -77,7 +75,6 @@ class TestKGLiteLLM(unittest.TestCase):
         )
 
     def test_kg_creation(self):
-
         file_path = "tests/data/madoff.txt"
 
         sources = [Source(file_path)]

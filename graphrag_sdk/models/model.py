@@ -70,7 +70,6 @@ class GenerativeModelConfig:
 
 
 class GenerationResponse:
-
     def __init__(self, text: str, finish_reason: FinishReason):
         self.text = text
         self.finish_reason = finish_reason

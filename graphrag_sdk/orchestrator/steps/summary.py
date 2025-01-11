@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 class SummaryResult(StepResult):
-
     def __init__(self, output: str):
         self._output = output
 
@@ -36,7 +35,6 @@ class SummaryResult(StepResult):
 
 
 class SummaryStep(graphrag_sdk.orchestrator.step.PlanStep):
-
     def __init__(self, id: str, properties: any):
         self._id = id
         self._properties = {}

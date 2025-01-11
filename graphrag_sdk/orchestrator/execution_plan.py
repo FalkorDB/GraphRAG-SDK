@@ -3,7 +3,6 @@ from graphrag_sdk.orchestrator.step import PlanStep
 
 
 class ExecutionPlan:
-
     steps: list[PlanStep] = []
 
     def __init__(self, steps: list[PlanStep]):

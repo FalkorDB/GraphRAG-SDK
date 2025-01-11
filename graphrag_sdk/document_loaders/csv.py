@@ -23,8 +23,7 @@ class CSVLoader:
                     [
                         ",".join(row)
                         for row in rows[
-                            i
-                            * self.rows_per_document : (i + 1)
+                            i * self.rows_per_document : (i + 1)
                             * self.rows_per_document
                         ]
                     ]

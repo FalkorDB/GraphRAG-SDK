@@ -24,7 +24,6 @@ class StepBlockType:
 
 
 class PlanStep(ABC):
-
     @property
     @abstractmethod
     def id(self) -> str:

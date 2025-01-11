@@ -68,7 +68,6 @@ class CreateOntologyStep(Step):
             disable=self.hide_progress,
         ) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-
                 # Process each source document in parallel
                 for source in self.sources:
                     task = executor.submit(

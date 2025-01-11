@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 
 
 class StepResult(ABC):
-
     @property
     @abstractmethod
     def output(self) -> str:

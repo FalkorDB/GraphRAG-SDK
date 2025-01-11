@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
-
     def __init__(self, model: GenerativeModel, backstory: str = ""):
         self._model = model
         self._backstory = backstory

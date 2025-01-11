@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 class AgentStepResult(StepResult):
-
     def __init__(self, response_code: AgentResponseCode, payload: dict):
         self.response_code = response_code
         self.payload = payload
@@ -38,7 +37,6 @@ class AgentStepResult(StepResult):
 
 
 class AgentProperties:
-
     def __init__(self, agent_id: str, session_id: str = None, payload: dict = None):
         self.agent_id = agent_id
         self.session_id = session_id
@@ -67,7 +65,6 @@ class AgentProperties:
 
 
 class AgentStep(PlanStep):
-
     def __init__(self, id: str, properties: AgentProperties):
         self._id = id
         self._properties = properties

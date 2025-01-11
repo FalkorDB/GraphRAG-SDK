@@ -157,4 +157,4 @@ class Attribute:
         Returns:
             str: A string representation of the Attribute object.
         """
-        return f"{self.name}: \"{self.type}{'!' if self.unique else ''}{'*' if self.required else ''}\""
+        return f'{self.name}: "{self.type}{"!" if self.unique else ""}{"*" if self.required else ""}"'

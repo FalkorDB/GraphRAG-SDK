@@ -67,7 +67,6 @@ def stringify_falkordb_response(response):
 
 
 def extract_cypher(text: str):
-
     if not text.startswith("```"):
         return text
 
@@ -138,7 +137,6 @@ def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology
 
 
 def validate_cypher_relation_directions(cypher: str, ontology: graphrag_sdk.Ontology):
-
     errors = []
     relations = list(re.finditer(r"\[.*?\]", cypher))
     i = 0

@@ -18,7 +18,6 @@ from google.generativeai import (
 
 
 class GeminiGenerativeModel(GenerativeModel):
-
     _model: GoogleGenerativeModel = None
 
     def __init__(
@@ -99,7 +98,6 @@ class GeminiGenerativeModel(GenerativeModel):
 
 
 class GeminiChatSession(GenerativeModelChatSession):
-
     def __init__(self, model: GeminiGenerativeModel, args: dict | None = None):
         self._model = model
         self._chat_session = self._model._model.start_chat(

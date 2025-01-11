@@ -19,7 +19,7 @@ class PDFLoader:
             __import__("pypdf")
         except ModuleNotFoundError:
             raise ModuleNotFoundError(
-                "pypdf package not found, please install it with " "`pip install pypdf`"
+                "pypdf package not found, please install it with `pip install pypdf`"
             )
 
         self.path = path

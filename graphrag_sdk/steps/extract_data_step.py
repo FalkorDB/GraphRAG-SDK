@@ -67,7 +67,6 @@ class ExtractDataStep(Step):
         return self.model.start_chat({"response_validation": False})
 
     def run(self, instructions: str = None) -> list[AbstractSource]:
-
         tasks: list[Future[Ontology]] = []
 
         with tqdm(
@@ -76,7 +75,6 @@ class ExtractDataStep(Step):
             disable=self.hide_progress,
         ) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-
                 # Process each source document in parallel
                 for source in self.sources:
                     task_id = "extract_data_step_" + str(uuid4())

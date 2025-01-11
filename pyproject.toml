@@ -44,6 +44,8 @@ sphinx = "^7.3.7"
 sphinx-rtd-theme = "^2.0.0"
 pandas = "^2.2.2"
 jupyter = "^1.0.0"
+ruff = "^0.9.1"
+black = "^24.10.0"
 
 [build-system]
 requires = ["poetry-core"]

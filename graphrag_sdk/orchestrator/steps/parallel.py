@@ -57,7 +57,6 @@ class ParallelProperties:
 
 
 class ParallelStep(PlanStep):
-
     def __init__(self, id: str, properties: ParallelProperties):
         self._id = id
         self._properties = properties

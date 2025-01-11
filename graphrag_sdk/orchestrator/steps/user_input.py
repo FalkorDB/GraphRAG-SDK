@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 
 class UserInputResult(StepResult):
-
     def __init__(self, output: str):
         self._output = output
 
@@ -34,7 +33,6 @@ class UserInputResult(StepResult):
 
 
 class UserInputProperties:
-
     def __init__(self, question: str):
         self.question = question
 
@@ -57,7 +55,6 @@ class UserInputProperties:
 
 
 class UserInputStep(PlanStep):
-
     def __init__(self, id: str, properties: UserInputProperties):
         self._id = id
         self._properties = properties

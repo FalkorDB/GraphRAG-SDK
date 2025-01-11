@@ -196,7 +196,6 @@ class KnowledgeGraph:
         instructions: str = None,
         hide_progress: bool = False,
     ) -> list[AbstractSource]:
-
         step = ExtractDataStep(
             sources=list(sources),
             ontology=self.ontology,

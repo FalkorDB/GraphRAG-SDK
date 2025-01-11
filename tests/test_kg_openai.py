@@ -24,7 +24,6 @@ class TestKGOpenAI(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls.ontology = Ontology([], [])
 
         cls.ontology.add_entity(
@@ -77,7 +76,6 @@ class TestKGOpenAI(unittest.TestCase):
         )
 
     def test_kg_creation(self):
-
         file_path = "tests/data/madoff.txt"
 
         sources = [Source(file_path)]

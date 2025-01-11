@@ -32,15 +32,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: 3.x # Update with desired Python version
-
-      - uses: datadog/action-py-black-formatter@v2.5
-        with:
-          check_mode: "true"
-
-      - uses: astral-sh/ruff-action@v3
-        with:
-          src: >-
-            "./graphrag_sdk"
             
       - name: Cache Poetry virtualenv
         id: cache
@@ -68,6 +59,12 @@ jobs:
 
       - name: Install dependencies
         run: poetry install --extras "all"
+
+      - name: Run Lint
+        run: |
+          poetry run ruff check ./graphrag_sdk/
+          poetry run ruff format --check ./graphrag_sdk/
+          poetry run black ./graphrag_sdk/ --check
 
       - name: Wait for Ollama to be ready
         run: |
