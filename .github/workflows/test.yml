@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: 3.x # Update with desired Python version
 
-      - uses: datadog/action-py-black-formatter@v2.1
+      - uses: datadog/action-py-black-formatter@v2.5
         with:
           check_mode: "true"
 
