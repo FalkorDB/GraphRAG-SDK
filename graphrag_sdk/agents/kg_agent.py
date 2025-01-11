@@ -1,6 +1,7 @@
 from graphrag_sdk.kg import KnowledgeGraph
 from .agent import Agent
 
+
 class KGAgent(Agent):
     """Represents an Agent for a FalkorDB Knowledge Graph.
 
@@ -134,7 +135,7 @@ class KGAgent(Agent):
 
         """
         output = self.chat_session.send_message(params["prompt"])
-        return output['response']
+        return output["response"]
 
     def __repr__(self):
         """

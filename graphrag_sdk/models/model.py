@@ -7,9 +7,11 @@ class FinishReason:
     STOP = "STOP"
     OTHER = "OTHER"
 
+
 class OutputMethod(Enum):
-    JSON = 'json'
-    DEFAULT = 'default'
+    JSON = "json"
+    DEFAULT = "default"
+
 
 class GenerativeModelConfig:
     """
@@ -89,7 +91,9 @@ class GenerativeModelChatSession(ABC):
         self.model = model
 
     @abstractmethod
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(
+        self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT
+    ) -> GenerationResponse:
         pass
 
 

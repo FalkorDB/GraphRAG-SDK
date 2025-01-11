@@ -69,8 +69,12 @@ class ExtractDataStep(Step):
     def run(self, instructions: str = None) -> list[AbstractSource]:
 
         tasks: list[Future[Ontology]] = []
-        
-        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
+
+        with tqdm(
+            total=len(self.sources),
+            desc="Process Documents",
+            disable=self.hide_progress,
+        ) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
 
                 # Process each source document in parallel
@@ -86,7 +90,7 @@ class ExtractDataStep(Step):
                         instructions,
                     )
                     tasks.append(task)
-                    
+
                 # Wait for all tasks to be completed
                 while any(task.running() or not task.done() for task in tasks):
                     time.sleep(RENDER_STEP_SIZE)
@@ -94,7 +98,9 @@ class ExtractDataStep(Step):
                         pbar.n = self.process_files
                     pbar.refresh()
 
-        failed_sources = [self.sources[idx] for idx, task in enumerate(tasks) if task.exception()]     
+        failed_sources = [
+            self.sources[idx] for idx, task in enumerate(tasks) if task.exception()
+        ]
         return failed_sources
 
     def _process_source(
@@ -124,10 +130,10 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
-            
+
             document = next(source.load())
             source_instructions = source.instruction
-                
+
             text = document.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
@@ -146,14 +152,27 @@ class ExtractDataStep(Step):
             responses: list[GenerationResponse] = []
             response_idx = 0
 
-            responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
+            responses.append(
+                self._call_model(
+                    chat_session, user_message, output_method=OutputMethod.JSON
+                )
+            )
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
-            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
+            while (
+                responses[response_idx].finish_reason == FinishReason.MAX_TOKENS
+                and response_idx < retries
+            ):
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
-                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))
+                responses.append(
+                    self._call_model(
+                        chat_session,
+                        COMPLETE_DATA_EXTRACTION,
+                        output_method=OutputMethod.JSON,
+                    )
+                )
                 _task_logger.debug(
                     f"Model response after continue: {responses[response_idx].text}"
                 )
@@ -202,7 +221,7 @@ class ExtractDataStep(Step):
                 except Exception as e:
                     _task_logger.error(f"Error creating relation: {e}")
                     continue
-            
+
         except Exception as e:
             logger.exception(f"Task id: {task_id} failed - {e}")
             raise e
@@ -293,7 +312,7 @@ class ExtractDataStep(Step):
         chat_session: GenerativeModelChatSession,
         prompt: str,
         retry: int = 6,
-        output_method: OutputMethod = OutputMethod.DEFAULT
+        output_method: OutputMethod = OutputMethod.DEFAULT,
     ):
         try:
             return chat_session.send_message(prompt, output_method=output_method)

@@ -1,4 +1,4 @@
-class Document():
+class Document:
     """
     Common class containing text extracted from a source
     """

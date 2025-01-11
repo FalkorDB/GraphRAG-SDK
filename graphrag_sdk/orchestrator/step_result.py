@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+
 class StepResult(ABC):
 
     @property

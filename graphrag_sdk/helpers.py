@@ -77,9 +77,7 @@ def extract_cypher(text: str):
     return "".join(matches)
 
 
-def validate_cypher(
-    cypher: str, ontology: graphrag_sdk.Ontology
-) -> list[str] | None:
+def validate_cypher(cypher: str, ontology: graphrag_sdk.Ontology) -> list[str] | None:
     try:
         if not cypher or len(cypher) == 0:
             return ["Cypher statement is empty"]
@@ -126,10 +124,10 @@ def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology
     for relation in relation_labels:
         for label in relation.split("|"):
             max_idx = min(
-                    label.index("*") if "*" in label else len(label),
-                    label.index("{") if "{" in label else len(label),
-                    label.index("]") if "]" in label else len(label),
-                    )
+                label.index("*") if "*" in label else len(label),
+                label.index("{") if "{" in label else len(label),
+                label.index("]") if "]" in label else len(label),
+            )
             label = label[:max_idx]
             if label not in [relation.label for relation in ontology.relations]:
                 not_found_relation_labels.append(label)
@@ -139,9 +137,7 @@ def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology
     ]
 
 
-def validate_cypher_relation_directions(
-    cypher: str, ontology: graphrag_sdk.Ontology
-):
+def validate_cypher_relation_directions(cypher: str, ontology: graphrag_sdk.Ontology):
 
     errors = []
     relations = list(re.finditer(r"\[.*?\]", cypher))

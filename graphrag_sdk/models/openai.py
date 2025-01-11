@@ -84,34 +84,34 @@ class OpenAiChatSession(GenerativeModelChatSession):
             else []
         )
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(
+        self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT
+    ) -> GenerationResponse:
         generation_config = self._get_generation_config(output_method)
         prompt = []
         prompt.extend(self._history)
         prompt.append({"role": "user", "content": message[:14385]})
         response = self._model.client.chat.completions.create(
-            model=self._model.model_name,
-            messages=prompt,
-            **generation_config
+            model=self._model.model_name, messages=prompt, **generation_config
         )
         content = self._model.parse_generate_content_response(response)
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": content.text})
         return content
-    
+
     def _get_generation_config(self, output_method: OutputMethod):
         config = self._model.generation_config.to_json()
         if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
+            config["temperature"] = 0
+            config["response_format"] = {"type": "json_object"}
+
         return config
-    
+
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
-        
+
         Example:
             Before:
             [
@@ -134,7 +134,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
         else:
             # Reset to initial state with just system message if present
             self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+                [{"role": "system", "content": self._model.system_instruction}]
+                if self._model.system_instruction is not None
+                else []
+            )

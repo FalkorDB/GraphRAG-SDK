@@ -10,13 +10,18 @@ from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.ollama import OllamaGenerativeModel
 from graphrag_sdk.models.openai import OpenAiGenerativeModel
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig, GenerativeModelConfig
+from graphrag_sdk import (
+    KnowledgeGraph,
+    KnowledgeGraphModelConfig,
+    GenerativeModelConfig,
+)
 
 load_dotenv()
 
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
 
 class TestKGOllama(unittest.TestCase):
     """
@@ -72,13 +77,20 @@ class TestKGOllama(unittest.TestCase):
 
         cls.graph_name = "IMDB_ollama"
 
-        model_ollama = OllamaGenerativeModel(model_name="llama3:8b", generation_config=GenerativeModelConfig(temperature=0))
+        model_ollama = OllamaGenerativeModel(
+            model_name="llama3:8b",
+            generation_config=GenerativeModelConfig(temperature=0),
+        )
         model_openai = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
 
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
-            model_config=KnowledgeGraphModelConfig(extract_data=model_openai, cypher_generation=model_ollama, qa=model_ollama),
+            model_config=KnowledgeGraphModelConfig(
+                extract_data=model_openai,
+                cypher_generation=model_ollama,
+                qa=model_ollama,
+            ),
         )
 
     def test_kg_creation(self):
@@ -91,11 +103,11 @@ class TestKGOllama(unittest.TestCase):
 
         chat = self.kg.chat_session()
         answer = chat.send_message("How many actors acted in a movie?")
-        answer = answer['response']
+        answer = answer["response"]
 
         logger.info(f"Answer: {answer}")
 
-        actors_count = re.findall(r'\d+', answer)
+        actors_count = re.findall(r"\d+", answer)
         num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
         assert num_actors > 5, "The number of actors found should be greater than 5"

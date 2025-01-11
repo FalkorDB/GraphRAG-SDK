@@ -21,7 +21,7 @@ class Orchestrator:
         self._backstory = backstory
         self._agents = []
         self._chat = None
-        
+
     def _get_chat(self):
         if self._chat is None:
             self._chat = self._model.with_system_instruction(

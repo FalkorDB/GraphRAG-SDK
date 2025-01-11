@@ -4,7 +4,8 @@ from typing import Iterator
 from bs4 import BeautifulSoup
 from graphrag_sdk.document import Document
 
-class URLLoader():
+
+class URLLoader:
     """
     Load URL
     """
@@ -21,7 +22,7 @@ class URLLoader():
 
     def _download(self) -> str:
         try:
-            response = requests.get(self.url, headers={'User-Agent': 'Mozilla/5.0'})
+            response = requests.get(self.url, headers={"User-Agent": "Mozilla/5.0"})
             response.raise_for_status()  # Raise an HTTPError for bad responses (4xx and 5xx)
             return response.text
         except requests.exceptions.RequestException as e:
@@ -39,13 +40,13 @@ class URLLoader():
         content = self._download()
 
         # extract text from HTML, populate content
-        soup = BeautifulSoup(content, 'html.parser')
+        soup = BeautifulSoup(content, "html.parser")
 
         # Extract text from the HTML
         content = soup.get_text()
 
         # Remove extra newlines
-        content = re.sub(r'\n{2,}', '\n', content)
+        content = re.sub(r"\n{2,}", "\n", content)
 
         yield Document(content)
-        #return f"{self.source}\n{self.content}"
+        # return f"{self.source}\n{self.content}"

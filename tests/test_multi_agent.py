@@ -314,7 +314,6 @@ class TestMultiAgent(unittest.TestCase):
         print(response)
         assert response is not None
 
-
         assert (
             "itinerary" in response.output.lower() or "day" in response.output.lower()
         ), f"Response should contain the 'itinerary' or 'day' string: {response.output}"

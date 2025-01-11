@@ -80,7 +80,7 @@ class TestValidateCypher1(unittest.TestCase):
 
 class TestValidateCypher2(unittest.TestCase):
     """
-        Test a cypher query with the wrong relation direction
+    Test a cypher query with the wrong relation direction
     """
 
     cypher = """

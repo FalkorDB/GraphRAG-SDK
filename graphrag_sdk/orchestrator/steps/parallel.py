@@ -17,10 +17,7 @@ class ParallelStepResult(StepResult):
     @staticmethod
     def from_json(json: dict) -> "ParallelStepResult":
         return ParallelStepResult(
-            [
-                StepResult.from_json(result)
-                for result in json["results"]
-            ]
+            [StepResult.from_json(result) for result in json["results"]]
         )
 
     def __str__(self) -> str:
@@ -51,10 +48,10 @@ class ParallelProperties:
 
     def to_json(self) -> dict:
         return {"steps": [step.to_json() for step in self.steps]}
-    
+
     def __str__(self) -> str:
         return f"ParallelProperties(steps={self.steps})"
-    
+
     def __repr__(self) -> str:
         return str(self)
 

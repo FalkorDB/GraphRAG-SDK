@@ -105,7 +105,9 @@ class AgentStep(PlanStep):
         self,
         runner: "OrchestratorRunner",
     ) -> AgentStepResult:
-        logger.info(f"Running agent {self.properties.agent_id}, step: {self.id}, payload: {self.properties.payload}")
+        logger.info(
+            f"Running agent {self.properties.agent_id}, step: {self.id}, payload: {self.properties.payload}"
+        )
 
         agent = runner.get_agent(self.properties.agent_id)
         if agent is None:

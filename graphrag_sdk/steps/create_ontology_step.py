@@ -23,6 +23,7 @@ from graphrag_sdk.fixtures.prompts import (
     FIX_JSON_PROMPT,
     BOUNDARIES_PREFIX,
 )
+
 RENDER_STEP_SIZE = 0.5
 
 
@@ -61,7 +62,11 @@ class CreateOntologyStep(Step):
     def run(self, boundaries: Optional[str] = None):
         tasks: list[Future[Ontology]] = []
 
-        with tqdm(total=len(self.sources) + 1, desc="Process Documents", disable=self.hide_progress) as pbar:
+        with tqdm(
+            total=len(self.sources) + 1,
+            desc="Process Documents",
+            disable=self.hide_progress,
+        ) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
 
                 # Process each source document in parallel
@@ -81,14 +86,16 @@ class CreateOntologyStep(Step):
                     with self.counter_lock:
                         pbar.n = self.process_files
                     pbar.refresh()
-                
+
                 # Validate the ontology
                 if len(self.ontology.entities) == 0:
                     raise Exception("Failed to create ontology")
-                
+
                 # Finalize the ontology
-                task_fin = executor.submit(self._fix_ontology, self._create_chat(), self.ontology)
-                
+                task_fin = executor.submit(
+                    self._fix_ontology, self._create_chat(), self.ontology
+                )
+
                 # Wait for the final task to be completed
                 while not task_fin.done():
                     time.sleep(RENDER_STEP_SIZE)
@@ -107,12 +114,16 @@ class CreateOntologyStep(Step):
     ):
         try:
             document = next(source.load())
-            
+
             text = document.content[: self.config["max_input_tokens"]]
 
             user_message = CREATE_ONTOLOGY_PROMPT.format(
-                text = text,
-                boundaries = BOUNDARIES_PREFIX.format(user_boundaries=boundaries) if boundaries is not None else "", 
+                text=text,
+                boundaries=(
+                    BOUNDARIES_PREFIX.format(user_boundaries=boundaries)
+                    if boundaries is not None
+                    else ""
+                ),
             )
 
             responses: list[GenerationResponse] = []
@@ -122,7 +133,10 @@ class CreateOntologyStep(Step):
 
             logger.debug(f"Model response: {responses[response_idx]}")
 
-            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
+            while (
+                responses[response_idx].finish_reason == FinishReason.MAX_TOKENS
+                and response_idx < retries
+            ):
                 response_idx += 1
                 responses.append(self._call_model(chat_session, "continue"))
 
@@ -209,7 +223,7 @@ class CreateOntologyStep(Step):
 
         if data is None:
             return o
-        
+
         try:
             new_ontology = Ontology.from_json(data)
         except Exception as e:

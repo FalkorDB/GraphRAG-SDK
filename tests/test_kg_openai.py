@@ -16,6 +16,7 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+
 class TestKGOpenAI(unittest.TestCase):
     """
     Test Knowledge Graph
@@ -85,11 +86,11 @@ class TestKGOpenAI(unittest.TestCase):
 
         chat = self.kg.chat_session()
         answer = chat.send_message("How many actors acted in a movie?")
-        answer = answer['response']
+        answer = answer["response"]
 
         logger.info(f"Answer: {answer}")
 
-        actors_count = re.findall(r'\d+', answer)
+        actors_count = re.findall(r"\d+", answer)
         num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
         assert num_actors > 10, "The number of actors found should be greater than 10"

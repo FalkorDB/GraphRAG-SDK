@@ -33,6 +33,10 @@ jobs:
         with:
           python-version: 3.x # Update with desired Python version
 
+      - uses: datadog/action-py-black-formatter@v2.1
+        with:
+          check_mode: "true"
+
       - uses: astral-sh/ruff-action@v3
         with:
           src: >-
