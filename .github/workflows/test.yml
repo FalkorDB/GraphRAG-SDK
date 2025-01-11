@@ -63,7 +63,6 @@ jobs:
       - name: Run Lint
         run: |
           poetry run ruff check ./graphrag_sdk/
-          poetry run ruff format --check ./graphrag_sdk/
           poetry run black ./graphrag_sdk/ --check
 
       - name: Wait for Ollama to be ready
