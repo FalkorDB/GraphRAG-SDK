@@ -7,7 +7,6 @@ from uuid import uuid4
 from falkordb import Graph
 from threading import Lock
 from graphrag_sdk.steps.Step import Step
-from graphrag_sdk.document import Document
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models.model import OutputMethod
@@ -174,7 +173,7 @@ class ExtractDataStep(Step):
                 data = json.loads(extract_json(last_respond))
             except Exception as e:
                 _task_logger.debug(f"Error extracting JSON: {e}")
-                _task_logger.debug(f"Prompting model to fix JSON")
+                _task_logger.debug("Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
                     FIX_JSON_PROMPT.format(json=last_respond, error=str(e)),
@@ -188,7 +187,7 @@ class ExtractDataStep(Step):
                     f"Invalid data format. Missing entities or relations. {data}"
                 )
                 raise Exception(
-                    f"Invalid data format. Missing 'entities' or 'relations' in JSON."
+                    "Invalid data format. Missing 'entities' or 'relations' in JSON."
                 )
             for entity in data["entities"]:
                 try:

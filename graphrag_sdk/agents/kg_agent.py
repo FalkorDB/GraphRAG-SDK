@@ -1,7 +1,5 @@
 from graphrag_sdk.kg import KnowledgeGraph
 from .agent import Agent
-from graphrag_sdk.models import GenerativeModelChatSession
-
 
 class KGAgent(Agent):
     """Represents an Agent for a FalkorDB Knowledge Graph.

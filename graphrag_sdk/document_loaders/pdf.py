@@ -15,9 +15,9 @@ class PDFLoader():
         """
 
         try:
-            import pypdf
-        except ImportError:
-            raise ImportError(
+            __import__('pypdf')
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(
                 "pypdf package not found, please install it with " "`pip install pypdf`"
         )
 

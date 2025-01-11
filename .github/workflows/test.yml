@@ -37,8 +37,6 @@ jobs:
         with:
           src: >-
             "./graphrag_sdk"
-            "./examples"
-            "./tests"
             
       - name: Cache Poetry virtualenv
         id: cache

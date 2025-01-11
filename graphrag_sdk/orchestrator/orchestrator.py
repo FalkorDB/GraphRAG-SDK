@@ -1,6 +1,5 @@
 from graphrag_sdk.agents import Agent
 from graphrag_sdk.models import GenerativeModel
-from graphrag_sdk.models.model import OutputMethod
 from .orchestrator_runner import OrchestratorRunner
 from graphrag_sdk.fixtures.prompts import (
     ORCHESTRATOR_SYSTEM,

@@ -1,6 +1,5 @@
 import graphrag_sdk.orchestrator.step
 from graphrag_sdk.orchestrator.step_result import StepResult
-from concurrent.futures import ThreadPoolExecutor, wait
 from graphrag_sdk.orchestrator.orchestrator_runner import OrchestratorRunner
 from graphrag_sdk.fixtures.prompts import ORCHESTRATOR_SUMMARY_PROMPT
 

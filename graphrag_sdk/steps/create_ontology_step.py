@@ -5,7 +5,6 @@ from tqdm import tqdm
 from threading import Lock
 from typing import Optional
 from graphrag_sdk.steps.Step import Step
-from graphrag_sdk.document import Document
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.helpers import extract_json
 from ratelimit import limits, sleep_and_retry
@@ -138,7 +137,7 @@ class CreateOntologyStep(Step):
                 data = json.loads(extract_json(combined_text))
             except json.decoder.JSONDecodeError as e:
                 logger.debug(f"Error extracting JSON: {e}")
-                logger.debug(f"Prompting model to fix JSON")
+                logger.debug("Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
                     FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),
@@ -170,7 +169,7 @@ class CreateOntologyStep(Step):
             return o
 
     def _fix_ontology(self, chat_session: GenerativeModelChatSession, o: Ontology):
-        logger.debug(f"Fixing ontology...")
+        logger.debug("Fixing ontology...")
 
         user_message = FIX_ONTOLOGY_PROMPT.format(ontology=o)
 
@@ -196,7 +195,7 @@ class CreateOntologyStep(Step):
             data = json.loads(extract_json(combined_text))
         except json.decoder.JSONDecodeError as e:
             logger.debug(f"Error extracting JSON: {e}")
-            logger.debug(f"Prompting model to fix JSON")
+            logger.debug("Prompting model to fix JSON")
             json_fix_response = self._call_model(
                 self._create_chat(),
                 FIX_JSON_PROMPT.format(json=combined_text, error=str(e)),

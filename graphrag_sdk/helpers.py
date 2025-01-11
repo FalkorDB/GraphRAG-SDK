@@ -55,12 +55,12 @@ def stringify_falkordb_response(response):
     elif not isinstance(response[0], list):
         data = str(response).strip()
     else:
-        for l, _ in enumerate(response):
-            if not isinstance(response[l], list):
-                response[l] = str(response[l])
+        for line, _ in enumerate(response):
+            if not isinstance(response[line], list):
+                response[line] = str(response[line])
             else:
-                for i, __ in enumerate(response[l]):
-                    response[l][i] = str(response[l][i])
+                for i, __ in enumerate(response[line]):
+                    response[line][i] = str(response[line][i])
         data = str(response).strip()
 
     return data

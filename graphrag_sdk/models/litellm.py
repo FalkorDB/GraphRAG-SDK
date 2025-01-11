@@ -74,7 +74,7 @@ class LiteModel(GenerativeModel):
                 model=model, messages=messages, max_tokens=10
             )
             return True
-        except:
+        except:  # noqa: E722
             return False
             
     def check_and_pull_model(self) -> None:

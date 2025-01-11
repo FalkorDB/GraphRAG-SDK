@@ -1,5 +1,4 @@
 import json
-from graphrag_sdk.fixtures.regex import *
 import logging
 import re
 

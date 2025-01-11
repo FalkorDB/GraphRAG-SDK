@@ -1,5 +1,5 @@
 from json import loads
-from graphrag_sdk.orchestrator.step import PlanStep, StepBlockType
+from graphrag_sdk.orchestrator.step import PlanStep
 
 
 class ExecutionPlan:
