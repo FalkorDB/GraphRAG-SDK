@@ -7,7 +7,6 @@ from uuid import uuid4
 from falkordb import Graph
 from threading import Lock
 from graphrag_sdk.steps.Step import Step
-from graphrag_sdk.document import Document
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models.model import OutputMethod
@@ -68,12 +67,14 @@ class ExtractDataStep(Step):
         return self.model.start_chat({"response_validation": False})
 
     def run(self, instructions: str = None) -> list[AbstractSource]:
-
         tasks: list[Future[Ontology]] = []
-        
-        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
-            with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
 
+        with tqdm(
+            total=len(self.sources),
+            desc="Process Documents",
+            disable=self.hide_progress,
+        ) as pbar:
+            with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
                 # Process each source document in parallel
                 for source in self.sources:
                     task_id = "extract_data_step_" + str(uuid4())
@@ -87,7 +88,7 @@ class ExtractDataStep(Step):
                         instructions,
                     )
                     tasks.append(task)
-                    
+
                 # Wait for all tasks to be completed
                 while any(task.running() or not task.done() for task in tasks):
                     time.sleep(RENDER_STEP_SIZE)
@@ -95,7 +96,9 @@ class ExtractDataStep(Step):
                         pbar.n = self.process_files
                     pbar.refresh()
 
-        failed_sources = [self.sources[idx] for idx, task in enumerate(tasks) if task.exception()]     
+        failed_sources = [
+            self.sources[idx] for idx, task in enumerate(tasks) if task.exception()
+        ]
         return failed_sources
 
     def _process_source(
@@ -125,10 +128,10 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
-            
+
             document = next(source.load())
             source_instructions = source.instruction
-                
+
             text = document.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
@@ -147,14 +150,27 @@ class ExtractDataStep(Step):
             responses: list[GenerationResponse] = []
             response_idx = 0
 
-            responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
+            responses.append(
+                self._call_model(
+                    chat_session, user_message, output_method=OutputMethod.JSON
+                )
+            )
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
-            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
+            while (
+                responses[response_idx].finish_reason == FinishReason.MAX_TOKENS
+                and response_idx < retries
+            ):
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
-                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))
+                responses.append(
+                    self._call_model(
+                        chat_session,
+                        COMPLETE_DATA_EXTRACTION,
+                        output_method=OutputMethod.JSON,
+                    )
+                )
                 _task_logger.debug(
                     f"Model response after continue: {responses[response_idx].text}"
                 )
@@ -174,7 +190,7 @@ class ExtractDataStep(Step):
                 data = json.loads(extract_json(last_respond))
             except Exception as e:
                 _task_logger.debug(f"Error extracting JSON: {e}")
-                _task_logger.debug(f"Prompting model to fix JSON")
+                _task_logger.debug("Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
                     FIX_JSON_PROMPT.format(json=last_respond, error=str(e)),
@@ -188,7 +204,7 @@ class ExtractDataStep(Step):
                     f"Invalid data format. Missing entities or relations. {data}"
                 )
                 raise Exception(
-                    f"Invalid data format. Missing 'entities' or 'relations' in JSON."
+                    "Invalid data format. Missing 'entities' or 'relations' in JSON."
                 )
             for entity in data["entities"]:
                 try:
@@ -203,7 +219,7 @@ class ExtractDataStep(Step):
                 except Exception as e:
                     _task_logger.error(f"Error creating relation: {e}")
                     continue
-            
+
         except Exception as e:
             logger.exception(f"Task id: {task_id} failed - {e}")
             raise e
@@ -294,7 +310,7 @@ class ExtractDataStep(Step):
         chat_session: GenerativeModelChatSession,
         prompt: str,
         retry: int = 6,
-        output_method: OutputMethod = OutputMethod.DEFAULT
+        output_method: OutputMethod = OutputMethod.DEFAULT,
     ):
         try:
             return chat_session.send_message(prompt, output_method=output_method)

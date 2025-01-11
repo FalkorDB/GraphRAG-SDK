@@ -32,7 +32,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: 3.x # Update with desired Python version
-
+            
       - name: Cache Poetry virtualenv
         id: cache
         uses: actions/cache@v4
@@ -59,6 +59,11 @@ jobs:
 
       - name: Install dependencies
         run: poetry install --extras "all"
+
+      - name: Run Lint
+        run: |
+          poetry run ruff check ./graphrag_sdk/
+          poetry run black ./graphrag_sdk/ --check
 
       - name: Wait for Ollama to be ready
         run: |

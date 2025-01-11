@@ -17,10 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 class TestMultiAgent(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
-
         cls.restaurants_ontology = Ontology()
         cls.restaurants_ontology.add_entity(
             Entity(
@@ -306,14 +304,12 @@ class TestMultiAgent(unittest.TestCase):
             )
 
     def test_multi_agent(self):
-
         response = self.orchestrator.ask(
             "Write me a two-day itinerary for a trip to Rome. Do not ask any questions to me, just provide your best itinerary."
         )
 
         print(response)
         assert response is not None
-
 
         assert (
             "itinerary" in response.output.lower() or "day" in response.output.lower()

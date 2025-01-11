@@ -59,9 +59,9 @@ class _RelationEntity:
     def __str__(self) -> str:
         """
         Returns a string representation of the Relation object.
-        
+
         The string representation includes the label of the Relation object.
-        
+
         Returns:
             str: The string representation of the Relation object.
         """

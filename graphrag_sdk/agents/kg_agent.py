@@ -1,6 +1,5 @@
 from graphrag_sdk.kg import KnowledgeGraph
 from .agent import Agent
-from graphrag_sdk.models import GenerativeModelChatSession
 
 
 class KGAgent(Agent):
@@ -136,7 +135,7 @@ class KGAgent(Agent):
 
         """
         output = self.chat_session.send_message(params["prompt"])
-        return output['response']
+        return output["response"]
 
     def __repr__(self):
         """

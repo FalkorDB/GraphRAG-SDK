@@ -13,11 +13,11 @@ from google.generativeai import (
     GenerationConfig as GoogleGenerationConfig,
     configure,
     protos,
-    types,)
+    types,
+)
 
 
 class GeminiGenerativeModel(GenerativeModel):
-
     _model: GoogleGenerativeModel = None
 
     def __init__(
@@ -30,7 +30,6 @@ class GeminiGenerativeModel(GenerativeModel):
         self._generation_config = generation_config
         self._system_instruction = system_instruction
         configure(api_key=os.environ["GOOGLE_API_KEY"])
-
 
     def _get_model(self) -> GoogleGenerativeModel:
         if self._model is None:
@@ -73,7 +72,8 @@ class GeminiGenerativeModel(GenerativeModel):
                 == protos.Candidate.FinishReason.MAX_TOKENS
                 else (
                     FinishReason.STOP
-                    if response.candidates[0].finish_reason == protos.Candidate.FinishReason.STOP
+                    if response.candidates[0].finish_reason
+                    == protos.Candidate.FinishReason.STOP
                     else FinishReason.OTHER
                 )
             ),
@@ -98,31 +98,31 @@ class GeminiGenerativeModel(GenerativeModel):
 
 
 class GeminiChatSession(GenerativeModelChatSession):
-
     def __init__(self, model: GeminiGenerativeModel, args: dict | None = None):
         self._model = model
         self._chat_session = self._model._model.start_chat(
             history=args.get("history", []) if args is not None else [],
         )
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(
+        self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT
+    ) -> GenerationResponse:
         generation_config = self._get_generation_config(output_method)
-        response = self._chat_session.send_message(message, generation_config=generation_config)
+        response = self._chat_session.send_message(
+            message, generation_config=generation_config
+        )
         return self._model.parse_generate_content_response(response)
-    
+
     def _get_generation_config(self, output_method: OutputMethod):
         if output_method == OutputMethod.JSON:
-            return {
-                "response_mime_type": "application/json",
-                "temperature": 0
-            }
+            return {"response_mime_type": "application/json", "temperature": 0}
         return self._model._generation_config
-    
+
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
-        
+
         Example:
             Before:
             [
@@ -139,4 +139,3 @@ class GeminiChatSession(GenerativeModelChatSession):
             self._chat_session.history.pop()
         else:
             self._chat_session.history = []
-

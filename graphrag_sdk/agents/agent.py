@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from graphrag_sdk.models.model import GenerativeModelChatSession
 
 
 class AgentResponseCode:

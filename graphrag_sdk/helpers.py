@@ -55,19 +55,18 @@ def stringify_falkordb_response(response):
     elif not isinstance(response[0], list):
         data = str(response).strip()
     else:
-        for l, _ in enumerate(response):
-            if not isinstance(response[l], list):
-                response[l] = str(response[l])
+        for line, _ in enumerate(response):
+            if not isinstance(response[line], list):
+                response[line] = str(response[line])
             else:
-                for i, __ in enumerate(response[l]):
-                    response[l][i] = str(response[l][i])
+                for i, __ in enumerate(response[line]):
+                    response[line][i] = str(response[line][i])
         data = str(response).strip()
 
     return data
 
 
 def extract_cypher(text: str):
-
     if not text.startswith("```"):
         return text
 
@@ -77,9 +76,7 @@ def extract_cypher(text: str):
     return "".join(matches)
 
 
-def validate_cypher(
-    cypher: str, ontology: graphrag_sdk.Ontology
-) -> list[str] | None:
+def validate_cypher(cypher: str, ontology: graphrag_sdk.Ontology) -> list[str] | None:
     try:
         if not cypher or len(cypher) == 0:
             return ["Cypher statement is empty"]
@@ -126,10 +123,10 @@ def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology
     for relation in relation_labels:
         for label in relation.split("|"):
             max_idx = min(
-                    label.index("*") if "*" in label else len(label),
-                    label.index("{") if "{" in label else len(label),
-                    label.index("]") if "]" in label else len(label),
-                    )
+                label.index("*") if "*" in label else len(label),
+                label.index("{") if "{" in label else len(label),
+                label.index("]") if "]" in label else len(label),
+            )
             label = label[:max_idx]
             if label not in [relation.label for relation in ontology.relations]:
                 not_found_relation_labels.append(label)
@@ -139,10 +136,7 @@ def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology
     ]
 
 
-def validate_cypher_relation_directions(
-    cypher: str, ontology: graphrag_sdk.Ontology
-):
-
+def validate_cypher_relation_directions(cypher: str, ontology: graphrag_sdk.Ontology):
     errors = []
     relations = list(re.finditer(r"\[.*?\]", cypher))
     i = 0

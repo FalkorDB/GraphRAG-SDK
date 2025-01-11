@@ -1,5 +1,5 @@
 from typing import Iterator
-from abc import ABC, abstractmethod
+from abc import ABC
 from graphrag_sdk.document import Document
 from graphrag_sdk.document_loaders import (
     PDFLoader,
