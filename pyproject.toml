@@ -38,6 +38,7 @@ litellm = ["litellm", "ollama"]
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
+pytest-cov = "^6.0.0"
 
 [tool.poetry.group.dev.dependencies]
 sphinx = "^7.3.7"
