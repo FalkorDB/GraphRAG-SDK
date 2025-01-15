@@ -121,7 +121,9 @@ class Ontology(object):
         e_labels = graph.query("call db.labels()").result_set
         
         for label in e_labels:
-            attributes = graph.query(f"MATCH (a:{label[0]}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} with types limit {node_limit} unwind types as kt return kt, count(1)").result_set
+            attributes = graph.query(
+                f"""MATCH (a:{label[0]}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
+                WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
             ontology.add_entity(Entity(label[0], [Attribute(attr[0][0], attr[0][1], False, False) for attr in attributes]))
 
         r_labels = graph.query("call db.relationshipTypes()").result_set
@@ -129,7 +131,9 @@ class Ontology(object):
             for label_s in e_labels:
                 for label_t in e_labels:
                     if graph.query(f"MATCH (s:{label_s[0]})-[a:{label[0]}]->(t:{label_t[0]}) return a limit 1").result_set:
-                        attributes = graph.query(f"MATCH ()-[a:{label[0]}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} with types limit {node_limit} unwind types as kt return kt, count(1)").result_set
+                        attributes = graph.query(
+                            f"""MATCH ()-[a:{label[0]}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
+                            WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
                         ontology.add_relation(Relation(label[0], label_s[0], label_t[0], [Attribute(attr[0][0], attr[0][1], False, False) for attr in attributes]))
         return ontology
     
