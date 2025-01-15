@@ -108,33 +108,43 @@ class Ontology(object):
     @staticmethod
     def from_kg_graph(graph: Graph, node_limit: int = 100,):
         """
-        Creates an Ontology object from a given Knowledge Graph.
+        Constructs an Ontology object from a given Knowledge Graph.
+
+        This function queries the provided knowledge graph to extract:
+        1. Entities and their attributes.
+        2. Relationships between entities and their attributes.
 
         Args:
-            graph (Graph): The graph object representing the ontology.
-            
+            graph (Graph): The graph object representing the knowledge graph.
+            node_limit (int): The maximum number of nodes to sample for attribute extraction.
+
         Returns:
-            The Ontology object created from the Knowledge Graph.
+            Ontology: The Ontology object constructed from the Knowledge Graph.
         """
         ontology = Ontology()
 
+        # Retrieve all entity labels and relationship types from the graph.
         e_labels = graph.query("call db.labels()").result_set
+        r_labels = graph.query("call db.relationshipTypes()").result_set
         
+        # Process each entity label to extract attributes, limited to the specified number of nodes
         for label in e_labels:
             attributes = graph.query(
                 f"""MATCH (a:{label[0]}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
                 WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
             ontology.add_entity(Entity(label[0], [Attribute(attr[0][0], attr[0][1], False, False) for attr in attributes]))
 
-        r_labels = graph.query("call db.relationshipTypes()").result_set
+        # Process each relationship type and extract attributes, limited to the specified number of nodes
         for label in r_labels:
             for label_s in e_labels:
                 for label_t in e_labels:
+                    # Check if a relationship exists between the source and target entity labels
                     if graph.query(f"MATCH (s:{label_s[0]})-[a:{label[0]}]->(t:{label_t[0]}) return a limit 1").result_set:
                         attributes = graph.query(
                             f"""MATCH ()-[a:{label[0]}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
                             WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
                         ontology.add_relation(Relation(label[0], label_s[0], label_t[0], [Attribute(attr[0][0], attr[0][1], False, False) for attr in attributes]))
+        
         return ontology
     
     def add_entity(self, entity: Entity):
