@@ -130,24 +130,31 @@ class Attribute:
 
         return Attribute(name, AttributeType.from_string(attr_type), unique, required)
 
-    def to_json(self):
+    def to_json(self, include_all: bool = True):
         """
         Converts the attribute object to a JSON representation.
+
+        Args:
+            include_all (bool): Whether to include both "unique" and "required" fields in the output. Default is True.
 
         Returns:
             dict: A dictionary representing the attribute object in JSON format.
                 The dictionary contains the following keys:
                 - "name": The name of the attribute.
                 - "type": The type of the attribute.
-                - "unique": A boolean indicating whether the attribute is unique.
-                - "required": A boolean indicating whether the attribute is required.
+                Optionally includes:
+                - "unique": A boolean indicating whether the attribute is unique (if include_all is True).
+                - "required": A boolean indicating whether the attribute is required (if include_all is True).
         """
-        return {
+        json_data = {
             "name": self.name,
             "type": self.type,
-            "unique": self.unique,
-            "required": self.required,
         }
+        if include_all:
+            json_data["unique"] = self.unique
+            json_data["required"] = self.required
+
+        return json_data
 
     def __str__(self) -> str:
         """

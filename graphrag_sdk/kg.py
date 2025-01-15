@@ -66,7 +66,7 @@ class KnowledgeGraph:
         # Load / Save ontology to database
         if ontology is None:
             # load ontology from DB
-            ontology = Ontology.from_graph(ontology_graph)
+            ontology = Ontology.from_schema_graph(ontology_graph)
         else:
             # save ontology to DB
             ontology.save_to_graph(ontology_graph)

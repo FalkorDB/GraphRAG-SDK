@@ -205,7 +205,7 @@ class Relation:
             [Attribute.from_string(attr) for attr in attributes],
         )
 
-    def to_json(self):
+    def to_json(self, include_all: bool = True) -> dict:
         """
         Converts the Relation object to a JSON dictionary.
 
@@ -216,7 +216,7 @@ class Relation:
             "label": self.label,
             "source": self.source.to_json(),
             "target": self.target.to_json(),
-            "attributes": [attr.to_json() for attr in self.attributes],
+            "attributes": [attr.to_json(include_all=include_all) for attr in self.attributes],
         }
 
     def combine(self, relation2: "Relation"):
