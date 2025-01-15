@@ -1,3 +1,4 @@
+import json
 from falkordb import Graph
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.steps.qa_step import QAStep
@@ -45,8 +46,11 @@ class ChatSession:
         self.model_config = model_config
         self.graph = graph
         self.ontology = ontology
-        cypher_system_instruction = cypher_system_instruction.format(ontology=str(ontology.to_json(include_all=False)))
-
+        
+        # Filter the ontology to remove unique and required attributes that are not needed for Q&A. 
+        ontology_prompt = self.clean_ontology_for_prompt(ontology)
+                
+        cypher_system_instruction = cypher_system_instruction.format(ontology=ontology_prompt)
         
         self.cypher_prompt = cypher_gen_prompt
         self.qa_prompt = qa_prompt
@@ -109,3 +113,30 @@ class ChatSession:
             "context": context, 
             "cypher": cypher
             }
+        
+    def clean_ontology_for_prompt(self, ontology: dict):
+        """
+        Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
+
+        Args:
+            ontology (dict): The ontology to clean and transform.
+
+        Returns:
+            str: The cleaned ontology as a JSON string.
+        """
+        # Convert the ontology object to a JSON.
+        ontology = ontology.to_json()
+        
+        # Remove unique and required attributes from the ontology.
+        for entity in ontology["entities"]:
+            for attribute in entity["attributes"]:
+                del attribute['unique']
+                del attribute['required']
+        
+        for relation in ontology["relations"]:
+            for attribute in relation["attributes"]:
+                del attribute['unique']
+                del attribute['required']
+        
+        # Return the transformed ontology as a JSON string
+        return json.dumps(ontology)

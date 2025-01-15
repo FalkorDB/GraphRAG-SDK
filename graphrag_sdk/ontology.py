@@ -132,7 +132,7 @@ class Ontology(object):
             attributes = graph.query(
                 f"""MATCH (a:{label[0]}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
                 WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
-            ontology.add_entity(Entity(label[0], [Attribute(attr[0][0], attr[0][1], False, False) for attr in attributes]))
+            ontology.add_entity(Entity(label[0], [Attribute(attr[0][0], attr[0][1]) for attr in attributes]))
 
         # Process each relationship type and extract attributes, limited to the specified number of nodes
         for label in r_labels:
@@ -143,7 +143,7 @@ class Ontology(object):
                         attributes = graph.query(
                             f"""MATCH ()-[a:{label[0]}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
                             WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
-                        ontology.add_relation(Relation(label[0], label_s[0], label_t[0], [Attribute(attr[0][0], attr[0][1], False, False) for attr in attributes]))
+                        ontology.add_relation(Relation(label[0], label_s[0], label_t[0], [Attribute(attr[0][0], attr[0][1]) for attr in attributes]))
         
         return ontology
     
@@ -165,7 +165,7 @@ class Ontology(object):
         """
         self.relations.append(relation)
 
-    def to_json(self, include_all: bool = True) -> dict:
+    def to_json(self) -> dict:
         """
         Converts the ontology object to a JSON representation.
 
@@ -173,8 +173,8 @@ class Ontology(object):
             A dictionary representing the ontology object in JSON format.
         """
         return {
-            "entities": [entity.to_json(include_all) for entity in self.entities],
-            "relations": [relation.to_json(include_all) for relation in self.relations],
+            "entities": [entity.to_json() for entity in self.entities],
+            "relations": [relation.to_json() for relation in self.relations],
         }
 
     def merge_with(self, o: "Ontology"):

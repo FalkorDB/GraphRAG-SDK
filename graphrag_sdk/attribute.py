@@ -57,7 +57,7 @@ class Attribute:
     """
 
     def __init__(
-        self, name: str, attr_type: AttributeType, unique: bool, required: bool = False
+        self, name: str, attr_type: AttributeType, unique: bool = False, required: bool = False
     ):
         """
         Initialize a new Attribute object.
@@ -65,7 +65,7 @@ class Attribute:
         Args:
             name (str): The name of the attribute.
             attr_type (AttributeType): The type of the attribute.
-            unique (bool): Indicates whether the attribute should be unique.
+            unique (bool, optional): Indicates whether the attribute should be unique. Defaults to False.
             required (bool, optional): Indicates whether the attribute is required. Defaults to False.
         """
         self.name = re.sub(r"([^a-zA-Z0-9_])", "_", name)
@@ -130,29 +130,24 @@ class Attribute:
 
         return Attribute(name, AttributeType.from_string(attr_type), unique, required)
 
-    def to_json(self, include_all: bool = True):
+    def to_json(self):
         """
         Converts the attribute object to a JSON representation.
-
-        Args:
-            include_all (bool): Whether to include both "unique" and "required" fields in the output. Default is True.
 
         Returns:
             dict: A dictionary representing the attribute object in JSON format.
                 The dictionary contains the following keys:
                 - "name": The name of the attribute.
                 - "type": The type of the attribute.
-                Optionally includes:
-                - "unique": A boolean indicating whether the attribute is unique (if include_all is True).
-                - "required": A boolean indicating whether the attribute is required (if include_all is True).
+                - "unique": A boolean indicating whether the attribute is unique.
+                - "required": A boolean indicating whether the attribute is required.
         """
         json_data = {
             "name": self.name,
             "type": self.type,
+            "unique": self.unique,
+            "required": self.required,
         }
-        if include_all:
-            json_data["unique"] = self.unique
-            json_data["required"] = self.required
 
         return json_data
 
