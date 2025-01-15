@@ -2,7 +2,7 @@
 name = "graphrag_sdk"
 version = "0.4.1"
 license = "MIT"
-description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
+description = "Build fast and accurate GenAI apps with GraphRAG SDK at scale."
 authors = ["FalkorDB <info@falkordb.com>"]
 readme = "README.md"
 repository = "https://github.com/FalkorDB/GraphRAG-SDK"
