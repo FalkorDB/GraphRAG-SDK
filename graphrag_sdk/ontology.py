@@ -136,13 +136,13 @@ class Ontology(object):
 
         # Extract attributes for each edge type, limited by the specified sample size.
         for e_type in e_types:
+            e_t = e_type[0]
             attributes = graph.query(
                             f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
                             WITH types limit {sample_size} unwind types as kt RETURN kt, count(1)""").result_set
             attributes = [Attribute(attr[0][0], attr[0][1]) for attr in attributes]
             for s_lbls in n_labels:
                 for t_lbls in n_labels:
-                    e_t = e_type[0]
                     s_l = s_lbls[0]
                     t_l = t_lbls[0]
                     # Check if a relationship exists between the source and target entity labels
