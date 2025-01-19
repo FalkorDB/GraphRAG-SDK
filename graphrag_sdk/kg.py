@@ -68,7 +68,7 @@ class KnowledgeGraph:
             # Load ontology from DB
             ontology = Ontology.from_schema_graph(ontology_graph)
             
-            if len(ontology.entities) == 0 and len(ontology.relations) == 0:
+            if len(ontology.entities) == 0:
                 raise Exception("The ontology is empty. Load a valid ontology or create one using the ontology module.")
         else:
             # Save ontology to DB
