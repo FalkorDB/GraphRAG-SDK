@@ -114,7 +114,7 @@ class ChatSession:
             "cypher": cypher
             }
         
-    def clean_ontology_for_prompt(self, ontology: dict):
+    def clean_ontology_for_prompt(self, ontology: dict) -> str:
         """
         Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
 

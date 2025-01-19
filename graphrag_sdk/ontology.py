@@ -4,7 +4,6 @@ import graphrag_sdk
 from .entity import Entity
 from falkordb import Graph
 from typing import Optional
-from falkordb import FalkorDB
 from .relation import Relation
 from .attribute import Attribute
 from graphrag_sdk.source import AbstractSource
@@ -106,7 +105,7 @@ class Ontology(object):
         return ontology
     
     @staticmethod
-    def from_kg_graph(graph: Graph, node_limit: int = 100,):
+    def from_kg_graph(graph: Graph, sample_size: int = 100,):
         """
         Constructs an Ontology object from a given Knowledge Graph.
 
@@ -116,34 +115,38 @@ class Ontology(object):
 
         Args:
             graph (Graph): The graph object representing the knowledge graph.
-            node_limit (int): The maximum number of nodes to sample for attribute extraction.
+            sample_size (int): The sample size for the attribute extraction.
 
         Returns:
             Ontology: The Ontology object constructed from the Knowledge Graph.
         """
         ontology = Ontology()
 
-        # Retrieve all entity labels and relationship types from the graph.
-        e_labels = graph.query("call db.labels()").result_set
-        r_labels = graph.query("call db.relationshipTypes()").result_set
+        # Retrieve all node labels and edge types from the graph.
+        n_labels = graph.call_procedure("db.labels").result_set
+        e_types = graph.call_procedure("db.relationshipTypes").result_set
         
-        # Process each entity label to extract attributes, limited to the specified number of nodes
-        for label in e_labels:
+        # Extract attributes for each node label, limited by the specified sample size.
+        for lbls in n_labels:
+            l = lbls[0]
             attributes = graph.query(
-                f"""MATCH (a:{label[0]}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
-                WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
-            ontology.add_entity(Entity(label[0], [Attribute(attr[0][0], attr[0][1]) for attr in attributes]))
+                f"""MATCH (a:{l}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
+                WITH types limit {sample_size} unwind types as kt RETURN kt, count(1)""").result_set
+            ontology.add_entity(Entity(l, [Attribute(attr[0][0], attr[0][1]) for attr in attributes]))
 
-        # Process each relationship type and extract attributes, limited to the specified number of nodes
-        for label in r_labels:
-            for label_s in e_labels:
-                for label_t in e_labels:
+        # Extract attributes for each edge type, limited by the specified sample size.
+        for e_type in e_types:
+            for s_lbls in n_labels:
+                for t_lbls in n_labels:
+                    e_t = e_type[0]
+                    s_l = s_lbls[0]
+                    t_l = t_lbls[0]
                     # Check if a relationship exists between the source and target entity labels
-                    if graph.query(f"MATCH (s:{label_s[0]})-[a:{label[0]}]->(t:{label_t[0]}) return a limit 1").result_set:
+                    if graph.query(f"MATCH (s:{s_l})-[a:{e_t}]->(t:{t_l}) return a limit 1").result_set:
                         attributes = graph.query(
-                            f"""MATCH ()-[a:{label[0]}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
-                            WITH types limit {node_limit} unwind types as kt RETURN kt, count(1)""").result_set
-                        ontology.add_relation(Relation(label[0], label_s[0], label_t[0], [Attribute(attr[0][0], attr[0][1]) for attr in attributes]))
+                            f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
+                            WITH types limit {sample_size} unwind types as kt RETURN kt, count(1)""").result_set
+                        ontology.add_relation(Relation(e_t, s_l, t_l, [Attribute(attr[0][0], attr[0][1]) for attr in attributes]))
         
         return ontology
     
