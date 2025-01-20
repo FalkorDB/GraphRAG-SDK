@@ -36,6 +36,7 @@ class KnowledgeGraph:
         cypher_gen_prompt: Optional[str] = None,
         qa_prompt: Optional[str] = None,
         cypher_gen_prompt_history: Optional[str] = None,
+        embeddings: Optional[str] = None,
     ):
         """
         Initialize Knowledge Graph
@@ -53,6 +54,7 @@ class KnowledgeGraph:
             cypher_gen_prompt (str|None): Cypher generation prompt. Make sure you have {question} in the prompt.
             qa_prompt (str|None): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.
             cypher_gen_prompt_history (str|None): Cypher generation prompt with history. Make sure you have {question} and {last_answer} in the prompt.
+            embeddings (str|None): Embeddings model for the knowledge graph.
         """
 
         if not isinstance(name, str) or name == "":
@@ -77,6 +79,13 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._name = name
         self._model_config = model_config
+        if embeddings is not None:
+            try:
+                self.graph.query("CREATE VECTOR INDEX FOR (p:document) ON (p.embeddings) OPTIONS {dimension:768, similarityFunction:'cosine'}")
+            except Exception as e:
+                logger.error(f"Failed to create vector index: {e}")
+                
+        self._embeddings = embeddings
         self.sources = set([])
         self.failed_sources = set([])
 
@@ -182,6 +191,7 @@ class KnowledgeGraph:
             model=self._model_config.extract_data,
             graph=self.graph,
             hide_progress=hide_progress,
+            embeddings=self._embeddings,
         )
 
         failed_sources = step.run(instructions)

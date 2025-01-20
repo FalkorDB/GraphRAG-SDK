@@ -6,8 +6,8 @@ from tqdm import tqdm
 from uuid import uuid4
 from falkordb import Graph
 from threading import Lock
+from typing import Optional
 from graphrag_sdk.steps.Step import Step
-from graphrag_sdk.document import Document
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models.model import OutputMethod
@@ -50,6 +50,7 @@ class ExtractDataStep(Step):
             "max_output_tokens": 8192,
         },
         hide_progress: bool = False,
+        embeddings: Optional[str] = None,
     ) -> None:
         self.sources = sources
         self.ontology = ontology
@@ -57,6 +58,7 @@ class ExtractDataStep(Step):
         self.model = model.with_system_instruction(
             EXTRACT_DATA_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json()))
         )
+        self.embeddings = embeddings
         self.graph = graph
         self.hide_progress = hide_progress
         self.process_files = 0
@@ -190,9 +192,15 @@ class ExtractDataStep(Step):
                 raise Exception(
                     f"Invalid data format. Missing 'entities' or 'relations' in JSON."
                 )
+                
+            if self.embeddings is not None:
+                doc_embed = self.embed_document(graph, document.content, task_id)
+            else:
+                doc_embed = None
+            
             for entity in data["entities"]:
                 try:
-                    self._create_entity(graph, entity, ontology)
+                    self._create_entity(graph, entity, ontology, doc_embed)
                 except Exception as e:
                     _task_logger.error(f"Error creating entity: {e}")
                     continue
@@ -211,7 +219,7 @@ class ExtractDataStep(Step):
             with self.counter_lock:
                 self.process_files += 1
 
-    def _create_entity(self, graph: Graph, args: dict, ontology: Ontology):
+    def _create_entity(self, graph: Graph, args: dict, ontology: Ontology, doc_embed: Optional[str]):
         # Get unique attributes from entity
         entity = ontology.get_entity_with_label(args["label"])
         if entity is None:
@@ -241,6 +249,10 @@ class ExtractDataStep(Step):
         query = f"MERGE (n:{args['label']} {unique_attributes_text}) {set_statement}"
         logger.debug(f"Query: {query}")
         result = graph.query(query)
+        
+        if self.embeddings is not None:
+            query = f"MATCH (e: document {{embeddings: vecf32({doc_embed})}})\nMATCH(n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
+            graph.query(query)
         return result
 
     def _create_relation(self, graph: Graph, args: dict, ontology: Ontology):
@@ -308,3 +320,9 @@ class ExtractDataStep(Step):
                 if retry == 0:
                     logger.error("Quota exceeded")
                 raise e
+    
+    def embed_document(self, graph, document, task_id):
+        embeddings = self.embeddings.get_embedding(document)
+        query = f"MERGE (n:document {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}'}}) RETURN n"
+        result = graph.query(query)
+        return embeddings

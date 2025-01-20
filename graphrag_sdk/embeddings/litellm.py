@@ -24,9 +24,20 @@ class LiteModelEmbeddings(EmbeddingModel):
             text (str): The text to embed
             
         Returns:
-            list: The embeddings of the text
+            list: The vector embeddings of the text
         
         """
         text = text.replace("\n", " ")
-        embeddings = embedding(input = [text], model=self.model_name)
-        return embeddings
+        response = embedding(input = [text], model=self.model_name)
+        return response.data[0]['embedding']
+    
+    def get_vector_size(self) -> int:
+        """
+        Get the size of the vector
+        
+        Returns:
+            int: The size of the vector
+        
+        """
+        response = embedding(input = ["Hello World"], model=self.model_name)
+        return len(response.data[0]['embedding'])
