@@ -81,7 +81,7 @@ class KnowledgeGraph:
         self._model_config = model_config
         if embeddings is not None:
             try:
-                self.graph.query("CREATE VECTOR INDEX FOR (p:document) ON (p.embeddings) OPTIONS {dimension:768, similarityFunction:'cosine'}")
+                self.graph.query("CREATE VECTOR INDEX FOR (p:Document) ON (p.embeddings) OPTIONS {dimension:768, similarityFunction:'cosine'}")
             except Exception as e:
                 logger.error(f"Failed to create vector index: {e}")
                 

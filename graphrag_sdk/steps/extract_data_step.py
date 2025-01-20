@@ -251,7 +251,7 @@ class ExtractDataStep(Step):
         result = graph.query(query)
         
         if self.embeddings is not None:
-            query = f"MATCH (e: document {{embeddings: vecf32({doc_embed})}})\nMATCH(n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
+            query = f"MATCH (e: Document {{embeddings: vecf32({doc_embed})}})\nMATCH(n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
             graph.query(query)
         return result
 
@@ -323,6 +323,6 @@ class ExtractDataStep(Step):
     
     def embed_document(self, graph, document, task_id):
         embeddings = self.embeddings.get_embedding(document)
-        query = f"MERGE (n:document {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}'}}) RETURN n"
+        query = f"MERGE (n:Document {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}'}}) RETURN n"
         result = graph.query(query)
         return embeddings
