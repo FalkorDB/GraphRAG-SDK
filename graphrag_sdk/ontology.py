@@ -131,22 +131,23 @@ class Ontology(object):
             l = lbls[0]
             attributes = graph.query(
                 f"""MATCH (a:{l}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
-                WITH types limit {sample_size} unwind types as kt RETURN kt, count(1)""").result_set
-            ontology.add_entity(Entity(l, [Attribute(attr[0][0], attr[0][1]) for attr in attributes]))
+                WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
+            ontology.add_entity(Entity(l, [Attribute(attr[0][0], 'number' if attr[0][1] == 'Integer' or attr[0][1] == 'Float' else attr[0][1].lower()) for attr in attributes]))
 
         # Extract attributes for each edge type, limited by the specified sample size.
         for e_type in e_types:
             e_t = e_type[0]
             attributes = graph.query(
                             f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
-                            WITH types limit {sample_size} unwind types as kt RETURN kt, count(1)""").result_set
-            attributes = [Attribute(attr[0][0], attr[0][1]) for attr in attributes]
+                            WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
+            attributes = [Attribute(attr[0][0], 'number' if attr[0][1] == 'Integer' or attr[0][1] == 'Float' else attr[0][1].lower()) for attr in attributes]
             for s_lbls in n_labels:
                 for t_lbls in n_labels:
                     s_l = s_lbls[0]
                     t_l = t_lbls[0]
                     # Check if a relationship exists between the source and target entity labels
-                    if graph.query(f"MATCH (s:{s_l})-[a:{e_t}]->(t:{t_l}) return a limit 1").result_set:
+                    result_set = graph.query(f"MATCH (s:{s_l})-[a:{e_t}]->(t:{t_l}) return a limit 1").result_set
+                    if len(result_set) > 0:
                         ontology.add_relation(Relation(e_t, s_l, t_l, attributes))
         
         return ontology
