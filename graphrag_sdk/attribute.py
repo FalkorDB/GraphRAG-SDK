@@ -26,7 +26,7 @@ class AttributeType:
     # Synonyms for attribute types
     _SYNONYMS = {
         STRING: {"string"},
-        NUMBER: {"integer", "float"},
+        NUMBER: {"integer", "float", "number"},
         BOOLEAN: {"boolean"},
         LIST: {"list"},
         POINT: {"point"},
