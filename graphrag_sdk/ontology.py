@@ -5,9 +5,10 @@ from .entity import Entity
 from falkordb import Graph
 from typing import Optional
 from .relation import Relation
-from .attribute import process_attributes_from_graph
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
+from .attribute import Attribute, AttributeType
+
 
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,7 @@ class Ontology(object):
             attributes = graph.query(
                 f"""MATCH (a:{l}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
                 WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
-            attributes = process_attributes_from_graph(attributes)
+            attributes = ontology.process_attributes_from_graph(attributes)
             ontology.add_entity(Entity(l, attributes))
 
         # Extract attributes for each edge type, limited by the specified sample size.
@@ -141,7 +142,7 @@ class Ontology(object):
             attributes = graph.query(
                             f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
                             WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
-            attributes = process_attributes_from_graph(attributes)
+            attributes = ontology.process_attributes_from_graph(attributes)
             for s_lbls in n_labels:
                 for t_lbls in n_labels:
                     s_l = s_lbls[0]
@@ -152,6 +153,29 @@ class Ontology(object):
                         ontology.add_relation(Relation(e_t, s_l, t_l, attributes))
         
         return ontology
+    
+    @staticmethod
+    def process_attributes_from_graph(attributes: list[list[list[str]]]) -> list[Attribute]:
+        """
+        Processes the attributes extracted from the graph and converts them into the SDK convention.
+
+        Args:
+            attributes (list[list[list[str]]]): The attributes extracted from the graph.
+
+        Returns:
+            processed_attributes (list[Attribute]): The processed attributes.
+        """
+        processed_attributes = []
+        for attr in attributes:
+            attr_name, attr_type = attr[0]
+            try:
+                attr_type = AttributeType.from_string(attr_type)
+            except:
+                continue
+            
+            processed_attributes.append(Attribute(attr_name, attr_type))
+
+        return processed_attributes
     
     def add_entity(self, entity: Entity):
         """

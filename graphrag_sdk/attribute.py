@@ -18,24 +18,19 @@ class AttributeType:
     POINT = "point"
     MAP = "map"
     VECTOR = "vectorf32"
-    DATE = "date"
-    DATE_TIME = "datetime"
-    TIME = "time"
-    DURATION = "duration"
+
     
     # Synonyms for attribute types
     _SYNONYMS = {
-        STRING: {"string"},
-        NUMBER: {"integer", "float", "number"},
-        BOOLEAN: {"boolean"},
-        LIST: {"list"},
-        POINT: {"point"},
-        MAP: {"map"},
-        VECTOR: {"vectorf32"},
-        DATE: {"date"},
-        DATE_TIME: {"datetime", "local datetime"},
-        TIME: {"time", "local time"},
-        DURATION: {"duration"},
+        "string": STRING,
+        "integer": NUMBER,
+        "float": NUMBER,
+        "number": NUMBER,
+        "boolean": BOOLEAN,
+        "list": LIST,
+        "point": POINT,
+        "map": MAP,
+        "vectorf32": VECTOR,
     }
 
     @staticmethod
@@ -47,7 +42,7 @@ class AttributeType:
             txt (str): The string representation of the attribute type.
 
         Returns:
-            AttributeType: The corresponding AttributeType value.
+            str: The corresponding AttributeType value.
 
         Raises:
             ValueError: If the provided attribute type is invalid.
@@ -56,9 +51,8 @@ class AttributeType:
         normalized_txt = txt.lower()
         
         # Find the matching attribute type
-        for attr_type, synonyms in AttributeType._SYNONYMS.items():
-            if normalized_txt in synonyms:
-                return attr_type
+        if normalized_txt in AttributeType._SYNONYMS:
+            return AttributeType._SYNONYMS[normalized_txt]
         
         raise ValueError(f"Invalid attribute type: {txt}")
 
@@ -174,23 +168,3 @@ class Attribute:
             str: A string representation of the Attribute object.
         """
         return f"{self.name}: \"{self.type}{'!' if self.unique else ''}{'*' if self.required else ''}\""
-    
-def process_attributes_from_graph(attributes: list[list[str]]) -> list[Attribute]:
-    """
-    Processes the attributes extracted from the graph and converts them into the SDK convention.
-
-    Args:
-        attributes (list[list[str]]): The attributes extracted from the graph.
-
-    Returns:
-        processed_attributes (list[Attribute]): The processed attributes.
-    """
-    processed_attributes = []
-    for attr in attributes:
-        try:
-            type = AttributeType.from_string(attr[0][1])
-            processed_attributes.append(Attribute(attr[0][0],type))
-        except:
-            continue
-
-    return processed_attributes
