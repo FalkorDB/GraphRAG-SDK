@@ -1,7 +1,7 @@
-import json
-from graphrag_sdk.fixtures.regex import *
-import logging
 import re
+import json
+import logging
+from graphrag_sdk.fixtures.regex import *
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,28 @@ class AttributeType:
     NUMBER = "number"
     BOOLEAN = "boolean"
     LIST = "list"
+    POINT = "point"
+    MAP = "map"
+    VECTOR = "vectorf32"
+    DATE = "date"
+    DATE_TIME = "datetime"
+    TIME = "time"
+    DURATION = "duration"
+    
+    # Synonyms for attribute types
+    _SYNONYMS = {
+        STRING: {"string"},
+        NUMBER: {"integer", "float"},
+        BOOLEAN: {"boolean"},
+        LIST: {"list"},
+        POINT: {"point"},
+        MAP: {"map"},
+        VECTOR: {"vectorf32"},
+        DATE: {"date"},
+        DATE_TIME: {"datetime", "local datetime"},
+        TIME: {"time", "local time"},
+        DURATION: {"duration"},
+    }
 
     @staticmethod
     def from_string(txt: str):
@@ -28,18 +50,17 @@ class AttributeType:
             AttributeType: The corresponding AttributeType value.
 
         Raises:
-            Exception: If the provided attribute type is invalid.
+            ValueError: If the provided attribute type is invalid.
         """
-        if txt.lower() == AttributeType.STRING:
-            return AttributeType.STRING
-        if txt.lower() == AttributeType.NUMBER:
-            return AttributeType.NUMBER
-        if txt.lower() == AttributeType.BOOLEAN:
-            return AttributeType.BOOLEAN
-        if txt.lower() == AttributeType.LIST:
-            return AttributeType.LIST
-        raise Exception(f"Invalid attribute type: {txt}")
-
+        # Graph representation of the attribute type
+        normalized_txt = txt.lower()
+        
+        # Find the matching attribute type
+        for attr_type, synonyms in AttributeType._SYNONYMS.items():
+            if normalized_txt in synonyms:
+                return attr_type
+        
+        raise ValueError(f"Invalid attribute type: {txt}")
 
 class Attribute:
     """ Represents an attribute of an entity or relation in the ontology.
@@ -120,14 +141,6 @@ class Attribute:
         unique = "!" in txt
         required = "*" in txt
 
-        if attr_type not in [
-            AttributeType.STRING,
-            AttributeType.NUMBER,
-            AttributeType.BOOLEAN,
-            AttributeType.LIST,
-        ]:
-            raise Exception(f"Invalid attribute type: {attr_type}")
-
         return Attribute(name, AttributeType.from_string(attr_type), unique, required)
 
     def to_json(self):
@@ -161,3 +174,23 @@ class Attribute:
             str: A string representation of the Attribute object.
         """
         return f"{self.name}: \"{self.type}{'!' if self.unique else ''}{'*' if self.required else ''}\""
+    
+def process_attributes_from_graph(attributes: list[list[str]]) -> list[Attribute]:
+    """
+    Processes the attributes extracted from the graph and converts them into the SDK convention.
+
+    Args:
+        attributes (list[list[str]]): The attributes extracted from the graph.
+
+    Returns:
+        processed_attributes (list[Attribute]): The processed attributes.
+    """
+    processed_attributes = []
+    for attr in attributes:
+        try:
+            type = AttributeType.from_string(attr[0][1])
+            processed_attributes.append(Attribute(attr[0][0],type))
+        except:
+            continue
+
+    return processed_attributes

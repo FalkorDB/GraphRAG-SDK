@@ -5,7 +5,7 @@ from .entity import Entity
 from falkordb import Graph
 from typing import Optional
 from .relation import Relation
-from .attribute import Attribute
+from .attribute import process_attributes_from_graph
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
 
@@ -130,17 +130,18 @@ class Ontology(object):
         for lbls in n_labels:
             l = lbls[0]
             attributes = graph.query(
-                f"""MATCH (a:{l}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
+                f"""MATCH (a:{l}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
                 WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
-            ontology.add_entity(Entity(l, [Attribute(attr[0][0], 'number' if attr[0][1] == 'Integer' or attr[0][1] == 'Float' else attr[0][1].lower()) for attr in attributes]))
+            attributes = process_attributes_from_graph(attributes)
+            ontology.add_entity(Entity(l, attributes))
 
         # Extract attributes for each edge type, limited by the specified sample size.
         for e_type in e_types:
             e_t = e_type[0]
             attributes = graph.query(
-                            f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }} 
+                            f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
                             WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
-            attributes = [Attribute(attr[0][0], 'number' if attr[0][1] == 'Integer' or attr[0][1] == 'Float' else attr[0][1].lower()) for attr in attributes]
+            attributes = process_attributes_from_graph(attributes)
             for s_lbls in n_labels:
                 for t_lbls in n_labels:
                     s_l = s_lbls[0]
