@@ -1,6 +1,5 @@
-
+import pytest
 import logging
-import unittest
 from json import loads
 from falkordb import FalkorDB
 from dotenv import load_dotenv
@@ -16,158 +15,123 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-
-class TestOntologyFromKG(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-
-        cls.ontology = Ontology()
-        cls.ontology.add_entity(
-            Entity(
-                label="City",
-                attributes=[
-                    Attribute(
-                        name="name",
-                        attr_type=AttributeType.STRING,
-                        required=False,
-                        unique=False,
-                    ),
-                    Attribute(
-                        name="population",
-                        attr_type=AttributeType.NUMBER,
-                        required=False,
-                        unique=False,
-                    ),
-                    Attribute(
-                        name="weather",
-                        attr_type=AttributeType.STRING,
-                        required=False,
-                        unique=False,
-                    ),
-                ],
-            )
+@pytest.fixture
+def ontology_kg_setup():
+    """
+    Sets up an ontology, initializes the KnowledgeGraph, and imports data.
+    """
+    # Build up the ontology.
+    ontology = Ontology()
+    ontology.add_entity(
+        Entity(
+            label="City",
+            attributes=[
+                Attribute("name", AttributeType.STRING, required=False, unique=False),
+                Attribute("population", AttributeType.NUMBER, required=False, unique=False),
+                Attribute("weather", AttributeType.STRING, required=False, unique=False),
+            ],
         )
-        cls.ontology.add_entity(
-            Entity(
-                label="Country",
-                attributes=[
-                    Attribute(
-                        name="name",
-                        attr_type=AttributeType.STRING,
-                        required=False,
-                        unique=False,
-                    ),
-                ],
-            )
+    )
+    ontology.add_entity(
+        Entity(
+            label="Country",
+            attributes=[
+                Attribute("name", AttributeType.STRING, required=False, unique=False),
+            ],
         )
-        cls.ontology.add_entity(
-            Entity(
-                label="Restaurant",
-                attributes=[
-                    Attribute(
-                        name="description",
-                        attr_type=AttributeType.STRING,
-                        required=False,
-                        unique=False,
-                    ),
-                    Attribute(
-                        name="food_type",
-                        attr_type=AttributeType.STRING,
-                        required=False,
-                        unique=False,
-                    ),
-                    Attribute(
-                        name="name",
-                        attr_type=AttributeType.STRING,
-                        required=False,
-                        unique=False,
-                    ),
-                    Attribute(
-                        name="rating",
-                        attr_type=AttributeType.NUMBER,
-                        required=False,
-                        unique=False,
-                    ),
-                ],
-            )
+    )
+    ontology.add_entity(
+        Entity(
+            label="Restaurant",
+            attributes=[
+                Attribute("description", AttributeType.STRING, required=False, unique=False),
+                Attribute("food_type", AttributeType.STRING, required=False, unique=False),
+                Attribute("name", AttributeType.STRING, required=False, unique=False),
+                Attribute("rating", AttributeType.NUMBER, required=False, unique=False),
+            ],
         )
-        cls.ontology.add_relation(
-            Relation(
-                label="IN_COUNTRY",
-                source="City",
-                target="Country",
-            )
-        )
-        cls.ontology.add_relation(
-            Relation(
-                label="IN_CITY",
-                source="Restaurant",
-                target="City",
-            )
-        )
-        cls.model = GeminiGenerativeModel("gemini-1.5-flash-001")
-        cls.kg = KnowledgeGraph(
-            name="test_ontology",
-            ontology=cls.ontology,
-            model_config=KnowledgeGraphModelConfig.with_model(cls.model),
-        )
-        cls.import_data(cls.kg)
+    )
+    ontology.add_relation(Relation(label="IN_COUNTRY", source="City", target="Country"))
+    ontology.add_relation(Relation(label="IN_CITY", source="Restaurant", target="City"))
 
-    @classmethod
-    def import_data(
-        self,
-        kg: KnowledgeGraph,
-    ):
-        with open("tests/data/cities.json") as f:
-            cities = loads(f.read())
-        with open("tests/data/restaurants.json") as f:
-            restaurants = loads(f.read())
+    # Create a model and a knowledge graph.
+    model = GeminiGenerativeModel("gemini-1.5-flash-001")
+    kg = KnowledgeGraph(
+        name="test_ontology",
+        ontology=ontology,
+        model_config=KnowledgeGraphModelConfig.with_model(model),
+    )
 
-        for city in cities:
-            kg.add_node(
-                "City",
-                {
-                    "name": city["name"],
-                    "weather": city["weather"],
-                    "population": city["population"],
-                },
-            )
-            kg.add_node("Country", {"name": city["country"]})
-            kg.add_edge(
-                "IN_COUNTRY",
-                "City",
-                "Country",
-                {"name": city["name"]},
-                {"name": city["country"]},
-            )
+    # Import test data.
+    with open("tests/data/cities.json") as f:
+        cities = loads(f.read())
+    with open("tests/data/restaurants.json") as f:
+        restaurants = loads(f.read())
 
-        for restaurant in restaurants:
-            kg.add_node(
-                "Restaurant",
-                {
-                    "name": restaurant["name"],
-                    "description": restaurant["description"],
-                    "rating": restaurant["rating"],
-                    "food_type": restaurant["food_type"],
-                },
-            )
-            kg.add_edge(
-                "IN_CITY",
-                "Restaurant",
-                "City",
-                {"name": restaurant["name"]},
-                {"name": restaurant["city"]},
-            )
+    for city in cities:
+        kg.add_node(
+            "City",
+            {
+                "name": city["name"],
+                "weather": city["weather"],
+                "population": city["population"],
+            },
+        )
+        kg.add_node("Country", {"name": city["country"]})
+        kg.add_edge(
+            "IN_COUNTRY",
+            "City",
+            "Country",
+            {"name": city["name"]},
+            {"name": city["country"]},
+        )
 
-    # Delete graph after tests
-    @classmethod
-    def tearDownClass(cls):
+    for restaurant in restaurants:
+        kg.add_node(
+            "Restaurant",
+            {
+                "name": restaurant["name"],
+                "description": restaurant["description"],
+                "rating": restaurant["rating"],
+                "food_type": restaurant["food_type"],
+            },
+        )
+        kg.add_edge(
+            "IN_CITY",
+            "Restaurant",
+            "City",
+            {"name": restaurant["name"]},
+            {"name": restaurant["city"]},
+        )
+
+    return ontology, kg
+
+
+@pytest.fixture
+def delete_kg():
+    """
+    Returns a function that deletes a given knowledge graph.
+    """
+    def cleanup(kg):
         logger.info("Cleaning up test graph...")
-        cls.kg.delete()
+        kg.delete()
 
-    def test_ontology_serialization(self):
+    return cleanup
+
+
+class TestOntologyFromKG:
+    def test_ontology_serialization(self, ontology_kg_setup, delete_kg):
+        """
+        Tests serializing the Ontology from the knowledge graph.
+        """
+        ontology, kg = ontology_kg_setup
         logger.info("Testing ontology serialization...")
+
         db = FalkorDB()
         graph = db.select_graph("test_ontology")
-        ontology = Ontology.from_kg_graph(graph=graph)
-        self.assertEqual(ontology.to_json(), self.ontology.to_json())
+        loaded_ontology = Ontology.from_kg_graph(graph=graph)
+
+        assert loaded_ontology.to_json() == ontology.to_json()
+
+        # Now clean up the KG by calling the function from delete_kg fixture
+        delete_kg(kg)
