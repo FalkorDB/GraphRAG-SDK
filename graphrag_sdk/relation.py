@@ -205,7 +205,7 @@ class Relation:
             [Attribute.from_string(attr) for attr in attributes],
         )
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Converts the Relation object to a JSON dictionary.
 

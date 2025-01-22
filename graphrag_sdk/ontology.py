@@ -1,17 +1,37 @@
 import json
+import logging
+import graphrag_sdk
+from .entity import Entity
 from falkordb import Graph
+from typing import Optional
+from .relation import Relation
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
-import graphrag_sdk
-import logging
-from .relation import Relation
-from .entity import Entity
-from typing import Optional
-
+from .attribute import Attribute, AttributeType
 
 logger = logging.getLogger(__name__)
 
+def _process_attributes_from_graph(attributes: list[list[list[str]]]) -> list[Attribute]:
+    """
+    Processes the attributes extracted from the graph and converts them into the SDK convention.
 
+    Args:
+        attributes (list[list[list[str]]]): The attributes extracted from the graph.
+
+    Returns:
+        processed_attributes (list[Attribute]): The processed attributes.
+    """
+    processed_attributes = []
+    for attr in attributes:
+        attr_name, attr_type = attr[0]
+        try:
+            attr_type = AttributeType.from_string(attr_type)
+        except:
+            continue
+        
+        processed_attributes.append(Attribute(attr_name, attr_type))
+
+    return processed_attributes
 class Ontology(object):
     """
     Represents an ontology, which is a collection of entities and relations.
@@ -37,14 +57,16 @@ class Ontology(object):
         sources: list[AbstractSource],
         model: GenerativeModel,
         boundaries: Optional[str] = None,
+        hide_progress: bool = False,
     ) -> "Ontology":
         """
         Create an Ontology object from a list of sources.
 
         Args:
             sources (list[AbstractSource]): A list of AbstractSource objects representing the sources.
-            boundaries (Optinal[str]): The boundaries for the ontology.
+            boundaries (Optional[str]): The boundaries for the ontology.
             model (GenerativeModel): The generative model to use.
+            hide_progress (bool): Whether to hide the progress bar.
 
         Returns:
             The created Ontology object.
@@ -53,6 +75,7 @@ class Ontology(object):
             sources=sources,
             ontology=Ontology(),
             model=model,
+            hide_progress=hide_progress,
         )
 
         return step.run(boundaries=boundaries)
@@ -78,9 +101,9 @@ class Ontology(object):
         )
 
     @staticmethod
-    def from_graph(graph: Graph):
+    def from_schema_graph(graph: Graph):
         """
-        Creates an Ontology object from a given graph.
+        Creates an Ontology object from a given schema graph.
 
         Args:
             graph (Graph): The graph object representing the ontology.
@@ -100,12 +123,61 @@ class Ontology(object):
             )
 
         return ontology
+    
+    @staticmethod
+    def from_kg_graph(graph: Graph, sample_size: int = 100,):
+        """
+        Constructs an Ontology object from a given Knowledge Graph.
 
+        This function queries the provided knowledge graph to extract:
+        1. Entities and their attributes.
+        2. Relationships between entities and their attributes.
+
+        Args:
+            graph (Graph): The graph object representing the knowledge graph.
+            sample_size (int): The sample size for the attribute extraction.
+
+        Returns:
+            Ontology: The Ontology object constructed from the Knowledge Graph.
+        """
+        ontology = Ontology()
+
+        # Retrieve all node labels and edge types from the graph.
+        n_labels = graph.call_procedure("db.labels").result_set
+        e_types = graph.call_procedure("db.relationshipTypes").result_set
+        
+        # Extract attributes for each node label, limited by the specified sample size.
+        for lbls in n_labels:
+            l = lbls[0]
+            attributes = graph.query(
+                f"""MATCH (a:{l}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
+                WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
+            attributes = _process_attributes_from_graph(attributes)
+            ontology.add_entity(Entity(l, attributes))
+
+        # Extract attributes for each edge type, limited by the specified sample size.
+        for e_type in e_types:
+            e_t = e_type[0]
+            attributes = graph.query(
+                            f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
+                            WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
+            attributes = _process_attributes_from_graph(attributes)
+            for s_lbls in n_labels:
+                for t_lbls in n_labels:
+                    s_l = s_lbls[0]
+                    t_l = t_lbls[0]
+                    # Check if a relationship exists between the source and target entity labels
+                    result_set = graph.query(f"MATCH (s:{s_l})-[a:{e_t}]->(t:{t_l}) return a limit 1").result_set
+                    if len(result_set) > 0:
+                        ontology.add_relation(Relation(e_t, s_l, t_l, attributes))
+        
+        return ontology
+    
     def add_entity(self, entity: Entity):
         """
         Adds an entity to the ontology.
 
-        Parameters:
+        Args:
             entity: The entity object to be added.
         """
         self.entities.append(entity)
@@ -119,7 +191,7 @@ class Ontology(object):
         """
         self.relations.append(relation)
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Converts the ontology object to a JSON representation.
 
@@ -268,7 +340,7 @@ The following entities do not have unique attributes:
         """
         Returns a list of relations with the specified label.
 
-        Parameters:
+        Args:
             label (str): The label to search for.
 
         Returns:
@@ -280,7 +352,7 @@ The following entities do not have unique attributes:
         """
         Checks if the ontology has an entity with the given label.
 
-        Parameters:
+        Args:
             label (str): The label to search for.
 
         Returns:
@@ -292,7 +364,7 @@ The following entities do not have unique attributes:
         """
         Checks if the ontology has a relation with the given label.
 
-        Parameters:
+        Args:
             label (str): The label of the relation to check.
 
         Returns:

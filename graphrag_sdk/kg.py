@@ -58,26 +58,27 @@ class KnowledgeGraph:
         if not isinstance(name, str) or name == "":
             raise Exception("name should be a non empty string")
 
-        # connect to database
+        # Connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
         ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
 
         # Load / Save ontology to database
         if ontology is None:
-            # load ontology from DB
-            ontology = Ontology.from_graph(ontology_graph)
-        else:
-            # save ontology to DB
-            ontology.save_to_graph(ontology_graph)
+            # Load ontology from DB
+            ontology = Ontology.from_schema_graph(ontology_graph)
             
-        if ontology is None:
-            raise Exception("Ontology is not defined")
+            if len(ontology.entities) == 0:
+                raise Exception("The ontology is empty. Load a valid ontology or create one using the ontology module.")
+        else:
+            # Save ontology to DB
+            ontology.save_to_graph(ontology_graph)
 
         self._ontology = ontology
         self._name = name
         self._model_config = model_config
         self.sources = set([])
+        self.failed_sources = set([])
 
         if cypher_system_instruction is None:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
@@ -146,38 +147,47 @@ class KnowledgeGraph:
         return [s.source for s in self.sources]
 
     def process_sources(
-        self, sources: list[AbstractSource], instructions: str = None
+        self, sources: list[AbstractSource], instructions: str = None, hide_progress: bool = False
     ) -> None:
         """
         Add entities and relations found in sources into the knowledge-graph
 
         Parameters:
             sources (list[AbstractSource]): list of sources to extract knowledge from
+            instructions (str): instructions to use for extraction
+            hide_progress (bool): hide progress bar
         """
 
         if self.ontology is None:
             raise Exception("Ontology is not defined")
 
         # Create graph with sources
-        self._create_graph_with_sources(sources, instructions)
+        failed_sources = self._create_graph_with_sources(sources, instructions, hide_progress)
 
         # Add processed sources
         for src in sources:
-            self.sources.add(src)
+            if src not in failed_sources:
+                self.sources.add(src)
+                self.failed_sources.discard(src)
+            else:
+                self.failed_sources.add(src)
 
     def _create_graph_with_sources(
-        self, sources: list[AbstractSource] | None = None, instructions: str = None
-    ):
+        self, sources: list[AbstractSource] | None = None, instructions: str = None, hide_progress: bool = False
+    ) -> list[AbstractSource]:
 
         step = ExtractDataStep(
             sources=list(sources),
             ontology=self.ontology,
             model=self._model_config.extract_data,
             graph=self.graph,
+            hide_progress=hide_progress,
         )
 
-        step.run(instructions)
-
+        failed_sources = step.run(instructions)
+        
+        return failed_sources
+        
     def delete(self) -> None:
         """
         Deletes the knowledge graph and any other related resource
