@@ -82,7 +82,7 @@ class Entity:
             txt.get("description", ""),
         )
 
-    def to_json(self) -> dict:
+    def to_json(self):
         """
         Convert the entity object to a JSON representation.
 

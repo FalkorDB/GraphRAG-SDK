@@ -1,0 +1,109 @@
+import re
+import logging
+import unittest
+from falkordb import FalkorDB
+from dotenv import load_dotenv
+from graphrag_sdk.entity import Entity
+from graphrag_sdk.source import Source
+from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.relation import Relation
+from graphrag_sdk.attribute import Attribute, AttributeType
+from graphrag_sdk.models.ollama import OllamaGenerativeModel
+from graphrag_sdk.models.openai import OpenAiGenerativeModel
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig, GenerativeModelConfig
+
+load_dotenv()
+
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+class TestKGOllama(unittest.TestCase):
+    """
+    Test Knowledge Graph
+    """
+
+    @classmethod
+    def setUpClass(cls):
+
+        cls.ontology = Ontology([], [])
+
+        cls.ontology.add_entity(
+            Entity(
+                label="Actor",
+                attributes=[
+                    Attribute(
+                        name="name",
+                        attr_type=AttributeType.STRING,
+                        unique=True,
+                        required=True,
+                    ),
+                ],
+            )
+        )
+        cls.ontology.add_entity(
+            Entity(
+                label="Movie",
+                attributes=[
+                    Attribute(
+                        name="title",
+                        attr_type=AttributeType.STRING,
+                        unique=True,
+                        required=True,
+                    ),
+                ],
+            )
+        )
+        cls.ontology.add_relation(
+            Relation(
+                label="ACTED_IN",
+                source="Actor",
+                target="Movie",
+                attributes=[
+                    Attribute(
+                        name="role",
+                        attr_type=AttributeType.STRING,
+                        unique=False,
+                        required=False,
+                    ),
+                ],
+            )
+        )
+
+        cls.graph_name = "IMDB_ollama"
+
+        model_ollama = OllamaGenerativeModel(model_name="llama3:8b", generation_config=GenerativeModelConfig(temperature=0))
+        model_openai = OpenAiGenerativeModel(model_name="gpt-3.5-turbo")
+
+        cls.kg = KnowledgeGraph(
+            name=cls.graph_name,
+            ontology=cls.ontology,
+            model_config=KnowledgeGraphModelConfig(extract_data=model_openai, cypher_generation=model_ollama, qa=model_ollama),
+        )
+
+    def test_kg_creation(self):
+
+        file_path = "tests/data/madoff.txt"
+
+        sources = [Source(file_path)]
+
+        self.kg.process_sources(sources)
+
+        chat = self.kg.chat_session()
+        answer = chat.send_message("How many actors acted in a movie?")
+        answer = answer['response']
+
+        logger.info(f"Answer: {answer}")
+
+        actors_count = re.findall(r'\d+', answer)
+        num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
+
+        assert num_actors > 5, "The number of actors found should be greater than 5"
+
+    def test_kg_delete(self):
+
+        self.kg.delete()
+
+        db = FalkorDB()
+        graphs = db.list_graphs()
+        self.assertNotIn(self.graph_name, graphs)

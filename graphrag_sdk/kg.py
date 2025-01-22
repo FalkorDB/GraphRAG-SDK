@@ -60,21 +60,21 @@ class KnowledgeGraph:
         if not isinstance(name, str) or name == "":
             raise Exception("name should be a non empty string")
 
-        # Connect to database
+        # connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
         ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
 
         # Load / Save ontology to database
         if ontology is None:
-            # Load ontology from DB
-            ontology = Ontology.from_schema_graph(ontology_graph)
-            
-            if len(ontology.entities) == 0:
-                raise Exception("The ontology is empty. Load a valid ontology or create one using the ontology module.")
+            # load ontology from DB
+            ontology = Ontology.from_graph(ontology_graph)
         else:
-            # Save ontology to DB
+            # save ontology to DB
             ontology.save_to_graph(ontology_graph)
+            
+        if ontology is None:
+            raise Exception("Ontology is not defined")
 
         self._ontology = ontology
         self._name = name
