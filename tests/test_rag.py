@@ -11,7 +11,7 @@ from graphrag_sdk.models.litellm import LiteModel
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
 from deepeval.metrics import AnswerRelevancyMetric, ContextualPrecisionMetric, ContextualRecallMetric, ContextualRelevancyMetric
-from custom_metric import FaithfulRelevancyGraphContextualMetric
+from graphrag_sdk.custom_metric import FaithfulRelevancyGraphContextualMetric
 
 load_dotenv()
 
