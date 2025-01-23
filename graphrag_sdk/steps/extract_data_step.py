@@ -323,6 +323,7 @@ class ExtractDataStep(Step):
     
     def embed_document(self, graph, document, task_id):
         embeddings = self.embeddings.get_embedding(document)
-        query = f"MERGE (n:Document {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}'}}) RETURN n"
+        text = document.replace("'", "")
+        query = f"MERGE (n:Document {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}', text: '{text}'}}) RETURN n"
         result = graph.query(query)
         return embeddings
