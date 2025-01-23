@@ -194,13 +194,15 @@ class ExtractDataStep(Step):
                 )
                 
             if self.embeddings is not None:
-                doc_embed = self.embed_document(graph, document.content, task_id)
+                text = document.content.replace("'", "")
+                doc_embed = self.embed_document(graph, text)
             else:
                 doc_embed = None
+                text = None
             
             for entity in data["entities"]:
                 try:
-                    self._create_entity(graph, entity, ontology, doc_embed)
+                    self._create_entity(graph, entity, ontology, doc_embed, text)
                 except Exception as e:
                     _task_logger.error(f"Error creating entity: {e}")
                     continue
@@ -219,7 +221,7 @@ class ExtractDataStep(Step):
             with self.counter_lock:
                 self.process_files += 1
 
-    def _create_entity(self, graph: Graph, args: dict, ontology: Ontology, doc_embed: Optional[str]):
+    def _create_entity(self, graph: Graph, args: dict, ontology: Ontology, doc_embed: Optional[str], text: Optional[str] = None):
         # Get unique attributes from entity
         entity = ontology.get_entity_with_label(args["label"])
         if entity is None:
@@ -251,7 +253,8 @@ class ExtractDataStep(Step):
         result = graph.query(query)
         
         if self.embeddings is not None:
-            query = f"MATCH (e: Document {{embeddings: vecf32({doc_embed})}})\nMATCH(n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
+            
+            query = f"MATCH (e: Document {{embeddings: vecf32({doc_embed}), text: '{text}'}})\nMATCH(n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
             graph.query(query)
         return result
 
@@ -321,9 +324,9 @@ class ExtractDataStep(Step):
                     logger.error("Quota exceeded")
                 raise e
     
-    def embed_document(self, graph, document, task_id):
-        embeddings = self.embeddings.get_embedding(document)
-        text = document.replace("'", "")
+    def embed_document(self, graph, text):
+        embeddings = self.embeddings.get_embedding(text)
         query = f"MERGE (n:Document {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}', text: '{text}'}}) RETURN n"
-        result = graph.query(query)
+        graph.query(query)
+        
         return embeddings
