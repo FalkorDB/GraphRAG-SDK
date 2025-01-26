@@ -12,35 +12,35 @@ from graphrag_sdk.document_loaders import (
 )
 
 
-def Source(path: str, instruction: Optional[str] = None) -> "AbstractSource":
+def Source(data_source: str, instruction: Optional[str] = None) -> "AbstractSource":
     """
-    Creates a source object
+    Creates a source object from a given data_source.
 
-    Args:
-        path (str): path to source
-        instruction (str): source specific instruction for the LLM
+    Parameters:
+        data_source (str): path to a source or data string.
+        instruction (str, optional): source specific instruction for the LLM. Defaults to None.
 
     Returns:
-        AbstractSource: A source object corresponding to the input path format.
+        AbstractSource: A source object corresponding to the input data source.
     """
 
-    if not isinstance(path, str) or path == "":
-        raise Exception("Invalid argument, path should be a none empty string.")
+    if not isinstance(data_source, str) or data_source == "":
+        raise Exception("Invalid argument: data source should be a non-empty string.")
 
-    if ".pdf" in path.lower():
-        s = PDF(path)
-    elif ".html" in path.lower():
-        s = HTML(path)
-    elif "http" in path.lower():
-        s = URL(path)
-    elif ".csv" in path.lower():
-        s = CSV(path)
-    elif ".jsonl" in path.lower():
-        s = JSONL(path)
-    elif ".txt" in path.lower():
-        s = TEXT(path)
+    if ".pdf" in data_source.lower():
+        s = PDF(data_source)
+    elif ".html" in data_source.lower():
+        s = HTML(data_source)
+    elif "http" in data_source.lower():
+        s = URL(data_source)
+    elif ".csv" in data_source.lower():
+        s = CSV(data_source)
+    elif ".jsonl" in data_source.lower():
+        s = JSONL(data_source)
+    elif ".txt" in data_source.lower():
+        s = TEXT(data_source)
     else:
-        raise Exception("Unsupported file format.")
+        s = STRING(data_source)
 
     # Set source instructions
     s.instruction = instruction
@@ -127,8 +127,8 @@ class PDF(AbstractSource):
     PDF resource
     """
 
-    def __init__(self, data_source):
-        super().__init__(data_source)
+    def __init__(self, path):
+        super().__init__(path)
         self.loader = PDFLoader(self.data_source)
 
 
@@ -137,8 +137,8 @@ class TEXT(AbstractSource):
     TEXT resource
     """
 
-    def __init__(self, data_source):
-        super().__init__(data_source)
+    def __init__(self, path):
+        super().__init__(path)
         self.loader = TextLoader(self.data_source)
 
 
@@ -147,8 +147,8 @@ class URL(AbstractSource):
     URL resource
     """
 
-    def __init__(self, data_source):
-        super().__init__(data_source)
+    def __init__(self, path):
+        super().__init__(path)
         self.loader = URLLoader(self.data_source)
 
 
@@ -157,8 +157,8 @@ class HTML(AbstractSource):
     HTML resource
     """
 
-    def __init__(self, data_source):
-        super().__init__(data_source)
+    def __init__(self, path):
+        super().__init__(path)
         self.loader = HTMLLoader(self.data_source)
 
 
@@ -167,8 +167,8 @@ class CSV(AbstractSource):
     CSV resource
     """
 
-    def __init__(self, data_source, rows_per_document: int = 50):
-        super().__init__(data_source)
+    def __init__(self, path, rows_per_document: int = 50):
+        super().__init__(path)
         self.loader = CSVLoader(self.data_source, rows_per_document)
 
 
@@ -177,8 +177,8 @@ class JSONL(AbstractSource):
     JSONL resource
     """
 
-    def __init__(self, data_source, rows_per_document: int = 50):
-        super().__init__(data_source)
+    def __init__(self, path, rows_per_document: int = 50):
+        super().__init__(path)
         self.loader = JSONLLoader(self.data_source, rows_per_document)
         
 class STRING(AbstractSource):
@@ -186,6 +186,6 @@ class STRING(AbstractSource):
     String resource
     """
 
-    def __init__(self, data_source: str):
-        super().__init__(data_source)
+    def __init__(self, string: str):
+        super().__init__(string)
         self.loader = StringLoader(self.data_source)
