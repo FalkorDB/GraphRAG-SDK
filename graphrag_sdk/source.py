@@ -1,5 +1,5 @@
-from typing import Iterator
-from abc import ABC, abstractmethod
+from abc import ABC
+from typing import Optional, Iterator
 from graphrag_sdk.document import Document
 from graphrag_sdk.document_loaders import (
     PDFLoader,
@@ -8,38 +8,39 @@ from graphrag_sdk.document_loaders import (
     HTMLLoader,
     CSVLoader,
     JSONLLoader,
+    StringLoader,
 )
 
 
-def Source(path: str, instruction: str | None = None) -> "AbstractSource":
+def Source(data_source: str, instruction: Optional[str] = None) -> "AbstractSource":
     """
-    Creates a source object
+    Creates a source object from a given data_source.
 
     Parameters:
-        path (str): path to source
-        instruction (str): source specific instruction for the LLM
+        data_source (str): path to a source or data string.
+        instruction (str, optional): source specific instruction for the LLM. Defaults to None.
 
     Returns:
-        AbstractSource: source
+        AbstractSource: A source object corresponding to the input data source.
     """
 
-    if not isinstance(path, str) or path == "":
-        raise Exception("Invalid argument, path should be a none empty string.")
+    if not isinstance(data_source, str) or data_source == "":
+        raise Exception("Invalid argument: data source should be a non-empty string.")
 
-    s = None
-
-    if ".pdf" in path.lower():
-        s = PDF(path)
-    elif ".html" in path.lower():
-        s = HTML(path)
-    elif "http" in path.lower():
-        s = URL(path)
-    elif ".csv" in path.lower():
-        s = CSV(path)
-    elif ".jsonl" in path.lower():
-        s = JSONL(path)
+    if ".pdf" in data_source.lower():
+        s = PDF(data_source)
+    elif ".html" in data_source.lower():
+        s = HTML(data_source)
+    elif "http" in data_source.lower():
+        s = URL(data_source)
+    elif ".csv" in data_source.lower():
+        s = CSV(data_source)
+    elif ".jsonl" in data_source.lower():
+        s = JSONL(data_source)
+    elif ".txt" in data_source.lower():
+        s = TEXT(data_source)
     else:
-        s = TEXT(path)
+        s = STRING(data_source)
 
     # Set source instructions
     s.instruction = instruction
@@ -52,19 +53,19 @@ class AbstractSource(ABC):
     Abstract class representing a source file
     """
 
-    def __init__(self, path: str):
+    def __init__(self, data_source: str):
         """
         Initializes a new instance of the Source class.
 
         Args:
-            path (str): The path to the source file.
+            data_source (str): Either a file path or a string.
 
         Attributes:
-            path (str): The path to the source file.
-            loader: The loader object associated with the source file.
+            data_source (str): The source path for the data or the data as a string.
+            loader: The loader object associated with the source.
             instruction (str): The instruction for the source file.
         """
-        self.path = path
+        self.data_source = data_source
         self.loader = None
         self.instruction = ""
 
@@ -90,16 +91,16 @@ class AbstractSource(ABC):
         if not isinstance(other, AbstractSource):
             return False
 
-        return self.path == other.path
+        return self.data_source == other.data_source
 
     def __hash__(self):
         """
-        Calculates the hash value of the Source object based on its path.
+        Calculates the hash value of the Source object based on its data_source.
 
         Returns:
             int: The hash value of the Source object.
         """
-        return hash(self.path)
+        return hash(self.data_source)
 
 
 class PDF(AbstractSource):
@@ -109,7 +110,7 @@ class PDF(AbstractSource):
 
     def __init__(self, path):
         super().__init__(path)
-        self.loader = PDFLoader(self.path)
+        self.loader = PDFLoader(self.data_source)
 
 
 class TEXT(AbstractSource):
@@ -119,7 +120,7 @@ class TEXT(AbstractSource):
 
     def __init__(self, path):
         super().__init__(path)
-        self.loader = TextLoader(self.path)
+        self.loader = TextLoader(self.data_source)
 
 
 class URL(AbstractSource):
@@ -129,7 +130,7 @@ class URL(AbstractSource):
 
     def __init__(self, path):
         super().__init__(path)
-        self.loader = URLLoader(self.path)
+        self.loader = URLLoader(self.data_source)
 
 
 class HTML(AbstractSource):
@@ -139,7 +140,7 @@ class HTML(AbstractSource):
 
     def __init__(self, path):
         super().__init__(path)
-        self.loader = HTMLLoader(self.path)
+        self.loader = HTMLLoader(self.data_source)
 
 
 class CSV(AbstractSource):
@@ -149,7 +150,7 @@ class CSV(AbstractSource):
 
     def __init__(self, path, rows_per_document: int = 50):
         super().__init__(path)
-        self.loader = CSVLoader(self.path, rows_per_document)
+        self.loader = CSVLoader(self.data_source, rows_per_document)
 
 
 class JSONL(AbstractSource):
@@ -159,4 +160,13 @@ class JSONL(AbstractSource):
 
     def __init__(self, path, rows_per_document: int = 50):
         super().__init__(path)
-        self.loader = JSONLLoader(self.path, rows_per_document)
+        self.loader = JSONLLoader(self.data_source, rows_per_document)
+        
+class STRING(AbstractSource):
+    """
+    String resource
+    """
+
+    def __init__(self, string: str):
+        super().__init__(string)
+        self.loader = StringLoader(self.data_source)
