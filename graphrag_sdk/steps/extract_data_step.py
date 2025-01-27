@@ -110,21 +110,20 @@ class ExtractDataStep(Step):
         retries: int = 1,
     ):
         failed_chunks = []
-        for source in self.sources:
-            for chunk_id, chunk in enumerate(source.load()):
-                if chunk is not None and chunk.content is not None and len(chunk.content) > 0:
-                    try:
-                        self._process_chunk(task_id + "_" + str(chunk_id),
-                                            chat_session,
-                                            chunk,
-                                            ontology,
-                                            graph,
-                                            source_instructions,
-                                            instructions,
-                                            retries)
-                    except Exception as e:
-                        logger.error(f"Error processing chunk: {e}")
-                        failed_chunks.append((chunk_id, source, e))
+        for chunk_id, chunk in enumerate(source.load()):
+            if chunk is not None and chunk.content is not None and len(chunk.content) > 0:
+                try:
+                    self._process_chunk(task_id + "_" + str(chunk_id),
+                                        chat_session,
+                                        chunk,
+                                        ontology,
+                                        graph,
+                                        source_instructions,
+                                        instructions,
+                                        retries)
+                except Exception as e:
+                    logger.error(f"Error processing chunk: {e}")
+                    failed_chunks.append((chunk_id, source, e))
         
         with self.counter_lock:
             self.process_files += 1
