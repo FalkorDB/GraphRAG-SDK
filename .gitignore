@@ -3,7 +3,8 @@ __pycache__
 cache
 output
 .venv
-.vscode
+#.vscode
+examples/charging_software/data
 
 logs
 falkordb-data

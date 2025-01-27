@@ -1,0 +1,31 @@
+{
+    "editor.fontSize": 14,
+    "editor.tabSize": 4,
+    "files.autoSave": "onFocusChange",
+    "terminal.integrated.fontFamily": "Courier New",
+
+    // Python settings
+    "python.analysis.autoSearchPaths": true,
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingImports": "none"
+    },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src"
+    ],
+    "python.envFile": "${workspaceFolder}/.env",
+    "python.terminal.activateEnvironment": true,
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+
+    // Test settings
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.cwd": "${workspaceFolder}/tests",
+    "python.testing.pytestPath": "${workspaceFolder}/.venv/bin/pytest",
+    "python.testing.autoTestDiscoverOnSaveEnabled": true,
+    "editor.rulers": [
+        {"column": 72, "color": "#4c4c4c"},
+        {"column": 79, "color": "#4b58b6"},
+        {"column": 100, "color": "#677864"}
+    ],
+    "makefile.configureOnOpen": false
+}
