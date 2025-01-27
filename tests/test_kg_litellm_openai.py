@@ -81,7 +81,7 @@ class TestKGLiteLLM(unittest.TestCase):
         with open(file_path) as f:
             string = f.read()
             
-        sources = [Source_FromRawText(string)]
+        sources = [Source(string)]
 
         self.kg.process_sources(sources)
 
