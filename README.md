@@ -17,10 +17,11 @@ Simplify the development of your next GenAI application with GraphRAG-SDK, a spe
 
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
 
-Or use on premise with Docker:
+Or use on premise with Docker. Go to project root and run this in bash:
 
 ```sh
-docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb:latest
+docker run -p 6379:6379 -p 3000:3000 -it --rm -v "$(pwd)/examples/charging_software/data:/data" falkordb/falkordb:latest
+
 ```
 
 ### UV Installation
