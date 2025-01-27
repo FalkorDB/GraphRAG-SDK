@@ -35,7 +35,9 @@ pip install graphrag_sdk[litellm]
 ### Configure Credentials. See [.env](.env.template) for examples.
 
 * [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.  
-  To choose vendor use the prefix "specific_vendor/your_model", for example "gemini/gemini-2.0-flash-exp".
+  To choose vendor use the prefix "specific_vendor/your_model", for example:
+  - "gemini/gemini-2.0-flash-exp"
+  - "deepseek/channel" (for DeepSeek models)
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
 * [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-2.0-flash-exp`
 * [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
@@ -45,6 +47,20 @@ pip install graphrag_sdk[litellm]
 # How to use
 [![Get started](https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg)](https://lightning.ai/muhammadqadora/studios/build-fast-accurate-genai-apps-advanced-rag-with-falkordb)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
+
+### Quickstart with DeepSeek
+
+1. Install dependencies:
+```bash
+pip install graphrag_sdk[litellm]
+export DEEPSEEK_API_KEY="your-api-key"
+export LITELLM_MODEL="deepseek/channel"
+```
+
+2. Run the quickstart script:
+```bash
+python quickstart.py
+```
 
 ### Step 1: Creating Ontologies
 Automate ontology creation from unstructured data or define it manually - See [example](https://github.com/falkordb/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
