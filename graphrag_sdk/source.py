@@ -12,37 +12,56 @@ from graphrag_sdk.document_loaders import (
 )
 
 
-def Source(data_source: str, instruction: Optional[str] = None) -> "AbstractSource":
+def Source(path: str, instruction: Optional[str] = None) -> "AbstractSource":
     """
-    Creates a source object from a given data_source.
+    Creates a source object
 
-    Parameters:
-        data_source (str): path to a source or data string.
-        instruction (str, optional): source specific instruction for the LLM. Defaults to None.
+    Args:
+        path (str): path to source
+        instruction (str): source specific instruction for the LLM
 
     Returns:
         AbstractSource: A source object corresponding to the input data source.
     """
 
-    if not isinstance(data_source, str) or data_source == "":
-        raise Exception("Invalid argument: data source should be a non-empty string.")
+    if not isinstance(path, str) or path == "":
+        raise Exception("Invalid argument, path should be a none empty string.")
 
-    if ".pdf" in data_source.lower():
-        s = PDF(data_source)
-    elif ".html" in data_source.lower():
-        s = HTML(data_source)
-    elif "http" in data_source.lower():
-        s = URL(data_source)
-    elif ".csv" in data_source.lower():
-        s = CSV(data_source)
-    elif ".jsonl" in data_source.lower():
-        s = JSONL(data_source)
-    elif ".txt" in data_source.lower():
-        s = TEXT(data_source)
+    if ".pdf" in path.lower():
+        s = PDF(path)
+    elif ".html" in path.lower():
+        s = HTML(path)
+    elif "http" in path.lower():
+        s = URL(path)
+    elif ".csv" in path.lower():
+        s = CSV(path)
+    elif ".jsonl" in path.lower():
+        s = JSONL(path)
+    elif ".txt" in path.lower():
+        s = TEXT(path)
     else:
-        s = STRING(data_source)
+        raise Exception("Unsupported file format.")
 
     # Set source instructions
+    s.instruction = instruction
+
+    return s
+
+def Source_FromRawText(text: str, instruction: Optional[str] = None) -> "AbstractSource":
+    """
+    Creates a source object from raw text
+
+    Args:
+        text (str): raw text
+        instruction (str): source specific instruction for the LLM
+
+    Returns:
+        AbstractSource: A source object corresponding to the input data.
+    """
+    if not isinstance(text, str) or text == "":
+        raise Exception("Invalid argument, text should be a none empty string.")
+
+    s = STRING(text)
     s.instruction = instruction
 
     return s
