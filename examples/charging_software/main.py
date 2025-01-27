@@ -10,15 +10,12 @@ from graphrag_sdk import KnowledgeGraph
 
 logging.basicConfig(level=logging.INFO)
 
-MODEL_TYPE = "azure"  # Switch to "litellm" for DeepSeek
+MODEL_TYPE = "litellm"  # Switch to "litellm" for DeepSeek
 
 if __name__ == "__main__":
     # Model configuration
-    if MODEL_TYPE == "azure":
-        model = AzureOpenAiGenerativeModel(
-            api_key="your-key-here",
-            model_name="gpt-4"
-        )
+    if MODEL_TYPE != "litellm":
+        logging.info("Specify LLM to be used.")
     elif MODEL_TYPE == "litellm":
         model = LiteModel(model_name="deepseek/deepseek-reasoner")
     
@@ -44,4 +41,5 @@ if __name__ == "__main__":
     
     # Example usage
     graph = build_knowledge_graph("redis://localhost:6379", ontology)
+    
     print(query_kg("Explain key EV charging concepts in this knowledge base"))

@@ -16,7 +16,7 @@ dependencies = [
     "pypdf>=4.2.0",
     "backoff>=2.2.1",
     "requests>=2.32.3",
-    "python-abc>=0.2.0",
+    # "python-abc>=0.2.0",
     "ratelimit>=2.2.1",
     "python-dotenv>=1.0.1",
     "fix-busted-json>=0.0.18",
@@ -43,6 +43,14 @@ dev = [
 [project.urls]
 repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 homepage = "http://RAG-SDK.readthedocs.io"
+
+[tool.setuptools]
+package-dir = { "graphrag_sdk" = "graphrag_sdk" }  # Use forward slashes
+
+[tool.setuptools.packages.find]
+# where = ["src"]
+include = ["graphrag_sdk*"]
+exclude = ["images*"]
 
 [tool.pytest.ini_options]
 log_cli = true

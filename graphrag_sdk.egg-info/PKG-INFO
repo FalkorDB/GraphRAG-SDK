@@ -1,0 +1,35 @@
+Metadata-Version: 2.2
+Name: graphrag_sdk
+Version: 0.5.0
+Summary: Enables graph-based RAG and integration with LLMs
+Author-email: FalkorDB <info@falkordb.com>
+License: MIT
+Project-URL: repository, https://github.com/FalkorDB/GraphRAG-SDK
+Project-URL: homepage, http://RAG-SDK.readthedocs.io
+Requires-Python: >=3.9
+License-File: LICENSE
+Requires-Dist: falkordb>=1.0.9
+Requires-Dist: typing-extensions>=4.12.1
+Requires-Dist: bs4>=0.0.2
+Requires-Dist: pypdf>=4.2.0
+Requires-Dist: backoff>=2.2.1
+Requires-Dist: requests>=2.32.3
+Requires-Dist: ratelimit>=2.2.1
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: fix-busted-json>=0.0.18
+Requires-Dist: ipykernel>=6.29.5
+Provides-Extra: litellm
+Requires-Dist: litellm>=1.52.14; extra == "litellm"
+Requires-Dist: ollama>=0.2.1; extra == "litellm"
+Provides-Extra: all
+Requires-Dist: vertexai>=1.49.0; extra == "all"
+Requires-Dist: ollama>=0.2.1; extra == "all"
+Requires-Dist: openai>=1.35.9; extra == "all"
+Requires-Dist: google-generativeai>=0.8.1; extra == "all"
+Requires-Dist: litellm>=1.52.14; extra == "all"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.1; extra == "dev"
+Requires-Dist: sphinx>=7.3.7; extra == "dev"
+Requires-Dist: sphinx-rtd-theme>=2.0.0; extra == "dev"
+Requires-Dist: pandas>=2.2.2; extra == "dev"
+Requires-Dist: jupyter>=1.0.0; extra == "dev"
