@@ -4,7 +4,8 @@ cache
 output
 .venv
 #.vscode
-examples/charging_software/data
+/examples/charging_software/data
+# \examples\charging_software\data
 
 logs
 falkordb-data
