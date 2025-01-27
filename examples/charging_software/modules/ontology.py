@@ -2,15 +2,28 @@ from graphrag_sdk import Ontology
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
 import json
+import os
+
+boundaries = """
+    Extract only the most relevant information about charging software.
+    Focus on the protocol for communication.
+    Avoid creating entities for details that can be expressed as attributes.
+"""
 
 def generate_ontology(sources: list[AbstractSource], model: GenerativeModel):
     """Generate ontology from documents"""
     ontology = Ontology.from_sources(
         sources=sources,
         model=model,
-        boundaries="EV charging software domain"
+        boundaries=boundaries
     )
-    return ontology
+
+    # Save the ontology to the disk as a json file.
+    output_dir = "examples/charging_software/ontologies"
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "ontology.json"), "w", encoding="utf-8") as file:
+        file.write(json.dumps(ontology.to_json(), indent=2))
+
 
 def merge_ontologies(main_ontology: Ontology, additional_path: str):
     """Merge with existing ontology"""
