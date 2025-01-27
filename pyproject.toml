@@ -1,53 +1,48 @@
-[tool.poetry]
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "graphrag_sdk"
 version = "0.5.0"
-license = "MIT"
-description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
-authors = ["FalkorDB <info@falkordb.com>"]
-readme = "README.md"
+description = "Enables graph-based RAG and integration with LLMs"
+authors = [{name = "FalkorDB", email = "info@falkordb.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.9"
+dependencies = [
+    "falkordb>=1.0.9",
+    "typing-extensions>=4.12.1",
+    "bs4>=0.0.2",
+    "pypdf>=4.2.0",
+    "backoff>=2.2.1",
+    "requests>=2.32.3",
+    "python-abc>=0.2.0",
+    "ratelimit>=2.2.1",
+    "python-dotenv>=1.0.1",
+    "fix-busted-json>=0.0.18",
+    "ipykernel>=6.29.5"
+]
+
+[project.optional-dependencies]
+litellm = ["litellm>=1.52.14", "ollama>=0.2.1"]
+all = [
+    "vertexai>=1.49.0",
+    "ollama>=0.2.1",
+    "openai>=1.35.9",
+    "google-generativeai>=0.8.1",
+    "litellm>=1.52.14"
+]
+dev = [
+    "pytest>=8.2.1",
+    "sphinx>=7.3.7",
+    "sphinx-rtd-theme>=2.0.0",
+    "pandas>=2.2.2",
+    "jupyter>=1.0.0"
+]
+
+[project.urls]
 repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 homepage = "http://RAG-SDK.readthedocs.io"
-keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
-
-[tool.poetry.dependencies]
-python = "^3.9.0"
-falkordb = "^1.0.9"
-typing-extensions = "^4.12.1"
-bs4 = "^0.0.2"
-pypdf = "^4.2.0"
-backoff = "^2.2.1"
-requests = "^2.32.3"
-python-abc = "^0.2.0"
-ratelimit = "^2.2.1"
-python-dotenv = "^1.0.1"
-fix-busted-json = "^0.0.18"
-ipykernel = "^6.29.5"
-vertexai = { version = "^1.49.0", optional = true } 
-ollama = { version = "^0.2.1", optional = true }
-openai = { version = "^1.35.9", optional = true }
-google-generativeai = { version = "^0.8.1", optional = true }
-litellm = { version = "^1.52.14", optional = true }
-
-[tool.poetry.extras]
-all = ["vertexai", "ollama", "openai", "google-generativeai", "litellm"]
-ollama = ["ollama"]
-openai = ["openai"]
-vertexai = ["vertexai"]
-google-generativeai = ["google-generativeai"]
-litellm = ["litellm", "ollama"]
-
-[tool.poetry.group.test.dependencies]
-pytest = "^8.2.1"
-
-[tool.poetry.group.dev.dependencies]
-sphinx = "^7.3.7"
-sphinx-rtd-theme = "^2.0.0"
-pandas = "^2.2.2"
-jupyter = "^1.0.0"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 log_cli = true
