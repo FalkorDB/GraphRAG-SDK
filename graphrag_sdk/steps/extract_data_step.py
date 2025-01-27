@@ -68,35 +68,61 @@ class ExtractDataStep(Step):
     def _create_chat(self):
         return self.model.start_chat({"response_validation": False})
 
+    def _get_documents(self, source: AbstractSource):
+        documents = []
+        for document in source.load():
+            if document is not None and document.content is not None and len(document.content) > 0:
+                documents.append((document, source.instruction))
+        return documents
     def run(self, instructions: str = None) -> list[AbstractSource]:
 
-        tasks: list[Future] = []
+        tasks_chunks: list[Future[Ontology]] = []
+        tasks_load = []
         
-        with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-            with tqdm(total=len(self.sources), desc="Process Sources", disable=self.hide_progress) as pbar:
-
+        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
+            with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
+                
                 # Process each source document in parallel
+                processing_queue = []
                 for source in self.sources:
-                    task_id = "extract_data_step_" + str(uuid4())
                     task = executor.submit(
-                        self._process_source,
-                        task_id,
-                        self._create_chat(),
-                        source,
-                        self.ontology,
-                        self.graph,
-                        instructions,
-                    )
-                    tasks.append(task)
+                        self._get_documents,
+                        source,)
+                    tasks_load.append(task)
+                
+                # Wait for all documents to be loaded
+                while any(task.running() or not task.done() for task in tasks_load):
+                    for task in tasks_load:
+                        if task.done():
+                            # Add loaded documents to the the processing queue
+                            processing_queue.extend(task.result())
+                            tasks_load.remove(task)
+                    
+                    for chunk, source_instruction in processing_queue:
+                        task_id = "extract_data_step_" + str(uuid4())
+                        task = executor.submit(
+                            self._process_source,
+                            task_id,
+                            self._create_chat(),
+                            chunk,
+                            self.ontology,
+                            self.graph,
+                            source_instruction,
+                            instructions,
+                        )
+                        tasks_chunks.append(task)
+                    # Clear the processing queue after submitting all tasks
+                    processing_queue = []
                     
                 # Wait for all tasks to be completed
-                while any(task.running() or not task.done() for task in tasks):
+                while any(task.running() or not task.done() for task in tasks_chunks):
                     time.sleep(RENDER_STEP_SIZE)
                     with self.counter_lock:
                         pbar.n = self.process_files
                     pbar.refresh()
 
-        return self.failed_chunks
+        failed_sources = [] # [self.sources[idx] for idx, task in enumerate(tasks_chunks) if task.exception()]     
+        return failed_sources
 
     def _process_source(
         self,
@@ -156,8 +182,10 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
-                            
-            text = chunk.content[: self.config["max_input_tokens"]]
+            
+            document = source
+                
+            text = document.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
                 instructions="\n".join(
