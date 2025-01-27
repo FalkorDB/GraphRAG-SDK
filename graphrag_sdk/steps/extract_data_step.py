@@ -68,75 +68,76 @@ class ExtractDataStep(Step):
     def _create_chat(self):
         return self.model.start_chat({"response_validation": False})
 
-    def _get_documents(self, source: AbstractSource):
-        """
-        Load documents from source
-        """
-        documents = []
-        for document in source.load():
-            if document is not None and document.content is not None and len(document.content) > 0:
-                documents.append((document, source))
-                
-        return documents
-    
     def run(self, instructions: str = None) -> list[AbstractSource]:
+
+        tasks: list[Future[Ontology]] = []
         
-        tasks_load: list[Future[Document]] = []
-        tasks_chunks: list[Future[Ontology]] = []
-        
-        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
+        with tqdm(total=len(self.sources), desc="Process Sources", disable=self.hide_progress) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-                
+
                 # Process each source document in parallel
                 for source in self.sources:
+                    task_id = "extract_data_step_" + str(uuid4())
                     task = executor.submit(
-                        self._get_documents,
-                        source,)
-                    tasks_load.append(task)
-                
-                processing_queue = []
-                # Wait for all documents to be loaded
-                while any(task.running() or not task.done() for task in tasks_load):
-                    for task in tasks_load:
-                        if task.done():
-                            # Add loaded documents to the the processing queue
-                            processing_queue.extend(task.result())
-                            tasks_load.remove(task)
-                    
-                    for chunk, source in processing_queue:
-                        task_id = "extract_data_step_" + str(uuid4())
-                        task = executor.submit(
-                            self._process_source,
-                            task_id,
-                            self._create_chat(),
-                            chunk,
-                            self.ontology,
-                            self.graph,
-                            source,
-                            instructions,
-                        )
-                        tasks_chunks.append(task)
-                    # Clear the processing queue after submitting all tasks
-                    processing_queue = []
+                        self._process_source,
+                        task_id,
+                        self._create_chat(),
+                        source,
+                        self.ontology,
+                        self.graph,
+                        instructions,
+                    )
+                    tasks.append(task)
                     
                 # Wait for all tasks to be completed
-                while any(task.running() or not task.done() for task in tasks_chunks):
+                while any(task.running() or not task.done() for task in tasks):
                     time.sleep(RENDER_STEP_SIZE)
                     with self.counter_lock:
                         pbar.n = self.process_files
                     pbar.refresh()
 
-        failed_sources = [task.result() for task in tasks_chunks if task.exception()] 
-        return failed_sources
+        return self.failed_chunks
 
     def _process_source(
         self,
         task_id: str,
         chat_session: GenerativeModelChatSession,
-        document: Document,
+        source: AbstractSource,
         ontology: Ontology,
         graph: Graph,
-        source: AbstractSource,
+        source_instructions: str = "",
+        instructions: str = "",
+        retries: int = 1,
+    ):
+        failed_chunks = []
+        for source in self.sources:
+            for chunk_id, chunk in enumerate(source.load()):
+                if chunk is not None and chunk.content is not None and len(chunk.content) > 0:
+                    try:
+                        self._process_chunk(task_id + "_" + str(chunk_id),
+                                            chat_session,
+                                            chunk,
+                                            ontology,
+                                            graph,
+                                            source_instructions,
+                                            instructions,
+                                            retries)
+                    except Exception as e:
+                        logger.error(f"Error processing chunk: {e}")
+                        failed_chunks.append((chunk_id, source, e))
+        
+        with self.counter_lock:
+            self.process_files += 1
+            self.failed_chunks.extend(failed_chunks)
+            
+    def _process_chunk(
+        self,
+        task_id: str,
+        chat_session: GenerativeModelChatSession,
+        chunk: Document,
+        ontology: Ontology,
+        graph: Graph,
+        source_instructions: str = "",
         instructions: str = "",
         retries: int = 1,
     ):
@@ -156,13 +157,13 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
-            
-            text = document.content[: self.config["max_input_tokens"]]
+                            
+            text = chunk.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
                 instructions="\n".join(
                     [
-                        source.instruction if source.instruction is not None else "",
+                        source_instructions if source_instructions is not None else "",
                         instructions if instructions is not None else "",
                     ]
                 ),
@@ -175,7 +176,7 @@ class ExtractDataStep(Step):
             responses: list[GenerationResponse] = []
             response_idx = 0
 
-            # responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
+            responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
@@ -235,10 +236,6 @@ class ExtractDataStep(Step):
         except Exception as e:
             logger.exception(f"Task id: {task_id} failed - {e}")
             raise e
-        finally:
-            with self.counter_lock:
-                self.process_files += 1
-            return document, source 
 
     def _create_entity(self, graph: Graph, args: dict, ontology: Ontology):
         # Get unique attributes from entity
