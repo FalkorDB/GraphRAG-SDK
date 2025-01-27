@@ -1,9 +1,0 @@
-[tool.uv]
-resolution = "highest"
-python = "3.9"
-strict = false
-exclude-newer = "2024-12-31T00:00:00Z"
-
-[install]
-compile = true
-generate_hashes = true

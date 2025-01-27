@@ -12,12 +12,12 @@ load_dotenv()
 
 # Initialize DeepSeek model via LiteLLM
 model = LiteModel(
-    model_name="deepseek/channel",  # Verify exact model name format
+    model_name="deepseek/deepseek-reasoner",  # Verify exact model name format
     api_base="https://api.deepseek.com/v1"  # Verify endpoint URL
 )
 
 # Create ontology from sample source
-sources = [URL("https://en.wikipedia.org/wiki/Your_Topic")]  # Start with a focused data source
+sources = [URL("https://en.wikipedia.org/wiki/Wikipedia")]  # Start with a focused data source
 ontology = Ontology.from_sources(
     sources=sources,
     model=model,

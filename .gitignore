@@ -8,3 +8,4 @@ output
 logs
 falkordb-data
 weaviate-data
+.aider*
