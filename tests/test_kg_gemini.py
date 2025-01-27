@@ -2,7 +2,7 @@ import re
 import os
 import logging
 import unittest
-import vertexai
+from graphrag_sdk.source import URL
 from falkordb import FalkorDB
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
@@ -10,7 +10,7 @@ from graphrag_sdk.source import Source
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
-from graphrag_sdk.models.gemini import GeminiGenerativeModel
+from graphrag_sdk.models.litellm import LiteModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
 
 load_dotenv()
@@ -18,8 +18,82 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-vertexai.init(project=os.getenv("PROJECT_ID"), location=os.getenv("REGION"))
+ontology = Ontology([], [])
 
+ontology.add_entity(
+    Entity(
+        label="Actor",
+        attributes=[
+            Attribute(
+                name="name",
+                attr_type=AttributeType.STRING,
+                unique=True,
+                required=True,
+            ),
+        ],
+    )
+)
+ontology.add_entity(
+    Entity(
+        label="Movie",
+        attributes=[
+            Attribute(
+                name="title",
+                attr_type=AttributeType.STRING,
+                unique=True,
+                required=True,
+            ),
+        ],
+    )
+)
+ontology.add_relation(
+    Relation(
+        label="ACTED_IN",
+        source="Actor",
+        target="Movie",
+        attributes=[
+            Attribute(
+                name="role",
+                attr_type=AttributeType.STRING,
+                unique=False,
+                required=False,
+            ),
+        ],
+    )
+)
+
+graph_name = "IMDB_embed"
+
+model = LiteModel(model_name="gemini/gemini-1.5-flash-001")
+
+kg = KnowledgeGraph(
+    name=graph_name,
+    ontology=ontology,
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+)
+sources = []
+for file in os.listdir():
+    if file.endswith(".pdf"):
+        sources.append(Source(file))
+urls = ["https://www.rottentomatoes.com/m/side_by_side_2012",
+"https://www.rottentomatoes.com/m/matrix",
+# "https://www.rottentomatoes.com/m/matrix_revolutions",
+# "https://www.rottentomatoes.com/m/matrix_reloaded",
+# "https://www.rottentomatoes.com/m/speed_1994",
+"https://www.rottentomatoes.com/m/john_wick_chapter_4"]
+
+sources = [URL(url) for url in urls]
+
+failed_chunks = kg.process_sources(sources)
+
+chat = kg.chat_session()
+answer = chat.send_message("How many actors acted in a movie?")
+answer = answer['response']
+
+logger.info(f"Answer: {answer}")
+
+actors_count = re.findall(r'\d+', answer)
+num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
 class TestKGGemini(unittest.TestCase):
     """

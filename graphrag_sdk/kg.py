@@ -77,8 +77,6 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._name = name
         self._model_config = model_config
-        self.sources = set([])
-        self.failed_sources = set([])
 
         if cypher_system_instruction is None:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
@@ -135,16 +133,6 @@ class KnowledgeGraph:
     @ontology.setter
     def ontology(self, value):
         self._ontology = value
-
-    def list_sources(self) -> list[AbstractSource]:
-        """
-        List of sources associated with knowledge graph
-
-        Returns:
-            list[AbstractSource]: sources
-        """
-
-        return [s.source for s in self.sources]
 
     def process_sources(
         self, sources: list[AbstractSource], instructions: str = None, hide_progress: bool = False
