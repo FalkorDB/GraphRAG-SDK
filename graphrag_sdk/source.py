@@ -127,8 +127,8 @@ class PDF(AbstractSource):
     PDF resource
     """
 
-    def __init__(self, path):
-        super().__init__(path)
+    def __init__(self, data_source):
+        super().__init__(data_source)
         self.loader = PDFLoader(self.data_source)
 
 
@@ -137,8 +137,8 @@ class TEXT(AbstractSource):
     TEXT resource
     """
 
-    def __init__(self, path):
-        super().__init__(path)
+    def __init__(self, data_source):
+        super().__init__(data_source)
         self.loader = TextLoader(self.data_source)
 
 
@@ -147,8 +147,8 @@ class URL(AbstractSource):
     URL resource
     """
 
-    def __init__(self, path):
-        super().__init__(path)
+    def __init__(self, data_source):
+        super().__init__(data_source)
         self.loader = URLLoader(self.data_source)
 
 
@@ -157,8 +157,8 @@ class HTML(AbstractSource):
     HTML resource
     """
 
-    def __init__(self, path):
-        super().__init__(path)
+    def __init__(self, data_source):
+        super().__init__(data_source)
         self.loader = HTMLLoader(self.data_source)
 
 
@@ -167,8 +167,8 @@ class CSV(AbstractSource):
     CSV resource
     """
 
-    def __init__(self, path, rows_per_document: int = 50):
-        super().__init__(path)
+    def __init__(self, data_source, rows_per_document: int = 50):
+        super().__init__(data_source)
         self.loader = CSVLoader(self.data_source, rows_per_document)
 
 
@@ -177,8 +177,8 @@ class JSONL(AbstractSource):
     JSONL resource
     """
 
-    def __init__(self, path, rows_per_document: int = 50):
-        super().__init__(path)
+    def __init__(self, data_source, rows_per_document: int = 50):
+        super().__init__(data_source)
         self.loader = JSONLLoader(self.data_source, rows_per_document)
         
 class STRING(AbstractSource):
@@ -186,6 +186,6 @@ class STRING(AbstractSource):
     String resource
     """
 
-    def __init__(self, string: str):
-        super().__init__(string)
+    def __init__(self, data_source: str):
+        super().__init__(data_source)
         self.loader = StringLoader(self.data_source)
