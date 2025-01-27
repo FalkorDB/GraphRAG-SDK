@@ -78,8 +78,10 @@ class TestKGLiteLLM(unittest.TestCase):
     def test_kg_creation(self):
 
         file_path = "tests/data/madoff.txt"
-
-        sources = [Source(file_path)]
+        with open(file_path) as f:
+            string = f.read()
+            
+        sources = [Source(string)]
 
         self.kg.process_sources(sources)
 
