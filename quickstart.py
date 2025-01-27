@@ -13,7 +13,7 @@ load_dotenv()
 # Initialize DeepSeek model via LiteLLM
 model = LiteModel(
     model_name="deepseek/deepseek-reasoner",  # Verify exact model name format
-    api_base="https://api.deepseek.com/v1"  # Verify endpoint URL
+    # api_base="https://api.deepseek.com/v1"  # Verify endpoint URL
 )
 
 # Create ontology from sample source
@@ -21,7 +21,7 @@ sources = [URL("https://en.wikipedia.org/wiki/Wikipedia")]  # Start with a focus
 ontology = Ontology.from_sources(
     sources=sources,
     model=model,
-    extraction_params={"chunk_size": 1000}  # Adjust based on content
+    # extraction_params={"chunk_size": 1000}  # Adjust based on content
 )
 
 # Build Knowledge Graph
