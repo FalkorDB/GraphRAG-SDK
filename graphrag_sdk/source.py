@@ -21,7 +21,7 @@ def Source(path: str, instruction: Optional[str] = None) -> "AbstractSource":
         instruction (str): source specific instruction for the LLM
 
     Returns:
-        AbstractSource: A source object corresponding to the input data source.
+        AbstractSource: A source object corresponding to the input path format.
     """
 
     if not isinstance(path, str) or path == "":
@@ -56,7 +56,7 @@ def Source_FromRawText(text: str, instruction: Optional[str] = None) -> "Abstrac
         instruction (str): source specific instruction for the LLM
 
     Returns:
-        AbstractSource: A source object corresponding to the input data.
+        AbstractSource: A string source object.
     """
     if not isinstance(text, str) or text == "":
         raise Exception("Invalid argument, text should be a none empty string.")
