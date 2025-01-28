@@ -146,7 +146,7 @@ class KnowledgeGraph:
         self._ontology = value
 
     def process_sources(
-        self, sources: list[AbstractSource], instructions: str = None, hide_progress: bool = False
+        self, sources: list[AbstractSource], instructions: str = None, hide_progress: bool = False, chunking_processor=None
     ) -> None:
         """
         Add entities and relations found in sources into the knowledge-graph
@@ -161,12 +161,12 @@ class KnowledgeGraph:
             raise Exception("Ontology is not defined")
 
         # Create graph with sources
-        failed_chunks = self._create_graph_with_sources(sources, instructions, hide_progress)
+        failed_chunks = self._create_graph_with_sources(sources, instructions, hide_progress, chunking_processor)
 
         return failed_chunks
 
     def _create_graph_with_sources(
-        self, sources: list[AbstractSource] | None = None, instructions: str = None, hide_progress: bool = False
+        self, sources: list[AbstractSource] | None = None, instructions: str = None, hide_progress: bool = False, chunking_processor=None
     ) -> list[AbstractSource]:
 
         step = ExtractDataStep(
@@ -176,6 +176,7 @@ class KnowledgeGraph:
             graph=self.graph,
             hide_progress=hide_progress,
             embeddings=self._embeddings,
+            chunking_processor=chunking_processor,
         )
 
         failed_sources = step.run(instructions)

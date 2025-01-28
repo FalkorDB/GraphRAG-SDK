@@ -6,12 +6,12 @@ class PDFLoader():
     Load PDF
     """
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, source) -> None:
         """
         Initialize loader
 
         Parameters:
-            path (str): path to PDF.
+            source: source
         """
 
         try:
@@ -21,11 +21,15 @@ class PDFLoader():
                 "pypdf package not found, please install it with " "`pip install pypdf`"
         )
 
-        self.path = path
+        self.source = source
+        self.path = source.data_source
 
-    def load(self) -> Iterator[Document]:
+    def load(self, chunking_processor=None) -> Iterator[Document]:
         """
         Load PDF
+        
+        Parameters:
+            chunking_processor (function): function to process chunks
 
         Returns:
             Iterator[Document]: document iterator
@@ -34,7 +38,12 @@ class PDFLoader():
         from pypdf import PdfReader # pylint: disable=import-outside-toplevel
 
         reader = PdfReader(self.path)
+        
+        full_pdf_text = "\n".join(page.extract_text() or '' for page in reader.pages)
+        
+        chunks = self.source.get_chunks(full_pdf_text, chunking_processor)
+        
         yield from [
-            Document(page.extract_text())
-            for page in reader.pages
+            Document(chunk)
+            for chunk in chunks
         ]

@@ -8,6 +8,7 @@ from falkordb import Graph
 from threading import Lock
 from typing import Optional
 from graphrag_sdk.steps.Step import Step
+from graphrag_sdk.document import Document
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models.model import OutputMethod
@@ -51,6 +52,7 @@ class ExtractDataStep(Step):
         },
         hide_progress: bool = False,
         embeddings: Optional[str] = None,
+        chunking_processor = None,
     ) -> None:
         self.sources = sources
         self.ontology = ontology
@@ -64,6 +66,8 @@ class ExtractDataStep(Step):
         self.process_files = 0
         self.failed_chunks = []
         self.counter_lock = Lock()
+        self.chunking_processor = chunking_processor
+        
         if not os.path.exists("logs"):
             os.makedirs("logs")
 
@@ -111,20 +115,31 @@ class ExtractDataStep(Step):
         instructions: str = "",
         retries: int = 1,
     ):
+        if self.embeddings is not None:
+            query = f"MERGE (s:Source {{Source: '{source.data_source}'}})"
+            graph.query(query)
+        
         failed_chunks = []
-        for chunk_id, chunk in enumerate(source.load()):
+        last_chunk_embed = [None, None]
+        for chunk_id, chunk in enumerate(source.load(self.chunking_processor)):
             if chunk is not None and chunk.content is not None and len(chunk.content) > 0:
                 try:
-                    self._process_chunk(task_id + "_" + str(chunk_id),
+                    (doc_embed, text) = self._process_chunk(task_id + "_" + str(chunk_id),
                                         chat_session,
                                         chunk,
                                         ontology,
                                         graph,
                                         source_instructions,
                                         instructions,
-                                        retries)
+                                        retries,
+                                        data_source=source.data_source)
+                    if last_chunk_embed[0] is not None:
+                        query = f"MATCH (c: Chunk {{embeddings: vecf32({last_chunk_embed[0]}), text: '{last_chunk_embed[1]}'}})\nMATCH (n: Chunk {{embeddings: vecf32({doc_embed}), text: '{text}'}}) MERGE (c)-[:NEXT_CHUNK]->(n)"
+                        graph.query(query)
+                        
+                    last_chunk_embed = [doc_embed, text]
                 except Exception as e:
-                    logger.error(f"Error processing chunk: {e}")
+                    logger.error(f"Error processing chunk {chunk_id} from data source {source.data_source}: {e}")
                     failed_chunks.append((chunk_id, source, e))
         
         with self.counter_lock:
@@ -141,6 +156,7 @@ class ExtractDataStep(Step):
         source_instructions: str = "",
         instructions: str = "",
         retries: int = 1,
+        data_source: str = "",
     ):
         try:
             _task_logger = logging.getLogger(task_id)
@@ -222,8 +238,8 @@ class ExtractDataStep(Step):
                 )
                 
             if self.embeddings is not None:
-                text = document.content.replace("'", "")
-                doc_embed = self.embed_document(graph, text)
+                text = chunk.content.replace("'", "")
+                doc_embed = self.embed_chunk(graph, text, data_source)
             else:
                 doc_embed = None
                 text = None
@@ -245,6 +261,7 @@ class ExtractDataStep(Step):
         except Exception as e:
             logger.exception(f"Task id: {task_id} failed - {e}")
             raise e
+        return (doc_embed, text)
 
     def _create_entity(self, graph: Graph, args: dict, ontology: Ontology, doc_embed: Optional[str], text: Optional[str] = None):
         # Get unique attributes from entity
@@ -278,8 +295,7 @@ class ExtractDataStep(Step):
         result = graph.query(query)
         
         if self.embeddings is not None:
-            
-            query = f"MATCH (e: Document {{embeddings: vecf32({doc_embed}), text: '{text}'}})\nMATCH(n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
+            query = f"MATCH (e:Chunk {{embeddings: vecf32({doc_embed}), text: '{text}'}})\nMATCH (n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
             graph.query(query)
         return result
 
@@ -349,9 +365,9 @@ class ExtractDataStep(Step):
                     logger.error("Quota exceeded")
                 raise e
     
-    def embed_document(self, graph, text):
+    def embed_chunk(self, graph, text, data_source):
         embeddings = self.embeddings.get_embedding(text)
-        query = f"MERGE (n:Document {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}', text: '{text}'}}) RETURN n"
+        query = f"MATCH (s:Source {{Source: '{data_source}'}})\nMERGE (n:Chunk {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}', text: '{text}'}})-[:CHUNKED_FROM]->(s)"
         graph.query(query)
         
         return embeddings

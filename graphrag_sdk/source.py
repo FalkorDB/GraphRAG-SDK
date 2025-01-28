@@ -88,14 +88,14 @@ class AbstractSource(ABC):
         self.loader = None
         self.instruction = ""
 
-    def load(self) -> Iterator[Document]:
+    def load(self, chunking_processor=None) -> Iterator[Document]:
         """
         Loads documents from the source.
 
         Returns:
             An iterator of Document objects.
         """
-        return self.loader.load()
+        return self.loader.load(chunking_processor)
 
     def __eq__(self, other) -> bool:
         """
@@ -121,6 +121,23 @@ class AbstractSource(ABC):
         """
         return hash(self.data_source)
 
+    def get_chunks(self, doc, chunking_processor = None) -> list[str]:
+        """
+        Get chunks of the source content
+        
+        Args:
+            doc (str): The source content.
+            chunking_processor (function): The function to use for splitting the source content.
+            
+        Returns:
+            list[str]: List of chunks.
+        """
+        if chunking_processor is not None:
+            chunks = chunking_processor.split_text(doc)
+        else:
+            chunks = [doc]
+
+        return chunks
 
 class PDF(AbstractSource):
     """
@@ -129,7 +146,7 @@ class PDF(AbstractSource):
 
     def __init__(self, data_source):
         super().__init__(data_source)
-        self.loader = PDFLoader(self.data_source)
+        self.loader = PDFLoader(self)
 
 
 class TEXT(AbstractSource):
@@ -139,7 +156,7 @@ class TEXT(AbstractSource):
 
     def __init__(self, data_source):
         super().__init__(data_source)
-        self.loader = TextLoader(self.data_source)
+        self.loader = TextLoader(self)
 
 
 class URL(AbstractSource):
@@ -149,7 +166,7 @@ class URL(AbstractSource):
 
     def __init__(self, data_source):
         super().__init__(data_source)
-        self.loader = URLLoader(self.data_source)
+        self.loader = URLLoader(self)
 
 
 class HTML(AbstractSource):
@@ -159,7 +176,7 @@ class HTML(AbstractSource):
 
     def __init__(self, data_source):
         super().__init__(data_source)
-        self.loader = HTMLLoader(self.data_source)
+        self.loader = HTMLLoader(self)
 
 
 class CSV(AbstractSource):
@@ -188,4 +205,4 @@ class STRING(AbstractSource):
 
     def __init__(self, data_source: str):
         super().__init__(data_source)
-        self.loader = StringLoader(self.data_source)
+        self.loader = StringLoader(self)

@@ -6,20 +6,31 @@ class StringLoader():
     Load String 
     """
 
-    def __init__(self, string: str) -> None:
+    def __init__(self, source) -> None:
         """
         Initialize loader
 
         Parameters:
-            string (str): string from memory.
+            source: source
         """
-        self.string = string
+        self.source = source
+        self.string = source.data_source
 
-    def load(self) -> Iterator[Document]:
+    def load(self, chunking_processor=None) -> Iterator[Document]:
         """
         Load string from memory
+        
+        Parameters:
+            chunking_processor (function): function to process chunks
 
         Returns:
             Iterator[Document]: document iterator
         """
-        yield Document(self.string)
+        
+        
+        chunks = self.source.get_chunks(self.string, chunking_processor)
+        
+        yield from [
+            Document(chunk)
+            for chunk in chunks
+        ]

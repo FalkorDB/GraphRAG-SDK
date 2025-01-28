@@ -10,15 +10,16 @@ class HTMLLoader:
     Load HTML
     """
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, source) -> None:
         """
         Initialize loader
 
         Parameters:
-            path (str): path to HTML.
+            source: source
         """
 
-        self.path = path
+        self.source = source
+        self.path = source.data_source
 
     def _get_file(self) -> str:
         try:
@@ -27,9 +28,12 @@ class HTMLLoader:
         except requests.exceptions.RequestException as e:
             print(f"An error occurred: {e}")
 
-    def load(self) -> Iterator[Document]:
+    def load(self, chunking_processor=None) -> Iterator[Document]:
         """
         Load HTML
+        
+        Parameters:
+            chunking_processor (function): function to process chunks
 
         Returns:
             Iterator[Document]: document iterator
@@ -47,5 +51,10 @@ class HTMLLoader:
         # Remove extra newlines
         content = re.sub(r"\n{2,}", "\n", content)
 
-        yield Document(content)
-        # return f"{self.source}\n{self.content}"
+        chunks = self.source.get_chunks(content, chunking_processor)
+        
+        yield from [
+            Document(chunk)
+            for chunk in chunks
+        ]
+
