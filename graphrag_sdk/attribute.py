@@ -1,7 +1,7 @@
-import json
-from graphrag_sdk.fixtures.regex import *
-import logging
 import re
+import json
+import logging
+from graphrag_sdk.fixtures.regex import *
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,23 @@ class AttributeType:
     NUMBER = "number"
     BOOLEAN = "boolean"
     LIST = "list"
+    POINT = "point"
+    MAP = "map"
+    VECTOR = "vectorf32"
+
+    
+    # Synonyms for attribute types
+    _SYNONYMS = {
+        "string": STRING,
+        "integer": NUMBER,
+        "float": NUMBER,
+        "number": NUMBER,
+        "boolean": BOOLEAN,
+        "list": LIST,
+        "point": POINT,
+        "map": MAP,
+        "vectorf32": VECTOR,
+    }
 
     @staticmethod
     def from_string(txt: str):
@@ -25,21 +42,19 @@ class AttributeType:
             txt (str): The string representation of the attribute type.
 
         Returns:
-            AttributeType: The corresponding AttributeType value.
+            str: The corresponding AttributeType value.
 
         Raises:
-            Exception: If the provided attribute type is invalid.
+            ValueError: If the provided attribute type is invalid.
         """
-        if txt.lower() == AttributeType.STRING:
-            return AttributeType.STRING
-        if txt.lower() == AttributeType.NUMBER:
-            return AttributeType.NUMBER
-        if txt.lower() == AttributeType.BOOLEAN:
-            return AttributeType.BOOLEAN
-        if txt.lower() == AttributeType.LIST:
-            return AttributeType.LIST
-        raise Exception(f"Invalid attribute type: {txt}")
-
+        # Graph representation of the attribute type
+        normalized_txt = txt.lower()
+        
+        # Find the matching attribute type
+        if normalized_txt in AttributeType._SYNONYMS:
+            return AttributeType._SYNONYMS[normalized_txt]
+        
+        raise ValueError(f"Invalid attribute type: {txt}")
 
 class Attribute:
     """ Represents an attribute of an entity or relation in the ontology.
@@ -57,7 +72,7 @@ class Attribute:
     """
 
     def __init__(
-        self, name: str, attr_type: AttributeType, unique: bool, required: bool = False
+        self, name: str, attr_type: AttributeType, unique: bool = False, required: bool = False
     ):
         """
         Initialize a new Attribute object.
@@ -65,7 +80,7 @@ class Attribute:
         Args:
             name (str): The name of the attribute.
             attr_type (AttributeType): The type of the attribute.
-            unique (bool): Indicates whether the attribute should be unique.
+            unique (bool, optional): Indicates whether the attribute should be unique. Defaults to False.
             required (bool, optional): Indicates whether the attribute is required. Defaults to False.
         """
         self.name = re.sub(r"([^a-zA-Z0-9_])", "_", name)
@@ -120,14 +135,6 @@ class Attribute:
         unique = "!" in txt
         required = "*" in txt
 
-        if attr_type not in [
-            AttributeType.STRING,
-            AttributeType.NUMBER,
-            AttributeType.BOOLEAN,
-            AttributeType.LIST,
-        ]:
-            raise Exception(f"Invalid attribute type: {attr_type}")
-
         return Attribute(name, AttributeType.from_string(attr_type), unique, required)
 
     def to_json(self):
@@ -142,12 +149,14 @@ class Attribute:
                 - "unique": A boolean indicating whether the attribute is unique.
                 - "required": A boolean indicating whether the attribute is required.
         """
-        return {
+        json_data = {
             "name": self.name,
             "type": self.type,
             "unique": self.unique,
             "required": self.required,
         }
+
+        return json_data
 
     def __str__(self) -> str:
         """

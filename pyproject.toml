@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graphrag_sdk"
-version = "0.4.1"
+version = "0.6.0"
 license = "MIT"
 description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
 authors = ["FalkorDB <info@falkordb.com>"]
@@ -27,14 +27,16 @@ ollama = { version = "^0.2.1", optional = true }
 openai = { version = "^1.35.9", optional = true }
 google-generativeai = { version = "^0.8.1", optional = true }
 litellm = { version = "^1.52.14", optional = true }
+langchain = {version = "^0.3.16", optional = true}
 
 [tool.poetry.extras]
-all = ["vertexai", "ollama", "openai", "google-generativeai", "litellm"]
+all = ["vertexai", "ollama", "openai", "google-generativeai", "litellm", "langchain"]
 ollama = ["ollama"]
 openai = ["openai"]
 vertexai = ["vertexai"]
 google-generativeai = ["google-generativeai"]
 litellm = ["litellm", "ollama"]
+chunks = ["langchain"]
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
