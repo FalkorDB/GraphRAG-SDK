@@ -36,6 +36,7 @@ class KnowledgeGraph:
         cypher_gen_prompt: Optional[str] = None,
         qa_prompt: Optional[str] = None,
         cypher_gen_prompt_history: Optional[str] = None,
+        embeddings: Optional[str] = None,
     ):
         """
         Initialize Knowledge Graph
@@ -53,30 +54,40 @@ class KnowledgeGraph:
             cypher_gen_prompt (str|None): Cypher generation prompt. Make sure you have {question} in the prompt.
             qa_prompt (str|None): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.
             cypher_gen_prompt_history (str|None): Cypher generation prompt with history. Make sure you have {question} and {last_answer} in the prompt.
+            embeddings (str|None): Embeddings model for the knowledge graph.
         """
 
         if not isinstance(name, str) or name == "":
             raise Exception("name should be a non empty string")
 
-        # Connect to database
+        # connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
         ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
 
         # Load / Save ontology to database
         if ontology is None:
-            # Load ontology from DB
-            ontology = Ontology.from_schema_graph(ontology_graph)
-            
-            if len(ontology.entities) == 0:
-                raise Exception("The ontology is empty. Load a valid ontology or create one using the ontology module.")
+            # load ontology from DB
+            ontology = Ontology.from_graph(ontology_graph)
         else:
-            # Save ontology to DB
+            # save ontology to DB
             ontology.save_to_graph(ontology_graph)
+            
+        if ontology is None:
+            raise Exception("Ontology is not defined")
 
         self._ontology = ontology
         self._name = name
         self._model_config = model_config
+        if embeddings is not None:
+            try:
+                self.graph.query("CREATE VECTOR INDEX FOR (p:Document) ON (p.embeddings) OPTIONS {dimension:768, similarityFunction:'cosine'}")
+            except Exception as e:
+                logger.error(f"Failed to create vector index: {e}")
+                
+        self._embeddings = embeddings
+        self.sources = set([])
+        self.failed_sources = set([])
 
         if cypher_system_instruction is None:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
@@ -164,6 +175,7 @@ class KnowledgeGraph:
             model=self._model_config.extract_data,
             graph=self.graph,
             hide_progress=hide_progress,
+            embeddings=self._embeddings,
         )
 
         failed_sources = step.run(instructions)
