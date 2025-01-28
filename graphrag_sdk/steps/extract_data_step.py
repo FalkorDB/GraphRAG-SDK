@@ -51,7 +51,7 @@ class ExtractDataStep(Step):
             "max_output_tokens": 8192,
         },
         hide_progress: bool = False,
-        embeddings: Optional[str] = None,
+        model_embedding: Optional[str] = None,
         chunking_processor = None,
     ) -> None:
         self.sources = sources
@@ -60,7 +60,7 @@ class ExtractDataStep(Step):
         self.model = model.with_system_instruction(
             EXTRACT_DATA_SYSTEM.replace("#ONTOLOGY", str(self.ontology.to_json()))
         )
-        self.embeddings = embeddings
+        self.model_embedding = model_embedding
         self.graph = graph
         self.hide_progress = hide_progress
         self.process_files = 0
@@ -115,8 +115,8 @@ class ExtractDataStep(Step):
         instructions: str = "",
         retries: int = 1,
     ):
-        if self.embeddings is not None:
-            query = f"MERGE (s:Source {{Source: '{source.data_source}'}})"
+        if self.model_embedding is not None:
+            query = f"MERGE (s:Source {{Source: '{source.data_source.replace("'", "")}'}})"
             graph.query(query)
         
         failed_chunks = []
@@ -237,9 +237,9 @@ class ExtractDataStep(Step):
                     f"Invalid data format. Missing 'entities' or 'relations' in JSON."
                 )
                 
-            if self.embeddings is not None:
+            if self.model_embedding is not None:
                 text = chunk.content.replace("'", "")
-                doc_embed = self.embed_chunk(graph, text, data_source)
+                doc_embed = self.embed_chunk(graph, text, data_source.replace("'", ""))
             else:
                 doc_embed = None
                 text = None
@@ -294,8 +294,8 @@ class ExtractDataStep(Step):
         logger.debug(f"Query: {query}")
         result = graph.query(query)
         
-        if self.embeddings is not None:
-            query = f"MATCH (e:Chunk {{embeddings: vecf32({doc_embed}), text: '{text}'}})\nMATCH (n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n) RETURN n"
+        if self.model_embedding is not None:
+            query = f"MATCH (e:Chunk {{embeddings: vecf32({doc_embed}), text: '{text}'}})\nMATCH (n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n)"
             graph.query(query)
         return result
 
@@ -366,8 +366,8 @@ class ExtractDataStep(Step):
                 raise e
     
     def embed_chunk(self, graph, text, data_source):
-        embeddings = self.embeddings.get_embedding(text)
-        query = f"MATCH (s:Source {{Source: '{data_source}'}})\nMERGE (n:Chunk {{embeddings: vecf32({embeddings}), model: '{self.embeddings.model_name}', text: '{text}'}})-[:CHUNKED_FROM]->(s)"
+        embeddings = self.model_embedding.get_embedding(text)
+        query = f"MATCH (s:Source {{Source: '{data_source}'}})\nMERGE (n:Chunk {{embeddings: vecf32({embeddings}), model: '{self.model_embedding.model_name}', text: '{text}'}})-[:CHUNKED_FROM]->(s)"
         graph.query(query)
         
         return embeddings

@@ -4,7 +4,7 @@ import unittest
 from falkordb import FalkorDB
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
-from graphrag_sdk.source import Source_FromRawText
+from graphrag_sdk.source import Source
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.attribute import Attribute, AttributeType
@@ -78,10 +78,8 @@ class TestKGLiteLLM(unittest.TestCase):
     def test_kg_creation(self):
 
         file_path = "tests/data/madoff.txt"
-        with open(file_path) as f:
-            string = f.read()
-            
-        sources = [Source_FromRawText(string)]
+
+        sources = [Source(file_path)]
 
         self.kg.process_sources(sources)
 

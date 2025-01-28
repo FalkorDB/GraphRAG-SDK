@@ -36,7 +36,7 @@ class KnowledgeGraph:
         cypher_gen_prompt: Optional[str] = None,
         qa_prompt: Optional[str] = None,
         cypher_gen_prompt_history: Optional[str] = None,
-        embeddings: Optional[str] = None,
+        model_embedding: Optional[str] = None,
     ):
         """
         Initialize Knowledge Graph
@@ -79,13 +79,13 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._name = name
         self._model_config = model_config
-        if embeddings is not None:
+        self._model_embedding = model_embedding
+        if model_embedding is not None:
             try:
-                self.graph.query("CREATE VECTOR INDEX FOR (p:Document) ON (p.embeddings) OPTIONS {dimension:768, similarityFunction:'cosine'}")
+                embed_len = self._model_embedding.get_vector_size()
+                self.graph.query(f"CREATE VECTOR INDEX FOR (p:Document) ON (p.embeddings) OPTIONS {{dimension:{embed_len}, similarityFunction:'cosine'}}")
             except Exception as e:
                 logger.error(f"Failed to create vector index: {e}")
-                
-        self._embeddings = embeddings
         self.sources = set([])
         self.failed_sources = set([])
 
@@ -175,7 +175,7 @@ class KnowledgeGraph:
             model=self._model_config.extract_data,
             graph=self.graph,
             hide_progress=hide_progress,
-            embeddings=self._embeddings,
+            model_embedding=self._model_embedding,
             chunking_processor=chunking_processor,
         )
 

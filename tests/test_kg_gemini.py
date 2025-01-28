@@ -2,23 +2,23 @@ import re
 import os
 import logging
 import unittest
-import vertexai
 from falkordb import FalkorDB
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
-from graphrag_sdk.source import Source
+from graphrag_sdk.source import Source_FromRawText
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.gemini import GeminiGenerativeModel
+from graphrag_sdk.embeddings.litellm import LiteModelEmbeddings
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 
 load_dotenv()
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-vertexai.init(project=os.getenv("PROJECT_ID"), location=os.getenv("REGION"))
 
 
 class TestKGGemini(unittest.TestCase):
@@ -76,18 +76,24 @@ class TestKGGemini(unittest.TestCase):
         cls.graph_name = "IMDB_gemini"
 
         model = GeminiGenerativeModel(model_name="gemini-1.5-flash-001")
+        model_embed = LiteModelEmbeddings(model_name="gemini/text-embedding-004")
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
             model_config=KnowledgeGraphModelConfig.with_model(model),
+            model_embedding=model_embed,
         )
 
     def test_kg_creation(self):
+        
         file_path = "tests/data/madoff.txt"
+        with open(file_path) as f:
+            string = f.read()
+            
+        sources = [Source_FromRawText(string)]
+        chunking_processor = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 
-        sources = [Source(file_path)]
-
-        self.kg.process_sources(sources)
+        self.kg.process_sources(sources, chunking_processor=chunking_processor)
         
         chat = self.kg.chat_session()
         answer = chat.send_message("How many actors acted in a movie?")

@@ -28,8 +28,11 @@ class LiteModelEmbeddings(EmbeddingModel):
         
         """
         text = text.replace("\n", " ")
-        response = embedding(input = [text], model=self.model_name)
-        return response.data[0]['embedding']
+        try:
+            response = embedding(input=[text], model=self.model_name)
+            return response.data[0]['embedding']
+        except Exception as e:
+            raise ValueError(f"Failed to get embedding: {str(e)}")
     
     def get_vector_size(self) -> int:
         """

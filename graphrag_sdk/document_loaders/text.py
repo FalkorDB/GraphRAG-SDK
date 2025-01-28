@@ -29,9 +29,9 @@ class TextLoader():
         """
 
         with open(self.path, 'r') as f:
-            f.read()
+            text = f.read()
 
-        chunks = self.source.get_chunks(f, chunking_processor)
+        chunks = self.source.get_chunks(text, chunking_processor)
         
         yield from [
             Document(chunk)
