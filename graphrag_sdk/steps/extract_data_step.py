@@ -60,6 +60,7 @@ class ExtractDataStep(Step):
         self.graph = graph
         self.hide_progress = hide_progress
         self.process_files = 0
+        self.failed_chunks = []
         self.counter_lock = Lock()
         if not os.path.exists("logs"):
             os.makedirs("logs")
@@ -71,7 +72,7 @@ class ExtractDataStep(Step):
 
         tasks: list[Future[Ontology]] = []
         
-        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
+        with tqdm(total=len(self.sources), desc="Process Sources", disable=self.hide_progress) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
 
                 # Process each source document in parallel
@@ -95,14 +96,44 @@ class ExtractDataStep(Step):
                         pbar.n = self.process_files
                     pbar.refresh()
 
-        failed_sources = [self.sources[idx] for idx, task in enumerate(tasks) if task.exception()]     
-        return failed_sources
+        return self.failed_chunks
 
     def _process_source(
         self,
         task_id: str,
         chat_session: GenerativeModelChatSession,
         source: AbstractSource,
+        ontology: Ontology,
+        graph: Graph,
+        source_instructions: str = "",
+        instructions: str = "",
+        retries: int = 1,
+    ):
+        failed_chunks = []
+        for chunk_id, chunk in enumerate(source.load()):
+            if chunk is not None and chunk.content is not None and len(chunk.content) > 0:
+                try:
+                    self._process_chunk(task_id + "_" + str(chunk_id),
+                                        chat_session,
+                                        chunk,
+                                        ontology,
+                                        graph,
+                                        source_instructions,
+                                        instructions,
+                                        retries)
+                except Exception as e:
+                    logger.error(f"Error processing chunk: {e}")
+                    failed_chunks.append((chunk_id, source, e))
+        
+        with self.counter_lock:
+            self.process_files += 1
+            self.failed_chunks.extend(failed_chunks)
+            
+    def _process_chunk(
+        self,
+        task_id: str,
+        chat_session: GenerativeModelChatSession,
+        chunk: Document,
         ontology: Ontology,
         graph: Graph,
         source_instructions: str = "",
@@ -125,11 +156,8 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
-            
-            document = next(source.load())
-            source_instructions = source.instruction
-                
-            text = document.content[: self.config["max_input_tokens"]]
+                            
+            text = chunk.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,
                 instructions="\n".join(
@@ -207,9 +235,6 @@ class ExtractDataStep(Step):
         except Exception as e:
             logger.exception(f"Task id: {task_id} failed - {e}")
             raise e
-        finally:
-            with self.counter_lock:
-                self.process_files += 1
 
     def _create_entity(self, graph: Graph, args: dict, ontology: Ontology):
         # Get unique attributes from entity
