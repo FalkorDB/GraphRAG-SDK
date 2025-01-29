@@ -83,7 +83,7 @@ class KnowledgeGraph:
         if model_embedding is not None:
             try:
                 embed_len = self._model_embedding.get_vector_size()
-                self.graph.query(f"CREATE VECTOR INDEX FOR (p:Document) ON (p.embeddings) OPTIONS {{dimension:{embed_len}, similarityFunction:'cosine'}}")
+                self.graph.query(f"CREATE VECTOR INDEX FOR (p:Chunk) ON (p.embedding) OPTIONS {{dimension:{embed_len}, similarityFunction:'cosine'}}")
             except Exception as e:
                 logger.error(f"Failed to create vector index: {e}")
         self.sources = set([])
