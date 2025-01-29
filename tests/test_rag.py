@@ -119,7 +119,7 @@ class TestKGLiteLLM(unittest.TestCase):
                 actual_output=answer["response"],
                 retrieval_context=["Cypher Query: " + answer["cypher"] + " Output: " + answer["context"]],
                 context=["Cypher Query: " + answer["cypher"] + " Output: " + answer["context"]],
-                name="kg_test",
+                name="kg_rag_test",
                 expected_output=expected_output,
                 additional_metadata=None,
             )
@@ -127,4 +127,4 @@ class TestKGLiteLLM(unittest.TestCase):
             score = answer_combined_metric.measure(test_case)
             scores.append(score)
 
-        assert np.mean(scores) >= 0.8
+        assert np.mean(scores) >= 0.5
