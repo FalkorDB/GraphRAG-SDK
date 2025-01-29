@@ -116,9 +116,10 @@ class ExtractDataStep(Step):
         retries: int = 1,
     ):
         if self.model_embedding is not None:
-            query = f"MERGE (s:Source {{Source: '{source.data_source.replace("'", "")}'}})"
-            graph.query(query)
-        
+            p = {'source': source.data_source}
+            q = "MERGE (s:Source {source: $source})"
+            graph.query(q, p)
+
         failed_chunks = []
         last_chunk_embed = [None, None]
         for chunk_id, chunk in enumerate(source.load(self.chunking_processor)):
@@ -134,7 +135,9 @@ class ExtractDataStep(Step):
                                         retries,
                                         data_source=source.data_source)
                     if last_chunk_embed[0] is not None:
-                        query = f"MATCH (c: Chunk {{embedding: vecf32({last_chunk_embed[0]}), text: '{last_chunk_embed[1]}'}})\nMATCH (n: Chunk {{embedding: vecf32({doc_embed}), text: '{text}'}}) MERGE (c)-[:NEXT_CHUNK]->(n)"
+                        query = f"""MATCH (c: Chunk {{embedding: vecf32({last_chunk_embed[0]}), text: '{last_chunk_embed[1]}'}})
+                                    MATCH (n: Chunk {{embedding: vecf32({doc_embed}), text: '{text}'}})
+                                    CREATE (c)-[:NEXT_CHUNK]->(n)"""
                         graph.query(query)
                         
                     last_chunk_embed = [doc_embed, text]
@@ -291,11 +294,15 @@ class ExtractDataStep(Step):
             else ""
         )
         query = f"MERGE (n:{args['label']} {unique_attributes_text}) {set_statement}"
+
         logger.debug(f"Query: {query}")
         result = graph.query(query)
         
         if self.model_embedding is not None:
-            query = f"MATCH (e:Chunk {{embeddings: vecf32({doc_embed}), text: '{text}'}})\nMATCH (n:{args['label']} {unique_attributes_text})\nMERGE (e)<-[:EXTRACTED_FROM]-(n)"
+            query = f"""MATCH (c:Chunk {{embeddings: vecf32({doc_embed})}})
+                        MATCH (n:{args['label']} {unique_attributes_text})
+                        MERGE (n)-[:EXTRACTED_FROM]->(c)"""
+
             graph.query(query)
         return result
 
@@ -367,7 +374,15 @@ class ExtractDataStep(Step):
     
     def embed_chunk(self, graph, text, data_source):
         embeddings = self.model_embedding.get_embedding(text)
-        query = f"MATCH (s:Source {{Source: '{data_source}'}})\nMERGE (n:Chunk {{embedding: vecf32({embeddings}), text: '{text}'}})-[:CHUNKED_FROM]->(s)"
-        graph.query(query)
+
+        p = {'data_source': data_source,
+             'embeddings': embeddings,
+             'text': text}
+
+        q = """MATCH (s:Source {source: $data_source})
+               CREATE (:Chunk {embedding: vecf32($embeddings), text: $text})-[:CHUNKED_FROM]->(s)"""
+
+        graph.query(q, p)
         
         return embeddings
+
