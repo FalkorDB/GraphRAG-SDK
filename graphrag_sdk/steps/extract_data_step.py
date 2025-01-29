@@ -70,10 +70,10 @@ class ExtractDataStep(Step):
 
     def run(self, instructions: str = None) -> list[AbstractSource]:
 
-        tasks: list[Future[Ontology]] = []
+        tasks: list[Future] = []
         
-        with tqdm(total=len(self.sources), desc="Process Sources", disable=self.hide_progress) as pbar:
-            with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
+        with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
+            with tqdm(total=len(self.sources), desc="Process Sources", disable=self.hide_progress) as pbar:
 
                 # Process each source document in parallel
                 for source in self.sources:
@@ -111,7 +111,7 @@ class ExtractDataStep(Step):
     ):
         failed_chunks = []
         for chunk_id, chunk in enumerate(source.load()):
-            if chunk is not None and chunk.content is not None and len(chunk.content) > 0:
+            if chunk is not None and chunk.not_empty():
                 try:
                     self._process_chunk(task_id + "_" + str(chunk_id),
                                         chat_session,

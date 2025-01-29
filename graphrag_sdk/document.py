@@ -14,3 +14,7 @@ class Document():
             None
         """
         self.content = content
+
+    def not_empty(self):
+        return self.content is not None and len(self.content) > 0
+
