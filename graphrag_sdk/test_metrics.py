@@ -229,7 +229,7 @@ class GraphContextualRecall(BaseMetric):
         self, expected_output: str, retrieval_context: List[str], cypher_query: Optional[str] = None
     ) -> List[ContextualRecallVerdict]:
         prompt = GraphContextualRecallTemplate.generate_verdicts(
-            expected_output=expected_output, retrieval_context=retrieval_context, cypher_query=cypher_query
+            expected_output=expected_output, retrieval_context=retrieval_context
         )
         if self.using_native_model:
             res, cost = self.model.generate(prompt)
@@ -304,7 +304,7 @@ JSON:
 """
 
     @staticmethod
-    def generate_verdicts(expected_output, retrieval_context, cypher_query):
+    def generate_verdicts(expected_output, retrieval_context):
         return f"""
 For EACH sentence in the given expected output below, determine whether the sentence can be attributed to the nodes of retrieval contexts that generated from the cypher query. Please generate a list of JSON with two keys: `verdict` and `reason`.
 The `verdict` key should STRICTLY be either a 'yes' or 'no'. Answer 'yes' if the sentence can be attributed to any parts of the retrieval context and the cypher query, else answer 'no'.
@@ -329,9 +329,6 @@ Since you are going to generate a verdict for each sentence, the number of 'verd
 
 Expected Output:
 {expected_output}
-
-Cypher Query:
-{cypher_query}
 
 Retrieval Context:
 {retrieval_context}
@@ -435,7 +432,7 @@ class GraphContextualRelevancy(BaseMetric):
         self, input: str, context: str, cypher_query: Optional[str] = None
     ) -> ContextualRelevancyVerdicts:
         prompt = GraphContextualRelevancyTemplate.generate_verdicts(
-            input=input, context=context, cypher_query=cypher_query
+            input=input, context=context
         )
         if self.using_native_model:
             res, cost = self.model.generate(prompt)
@@ -505,7 +502,7 @@ JSON:
 """
 
     @staticmethod
-    def generate_verdicts(input: str, context: str, cypher_query):
+    def generate_verdicts(input: str, context: str):
         return f"""Based on the input and context (cypher and query output), please generate a JSON object to indicate whether each statement found in the context is relevant to the provided input. The JSON will be a list of 'verdicts', with 2 mandatory fields: 'verdict' and 'statement', and 1 optional field: 'reason'.
 You should first extract statements found in the context, which are high level information found in the context, before deciding on a verdict and optionally a reason for each statement.
 The 'verdict' key should STRICTLY be either 'yes' or 'no', and states whether the statement is relevant to the input.
@@ -534,9 +531,6 @@ Example:
 
 Input:
 {input}
-
-Cypher Query:
-{cypher_query}
 
 Context:
 {context}

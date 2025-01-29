@@ -107,7 +107,7 @@ class TestKGLiteLLM(unittest.TestCase):
             "No, Melony Feliciano acted as a background extra in Madoff: The Monster of Wall Street.",
         ]
 
-        answer_faithful_relevancy_metric = CombineMetrics(threshold=0.5)
+        answer_combined_metric = CombineMetrics(threshold=0.5)
         scores = []
 
         for input_text, expected_output in zip(inputs, expected_outputs):
@@ -117,14 +117,14 @@ class TestKGLiteLLM(unittest.TestCase):
             test_case = LLMTestCase(
                 input=input_text,
                 actual_output=answer["response"],
-                retrieval_context=[answer["context"]],
-                context=[answer["context"]],
+                retrieval_context=["Cypher Query: " + answer["cypher"] + " Output: " + answer["context"]],
+                context=["Cypher Query: " + answer["cypher"] + " Output: " + answer["context"]],
                 name="kg_test",
                 expected_output=expected_output,
-                additional_metadata={"cypher_query": answer["cypher"]},
+                additional_metadata=None,
             )
 
-            score = answer_faithful_relevancy_metric.measure(test_case)
+            score = answer_combined_metric.measure(test_case)
             scores.append(score)
 
         assert np.mean(scores) >= 0.8

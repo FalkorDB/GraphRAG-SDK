@@ -77,5 +77,6 @@ jobs:
           REGION: ${{ vars.REGION }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TEST_MODEL: ${{ matrix.model }} # Pass the model as an environment variable
         run: poetry run pytest
