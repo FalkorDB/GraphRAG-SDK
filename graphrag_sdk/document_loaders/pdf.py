@@ -33,7 +33,7 @@ class PDFLoader():
         
         from pypdf import PdfReader # pylint: disable=import-outside-toplevel
 
-        reader = PdfReader(self.path)
+        reader = PdfReader(self.path)  # works fine, there are 24 objects for 24 pages pdf
         yield from [
             Document(page.extract_text())
             for page in reader.pages

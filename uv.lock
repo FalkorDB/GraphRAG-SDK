@@ -1008,7 +1008,6 @@ dependencies = [
     { name = "fix-busted-json" },
     { name = "ipykernel" },
     { name = "pypdf" },
-    { name = "python-abc" },
     { name = "python-dotenv" },
     { name = "ratelimit" },
     { name = "requests" },
@@ -1053,7 +1052,6 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2.2" },
     { name = "pypdf", specifier = ">=4.2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.1" },
-    { name = "python-abc", specifier = ">=0.2.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "ratelimit", specifier = ">=2.2.1" },
     { name = "requests", specifier = ">=2.32.3" },
@@ -2644,12 +2642,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/05/35/30e0d83068951d90a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/11/92/76a1c94d3afee238333bc0a42b82935dd8f9cf8ce9e336ff87ee14d9e1cf/pytest-8.3.4-py3-none-any.whl", hash = "sha256:50e16d954148559c9a74109af1eaf0c945ba2d8f30f0a3d3335edde19788b6f6", size = 343083 },
 ]
-
-[[package]]
-name = "python-abc"
-version = "0.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/17/e3/5973ccea7302dfe994331e2824bfc8cc4e4c8ba7f0b9d1f16bcda5ef26a3/python-abc-0.2.0.tar.gz", hash = "sha256:90017d09fbac7bde4b64b2c7e1b5d22da9055b64b821d1a2b4dc805b450b251a", size = 7423 }
 
 [[package]]
 name = "python-dateutil"

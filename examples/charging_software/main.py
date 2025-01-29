@@ -4,17 +4,22 @@ import json
 from modules.ontology import generate_ontology
 from modules.kg_processing import build_knowledge_graph
 from graphrag_sdk.models.litellm import LiteModel
+from graphrag_sdk.models.ollama import OllamaGenerativeModel
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.source import Source
 from graphrag_sdk import KnowledgeGraph, Ontology
 
 logging.basicConfig(level=logging.INFO)
 
-MODEL_TYPE = "litellm"  # Switch to "litellm" for DeepSeek
+folder = "ocpp"  # "everest-core"
+path_in = "examples/charging_software/03_data_in/specs"
+# path_in = "examples/charging_software/03_data_in/code_repos"
+
+MODEL_TYPE = "litellm"  # Switch to "ollama", "litellm" for DeepSeek; "ollama" for local LLM
 
 if __name__ == "__main__":
     # Source configuration: Data folder.
-    src_files = "examples/charging_software/data"
+    src_files = path_in+"/"+folder
     sources = []
 
     # For each file in the source directory and its subdirectories, create a new Source object.
@@ -22,16 +27,21 @@ if __name__ == "__main__":
         for file in files:
             sources.append(Source(os.path.join(root, file)))
         # Model configuration
-    if MODEL_TYPE != "litellm":
-        logging.info("Specify LLM to be used.")
-    elif MODEL_TYPE == "litellm":
+    if MODEL_TYPE == "litellm":
         model = LiteModel(model_name="deepseek/deepseek-chat")
+        # model = LiteModel(model_name="deepseek/deepseek-reasoner")
+    elif MODEL_TYPE == "ollama":
+        model = OllamaGenerativeModel(model_name="deepseek/deepseek-coder-v2")
+        # "deepseek-r1:14b"
+    else:
+        logging.info("Specify LLM to be used.")
     
 
     # # Generate ontology
-    generate_ontology(sources, model)
+    f_name = "ontology_"+folder+".json"
+    generate_ontology(sources, model, f_name)
 
-    with open("examples/charging_software/ontologies/ontology.json", "r") as f:
+    with open(os.path.join("examples/charging_software/05_ontologies", f_name), "r") as f:
         ontology = Ontology.from_json(json.loads(f.read()))
     
     # Build knowledge graph with unified config

@@ -4,7 +4,7 @@ cache
 output
 .venv
 #.vscode
-/examples/charging_software/data
+/examples/charging_software/03_data_in
 # \examples\charging_software\data
 
 logs

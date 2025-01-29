@@ -7,7 +7,7 @@ from typing import Optional
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.document import Document
 from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.helpers import extract_json
+from graphrag_sdk.helpers import extract_json, strip_thinking_prefix
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -107,9 +107,23 @@ class CreateOntologyStep(Step):
         retries: int = 1,
     ):
         try:
-            document = next(source.load())
-            
-            text = document.content[: self.config["max_input_tokens"]]
+            if source.path.lower().endswith(".pdf"):
+                document_list = [x for x in source.load()]
+                text = ""
+                for document in document_list:
+                    text += "\n"+document.content
+            else:
+                document = next(source.load())
+                text = document.content
+
+            if len(text) * 0.9 > self.config["max_input_tokens"]:
+                total_tokens = len(text)
+                max_tokens = self.config["max_input_tokens"]
+                num_splits = (total_tokens // max_tokens) + 1
+                logger.warning(f"Document {source.path} exceeds token limit")
+                logger.warning(f"Consider splitting the document into {num_splits} smaller documents, each with up to {max_tokens} tokens.")
+                # For now, just truncate information
+                text = document.content[: self.config["max_input_tokens"]]
 
             user_message = CREATE_ONTOLOGY_PROMPT.format(
                 text = text,
@@ -133,9 +147,11 @@ class CreateOntologyStep(Step):
                 )
 
             combined_text = " ".join([r.text for r in responses])
+            combined_text = strip_thinking_prefix(combined_text)   # Idea from ChatGPT  # Idea from ChatGPT
 
             try:
                 data = json.loads(extract_json(combined_text))
+                # todo: this is failing and resolving attempts too, because the reasoner model prepends "<think> ... </think>" to the response
             except json.decoder.JSONDecodeError as e:
                 logger.debug(f"Error extracting JSON: {e}")
                 logger.debug(f"Prompting model to fix JSON")
@@ -191,6 +207,7 @@ class CreateOntologyStep(Step):
             )
 
         combined_text = " ".join([r.text for r in responses])
+        combined_text = strip_thinking_prefix(combined_text)   # Idea from ChatGPT
 
         try:
             data = json.loads(extract_json(combined_text))
@@ -209,6 +226,7 @@ class CreateOntologyStep(Step):
                 data = None
 
         if data is None:
+            logger.debug(f"Unable to fix ontology for this iteration")
             return o
         
         try:

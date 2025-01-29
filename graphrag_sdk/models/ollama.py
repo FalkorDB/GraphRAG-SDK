@@ -76,7 +76,11 @@ class OllamaGenerativeModel(GenerativeModel):
         """
         # Get the list of available models
         response = self.client.list()  # This returns a dictionary
-        available_models = [model['name'] for model in response['models']]  # Extract model names
+        # Extension from BB because local Deepseek-r1 model was not recognized
+        try:
+            available_models = [model['name'] for model in response['models']]  # Extract model names
+        except KeyError:
+            available_models = [model['model'] for model in response['models']]
 
         # Check if the model is already pulled
         if self.model_name in available_models:

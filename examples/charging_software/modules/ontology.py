@@ -10,7 +10,7 @@ boundaries = """
     Avoid creating entities for details that can be expressed as attributes.
 """
 
-def generate_ontology(sources: list[AbstractSource], model: GenerativeModel):
+def generate_ontology(sources: list[AbstractSource], model: GenerativeModel, filename):
     """Generate ontology from documents"""
     ontology = Ontology.from_sources(
         sources=sources,
@@ -19,9 +19,9 @@ def generate_ontology(sources: list[AbstractSource], model: GenerativeModel):
     )
 
     # Save the ontology to the disk as a json file.
-    output_dir = "examples/charging_software/ontologies"
+    output_dir = "examples/charging_software/05_ontologies"  # todo: change directory
     os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, "ontology.json"), "w", encoding="utf-8") as file:
+    with open(os.path.join(output_dir, filename), "w", encoding="utf-8") as file:
         file.write(json.dumps(ontology.to_json(), indent=2))
 
 

@@ -20,7 +20,7 @@ Simplify the development of your next GenAI application with GraphRAG-SDK, a spe
 Or use on premise with Docker. Go to project root and run this in bash:
 
 ```sh
-docker run -p 6379:6379 -p 3000:3000 -it --rm -v "$(pwd)/examples/charging_software/data:/data" falkordb/falkordb:latest
+docker run -p 6379:6379 -p 3000:3000 -it --rm -v "/$(pwd)/examples/charging_software/data:/data" falkordb/falkordb:latest
 
 ```
 

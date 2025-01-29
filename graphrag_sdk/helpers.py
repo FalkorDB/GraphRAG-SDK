@@ -19,6 +19,31 @@ def extract_json(text: str | dict, skip_repair=False) -> str:
         return "".join(matches)
 
 
+# def extract_json(text: str | dict, skip_repair=False) -> str:
+#     """Extracts JSON content from a text block, removing markdown artifacts."""
+#     if not isinstance(text, str):
+#         text = str(text)
+#     # regex = r"(?:```)?(?:json)?([^`]*)(?:\\n)?(?:```)?"
+#     # regex = r"(?:```json\s*|```)?(\{.*?\}|\[.*?\])(?:\s*```)?"  # Idea from ChatGPT
+#     regex = r"```json\s*(\{.*?\}|\[.*?\])\s*```|(\{.*?\}|\[.*?\])"
+#     matches = re.findall(regex, text, re.DOTALL)
+
+#     # Flatten tuples and remove empty strings
+#     matches = [m[0] or m[1] for m in matches if m[0] or m[1]]
+
+#     try:
+#         return repair_json("".join(matches)) if not skip_repair else "".join(matches)
+#     except Exception as e:
+#         logger.error(f"Failed to repair JSON: {e} - {text}")
+#         return "".join(matches)
+
+
+def strip_thinking_prefix(text: str) -> str:
+    """Removes <think>...</think> section from DeepSeek output."""
+    # Idea from ChatGPT. 
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
 def map_dict_to_cypher_properties(d: dict):
     cypher = "{"
     if isinstance(d, list):
