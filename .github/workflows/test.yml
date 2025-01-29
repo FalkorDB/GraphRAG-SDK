@@ -27,7 +27,7 @@ jobs:
     
     strategy:
       matrix:
-        model: [gemini-1.5-flash-001, gpt-4o] # List of models
+        model: [gemini/gemini-1.5-flash-001, openai/gpt-4o] # List of models
 
     steps:
       - uses: actions/checkout@v4
