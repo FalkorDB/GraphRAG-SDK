@@ -10,7 +10,7 @@ from graphrag_sdk.relation import Relation
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models.litellm import LiteModel
 from graphrag_sdk.attribute import Attribute, AttributeType
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig, GenerativeModelConfig
 
 from graphrag_sdk.test_metrics import CombineMetrics
 os.environ["DEEPEVAL_ENABLE_TELEMETRY"] = "NO"
@@ -75,7 +75,8 @@ class TestKGLiteLLM(unittest.TestCase):
         cls.graph_name = "IMDB_deep"
 
         # Use the model name from the environment variable
-        model = LiteModel(model_name=model_name)
+        model = LiteModel(model_name=model_name, generation_config=GenerativeModelConfig(temperature=0))
+
 
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
