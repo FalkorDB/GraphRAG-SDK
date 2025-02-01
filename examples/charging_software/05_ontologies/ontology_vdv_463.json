@@ -1,0 +1,168 @@
+{
+  "entities": [
+    {
+      "label": "System",
+      "attributes": [
+        {
+          "name": "system_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingStation",
+      "attributes": [
+        {
+          "name": "charging_station_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "charging_station_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingPoint",
+      "attributes": [
+        {
+          "name": "charging_point_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "charging_point_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Vehicle",
+      "attributes": [
+        {
+          "name": "vehicle_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "vehicle_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingRequest",
+      "attributes": [
+        {
+          "name": "charging_request_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "charging_instruction",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingProcess",
+      "attributes": [
+        {
+          "name": "charging_process_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "process_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "MANAGES",
+      "source": {
+        "label": "System"
+      },
+      "target": {
+        "label": "ChargingStation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "ChargingStation"
+      },
+      "target": {
+        "label": "ChargingPoint"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHARGES",
+      "source": {
+        "label": "ChargingPoint"
+      },
+      "target": {
+        "label": "Vehicle"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUESTS",
+      "source": {
+        "label": "System"
+      },
+      "target": {
+        "label": "ChargingRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INITIATES",
+      "source": {
+        "label": "ChargingRequest"
+      },
+      "target": {
+        "label": "ChargingProcess"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OCCURS_AT",
+      "source": {
+        "label": "ChargingProcess"
+      },
+      "target": {
+        "label": "ChargingPoint"
+      },
+      "attributes": []
+    }
+  ]
+}
