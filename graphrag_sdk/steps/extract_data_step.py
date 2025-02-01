@@ -301,7 +301,7 @@ class ExtractDataStep(Step):
         except Exception as e:
             # If exception is caused by quota exceeded, wait 10 seconds and try again for 6 times
             if "Quota exceeded" in str(e) and retry > 0:
-                time.sleep(10)
+                time.sleep(20)  # BB change
                 retry -= 1
                 return self._call_model(chat_session, prompt, retry)
             else:

@@ -42,7 +42,7 @@ class CreateOntologyStep(Step):
         ontology: Ontology,
         model: GenerativeModel,
         config: dict = {
-            "max_workers": 16,
+            "max_workers": 1,  # todo: Reduced by BBB for debugging.
             "max_input_tokens": 500000,
             "max_output_tokens": 8192,
         },
@@ -116,7 +116,7 @@ class CreateOntologyStep(Step):
                 document = next(source.load())
                 text = document.content
 
-            if len(text) * 0.9 > self.config["max_input_tokens"]:
+            if len(text) * 1.05 > self.config["max_input_tokens"]:
                 total_tokens = len(text)
                 max_tokens = self.config["max_input_tokens"]
                 num_splits = (total_tokens // max_tokens) + 1
@@ -251,6 +251,7 @@ class CreateOntologyStep(Step):
         retry=6,
     ):
         try:
+            time.sleep(20)  # added BB
             return chat_session.send_message(prompt)
         except Exception as e:
             # If exception is caused by quota exceeded, wait 10 seconds and try again for 6 times
