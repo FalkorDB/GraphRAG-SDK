@@ -1,0 +1,398 @@
+{
+  "entities": [
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TimeFormat",
+      "attributes": [
+        {
+          "name": "format",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "time_zone",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SubscriptionProcedure",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Client",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Server",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Subscription",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "lifespan",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Message",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Service",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DataType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "URL",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Fahrt",
+      "attributes": [
+        {
+          "name": "fahrt_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "prognose_moeglich",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Halt",
+      "attributes": [
+        {
+          "name": "halt_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ist_ankunft_prognose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ist_abfahrt_prognose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ist_ankunft_prognose_status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ist_abfahrt_prognose_status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ITCS",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AboAnfrage",
+      "attributes": [
+        {
+          "name": "parameter",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Anschluss",
+      "attributes": [
+        {
+          "name": "anschluss_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "fahrt_id_zubringer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "fahrt_id_abbringer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "halt_id_zubringer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "halt_id_abbringer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "leitstellenkennung_zubringer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "umsteigezeit",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "maximale_verz_gerung",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "USES",
+      "source": {
+        "label": "Protocol"
+      },
+      "target": {
+        "label": "TimeFormat"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "Protocol"
+      },
+      "target": {
+        "label": "SubscriptionProcedure"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMUNICATES",
+      "source": {
+        "label": "Client"
+      },
+      "target": {
+        "label": "Server"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Client"
+      },
+      "target": {
+        "label": "Subscription"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS",
+      "source": {
+        "label": "Server"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROVIDES",
+      "source": {
+        "label": "Server"
+      },
+      "target": {
+        "label": "Service"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ACCESSES",
+      "source": {
+        "label": "Client"
+      },
+      "target": {
+        "label": "URL"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_HALT",
+      "source": {
+        "label": "Fahrt"
+      },
+      "target": {
+        "label": "Halt"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_DATA",
+      "source": {
+        "label": "ITCS"
+      },
+      "target": {
+        "label": "Fahrt"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUESTS_DATA",
+      "source": {
+        "label": "AboAnfrage"
+      },
+      "target": {
+        "label": "ITCS"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ANCHLUSS",
+      "source": {
+        "label": "Fahrt"
+      },
+      "target": {
+        "label": "Anschluss"
+      },
+      "attributes": []
+    }
+  ]
+}

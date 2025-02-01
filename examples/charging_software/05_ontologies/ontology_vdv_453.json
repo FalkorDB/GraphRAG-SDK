@@ -1,0 +1,262 @@
+{
+  "entities": [
+    {
+      "label": "Document",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "publication_date",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Organization",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "address",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Service",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Message",
+      "attributes": [
+        {
+          "name": "message_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "channel_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "expiration_timestamp",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "format_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message_xml",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Subscription",
+      "attributes": [
+        {
+          "name": "subscription_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Confirmation",
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "error_number",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProtocolEntry",
+      "attributes": [
+        {
+          "name": "entry_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "AUTHORED_BY",
+      "source": {
+        "label": "Document"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUBLISHED_BY",
+      "source": {
+        "label": "Document"
+      },
+      "target": {
+        "label": "Organization"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MANAGED_BY",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Organization"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Subscription"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIRMS",
+      "source": {
+        "label": "Confirmation"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOGS",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "ProtocolEntry"
+      },
+      "attributes": []
+    }
+  ]
+}

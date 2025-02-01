@@ -1,0 +1,800 @@
+{
+  "entities": [
+    {
+      "label": "Document",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "publication_date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Organization",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "address",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "affiliation",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Service",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "System",
+      "attributes": [
+        {
+          "name": "system_kennung",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protokolleintrag",
+      "attributes": [
+        {
+          "name": "zst",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "aktion",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Anschlussbereich",
+      "attributes": [
+        {
+          "name": "asbid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Fahrt",
+      "attributes": [
+        {
+          "name": "fahrt_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "betriebstag",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Linie",
+      "attributes": [
+        {
+          "name": "linien_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "linien_text",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Richtung",
+      "attributes": [
+        {
+          "name": "richtungs_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "richtungs_text",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Fahrplanlage",
+      "attributes": [
+        {
+          "name": "zst",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "verfall_zst",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "fahrt_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Abbringer",
+      "attributes": [
+        {
+          "name": "fahrt_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "linien_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "richtungs_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Standard",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Profile",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "level",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DataExchange",
+      "attributes": [
+        {
+          "name": "format",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Haltestelle",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Bedarfsfahrt",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "bedienform",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "buchungskontakt",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "buchungsmethoden",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "buchungsstopp",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "voranmeldezeit",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Bedienverbot",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "beschreibung",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "typ",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Bediengebiet",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "abkuerzung",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "nummer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Teilflche",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "abkuerzung",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "nummer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Zug",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "zugnummer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Fahrtabschnitt",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "zugehoerigkeit",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "zugnummer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "von_haltestelle",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bis_haltestelle",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "abfahrtszeit",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ankunftszeit",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "position_im_zug",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Anschluss",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "tagesart",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "beschreibung",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "nummer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "asbid",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "leitstellenkennung",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "CREATED",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Document"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUBLISHED",
+      "source": {
+        "label": "Organization"
+      },
+      "target": {
+        "label": "Document"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "Document"
+      },
+      "target": {
+        "label": "Service"
+      },
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": [
+        {
+          "name": "format",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SENDET",
+      "source": {
+        "label": "System"
+      },
+      "target": {
+        "label": "Protokolleintrag"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BEZIEHT_SICH_AUF",
+      "source": {
+        "label": "Protokolleintrag"
+      },
+      "target": {
+        "label": "Anschlussbereich"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAT",
+      "source": {
+        "label": "Fahrt"
+      },
+      "target": {
+        "label": "Linie"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_VERSION",
+      "source": {
+        "label": "Document"
+      },
+      "target": {
+        "label": "Document"
+      },
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "FOLLOWS",
+      "source": {
+        "label": "Document"
+      },
+      "target": {
+        "label": "Standard"
+      },
+      "attributes": [
+        {
+          "name": "compliance",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "AUTHORED_BY",
+      "source": {
+        "label": "Document"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": [
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Organization"
+      },
+      "attributes": [
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAT_BEDARFSFAHRT",
+      "source": {
+        "label": "Haltestelle"
+      },
+      "target": {
+        "label": "Bedarfsfahrt"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAT_BEDIENVERBOT",
+      "source": {
+        "label": "Haltestelle"
+      },
+      "target": {
+        "label": "Bedienverbot"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAT_BEDIENGEBIET",
+      "source": {
+        "label": "Haltestelle"
+      },
+      "target": {
+        "label": "Bediengebiet"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAT_TEILFLAECHE",
+      "source": {
+        "label": "Bediengebiet"
+      },
+      "target": {
+        "label": "Teilflche"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAT_FAHRTABSCHNITT",
+      "source": {
+        "label": "Zug"
+      },
+      "target": {
+        "label": "Fahrtabschnitt"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAT_ANSCHLUSS",
+      "source": {
+        "label": "Haltestelle"
+      },
+      "target": {
+        "label": "Anschluss"
+      },
+      "attributes": []
+    }
+  ]
+}

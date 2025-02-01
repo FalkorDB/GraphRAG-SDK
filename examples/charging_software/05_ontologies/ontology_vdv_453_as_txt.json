@@ -1,0 +1,310 @@
+{
+  "entities": [
+    {
+      "label": "VdvSchrift",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Forschungsprojekt",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "project_number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Organisation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Itcs",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dienst",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "XmlSchema",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Standard",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Anschlussbereich",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Haltestelle",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Anzeigerbereich",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Visualisierungsbereich",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Nachrichtenkanal",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Technologie",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protokoll",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Abonnement",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "lifetime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "ERARBEITET",
+      "source": {
+        "label": "VdvSchrift"
+      },
+      "target": {
+        "label": "Organisation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PARTICIPATED_IN",
+      "source": {
+        "label": "Organisation"
+      },
+      "target": {
+        "label": "VdvSchrift"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "VdvSchrift"
+      },
+      "target": {
+        "label": "Forschungsprojekt"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SPECIFIES",
+      "source": {
+        "label": "VdvSchrift"
+      },
+      "target": {
+        "label": "Itcs"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROMOTES",
+      "source": {
+        "label": "VdvSchrift"
+      },
+      "target": {
+        "label": "Technologie"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DESCRIBES",
+      "source": {
+        "label": "VdvSchrift"
+      },
+      "target": {
+        "label": "Dienst"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "VdvSchrift"
+      },
+      "target": {
+        "label": "XmlSchema"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROVIDES",
+      "source": {
+        "label": "Standard"
+      },
+      "target": {
+        "label": "Dienst"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "VdvSchrift"
+      },
+      "target": {
+        "label": "Anschlussbereich"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOCATED_AT",
+      "source": {
+        "label": "Anschlussbereich"
+      },
+      "target": {
+        "label": "Haltestelle"
+      },
+      "attributes": []
+    }
+  ]
+}
