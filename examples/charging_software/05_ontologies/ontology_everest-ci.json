@@ -1,0 +1,2381 @@
+{
+  "entities": [
+    {
+      "label": "License",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Licensor",
+      "attributes": [
+        {
+          "name": "copyright_owner",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Work",
+      "attributes": [
+        {
+          "name": "source_form",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DerivativeWorks",
+      "attributes": [
+        {
+          "name": "based_on",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Contribution",
+      "attributes": [
+        {
+          "name": "submitted_by",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Contributor",
+      "attributes": [
+        {
+          "name": "contributor_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LegalEntity",
+      "attributes": [
+        {
+          "name": "control_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ownership_percentage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dependency",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Gemfile",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CoreConfiguration",
+      "attributes": [
+        {
+          "name": "repositoryformatversion",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filemode",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bare",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "logallrefupdates",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "symlinks",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ignorecase",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Remote",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "fetch",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "remote",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "merge",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "sourcePath",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "destinationPath",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "interpreter",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "execution",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "hook",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "shebang",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "copyright_notice",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "permission_notice",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetupScript",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "commandArgs",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "arguments",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessageFile",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SignedOffByLine",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "duplicate",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitAuthorIdent",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Git",
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Watchman",
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ShellScript",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "shebang",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Filename",
+      "attributes": [
+        {
+          "name": "allowed",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "valid",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "initial",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "oid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Url",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessage",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PerlCommand",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExcludeFile",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Event",
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RemoteRepository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "refs",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Workflow",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "on",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Job",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "runs_on",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Step",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "run",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Input",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "default",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Output",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Secret",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DockerImage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "baseImage",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Function",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "function_name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Settings",
+      "attributes": [
+        {
+          "name": "local_repository",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BaseImage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "imageName",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "imageTag",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tag",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RunInstruction",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CopyInstruction",
+      "attributes": [
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "destination",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Entrypoint",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Library",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Executable",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingSoftware",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BuildArgument",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "defaultValue",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnvironmentVariable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RuntimeInstruction",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "WorkingDirectory",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EntryPoint",
+      "attributes": [
+        {
+          "name": "executablePath",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Parameter",
+      "attributes": [
+        {
+          "name": "base_image_tag",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "user_uid",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "User",
+      "attributes": [
+        {
+          "name": "username",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uid",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tool",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PythonPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DockerTool",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Action",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "source_dir",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "extensions",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "exclude",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "color",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Directory",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "directory",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "pip3",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "unittest",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "coverage",
+      "attributes": [
+        {
+          "name": "tool",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "test_dependencies",
+      "attributes": [
+        {
+          "name": "package",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Path",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IncludePath",
+      "attributes": [
+        {
+          "name": "include_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "exists",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IncludePathRewriter",
+      "attributes": [
+        {
+          "name": "working_dir",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "keep_dir",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ignore_dirs",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CompilerCommand",
+      "attributes": [
+        {
+          "name": "directory",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JSONFile",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ArgumentParser",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareVersion",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Module",
+      "attributes": [
+        {
+          "name": "module_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Class",
+      "attributes": [
+        {
+          "name": "class_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestCase",
+      "attributes": [
+        {
+          "name": "class_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "sys",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "pathlibPath",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "GRANTED_BY",
+      "source": {
+        "label": "License"
+      },
+      "target": {
+        "label": "Licensor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATED_BY",
+      "source": {
+        "label": "Work"
+      },
+      "target": {
+        "label": "Contributor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BASED_ON",
+      "source": {
+        "label": "DerivativeWorks"
+      },
+      "target": {
+        "label": "Work"
+      },
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SUBMITTED_VIA",
+      "source": {
+        "label": "Contribution"
+      },
+      "target": {
+        "label": "Licensor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINED_IN",
+      "source": {
+        "label": "LegalEntity"
+      },
+      "target": {
+        "label": "License"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": [
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dependency_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "CoreConfiguration"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "hook",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "EDITED",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": [
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": [
+        {
+          "name": "execution_context",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "command_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CHECKS",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "CommitMessageFile"
+      },
+      "attributes": [
+        {
+          "name": "duplicate_check",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "non_ascii",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "validity",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "pattern",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "CommitMessageFile"
+      },
+      "target": {
+        "label": "SignedOffByLine"
+      },
+      "attributes": [
+        {
+          "name": "count",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "inputs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "outputs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "secrets",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "steps",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "REPRESENTS",
+      "source": {
+        "label": "SignedOffByLine"
+      },
+      "target": {
+        "label": "GitAuthorIdent"
+      },
+      "attributes": [
+        {
+          "name": "validation",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Watchman"
+      },
+      "attributes": [
+        {
+          "name": "communication_speed",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INTEGRATES_WITH",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Git"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INTERACTS_WITH",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Git"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ASSOCIATED_WITH",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MONITORS",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BELONGS_TO",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USED_AS",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "GitHook"
+      },
+      "attributes": [
+        {
+          "name": "hook_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PREPARES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": [
+        {
+          "name": "message_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SOURCES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": [
+        {
+          "name": "commit_source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "PerlCommand"
+      },
+      "attributes": [
+        {
+          "name": "command_purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CLONES",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_BRANCH",
+      "source": {
+        "label": "RemoteRepository"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WARNINGS",
+      "source": {
+        "label": "Function"
+      },
+      "target": {
+        "label": "DockerImage"
+      },
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RECOMMENDS",
+      "source": {
+        "label": "Function"
+      },
+      "target": {
+        "label": "DockerImage"
+      },
+      "attributes": [
+        {
+          "name": "alternative",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "WARN_ABOUT",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "DockerImage"
+      },
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "DEPRECATED",
+      "source": {
+        "label": "DockerImage"
+      },
+      "target": {
+        "label": "DockerImage"
+      },
+      "attributes": [
+        {
+          "name": "new_location",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RUNS",
+      "source": {
+        "label": "DockerImage"
+      },
+      "target": {
+        "label": "RunInstruction"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "COPIES",
+      "source": {
+        "label": "DockerImage"
+      },
+      "target": {
+        "label": "CopyInstruction"
+      },
+      "attributes": [
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "destination",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ENTRYPOINT",
+      "source": {
+        "label": "DockerImage"
+      },
+      "target": {
+        "label": "Entrypoint"
+      },
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ENV_SET_FROM_ARG",
+      "source": {
+        "label": "EnvironmentVariable"
+      },
+      "target": {
+        "label": "BuildArgument"
+      },
+      "attributes": [
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "target",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "FILE_COPIED_TO",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "BaseImage"
+      },
+      "attributes": [
+        {
+          "name": "sourcePath",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "destinationPath",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "WORKDIR_SET",
+      "source": {
+        "label": "WorkingDirectory"
+      },
+      "target": {
+        "label": "BaseImage"
+      },
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ENTRYPOINT_SET",
+      "source": {
+        "label": "EntryPoint"
+      },
+      "target": {
+        "label": "BaseImage"
+      },
+      "attributes": [
+        {
+          "name": "executablePath",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CMD_SET",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "BaseImage"
+      },
+      "attributes": [
+        {
+          "name": "commandArgs",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURED_IN",
+      "source": {
+        "label": "User"
+      },
+      "target": {
+        "label": "BaseImage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INSTALLED_IN",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "BaseImage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUNS_ON",
+      "source": {
+        "label": "Action"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INSTALL",
+      "source": {
+        "label": "pip3"
+      },
+      "target": {
+        "label": "test_dependencies"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RUN",
+      "source": {
+        "label": "unittest"
+      },
+      "target": {
+        "label": "test_dependencies"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REPORT",
+      "source": {
+        "label": "coverage"
+      },
+      "target": {
+        "label": "test_dependencies"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PROCESSED_FROM",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "IncludePath"
+      },
+      "attributes": [
+        {
+          "name": "resolved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RESOLVED_TO",
+      "source": {
+        "label": "Path"
+      },
+      "target": {
+        "label": "Path"
+      },
+      "attributes": [
+        {
+          "name": "resolution",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INITIALIZED",
+      "source": {
+        "label": "IncludePathRewriter"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": [
+        {
+          "name": "working_dir",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "keep_dir",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ignore_dirs",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PROCESSED",
+      "source": {
+        "label": "IncludePathRewriter"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": [
+        {
+          "name": "include",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "MODIFIED",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "CompilerCommand"
+      },
+      "attributes": [
+        {
+          "name": "patched_cmd",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "READ",
+      "source": {
+        "label": "JSONFile"
+      },
+      "target": {
+        "label": "CompilerCommand"
+      },
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "WRITTEN",
+      "source": {
+        "label": "CompilerCommand"
+      },
+      "target": {
+        "label": "JSONFile"
+      },
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USED",
+      "source": {
+        "label": "ArgumentParser"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": [
+        {
+          "name": "source_dir",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "build_dir",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RESOLVED",
+      "source": {
+        "label": "Directory"
+      },
+      "target": {
+        "label": "Path"
+      },
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INHERITS_FROM",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "TestCase"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPENDED_TO",
+      "source": {
+        "label": "sys"
+      },
+      "target": {
+        "label": "pathlibPath"
+      },
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    }
+  ]
+}
