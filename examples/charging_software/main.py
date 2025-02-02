@@ -48,7 +48,16 @@ if __name__ == "__main__":
 
     generate_ontology(sources, model, f_name)
 
-    # with open(os.path.join("examples/charging_software/05_ontologies", f_name), "r") as f:
+    # ontologies_dir = "examples"+"/"+"charging_software"+"/"+"05_ontologies"
+    # target_dir = "examples"+"/"+"charging_software"
+
+    # merged = merge_ontology_directory(ontologies_dir)
+
+    # # Save merged ontology
+    # with open(os.path.join(target_dir, "merged_ontology.json"), "w") as f:
+    #     json.dump(merged.to_json(), f, indent=2)
+
+    # with open(os.path.join(target_dir, "merged_ontology.json"), "r") as f:
     #     ontology = Ontology.from_json(json.loads(f.read()))
     
     # # Build knowledge graph with unified config
