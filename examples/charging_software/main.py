@@ -12,11 +12,11 @@ from graphrag_sdk import KnowledgeGraph, Ontology
 
 logging.basicConfig(level=logging.INFO)
 
-folder = "everest-core"  # "everest-core"
+folder = "ext-switchev-iso15118"  # "everest-core"
 path_in = "examples/charging_software/03_data_in/code_repos"
 # path_in = "examples/charging_software/03_data_in/code_repos"
 
-MODEL_TYPE = "gemini"  # Switch to "ollama", "litellm" 
+MODEL_TYPE = "groq"  # Switch to "ollama", "litellm" 
 
 if __name__ == "__main__":
     # Source configuration: Data folder.
@@ -31,6 +31,10 @@ if __name__ == "__main__":
     if MODEL_TYPE == "litellm":
         model = LiteModel(model_name="deepseek/deepseek-chat")
         # model = LiteModel(model_name="deepseek/deepseek-reasoner")
+    elif MODEL_TYPE == "groq":
+        model = LiteModel(model_name="groq/deepseek-r1-distill-llama-70b")
+    elif MODEL_TYPE == "openrouter":
+        model = LiteModel(model_name="openrouter/deepseek/deepseek-r1:free")
     elif MODEL_TYPE == "ollama":
         model = OllamaGenerativeModel(model_name="deepseek-r1:14b")
         # "deepseek-r1:14b"
