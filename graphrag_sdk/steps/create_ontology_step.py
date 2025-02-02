@@ -251,7 +251,7 @@ class CreateOntologyStep(Step):
         retry=6,
     ):
         try:
-            time.sleep(20)  # added BB
+            time.sleep(10)  # added BB
             return chat_session.send_message(prompt)
         except Exception as e:
             # If exception is caused by quota exceeded, wait 10 seconds and try again for 6 times
