@@ -1,0 +1,832 @@
+{
+  "entities": [
+    {
+      "label": "SoftwareVersion",
+      "attributes": [
+        {
+          "name": "tag",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResourceConfiguration",
+      "attributes": [
+        {
+          "name": "cpus",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "memory",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Service",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "image",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "platform",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Port",
+      "attributes": [
+        {
+          "name": "external",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "internal",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResourceLimit",
+      "attributes": [
+        {
+          "name": "cpus",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "memory",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnvironmentVariable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Sysctl",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExtraHost",
+      "attributes": [
+        {
+          "name": "hostname",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "address",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HookScript",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PushOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitPushOptionCount",
+      "attributes": [
+        {
+          "name": "count",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitConfig",
+      "attributes": [
+        {
+          "name": "allowunannotated",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allowdeletebranch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "denycreatebranch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allowdeletetag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allowmodifytag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRef",
+      "attributes": [
+        {
+          "name": "refname",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "oldrev",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "newrev",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Workflow",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Job",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "runs_on",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Step",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "with",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Matrix",
+      "attributes": [
+        {
+          "name": "host_namespace",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "image_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "context",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Registry",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Image",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "tag",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Certificate",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "days_valid",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Key",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateSigningRequest",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "subject",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "subject_alt_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConfigFile",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConfigModule",
+      "attributes": [
+        {
+          "name": "device",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "supported_iso15118_2",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "tls_active",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "is_cert_install_needed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseManager",
+      "attributes": [
+        {
+          "name": "module",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Message",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Session",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ongoing_timer",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_session_timer",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "sim_speed",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_of_profile_schedule",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "renegotiation_requested",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Controller",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Schedule",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "profile_entries",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MQTT",
+      "attributes": [
+        {
+          "name": "topic",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "hostname",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "HAS",
+      "source": {
+        "label": "SoftwareVersion"
+      },
+      "target": {
+        "label": "ResourceConfiguration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PORT",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Port"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESOURCE_LIMIT",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "ResourceLimit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Service"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ENVIRONMENT_VARIABLE",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "EnvironmentVariable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_SYSCTL",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Sysctl"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXTRA_HOST",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "ExtraHost"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "GitConfig"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TRIGGERED_BY",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Step"
+      },
+      "target": {
+        "label": "Matrix"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUSHES_TO",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Registry"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BUILDS",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Image"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GENERATES",
+      "source": {
+        "label": "Key"
+      },
+      "target": {
+        "label": "CertificateSigningRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SIGNS",
+      "source": {
+        "label": "Key"
+      },
+      "target": {
+        "label": "Certificate"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Certificate"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROCESSES",
+      "source": {
+        "label": "Controller"
+      },
+      "target": {
+        "label": "Schedule"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUBLISHES",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "MQTT"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUBSCRIBES",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "MQTT"
+      },
+      "attributes": []
+    }
+  ]
+}

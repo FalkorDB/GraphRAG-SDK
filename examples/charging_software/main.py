@@ -12,39 +12,11 @@ from graphrag_sdk import KnowledgeGraph, Ontology
 
 logging.basicConfig(level=logging.INFO)
 
-folder = "shellrecharge"  # "everest-core"
+folder = "ext-switchev-iso15118"  # "everest-core"
 path_in = "examples/charging_software/03_data_in/code_repos"
 # path_in = "examples/charging_software/03_data_in/code_repos"
 
-MODEL_TYPE = "gemini"  # Switch to "ollama", "litellm" 
-
-
-def merge_ontology_directory(directory: str) -> Ontology:
-    """Merge all ontology JSON files in a directory using the SDK's merge_with method."""
-    merged_ontology = Ontology()
-
-    for root, dirs, files in os.walk(directory):
-        for filename in files:
-            if filename.endswith(".json"):
-                filepath = os.path.join(root, filename)
-                logging.info(f"Merging {filename}")
-
-            with open(filepath, "r") as f:
-                try:
-                    current_ontology = Ontology.from_json(json.load(f))
-                    merged_ontology.merge_with(current_ontology)
-                except Exception as e:
-                    logging.error(f"Failed to merge {filename}: {str(e)}")
-
-    # # Post-merge cleanup and validation
-    # merged_ontology.discard_entities_without_relations()
-    # merged_ontology.discard_relations_without_entities()
-
-    if not merged_ontology.validate_entities():
-        logging.warning("Merged ontology contains entities without unique attributes")
-
-    return merged_ontology
-
+MODEL_TYPE = "groq"  # Switch to "ollama", "litellm" 
 
 if __name__ == "__main__":
     # Source configuration: Data folder.
@@ -59,6 +31,10 @@ if __name__ == "__main__":
     if MODEL_TYPE == "litellm":
         model = LiteModel(model_name="deepseek/deepseek-chat")
         # model = LiteModel(model_name="deepseek/deepseek-reasoner")
+    elif MODEL_TYPE == "groq":
+        model = LiteModel(model_name="groq/deepseek-r1-distill-llama-70b")
+    elif MODEL_TYPE == "openrouter":
+        model = LiteModel(model_name="openrouter/deepseek/deepseek-r1:free")
     elif MODEL_TYPE == "ollama":
         model = OllamaGenerativeModel(model_name="deepseek-r1:14b")
         # "deepseek-r1:14b"

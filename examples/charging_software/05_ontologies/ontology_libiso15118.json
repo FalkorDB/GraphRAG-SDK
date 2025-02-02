@@ -1,0 +1,7134 @@
+{
+  "entities": [
+    {
+      "label": "Directory",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareProject",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "languages",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BuildOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "value",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dependency",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CompileOption",
+      "attributes": [
+        {
+          "name": "options",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "option",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestExecution",
+      "attributes": [
+        {
+          "name": "output_on_failure",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "build_directory",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "test_report_directory",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestResult",
+      "attributes": [
+        {
+          "name": "return_code",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "log_file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "script_path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitCommit",
+      "attributes": [
+        {
+          "name": "commit_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "against",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitConfig",
+      "attributes": [
+        {
+          "name": "config_key",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "config_value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allowunannotated",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allowdeletebranch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "denycreatebranch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allowdeletetag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allowmodifytag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitDiff",
+      "attributes": [
+        {
+          "name": "diff_filter",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "against",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HookScript",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRef",
+      "attributes": [
+        {
+          "name": "refname",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "oldrev",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "newrev",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitTag",
+      "attributes": [
+        {
+          "name": "short_refname",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitBranch",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Pattern",
+      "attributes": [
+        {
+          "name": "pattern",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingSoftware",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommunicationProtocol",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Software",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "license",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "copyright",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "inverse_version",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "schema_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version_major",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version_minor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Condition",
+      "attributes": [
+        {
+          "name": "expression",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Library",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "imported_location",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "interface_include_directories",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExternalProject",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "binary_dir",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "git_repository",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "git_tag",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "cmake_args",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "build_byproducts",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConfigFile",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Config",
+      "attributes": [
+        {
+          "name": "ssl",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "interface_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "tls_negotiation_strategy",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "enable_sdp_server",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Controller",
+      "attributes": [
+        {
+          "name": "config",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "callbacks",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evse_setup",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PollManager",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "registered_fds",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "poll_set",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "event_fd",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SdpServer",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "fd",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "udp_buffer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Session",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "service_renegotiation_supported",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "idle_timeout_ms",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "connection",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "log",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ctx",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "offered_services",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FsmEvent",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FsmReturnType",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Fsm",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FsmSimpleState",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FsmCompoundState",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Limit",
+      "attributes": [
+        {
+          "name": "max",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Limits",
+      "attributes": [
+        {
+          "name": "power",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "current",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcTransferLimits",
+      "attributes": [
+        {
+          "name": "charge_limits",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "discharge_limits",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_ramp_limit",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "limits",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "State",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Event",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "event_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerDelivery",
+      "attributes": [
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionSetup",
+      "attributes": [
+        {
+          "name": "evse_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Message",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "processing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "target_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evccid",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_session",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthorizationStatus",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Parameter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceCategory",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionSetupRequest",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionSetupResponse",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVSE",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Namespace",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Function",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "error_msg",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "error_code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "return_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "parameters",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "error_handling",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Interface",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SocketAddress",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConnectionEvent",
+      "attributes": [
+        {
+          "name": "event_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConnectionEventCallback",
+      "attributes": [
+        {
+          "name": "callback_function",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReadResult",
+      "attributes": [
+        {
+          "name": "would_block",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bytes_read",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IConnection",
+      "attributes": [
+        {
+          "name": "public_endpoint",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConnectionSSL",
+      "attributes": [
+        {
+          "name": "interface_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "handshake_complete",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "poll_manager",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ssl",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "end_point",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "event_callback",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SSLContext",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "accepting_net_ctx",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "connection_net_ctx",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ssl",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "conf",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "server_certificate",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ctr_drbg",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "entropy",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "pkey",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ipv6EndPoint",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogLevel",
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PollSet",
+      "attributes": [
+        {
+          "name": "fds",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "callbacks",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Packet",
+      "attributes": [
+        {
+          "name": "header_size",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "payload_length",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "buffer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bytes_read",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StreamInputView",
+      "attributes": [
+        {
+          "name": "payload",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "payload_len",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StreamOutputView",
+      "attributes": [
+        {
+          "name": "payload",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "payload_len",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "buffer_size",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_AC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_charge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_charge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_charge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_charge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_charge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "present_active_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_reactive_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_reactive_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_reactive_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Scheduled_AC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "max_discharge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_AC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "max_charge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_charge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_charge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "min_charge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_charge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "present_active_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_reactive_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "present_reactive_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_reactive_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Dynamic_AC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "max_discharge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "max_discharge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "min_discharge_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_v2x_energy_request",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_v2x_energy_request",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_AC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "target_active_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_active_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_active_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_AC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "target_active_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "target_active_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_active_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AC_ChargeLoopRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "display_parameters",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "meter_info_requested",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AC_ChargeLoopResponse",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "meter_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "receipt",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_frequency",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Header",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "binary_representation",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "payload_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResponseCode",
+      "attributes": [
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Processing",
+      "attributes": [
+        {
+          "name": "processing",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_DC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "target_current",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "target_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_charge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_charge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_charge_current",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_voltage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_voltage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Scheduled_DC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "max_discharge_power",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_current",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_DC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "min_charge_power",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_charge_current",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Dynamic_DC_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "max_discharge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_discharge_current",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_v2x_energy_request",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_v2x_energy_request",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_DC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "min_charge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_charge_current",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_voltage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Scheduled_DC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "max_discharge_power",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_current",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_voltage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_DC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "min_charge_power",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_charge_current",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Dynamic_DC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "max_discharge_power",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_discharge_current",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_ChargeLoopRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "display_parameters",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "meter_info_requested",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_ChargeLoopResponse",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "meter_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "receipt",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_current",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "current_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "voltage_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PayloadTypeTrait",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SupportedAppProtocolResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "schema_id",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthorizationSetupResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "authorization_services",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "certificate_installation_service",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "authorization_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthorizationResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceDiscoveryResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "service_renegotiation_supported",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "energy_transfer_service_list",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceDetailResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceSelectionResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_ChargeParameterDiscoveryResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ScheduleExchangeResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "processing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "go_to_pause",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_CableCheckResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_PreChargeResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerDeliveryResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_WeldingDetectionResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionStopResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AC_ChargeParameterDiscoveryResponse",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionStopRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "charging_session",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ev_termination_code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_termination_explanation",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingSession",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessageType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Request",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Response",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "processing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "current_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "power_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "voltage_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "certificate_installation_service",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "authorization_services",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "authorization_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage_value",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage_exponent",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Signal",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcMaximumLimits",
+      "attributes": [
+        {
+          "name": "voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "limits",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PresentVoltage",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MeterInfoRequested",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcReqControlMode",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcChargeLoopReq",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "values",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Callbacks",
+      "attributes": [
+        {
+          "name": "signal",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "dc_pre_charge_target_voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "dc_charge_loop_req",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "dc_max_limits",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "v2g_message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "evccid",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "selected_protocol",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Feedback",
+      "attributes": [
+        {
+          "name": "callbacks",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "signal",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dc_pre_charge_target_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dc_charge_loop_req",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dc_max_limits",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "v2g_message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evcc_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "selected_protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TimePoint",
+      "attributes": [
+        {
+          "name": "time_point",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SimpleEvent",
+      "attributes": [
+        {
+          "name": "info",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExiMessageDirection",
+      "attributes": [
+        {
+          "name": "direction",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExiMessageEvent",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "len",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Callback",
+      "attributes": [
+        {
+          "name": "callback_function",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionLogger",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "last_state_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SchemaFile",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "URL",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SourceFile",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionConfig",
+      "attributes": [
+        {
+          "name": "evse_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "cert_install_service",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "authorization_services",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "supported_energy_transfer_services",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dc_limits",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "supported_control_mobility_modes",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ControlMobilityNeedsModes",
+      "attributes": [
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "mobility_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "mobility_needs_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcParameterList",
+      "attributes": [
+        {
+          "name": "dc_connector",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "mobility_needs_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "pricing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcBptParameterList",
+      "attributes": [
+        {
+          "name": "dc_connector",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "mobility_needs_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "pricing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bpt_channel",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "generator_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Context",
+      "attributes": [
+        {
+          "name": "session",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SelectedServiceParameters",
+      "attributes": [
+        {
+          "name": "service_category",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "connector",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "mobility_needs_mode",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "pricing",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "bpt_channel",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "generator_mode",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "dc_connector",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OfferedServices",
+      "attributes": [
+        {
+          "name": "dc_parameter_list",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "dc_bpt_parameter_list",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "internet_parameter_list",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "parking_parameter_list",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthorizationService",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthorizationRequest",
+      "attributes": [
+        {
+          "name": "selected_authorization_service",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthStatus",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareComponent",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "license",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "copyright",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProcessingStatus",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_DC_Res",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_charge_current",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_BPT_DC_Res",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_charge_current",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_DC_Res",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_charge_current",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_BPT_DC_Res",
+      "attributes": [
+        {
+          "name": "max_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_charge_current",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UpdateDynamicModeParameters",
+      "attributes": [
+        {
+          "name": "departure_time",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_soc",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_soc",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ack_max_delay",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "VoltageCurrent",
+      "attributes": [
+        {
+          "name": "voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "current",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Service",
+      "attributes": [
+        {
+          "name": "service_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateBackend",
+      "attributes": [
+        {
+          "name": "backend",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "config_string",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "private_key_password",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogMessage",
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggingCallback",
+      "attributes": [
+        {
+          "name": "callback_function",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PollCallback",
+      "attributes": [
+        {
+          "name": "callback",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PeerRequestContext",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "security",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "transport_protocol",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TlsKeyLoggingServer",
+      "attributes": [
+        {
+          "name": "fd",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "destination_address",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DisplayParameters",
+      "attributes": [
+        {
+          "name": "present_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "remaining_time_to_min_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "remaining_time_to_target_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "remaining_time_to_max_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_complete",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "battery_energy_capacity",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "inlet_hot",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "target_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_CLReqControlMode",
+      "attributes": [
+        {
+          "name": "departure_time",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DetailedCost",
+      "attributes": [
+        {
+          "name": "amount",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cost_per_unit",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DetailedTax",
+      "attributes": [
+        {
+          "name": "tax_rule_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "amount",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Receipt",
+      "attributes": [
+        {
+          "name": "time_anchor",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "energy_costs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "occupany_costs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "additional_service_costs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "overstay_costs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tax_costs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Scheduled_AC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "target_active_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_active_power_L2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_active_power_L3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_CLResControlMode",
+      "attributes": [
+        {
+          "name": "departure_time",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "minimum_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ack_max_delay",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BPT_Dynamic_AC_CLResControlMode",
+      "attributes": [
+        {
+          "name": "target_active_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_active_power_L2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_active_power_L3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_reactive_power_L3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_active_power_L3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerDeliveryRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "processing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "charge_progress",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_profile",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "channel_selection",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerProfile",
+      "attributes": [
+        {
+          "name": "time_anchor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "entries",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerScheduleEntry",
+      "attributes": [
+        {
+          "name": "duration",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "power",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_l2",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "power_l3",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChannelSelection",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVPowerScheduleEntry",
+      "attributes": [
+        {
+          "name": "duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVPowerSchedule",
+      "attributes": [
+        {
+          "name": "time_anchor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "entries",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVPriceRule",
+      "attributes": [
+        {
+          "name": "energy_fee",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_range_start",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVPriceRuleStack",
+      "attributes": [
+        {
+          "name": "duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_rules",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVAbsolutePriceSchedule",
+      "attributes": [
+        {
+          "name": "time_anchor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_algorithm",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_rule_stacks",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVEnergyOffer",
+      "attributes": [
+        {
+          "name": "power_schedule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "absolute_price_schedule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_SEReqControlMode",
+      "attributes": [
+        {
+          "name": "departure_time",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_energy",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_energy",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_energy",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "energy_offer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_SEReqControlMode",
+      "attributes": [
+        {
+          "name": "departure_time",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "minimum_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_energy",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_energy",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_energy",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_v2x_energy",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_v2x_energy",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ScheduleExchangeRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_supporting_points",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerSchedule",
+      "attributes": [
+        {
+          "name": "time_anchor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "available_energy",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "power_tolerance",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "entries",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TaxRule",
+      "attributes": [
+        {
+          "name": "tax_rule_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "tax_rule_name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tax_rate",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "tax_included_in_price",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "applies_to_energy_fee",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "applies_to_parking_fee",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "applies_to_overstay_fee",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "applies_to_minimum_maximum_cost",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PriceRule",
+      "attributes": [
+        {
+          "name": "energy_fee",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "parking_fee",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "parking_fee_period",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "carbon_dioxide_emission",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "renewable_generation_percentage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "power_range_start",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PriceRuleStack",
+      "attributes": [
+        {
+          "name": "duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_rule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OverstayRule",
+      "attributes": [
+        {
+          "name": "overstay_rule_description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_time",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "overstay_fee",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "overstay_fee_period",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AbsolutePriceSchedule",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "time_anchor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_schedule_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "price_schedule_description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_algorithm",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "minimum_cost",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "maximum_cost",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tax_rules",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "price_rule_stacks",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "overstay_rules",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "additional_selected_services",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PriceLevelSchedule",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "time_anchor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_schedule_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "price_schedule_description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "number_of_price_levels",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_level_schedule_entries",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingSchedule",
+      "attributes": [
+        {
+          "name": "power_schedule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "price_schedule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ScheduleTuple",
+      "attributes": [
+        {
+          "name": "schedule_tuple_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "charging_schedule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "discharging_schedule",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dynamic_SEResControlMode",
+      "attributes": [
+        {
+          "name": "departure_time",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "minimum_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_soc",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "price_schedule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_SEResControlMode",
+      "attributes": [
+        {
+          "name": "schedule_tuple",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AppProtocol",
+      "attributes": [
+        {
+          "name": "protocol_namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version_number_major",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version_number_minor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "schema_id",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "priority",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SupportedAppProtocolRequest",
+      "attributes": [
+        {
+          "name": "app_protocol",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AppHandExiDocument",
+      "attributes": [
+        {
+          "name": "supportedAppProtocolReq",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "supportedAppProtocolRes",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Stream",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Error",
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "V2gMessage",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SdpPacket",
+      "attributes": [
+        {
+          "name": "payload_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "payload_buffer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "payload_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Connection",
+      "attributes": [
+        {
+          "name": "event",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "public_endpoint_port",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessageExchange",
+      "attributes": [
+        {
+          "name": "response_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "response_size",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CompileOptions",
+      "attributes": [
+        {
+          "name": "options",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ModulePath",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Subdirectory",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeCoverage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CoverageTarget",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "executable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AppProtocolReq",
+      "attributes": [
+        {
+          "name": "version_number_major",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version_number_minor",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "schema_id",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "priority",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "protocol_namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Variant",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Executable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestFramework",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthorizationSetupRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Authorization",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PnC_ASResAuthorizationMode",
+      "attributes": [
+        {
+          "name": "gen_challenge",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestTarget",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ControlMode",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "target_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_energy_request",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_charge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_discharge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "mode",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RationalNumber",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "exponent",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "numerator",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "denominator",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SerializationBuffer",
+      "attributes": [
+        {
+          "name": "size",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduled_EVPPTControlMode",
+      "attributes": [
+        {
+          "name": "power_tolerance_acceptance",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "selected_schedule",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceDiscoveryRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceSelectionRequest",
+      "attributes": [
+        {
+          "name": "service_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "parameter_set_id",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "selected_energy_transfer_service",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "selected_vas_list",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MobilityNeedsMode",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "mode",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseSetupConfig",
+      "attributes": [
+        {
+          "name": "evse_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "cert_install",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FsmStateHelper",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "log",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ctx",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "output_buffer",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "output_stream_view",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "msg_exch",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "active_control_event",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "callbacks",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "state_allocator_impl",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "state_allocator",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "d20Context",
+      "attributes": [
+        {
+          "name": "callbacks",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "log",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "config",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "active_control_event",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "msg_exch",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "d20MessageExchange",
+      "attributes": [
+        {
+          "name": "output_stream_view",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "sessionfeedbackCallbacks",
+      "attributes": [
+        {
+          "name": "callbacks",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "sessionSessionLogger",
+      "attributes": [
+        {
+          "name": "log",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "fsm_implDynamicStateAllocator",
+      "attributes": [
+        {
+          "name": "state_allocator_impl",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "fsmstatesStateAllocator",
+      "attributes": [
+        {
+          "name": "state_allocator",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogFunction",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FeedbackResults",
+      "attributes": [
+        {
+          "name": "signal",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "target_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dc_charge_loop_req",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dc_max_limits",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "v2g_message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evcc_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "selected_protocol",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_CableCheckRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceParameters",
+      "attributes": [
+        {
+          "name": "service_category",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "dc_connector",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "control_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "mobility_needs_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "pricing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargeLoopRequest",
+      "attributes": [
+        {
+          "name": "meter_info_requested",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargeLoopResponse",
+      "attributes": [
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_current",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "current_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "voltage_limit_achieved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_PreChargeRequest",
+      "attributes": [
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "processing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "target_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DC_WeldingDetectionRequest",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "processing",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceDetailRequest",
+      "attributes": [
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "service",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceParameter",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "parameter",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcConnector",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Pricing",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Port",
+      "attributes": [
+        {
+          "name": "number",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IntendedService",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ParkingStatus",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "InternetParameterList",
+      "attributes": [
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "port",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ParkingParameterList",
+      "attributes": [
+        {
+          "name": "intended_service",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "parking_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "V2GTP_Error",
+      "attributes": [
+        {
+          "name": "error_code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "Directory"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": [
+        {
+          "name": "subdirectory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_BUILD_OPTION",
+      "source": {
+        "label": "SoftwareProject"
+      },
+      "target": {
+        "label": "BuildOption"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DEPENDENCY",
+      "source": {
+        "label": "SoftwareProject"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COMPILE_OPTION",
+      "source": {
+        "label": "SoftwareProject"
+      },
+      "target": {
+        "label": "CompileOption"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GENERATES",
+      "source": {
+        "label": "TestExecution"
+      },
+      "target": {
+        "label": "TestResult"
+      },
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "VERIFIES",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Hook"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SETS",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "GitConfig"
+      },
+      "attributes": [
+        {
+          "name": "config_key",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "config_value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "GitConfig"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MANAGES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROCESSES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "GitRef"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HANDLES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "GitTag"
+      },
+      "attributes": [
+        {
+          "name": "request_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "response_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "new_session",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "supported_service_ids",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "result",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EXCLUDES",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Pattern"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "ChargingSoftware"
+      },
+      "target": {
+        "label": "CommunicationProtocol"
+      },
+      "attributes": [
+        {
+          "name": "condition",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "scope",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_CONDITION",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Condition"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "ExternalProject"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Controller"
+      },
+      "target": {
+        "label": "Config"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "error_condition",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "iso15118d20"
+      },
+      "target": {
+        "label": "FsmEvent"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STATE",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "State"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INHERITS",
+      "source": {
+        "label": "PowerDelivery"
+      },
+      "target": {
+        "label": "FsmSimpleState"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "Protocol"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUIRES",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "Session"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OCCURS_IN",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "Session"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROVIDES",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "ServiceCategory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RESPONDS_TO",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "SessionSetupResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RETURNS",
+      "source": {
+        "label": "Function"
+      },
+      "target": {
+        "label": "SocketAddress"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CALLBACK",
+      "source": {
+        "label": "IConnection"
+      },
+      "target": {
+        "label": "ConnectionEventCallback"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EVENT",
+      "source": {
+        "label": "ConnectionEventCallback"
+      },
+      "target": {
+        "label": "ConnectionEvent"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESULT",
+      "source": {
+        "label": "IConnection"
+      },
+      "target": {
+        "label": "ReadResult"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_FUNCTION",
+      "source": {
+        "label": "Namespace"
+      },
+      "target": {
+        "label": "Function"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONVERTS_TO",
+      "source": {
+        "label": "StreamOutputView"
+      },
+      "target": {
+        "label": "StreamInputView"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PAYLOAD_TYPE",
+      "source": {
+        "label": "PayloadTypeTrait"
+      },
+      "target": {
+        "label": "SupportedAppProtocolResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DOWNLOAD",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "SchemaFile"
+      },
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "LOCATED_AT",
+      "source": {
+        "label": "SchemaFile"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AVAILABLE_AT",
+      "source": {
+        "label": "SchemaFile"
+      },
+      "target": {
+        "label": "URL"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LINKS",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": [
+        {
+          "name": "scope",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "VALIDATES",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "Header"
+      },
+      "attributes": [
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RESPONDS_WITH",
+      "source": {
+        "label": "Authorization"
+      },
+      "target": {
+        "label": "AuthorizationResponse"
+      },
+      "attributes": [
+        {
+          "name": "response_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_STATUS",
+      "source": {
+        "label": "AuthorizationResponse"
+      },
+      "target": {
+        "label": "AuthStatus"
+      },
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "TRANSITIONS_TO",
+      "source": {
+        "label": "State"
+      },
+      "target": {
+        "label": "State"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONVERT",
+      "source": {
+        "label": "DcTransferLimits"
+      },
+      "target": {
+        "label": "Scheduled_DC_Res"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SET_PARAMETERS",
+      "source": {
+        "label": "UpdateDynamicModeParameters"
+      },
+      "target": {
+        "label": "Dynamic_DC_Res"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MEASURES",
+      "source": {
+        "label": "SoftwareComponent"
+      },
+      "target": {
+        "label": "VoltageCurrent"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOGS",
+      "source": {
+        "label": "LoggingCallback"
+      },
+      "target": {
+        "label": "LogMessage"
+      },
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REGISTERS",
+      "source": {
+        "label": "PollManager"
+      },
+      "target": {
+        "label": "PollCallback"
+      },
+      "attributes": [
+        {
+          "name": "fd",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "UNREGISTERS",
+      "source": {
+        "label": "PollManager"
+      },
+      "target": {
+        "label": "PollCallback"
+      },
+      "attributes": [
+        {
+          "name": "fd",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CREATES",
+      "source": {
+        "label": "PollManager"
+      },
+      "target": {
+        "label": "PollSet"
+      },
+      "attributes": [
+        {
+          "name": "event_fd",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "test_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SENDS",
+      "source": {
+        "label": "SdpServer"
+      },
+      "target": {
+        "label": "Ipv6EndPoint"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESPONSE",
+      "source": {
+        "label": "SupportedAppProtocolResponse"
+      },
+      "target": {
+        "label": "AppProtocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SERIALIZES",
+      "source": {
+        "label": "AppHandExiDocument"
+      },
+      "target": {
+        "label": "SupportedAppProtocolRequest"
+      },
+      "attributes": [
+        {
+          "name": "buffer_size",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_LICENSE",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Namespace"
+      },
+      "attributes": [
+        {
+          "name": "license_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_COPYRIGHT",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Namespace"
+      },
+      "attributes": [
+        {
+          "name": "copyright_text",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "THROWS",
+      "source": {
+        "label": "Function"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXCHANGES",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "MessageExchange"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPENDS",
+      "source": {
+        "label": "CodeCoverage"
+      },
+      "target": {
+        "label": "CompileOptions"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SETS_UP",
+      "source": {
+        "label": "CodeCoverage"
+      },
+      "target": {
+        "label": "CoverageTarget"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DECODED_FROM",
+      "source": {
+        "label": "AppProtocolReq"
+      },
+      "target": {
+        "label": "StreamInputView"
+      },
+      "attributes": [
+        {
+          "name": "success",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "LINKED_TO",
+      "source": {
+        "label": "Executable"
+      },
+      "target": {
+        "label": "Library"
+      },
+      "attributes": [
+        {
+          "name": "link_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_HEADER",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "Header"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESPONSE_CODE",
+      "source": {
+        "label": "AuthorizationSetupResponse"
+      },
+      "target": {
+        "label": "ResponseCode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_AUTHORIZATION_SERVICE",
+      "source": {
+        "label": "AuthorizationSetupResponse"
+      },
+      "target": {
+        "label": "Authorization"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_AUTHORIZATION_MODE",
+      "source": {
+        "label": "AuthorizationSetupResponse"
+      },
+      "target": {
+        "label": "PnC_ASResAuthorizationMode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONTROL_MODE",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "ControlMode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DISPLAY_PARAMETERS",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "DisplayParameters"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_VOLTAGE",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "RationalNumber"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_POWER_PROFILE",
+      "source": {
+        "label": "PowerDeliveryRequest"
+      },
+      "target": {
+        "label": "PowerProfile"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CALLS",
+      "source": {
+        "label": "Controller"
+      },
+      "target": {
+        "label": "Function"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUPPORTS",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONTEXT",
+      "source": {
+        "label": "FsmStateHelper"
+      },
+      "target": {
+        "label": "Context"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LEVEL",
+      "source": {
+        "label": "LogMessage"
+      },
+      "target": {
+        "label": "LogLevel"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PRODUCES",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "Response"
+      },
+      "attributes": []
+    }
+  ]
+}
