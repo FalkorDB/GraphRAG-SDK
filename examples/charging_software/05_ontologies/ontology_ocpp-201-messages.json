@@ -1,0 +1,4291 @@
+{
+  "entities": [
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CoreSettings",
+      "attributes": [
+        {
+          "name": "repositoryformatversion",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filemode",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bare",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "logallrefupdates",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "symlinks",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ignorecase",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RemoteSettings",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "fetch",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BranchSettings",
+      "attributes": [
+        {
+          "name": "remote",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "merge",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitConfiguration",
+      "attributes": [
+        {
+          "name": "allowNonAscii",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ref",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "packrefs",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "commit",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "reference",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ShellScript",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "shebang",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "environment",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitCommand",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Filename",
+      "attributes": [
+        {
+          "name": "isNonAscii",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "trigger",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitPushOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RepositoryConfig",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Project",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "project_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "project_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "project_guid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "sdk",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "target_framework",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RepositoryOperation",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExcludeFile",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExcludePattern",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hash",
+      "attributes": [
+        {
+          "name": "hash_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Git",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SolutionFile",
+      "attributes": [
+        {
+          "name": "format_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "visual_studio_version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "minimum_visual_studio_version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "solution_guid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Configuration",
+      "attributes": [
+        {
+          "name": "build_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "platform",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CancelReservationResponse",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CancelReservationStatusEnumType",
+      "attributes": [
+        {
+          "name": "accepted",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "rejected",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CustomDataType",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "data",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "custom_data_attribute",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusInfoType",
+      "attributes": [
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status_info_attribute",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Package",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ClearChargingProfileResponse",
+      "attributes": [
+        {
+          "name": "response_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Status",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "accepted",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "rejected",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "notImplemented",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CustomData",
+      "attributes": [
+        {
+          "name": "custom_data_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "data",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "json_property_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "data_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusInfo",
+      "attributes": [
+        {
+          "name": "status_info_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ClearedChargingLimitRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_limit_source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evse_id",
+          "type": "number",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingLimitSource",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CostUpdatedResponse",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusEnum",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CustomerInformationResponse",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Namespace",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Enum",
+      "attributes": [
+        {
+          "name": "accepted",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "failed",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "notFound",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Class",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "summary",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Get15118EVCertificateRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "iso15118_schema_version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "exi_request",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateActionEnumType",
+      "attributes": [
+        {
+          "name": "install",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "update",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetBaseReportRequest",
+      "attributes": [
+        {
+          "name": "request_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "report_base",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReportBaseEnum",
+      "attributes": [
+        {
+          "name": "configuration_inventory",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "full_inventory",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "summary_inventory",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetBaseReportResponse",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GenericDeviceModelStatusEnumType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetCertificateStatusRequest",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ocspRequestData",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetCertificateStatusResponse",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ocspResult",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetChargingProfileStatusEnumType",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetChargingProfilesResponse",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingRateUnitEnumType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetCompositeScheduleRequest",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "chargingRateUnit",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "evseId",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessagePriority",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessageState",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetDisplayMessagesRequest",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "id",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "requestId",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "priority",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateHashDataChainType",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "certificate_hash_data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "certificate_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "child_certificate_hash_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetInstalledCertificateIdsResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "certificate_hash_data_chain",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetInstalledCertificateStatusEnumType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateHashDataType",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetLocalListVersionRequest",
+      "attributes": [
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "class_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DataType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogParametersType",
+      "attributes": [
+        {
+          "name": "remote_location",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "oldest_timestamp",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "latest_timestamp",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetLogRequest",
+      "attributes": [
+        {
+          "name": "request_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "log_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "retries",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "retry_interval",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogEnumType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetMonitoringReportResponse",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetReportRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "component_variable",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "request_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "component_criteria",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ComponentCriterionEnumType",
+      "attributes": [
+        {
+          "name": "active",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "available",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "enabled",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "problem",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ComponentVariableType",
+      "attributes": [],
+      "description": ""
+    },
+    {
+      "label": "GetVariablesRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "get_variable_data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetVariableDataType",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "attribute_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "component",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AttributeEnumType",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetVariableResultType",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "attribute_status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "attribute_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "attribute_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "attribute_value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "component",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetVariablesResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "get_variable_result",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ComponentType",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "component",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "VariableType",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetVariableStatusEnumType",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UploadLogStatusEnumType",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogStatusNotificationRequest",
+      "attributes": [
+        {
+          "name": "requestId",
+          "type": "number",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogStatusNotificationResponse",
+      "attributes": [
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Property",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "nullable",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Warning",
+      "attributes": [
+        {
+          "name": "number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NotifyCustomerInformationRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "data",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "tbc",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "seq_no",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "generated_at",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "request_id",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingStation",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CentralSystem",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NotifyCustomerInformationResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnumType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NotifyEVChargingScheduleResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GenericStatusEnumType",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NotifyMonitoringReportResponse",
+      "attributes": [
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PublishFirmwareRequest",
+      "attributes": [
+        {
+          "name": "request_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "location",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "checksum",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "retries",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "retry_interval",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PublishFirmwareResponse",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RequestStartTransactionResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "transaction_id",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RequestStartStopStatusEnumType",
+      "attributes": [
+        {
+          "name": "status_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReservationStatusUpdateRequest",
+      "attributes": [
+        {
+          "name": "reservation_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReservationUpdateStatusEnumType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Expired",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Removed",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReservationStatusUpdateResponse",
+      "attributes": [
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReserveNowResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReserveNowStatusEnum",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResetRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evse_id",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResetType",
+      "attributes": [
+        {
+          "name": "immediate",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "on_idle",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResetResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResetStatusEnumType",
+      "attributes": [
+        {
+          "name": "accepted",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "rejected",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "scheduled",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SendLocalListResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetChargingProfileRequest",
+      "attributes": [
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingProfile",
+      "attributes": [
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseId",
+      "attributes": [
+        {
+          "name": "comment",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessageInfoType",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "priority",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "startDateTime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "endDateTime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "transactionId",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetDisplayMessageRequest",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessageContentType",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DisplayMessageStatusEnumType",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetDisplayMessageResponse",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetMonitoringBaseResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetMonitoringLevelRequest",
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "severity",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetNetworkProfileResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Accepted",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Rejected",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Failed",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetVariableMonitoringRequest",
+      "attributes": [
+        {
+          "name": "set_monitoring_data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetMonitoringDataType",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "number",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "transaction",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "severity",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "component",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetMonitoringResultType",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "id",
+          "type": "number",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "component",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "severity",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetVariableMonitoringResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "set_monitoring_result",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetVariableDataType",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "attribute_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "attribute_value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "component",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetVariablesRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SignCertificateRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "csr",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "certificate_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateSigningUseEnumType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusNotificationRequest",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "connector_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evse_id",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "connector_id",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConnectorStatus",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Available",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Occupied",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Reserved",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Unavailable",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Faulted",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusNotificationResponse",
+      "attributes": [
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "class_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "custom_data_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TransactionEventResponse",
+      "attributes": [
+        {
+          "name": "total_cost",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_priority",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IdTokenInfo",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UpdatedPersonalMessage",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TriggerMessageResponse",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UnlockConnectorRequest",
+      "attributes": [
+        {
+          "name": "evse_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "connector_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UnlockConnectorResponse",
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UnlockStatusEnumType",
+      "attributes": [
+        {
+          "name": "unlocked",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "unlock_failed",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "ongoing_authorized_transaction",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "unknown_connector",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Firmware",
+      "attributes": [
+        {
+          "name": "location",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "retrieve_date_time",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "install_date_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "signing_certificate",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "signature",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UpdateFirmwareRequest",
+      "attributes": [
+        {
+          "name": "request_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "retries",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "retry_interval",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "CONFIGURED_IN",
+      "source": {
+        "label": "CoreSettings"
+      },
+      "target": {
+        "label": "GitConfiguration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USED_TO_NAME",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ASSOCIATED_WITH",
+      "source": {
+        "label": "packrefs"
+      },
+      "target": {
+        "label": "commit"
+      },
+      "attributes": [
+        {
+          "name": "commit_hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "reference_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "ShellScript"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "arguments",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "hook_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "execution_command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "repository_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "reference",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CHECKS",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "GitConfiguration"
+      },
+      "attributes": [
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "TRIGGERED_BY",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": [
+        {
+          "name": "trigger_event",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SOURCES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PROCESSES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "GitPushOption"
+      },
+      "attributes": [
+        {
+          "name": "operationType",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ENFORCES",
+      "source": {
+        "label": "RepositoryConfig"
+      },
+      "target": {
+        "label": "RepositoryOperation"
+      },
+      "attributes": [
+        {
+          "name": "rule",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "ExcludeFile"
+      },
+      "target": {
+        "label": "ExcludePattern"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "AUTHORED",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": [
+        {
+          "name": "commit_hash",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "SolutionFile"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": [
+        {
+          "name": "project_count",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "certificate_hash_data_chain",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cardinality",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "serialization",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "required_status",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "messageInfo",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "property_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "data_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "null_handling",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": [
+        {
+          "name": "configuration_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_STATUS",
+      "source": {
+        "label": "CancelReservationResponse"
+      },
+      "target": {
+        "label": "CancelReservationStatusEnumType"
+      },
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REFERENCES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Package"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CUSTOM_DATA",
+      "source": {
+        "label": "ClearChargingProfileResponse"
+      },
+      "target": {
+        "label": "CustomData"
+      },
+      "attributes": [
+        {
+          "name": "customData",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "property",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS_STATUS_INFO",
+      "source": {
+        "label": "ClearChargingProfileResponse"
+      },
+      "target": {
+        "label": "StatusInfo"
+      },
+      "attributes": [
+        {
+          "name": "status_info",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "statusInfo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "USES_CUSTOM_DATA",
+      "source": {
+        "label": "ClearedChargingLimitRequest"
+      },
+      "target": {
+        "label": "CustomDataType"
+      },
+      "attributes": [
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_CHARGING_LIMIT_SOURCE",
+      "source": {
+        "label": "ClearedChargingLimitRequest"
+      },
+      "target": {
+        "label": "ChargingLimitSource"
+      },
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "CustomDataType"
+      },
+      "attributes": [
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "chargingRateUnit",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS_REPORT_BASE",
+      "source": {
+        "label": "GetBaseReportRequest"
+      },
+      "target": {
+        "label": "ReportBaseEnum"
+      },
+      "attributes": [
+        {
+          "name": "report_base",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_OCSP_RESULT",
+      "source": {
+        "label": "GetCertificateStatusResponse"
+      },
+      "target": {
+        "label": "Status"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PRIORITY",
+      "source": {
+        "label": "GetDisplayMessagesRequest"
+      },
+      "target": {
+        "label": "MessagePriority"
+      },
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "STATE",
+      "source": {
+        "label": "GetDisplayMessagesRequest"
+      },
+      "target": {
+        "label": "MessageState"
+      },
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_PROPERTY",
+      "source": {
+        "label": "GetLocalListVersionRequest"
+      },
+      "target": {
+        "label": "CustomDataType"
+      },
+      "attributes": [
+        {
+          "name": "property_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "nullable",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "nullValueHandling",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "evse_id_comment",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS_LOG_PARAMETERS",
+      "source": {
+        "label": "GetLogRequest"
+      },
+      "target": {
+        "label": "LogParametersType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SPECIFIES",
+      "source": {
+        "label": "GetLogRequest"
+      },
+      "target": {
+        "label": "LogEnumType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMPONENT_CRITERIA",
+      "source": {
+        "label": "GetReportRequest"
+      },
+      "target": {
+        "label": "ComponentCriterionEnumType"
+      },
+      "attributes": [
+        {
+          "name": "component_criteria",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "COMPONENT_VARIABLE",
+      "source": {
+        "label": "GetReportRequest"
+      },
+      "target": {
+        "label": "ComponentVariableType"
+      },
+      "attributes": [
+        {
+          "name": "component_variable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CUSTOM_DATA",
+      "source": {
+        "label": "GetReportRequest"
+      },
+      "target": {
+        "label": "CustomDataType"
+      },
+      "attributes": [
+        {
+          "name": "custom_data",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONTAINS_GET_VARIABLE_RESULT",
+      "source": {
+        "label": "GetVariablesResponse"
+      },
+      "target": {
+        "label": "GetVariableResultType"
+      },
+      "attributes": [
+        {
+          "name": "result",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REFERENCES_COMPONENT",
+      "source": {
+        "label": "GetVariableResultType"
+      },
+      "target": {
+        "label": "ComponentType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REFERENCES_VARIABLE",
+      "source": {
+        "label": "GetVariableResultType"
+      },
+      "target": {
+        "label": "VariableType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINED_IN",
+      "source": {
+        "label": "Property"
+      },
+      "target": {
+        "label": "Class"
+      },
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "DISABLES_WARNING",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "Warning"
+      },
+      "attributes": [
+        {
+          "name": "number",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "OF_TYPE",
+      "source": {
+        "label": "Property"
+      },
+      "target": {
+        "label": "CustomDataType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMUNICATES_WITH",
+      "source": {
+        "label": "ChargingStation"
+      },
+      "target": {
+        "label": "CentralSystem"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GENERATES",
+      "source": {
+        "label": "ChargingStation"
+      },
+      "target": {
+        "label": "NotifyCustomerInformationRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_TO",
+      "source": {
+        "label": "ChargingStation"
+      },
+      "target": {
+        "label": "CentralSystem"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ENUM",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "EnumType"
+      },
+      "attributes": [
+        {
+          "name": "enumMember",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PART_OF_NAMESPACE",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "Namespace"
+      },
+      "attributes": [
+        {
+          "name": "namespaceName",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "BELONGS_TO_CLASS",
+      "source": {
+        "label": "Property"
+      },
+      "target": {
+        "label": "Class"
+      },
+      "attributes": [
+        {
+          "name": "propertyName",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "IS_TYPE_OF_PROPERTY",
+      "source": {
+        "label": "CustomDataType"
+      },
+      "target": {
+        "label": "Property"
+      },
+      "attributes": [
+        {
+          "name": "propertyType",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_TYPE",
+      "source": {
+        "label": "Property"
+      },
+      "target": {
+        "label": "CustomDataType"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS_RESET_TYPE",
+      "source": {
+        "label": "ResetRequest"
+      },
+      "target": {
+        "label": "ResetType"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_DISPLAY",
+      "source": {
+        "label": "MessageInfoType"
+      },
+      "target": {
+        "label": "ComponentType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_MESSAGE",
+      "source": {
+        "label": "MessageInfoType"
+      },
+      "target": {
+        "label": "MessageContentType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTAINS_RESULT",
+      "source": {
+        "label": "SetVariableMonitoringResponse"
+      },
+      "target": {
+        "label": "SetMonitoringResultType"
+      },
+      "attributes": [
+        {
+          "name": "set_monitoring_result",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_COMPONENT",
+      "source": {
+        "label": "SetMonitoringResultType"
+      },
+      "target": {
+        "label": "ComponentType"
+      },
+      "attributes": [
+        {
+          "name": "component",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_VARIABLE",
+      "source": {
+        "label": "SetMonitoringResultType"
+      },
+      "target": {
+        "label": "VariableType"
+      },
+      "attributes": [
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_SET_VARIABLE_DATA",
+      "source": {
+        "label": "SetVariablesRequest"
+      },
+      "target": {
+        "label": "SetVariableDataType"
+      },
+      "attributes": [
+        {
+          "name": "count",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_ID_TOKEN_INFO",
+      "source": {
+        "label": "TransactionEventResponse"
+      },
+      "target": {
+        "label": "IdTokenInfo"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_UPDATED_PERSONAL_MESSAGE",
+      "source": {
+        "label": "TransactionEventResponse"
+      },
+      "target": {
+        "label": "UpdatedPersonalMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUESTS",
+      "source": {
+        "label": "UpdateFirmwareRequest"
+      },
+      "target": {
+        "label": "Firmware"
+      },
+      "attributes": [
+        {
+          "name": "firmware",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    }
+  ]
+}
