@@ -1,0 +1,1418 @@
+{
+  "entities": [
+    {
+      "label": "Directory",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Submodule",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "branch",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Project",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitBranch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargePoint",
+      "attributes": [
+        {
+          "name": "charge_point_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "websocket",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "iso15118_certs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Server",
+      "attributes": [
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "port",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "tls",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Parameter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateChain",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "creation_command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "WildcardCertificate",
+      "attributes": [
+        {
+          "name": "key_file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "cert_file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "days",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OpenSSLCommand",
+      "attributes": [
+        {
+          "name": "executable",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "arguments",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "output_file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CSMS",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "supportedOcppVersions",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "certificatePath",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "supportedSubprotocols",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OCPP16",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OCPP201",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVSE",
+      "attributes": [
+        {
+          "name": "identifier",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PlugAndCharge",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateInstallationRequest",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CertificateInstallationResponse",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ISO15118",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PKI",
+      "attributes": [
+        {
+          "name": "certificatePath",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Josev",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVerest",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitSubmodule",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PythonPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CSMESServer",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PackRefs",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RefSpec",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "definition",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "shebang",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "interpreter",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "System",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HookScript",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "VersionControlSystem",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Head",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TreeObject",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Configuration",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Filename",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Diff",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExecutableFile",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Remote",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "URL",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "oid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "timezone",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "commit_hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "author",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ref",
+      "attributes": [
+        {
+          "name": "local_ref",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "remote_ref",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PushOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Software",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "interpreter",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessage",
+      "attributes": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Git",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "commands",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PerlCommand",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ShellScript",
+      "attributes": [
+        {
+          "name": "shebang",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "username",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "User",
+      "attributes": [
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Submodule"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Submodule"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "forCertificateManagement",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "forCertificateGeneration",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "context",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REFERENCES",
+      "source": {
+        "label": "Submodule"
+      },
+      "target": {
+        "label": "GitBranch"
+      },
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HANDLES",
+      "source": {
+        "label": "Server"
+      },
+      "target": {
+        "label": "ChargePoint"
+      },
+      "attributes": [
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURED_WITH",
+      "source": {
+        "label": "Server"
+      },
+      "target": {
+        "label": "Parameter"
+      },
+      "attributes": [
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CREATES",
+      "source": {
+        "label": "OpenSSLCommand"
+      },
+      "target": {
+        "label": "WildcardCertificate"
+      },
+      "attributes": [
+        {
+          "name": "order",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RESPONDS_TO",
+      "source": {
+        "label": "CSMS"
+      },
+      "target": {
+        "label": "EVSE"
+      },
+      "attributes": [
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "CSMS"
+      },
+      "target": {
+        "label": "PlugAndCharge"
+      },
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SUPPORTS",
+      "source": {
+        "label": "CSMS"
+      },
+      "target": {
+        "label": "OCPP16"
+      },
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "GENERATES",
+      "source": {
+        "label": "CSMS"
+      },
+      "target": {
+        "label": "CertificateInstallationResponse"
+      },
+      "attributes": [
+        {
+          "name": "trigger",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "TRIGGERED_BY",
+      "source": {
+        "label": "CertificateInstallationResponse"
+      },
+      "target": {
+        "label": "CertificateInstallationRequest"
+      },
+      "attributes": [
+        {
+          "name": "event",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "IS_SUBMODULE_OF",
+      "source": {
+        "label": "Josev"
+      },
+      "target": {
+        "label": "GitSubmodule"
+      },
+      "attributes": [
+        {
+          "name": "repository",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SIMULATES_WITH",
+      "source": {
+        "label": "EVerest"
+      },
+      "target": {
+        "label": "CSMS"
+      },
+      "attributes": [
+        {
+          "name": "software",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "IS_STARTED_VIA",
+      "source": {
+        "label": "CSMESServer"
+      },
+      "target": {
+        "label": "PythonPackage"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "OPERATES_ON",
+      "source": {
+        "label": "PackRefs"
+      },
+      "target": {
+        "label": "RefSpec"
+      },
+      "attributes": [
+        {
+          "name": "operation_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "execute_script",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SOURCES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": [
+        {
+          "name": "source_script",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURES",
+      "source": {
+        "label": "VersionControlSystem"
+      },
+      "target": {
+        "label": "HookScript"
+      },
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CHECKS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Filename"
+      },
+      "attributes": [
+        {
+          "name": "context",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "RUNS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Diff"
+      },
+      "attributes": [
+        {
+          "name": "context",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "commands",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ACCESSIBLE_VIA",
+      "source": {
+        "label": "Remote"
+      },
+      "target": {
+        "label": "URL"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROCESSES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "PushOption"
+      },
+      "attributes": [
+        {
+          "name": "condition",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EDIT",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": [
+        {
+          "name": "operation",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "MANAGES",
+      "source": {
+        "label": "Git"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": [
+        {
+          "name": "operation",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CLONED",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "AUTHORED_BY",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "User"
+      },
+      "attributes": []
+    }
+  ]
+}
