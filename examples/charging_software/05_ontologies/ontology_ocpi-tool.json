@@ -1,0 +1,6286 @@
+{
+  "entities": [
+    {
+      "label": "LogFile",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DiagnosticReport",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RuntimeData",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CoverageDirectory",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GruntStorage",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BowerDependency",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NodeWafConfig",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BinaryAddon",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DependencyDirectory",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TypescriptDeclaration",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TypescriptCache",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NpmCache",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EslintCache",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MicrobundleCache",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReplHistory",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NpmPackOutput",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "YarnIntegrityFile",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DotenvVariableFile",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ParcelBundlerCache",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NextjsBuildOutput",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NuxtjsBuildOutput",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GatsbyFile",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "VuepressBuildOutput",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServerlessDirectory",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FuseboxCache",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DynamoDbLocalFile",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TernjsPortFile",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcpiMessageSource",
+      "attributes": [
+        {
+          "name": "directory_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "repositoryformatversion",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "filemode",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bare",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "logallrefupdates",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "symlinks",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ignorecase",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "extension",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Software",
+      "attributes": [
+        {
+          "name": "preset",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "test_environment",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "test_path_ignore_patterns",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "license",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "bin",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "License",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Copyright",
+      "attributes": [
+        {
+          "name": "year",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "holder",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Permission",
+      "attributes": [
+        {
+          "name": "granted",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Condition",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Warranty",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dependency",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DevelopmentDependency",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Communication",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Package",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Lockfile",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareTool",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Organization",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProgrammingLanguage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareLibrary",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tool",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DataField",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "privacy_sensitive",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingSession",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "kwh",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "auth_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_cost",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "auth_method",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_datetime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_datetime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingPeriod",
+      "attributes": [
+        {
+          "name": "start_date_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_period_descriptor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "items",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "start_datetime",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "end_datetime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "kwh",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dimension",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "volume",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ETLPipeline",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Party",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "party_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CompilerOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Configuration",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Include",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Remote",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "fetch",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "remote",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "merge",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Reference",
+      "attributes": [
+        {
+          "name": "ref",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Head",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "oid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tag",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "event",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessage",
+      "attributes": [
+        {
+          "name": "location",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitCommand",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Watchman",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UpdateToken",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Query",
+      "attributes": [
+        {
+          "name": "expression",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "fields",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitConfiguration",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitFile",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitCommit",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ref",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "oid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Push",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitOperation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Status",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Merge",
+      "attributes": [
+        {
+          "name": "branch_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PushOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitEnvironmentVariable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRef",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Project",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitTag",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "annotated",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitBranch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Email",
+      "attributes": [
+        {
+          "name": "email_address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Timestamp",
+      "attributes": [
+        {
+          "name": "time",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "pattern",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "date_time",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "User",
+      "attributes": [
+        {
+          "name": "username",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareRepository",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Workflow",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Job",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "runs_on",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Step",
+      "attributes": [
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "run",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Github",
+      "attributes": [
+        {
+          "name": "package_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Npm",
+      "attributes": [
+        {
+          "name": "registry_url",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Node",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Option",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Module",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "module_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoginSession",
+      "attributes": [
+        {
+          "name": "token",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "party_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcpiEndpoint",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ErrorMessage",
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Session",
+      "attributes": [
+        {
+          "name": "data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "session_file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ocpi_version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "start_datetime",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "end_datetime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "kwh",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "auth_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "auth_method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "meter_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "total_cost",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcpiVersion",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpRequest",
+      "attributes": [
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpHeader",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Authentication",
+      "attributes": [
+        {
+          "name": "token",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "encoding",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Routing",
+      "attributes": [
+        {
+          "name": "from_country_code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "from_party_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "to_country_code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "to_party_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcpiResponse",
+      "attributes": [
+        {
+          "name": "status_code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AxiosResponse",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_text",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AxiosError",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_text",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Endpoint",
+      "attributes": [
+        {
+          "name": "identifier",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcpiPageParameters",
+      "attributes": [
+        {
+          "name": "offset",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthHeader",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ModuleData",
+      "attributes": [
+        {
+          "name": "module_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Error",
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SessionPartyId",
+      "attributes": [
+        {
+          "name": "session_party_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TracingHeaders",
+      "attributes": [
+        {
+          "name": "request_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "correlation_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RoutingHeaders",
+      "attributes": [
+        {
+          "name": "from_country_code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "from_party_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "to_country_code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "to_party_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Token",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "uid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "auth_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "visual_number",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "issuer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "valid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "whitelist",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PrivacyDescriptor",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "address",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "city",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "postal_code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "country",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "evse_uid",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "evse_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "connector_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "connector_standard",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "connector_format",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "connector_power_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "encoding_method",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "encoding_method_version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "public_key",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "nature",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "plain_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "signed_data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_date_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "auth_method",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "meter_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_energy",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_parking_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "remark",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "stop_date_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "auth_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "country_code",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "party_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_date_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "session_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "authorization_reference",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "invoice_reference_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "credit",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "credit_reference_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "home_charging_compensation",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "coordinates",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_cost",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_fixed_cost",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_energy_cost",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_time_cost",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_parking_cost",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "total_reservation_cost",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "volume",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "uid",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "contract_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tariff_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "is_green_energy",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "supplier_name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "energy_product_name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "latitude",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "longitude",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "excl_vat",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "incl_vat",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "field",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "nested_field",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "a",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "b",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "c",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "d",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "thumbnail",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "width",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "height",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "standard",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "power_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "voltage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "amperage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_voltage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_amperage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_electric_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tariff_ids",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "terms_and_conditions",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "capabilities",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "floor_level",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "physical_reference",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "parking_restrictions",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "publish",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "parking_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "time_zone",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_when_closed",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "twentyfourseven",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "weekday",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "period_begin",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "period_end",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_datetime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_datetime",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "kwh",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "location_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "price",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "vat",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "step_size",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_kwh",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_kwh",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_current",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_current",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_power",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_duration",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_duration",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "day_of_week",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "reservation",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tariff_alt_url",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "visual_number",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "issuer",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "group_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "valid",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "whitelist",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "default_profile_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Modifier",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Stream",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Http_request",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ocpi_endpoint",
+      "attributes": [
+        {
+          "name": "identifier",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Country_code",
+      "attributes": [
+        {
+          "name": "code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Software_module",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Platform",
+      "attributes": [
+        {
+          "name": "platform_versions_url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tariff",
+      "attributes": [
+        {
+          "name": "tariff_descriptor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "items",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CdrToken",
+      "attributes": [
+        {
+          "name": "cdr_token_descriptor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GeoLocation",
+      "attributes": [
+        {
+          "name": "geo_location_descriptor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "latitude",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "longitude",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PrivatePrice",
+      "attributes": [
+        {
+          "name": "private_price_descriptor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Location",
+      "attributes": [
+        {
+          "name": "location_descriptor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "address",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "city",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "postal_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "country",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "coordinates",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "time_zone",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charging_when_closed",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnergySource",
+      "attributes": [
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "percentage",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnvironImpact",
+      "attributes": [
+        {
+          "name": "category",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "amount",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FilterResult",
+      "attributes": [
+        {
+          "name": "result",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "errors",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DescriptorModifier",
+      "attributes": [
+        {
+          "name": "modifier",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Input",
+      "attributes": [
+        {
+          "name": "field",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "nested_field",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "a",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "b",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "c",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "d",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PrivacyError",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DescriptorModificationError",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "modifier",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CdrTokenDescriptor",
+      "attributes": [
+        {
+          "name": "cdr_token",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingPeriodDescriptor",
+      "attributes": [
+        {
+          "name": "charging_period",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PrivatePriceDescriptor",
+      "attributes": [
+        {
+          "name": "private_price",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PriceComponent",
+      "attributes": [
+        {
+          "name": "price",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "vat",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "step_size",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TariffElement",
+      "attributes": [
+        {
+          "name": "restrictions",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_date",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_date",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_kwh",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_kwh",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "min_duration",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_duration",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "day_of_week",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnergyContract",
+      "attributes": [
+        {
+          "name": "supplier_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "contract_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusCode",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "code",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusMessage",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Version",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "enum",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Definition",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingDataRecord",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "start_date_time",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "stop_date_time",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "auth_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "auth_method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "meter_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "total_cost",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "total_energy",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "total_time",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "total_parking_time",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "remark",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Credentials",
+      "attributes": [
+        {
+          "name": "token",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "party_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "country_code",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BusinessDetails",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "website",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ref",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "phone_number",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseStatus",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExceptionalPeriod",
+      "attributes": [
+        {
+          "name": "period_begin",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "period_end",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hours",
+      "attributes": [
+        {
+          "name": "opening_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "closing_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Image",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "thumbnail_url",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Latitude",
+      "attributes": [
+        {
+          "name": "latitude",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Longitude",
+      "attributes": [
+        {
+          "name": "longitude",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DisplayText",
+      "attributes": [
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RegularHours",
+      "attributes": [
+        {
+          "name": "weekday",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "period_begin",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "period_end",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RelatedLocations",
+      "attributes": [
+        {
+          "name": "related_location_ids",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnergyMix",
+      "attributes": [
+        {
+          "name": "is_green_energy",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "energy_source",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "percentage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingDimension",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "volume",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LocationReferences",
+      "attributes": [
+        {
+          "name": "location_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Connector",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "amperage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tariff_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "terms_and_conditions",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "connector_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingStandard",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Emsp",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Evse",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "evse_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "floor_level",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "physical_reference",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "last_updated",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Url",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PartyId",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CountryCode",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusSchedule",
+      "attributes": [
+        {
+          "name": "period_begin",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "period_end",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Capability",
+      "attributes": [
+        {
+          "name": "capability_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ParkingRestriction",
+      "attributes": [
+        {
+          "name": "restriction_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Schema",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareVersion",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Requirement",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Facility",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "USES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GENERATES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPLEMENTS",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOCATED_IN",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UTILIZES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SPECIFIED_BY",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LICENSE",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "License"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COPYRIGHT",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Copyright"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PERMISSION",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Permission"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUBJECT_TO",
+      "source": {
+        "label": "Permission"
+      },
+      "target": {
+        "label": "Condition"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_WARRANTY",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Warranty"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_DEPENDENCY",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_DEVELOPMENT_DEPENDENCY",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "DevelopmentDependency"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMUNICATES_WITH",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": [
+        {
+          "name": "authentication_token",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "party_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "COMMUNICATES_BY",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Communication"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Dependency"
+      },
+      "target": {
+        "label": "Package"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PACKAGE",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Package"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_LOCKFILE",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Lockfile"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_PROTOCOL",
+      "source": {
+        "label": "SoftwareTool"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": [
+        {
+          "name": "protocol_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "DEVELOPED_BY",
+      "source": {
+        "label": "SoftwareTool"
+      },
+      "target": {
+        "label": "Organization"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_REPOSITORY",
+      "source": {
+        "label": "SoftwareTool"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WRITTEN_IN",
+      "source": {
+        "label": "SoftwareTool"
+      },
+      "target": {
+        "label": "ProgrammingLanguage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COMMAND",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXPORTS",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "DataField"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PRIVACY_FILTER",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "DataField"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "ChargingSession"
+      },
+      "target": {
+        "label": "ChargingPeriod"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATES",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "ETLPipeline"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HOSTS",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "Tool"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LICENSED_UNDER",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "License"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONSUMES",
+      "source": {
+        "label": "Party"
+      },
+      "target": {
+        "label": "Tool"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OPERATES",
+      "source": {
+        "label": "Party"
+      },
+      "target": {
+        "label": "ChargingSession"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUIRES",
+      "source": {
+        "label": "Protocol"
+      },
+      "target": {
+        "label": "Party"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_OPTION",
+      "source": {
+        "label": "Configuration"
+      },
+      "target": {
+        "label": "CompilerOption"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "Configuration"
+      },
+      "target": {
+        "label": "Include"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_REMOTE",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_BRANCH",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_PART_OF",
+      "source": {
+        "label": "Reference"
+      },
+      "target": {
+        "label": "Head"
+      },
+      "attributes": []
+    },
+    {
+      "label": "POINTS_TO",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Reference"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TAGGED_WITH",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Tag"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "GitCommand"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHECKS",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "MODIFIES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONTENT",
+      "source": {
+        "label": "CommitMessage"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Watchman"
+      },
+      "target": {
+        "label": "UpdateToken"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MODIFIED",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "UpdateToken"
+      },
+      "attributes": []
+    },
+    {
+      "label": "QUERIES",
+      "source": {
+        "label": "Watchman"
+      },
+      "target": {
+        "label": "Query"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Hook"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURES",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "GitConfiguration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TRIGGERS",
+      "source": {
+        "label": "GitCommit"
+      },
+      "target": {
+        "label": "GitHook"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TRIGGERED_BY",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "GitCommand"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_REF",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Ref"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TO_REMOTE",
+      "source": {
+        "label": "Push"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STATUS",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Push"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FORKED_FROM",
+      "source": {
+        "label": "Branch"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COMMIT",
+      "source": {
+        "label": "Branch"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PERFORMS",
+      "source": {
+        "label": "GitOperation"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MERGED_TO",
+      "source": {
+        "label": "Branch"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_MERGE_INFO",
+      "source": {
+        "label": "Branch"
+      },
+      "target": {
+        "label": "Merge"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HANDLES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "PushOption"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ECHOES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "PushOption"
+      },
+      "attributes": [
+        {
+          "name": "prefix",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_SOURCE",
+      "source": {
+        "label": "CommitMessage"
+      },
+      "target": {
+        "label": "GitCommand"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_FILE",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UPDATES",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPLIES_TO",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONFIG",
+      "source": {
+        "label": "GitRepository"
+      },
+      "target": {
+        "label": "GitConfiguration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AFFECTS",
+      "source": {
+        "label": "GitOperation"
+      },
+      "target": {
+        "label": "GitRef"
+      },
+      "attributes": [
+        {
+          "name": "allowed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_DESCRIPTION",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_TAG",
+      "source": {
+        "label": "GitRef"
+      },
+      "target": {
+        "label": "GitTag"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_BRANCH",
+      "source": {
+        "label": "GitRef"
+      },
+      "target": {
+        "label": "GitBranch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_TYPE",
+      "source": {
+        "label": "GitRef"
+      },
+      "target": {
+        "label": "GitOperation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_OPERATION",
+      "source": {
+        "label": "GitRepository"
+      },
+      "target": {
+        "label": "GitOperation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_FILE",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLONED_FROM",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "AUTHOR",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Software"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLONED_BY",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "Software"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLONE",
+      "source": {
+        "label": "User"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": [
+        {
+          "name": "time",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SENT_FROM",
+      "source": {
+        "label": "Email"
+      },
+      "target": {
+        "label": "User"
+      },
+      "attributes": [
+        {
+          "name": "time",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REF",
+      "source": {
+        "label": "Reference"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ON",
+      "source": {
+        "label": "Reference"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_JOB",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STEP",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUBLISHES_TO",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Github"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FETCHES_MODULE",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "Module"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMAND",
+      "source": {
+        "label": "Program"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ENDPOINT",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "OcpiEndpoint"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ERROR_MESSAGE",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "ErrorMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STORED_IN",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_VERSION",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "OcpiVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_AUTHENTICATION",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "Authentication"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_HEADER",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "HttpHeader"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUESTS_WITH_OCPI_VERSION",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "OcpiVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_RESPONSE",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "OcpiResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_ERROR",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "AxiosError"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ROUTING",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "Routing"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HTTP_RESPONSE",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "AxiosResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_MODULE",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "Module"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ENDPOINT",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "Endpoint"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESPONSE",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "OcpiResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_NEXT_PAGE",
+      "source": {
+        "label": "OcpiResponse"
+      },
+      "target": {
+        "label": "OcpiPageParameters"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AUTHENTICATED_WITH",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "AuthHeader"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PARTY",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "Party"
+      },
+      "attributes": []
+    },
+    {
+      "label": "THROWS_ERROR",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "AxiosError"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DATA",
+      "source": {
+        "label": "OcpiResponse"
+      },
+      "target": {
+        "label": "ModuleData"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_SESSION_PARTY_ID",
+      "source": {
+        "label": "Party"
+      },
+      "target": {
+        "label": "SessionPartyId"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_TRACING_HEADERS",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "TracingHeaders"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ROUTING_HEADERS",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "RoutingHeaders"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TOKEN",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "Token"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HANDLES_ERROR",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "THROWS",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_MESSAGE",
+      "source": {
+        "label": "Error"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_PRIVACY_DESCRIPTOR",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_SESSION",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Session"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FILTERED_BY",
+      "source": {
+        "label": "Stream"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STREAM",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Stream"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS",
+      "source": {
+        "label": "Software_module"
+      },
+      "target": {
+        "label": "Http_request"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BELONGS_TO",
+      "source": {
+        "label": "Software_module"
+      },
+      "target": {
+        "label": "Country_code"
+      },
+      "attributes": []
+    },
+    {
+      "label": "VERSION_OF",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "OcpiVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOGGED_IN_TO",
+      "source": {
+        "label": "LoginSession"
+      },
+      "target": {
+        "label": "Platform"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TARIFF",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "Tariff"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CHARGING_PERIOD",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "ChargingPeriod"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CDR_TOKEN",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "CdrToken"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_GEO_LOCATION",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "GeoLocation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PRIVATE_PRICE",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivatePrice"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LOCATION",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "Location"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DIMENSION",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ENERGY_SOURCE",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "EnergySource"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ENVIRON_IMPACT",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "EnvironImpact"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ERROR",
+      "source": {
+        "label": "FilterResult"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FILTERS",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "Input"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PRIVACY_DESCRIPTOR_FOR_VERSION",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "OcpiVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_VERSION",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "OcpiVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MODIFIES_DESCRIPTOR",
+      "source": {
+        "label": "DescriptorModificationError"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_IMAGE_DESCRIPTOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DISPLAY_TEXT_DESCRIPTOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONNECTOR_DESCRIPTOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EVSE_DESCRIPTOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LOCATION_DESCRIPTOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STATUS_SCHEDULE",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PUBLISH_ALLOWED_TO",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RELATED_LOCATIONS",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_OPERATOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_SUBOPERATOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_OWNER",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_OPENING_TIMES",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXCEPTIONAL_OPENINGS",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXCEPTIONAL_CLOSINGS",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ENERGY_MIX",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PRICE_COMPONENT",
+      "source": {
+        "label": "TariffElement"
+      },
+      "target": {
+        "label": "PriceComponent"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESTRICTIONS",
+      "source": {
+        "label": "TariffElement"
+      },
+      "target": {
+        "label": "PrivacyDescriptor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TARIFF_ELEMENT",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "TariffElement"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DESCRIPTOR",
+      "source": {
+        "label": "PrivacyDescriptor"
+      },
+      "target": {
+        "label": "EnergyContract"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DEFINITION",
+      "source": {
+        "label": "Definition"
+      },
+      "target": {
+        "label": "StatusCode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ATTRIBUTE",
+      "source": {
+        "label": "Definition"
+      },
+      "target": {
+        "label": "StatusCode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TARIFFS",
+      "source": {
+        "label": "ChargingDataRecord"
+      },
+      "target": {
+        "label": "Tariff"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CHARGING_PERIODS",
+      "source": {
+        "label": "ChargingDataRecord"
+      },
+      "target": {
+        "label": "ChargingPeriod"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_BUSINESS_DETAILS",
+      "source": {
+        "label": "Credentials"
+      },
+      "target": {
+        "label": "BusinessDetails"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STATUS_CODE",
+      "source": {
+        "label": "StatusCode"
+      },
+      "target": {
+        "label": "StatusMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TIMESTAMP",
+      "source": {
+        "label": "Credentials"
+      },
+      "target": {
+        "label": "Timestamp"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EVSE_STATUS",
+      "source": {
+        "label": "Credentials"
+      },
+      "target": {
+        "label": "EvseStatus"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXCEPTIONAL_PERIOD",
+      "source": {
+        "label": "Hours"
+      },
+      "target": {
+        "label": "ExceptionalPeriod"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_IMAGE",
+      "source": {
+        "label": "BusinessDetails"
+      },
+      "target": {
+        "label": "Image"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LATITUDE",
+      "source": {
+        "label": "GeoLocation"
+      },
+      "target": {
+        "label": "Latitude"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LONGITUDE",
+      "source": {
+        "label": "GeoLocation"
+      },
+      "target": {
+        "label": "Longitude"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DISPLAY_TEXT",
+      "source": {
+        "label": "RelatedLocations"
+      },
+      "target": {
+        "label": "DisplayText"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_REGULAR_HOURS",
+      "source": {
+        "label": "Hours"
+      },
+      "target": {
+        "label": "RegularHours"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CHARGING_DIMENSION",
+      "source": {
+        "label": "ChargingPeriod"
+      },
+      "target": {
+        "label": "ChargingDimension"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LOCATION_REFERENCES",
+      "source": {
+        "label": "Credentials"
+      },
+      "target": {
+        "label": "LocationReferences"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONNECTOR",
+      "source": {
+        "label": "Evse"
+      },
+      "target": {
+        "label": "Connector"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUPPORTS_STANDARD",
+      "source": {
+        "label": "Connector"
+      },
+      "target": {
+        "label": "ChargingStandard"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_URL",
+      "source": {
+        "label": "Credentials"
+      },
+      "target": {
+        "label": "Url"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PARTY_ID",
+      "source": {
+        "label": "Credentials"
+      },
+      "target": {
+        "label": "PartyId"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COUNTRY_CODE",
+      "source": {
+        "label": "Credentials"
+      },
+      "target": {
+        "label": "CountryCode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SCHEDULE_STATUS",
+      "source": {
+        "label": "StatusSchedule"
+      },
+      "target": {
+        "label": "EvseStatus"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CAPABILITY",
+      "source": {
+        "label": "Evse"
+      },
+      "target": {
+        "label": "Capability"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COORDINATES",
+      "source": {
+        "label": "Evse"
+      },
+      "target": {
+        "label": "GeoLocation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DIRECTION",
+      "source": {
+        "label": "Evse"
+      },
+      "target": {
+        "label": "DisplayText"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PARKING_RESTRICTION",
+      "source": {
+        "label": "Evse"
+      },
+      "target": {
+        "label": "ParkingRestriction"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EVSE",
+      "source": {
+        "label": "Location"
+      },
+      "target": {
+        "label": "Evse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DIRECTIONS",
+      "source": {
+        "label": "Location"
+      },
+      "target": {
+        "label": "DisplayText"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LAST_UPDATED",
+      "source": {
+        "label": "Location"
+      },
+      "target": {
+        "label": "Timestamp"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FACILITY",
+      "source": {
+        "label": "Location"
+      },
+      "target": {
+        "label": "Facility"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "LOCATED_AT",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "Location"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PERIOD",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "ChargingPeriod"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ELEMENT",
+      "source": {
+        "label": "Tariff"
+      },
+      "target": {
+        "label": "TariffElement"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PROPERTY",
+      "source": {
+        "label": "Schema"
+      },
+      "target": {
+        "label": "Token"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMUNICATES_VIA",
+      "source": {
+        "label": "Token"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "Schema"
+      },
+      "target": {
+        "label": "Definition"
+      },
+      "attributes": []
+    }
+  ]
+}
