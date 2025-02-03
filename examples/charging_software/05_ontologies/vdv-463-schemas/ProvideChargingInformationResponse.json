@@ -1,0 +1,9 @@
+{
+   "$schema": "http://json-schema.org/draft-04/schema#",
+   "$id": "urn:VDV463:1:0:0:ProvideChargingInformationResponse",
+   "comment": "VDV463 1.0.0 FINAL",
+   "title": "ProvideChargingInformationResponse",
+   "description": "This type represents the response data sent by the presystem to the load management system as a result associated with the charging information previously sent by the load management system.",
+   "additionalProperties": false,
+   "type": "object"
+}

@@ -1,0 +1,27 @@
+{
+   "$schema": "http://json-schema.org/draft-04/schema#",
+   "$id": "urn:VDV463:1:0:0:BootNotificationResponse",
+   "comment": "VDV463 1.0.0 FINAL",
+   "title": "BootNotificationResponse",
+   "description": "This type represents the response data sent by the load management system to the presystem as a result associated with the boot notification previously sent by the presystem.",
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+      "status": {
+         "$ref": "#/definitions/BootNotificationStatusEnumType"
+      }
+   },
+   "required": [
+      "status"
+   ],
+   "definitions": {
+      "BootNotificationStatusEnumType": {
+         "type": "string",
+         "additionalProperties": false,
+         "enum": [
+            "Accepted",
+            "Rejected"
+         ]
+      }
+   }
+}

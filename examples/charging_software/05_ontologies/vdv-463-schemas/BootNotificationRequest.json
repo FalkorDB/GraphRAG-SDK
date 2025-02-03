@@ -1,0 +1,27 @@
+{
+   "$schema": "http://json-schema.org/draft-04/schema#",
+   "$id": "urn:VDV463:1:0:0:BootNotificationRequest",
+   "comment": "VDV463 1.0.0 FINAL",
+   "title": "BootNotificationRequest",
+   "description": "This type represents the data sent by the presystem to the load management system as a result associated with a successful boot of the presystem.",
+   "additionalProperties": false,
+   "type": "object",
+   "properties": {
+      "presystem": {
+         "$ref": "#/definitions/PresystemEnumType"
+      }
+   },
+   "required": [
+      "presystem"
+   ],
+   "definitions": {
+      "PresystemEnumType": {
+         "additionalProperties": false,
+         "type": "string",
+         "enum": [
+            "BMS",
+            "ITCS"
+         ]
+      }
+   }
+}

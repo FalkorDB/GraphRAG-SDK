@@ -1,0 +1,577 @@
+{
+	"$schema": "http://json-schema.org/draft-04/schema#",
+	"$id": "urn:VDV463:1:0:0:ProvideChargingInformationRequest",
+	"comment": "VDV463 1.0.0 FINAL",
+	"title": "ProvideChargingInformationRequest",
+	"description": "This type represents charging information sent by a load management system to a presystem.",
+	"type": "object",
+	"properties": {
+		"depotInfoList": {
+			"type": "array",
+			"items": {
+				"$ref": "#/definitions/DepotInfo"
+			},
+			"additionalProperties": false
+		}
+	},
+	"required": [
+		"depotInfoList"
+	],
+	"additionalProperties": false,
+	"definitions": {
+		"VehicleIdentifier": {
+			"description": "This type represents an unique vehicle identifier associated with VDV261.",
+			"type": "string",
+			"additionalProperties": false
+		},
+		"EvccIdentifier": {
+			"description": "This type represents a mac address of electric vehicle communication controller associated with ISO 15118.",
+			"type": "string",
+			"additionalProperties": false
+		},
+		"UniqueIdentifier": {
+			"description": "This type represents an unique identifier.",
+			"type": "string",
+			"additionalProperties": false
+		},
+		"ChargingStationFaultInfo": {
+			"description": "This type represents error information regarding charging stations.",
+			"type": "object",
+			"properties": {
+				"chargingStationFaultCode": {
+					"$ref": "#/definitions/ChargingStationFaultCode"
+				},
+				"faultText": {
+					"type": "string",
+					"additionalProperties": false
+				},
+				"faultTimeStamp": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"chargingStationFaultCode",
+				"faultTimeStamp"
+			],
+			"additionalProperties": false
+		},
+		"ChargingStationFaultCode": {
+			"description": "This type represents error codes regarding faults at the charging station.",
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"NoFaultKnown",
+				"UsageFailure",
+				"CommunicationFailure",
+				"ElectricalOperationFailure",
+				"ConfigurationFailure",
+				"OtherChargingStationFailure"
+			]
+		},
+		"ChargingPointStatus": {
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"Available",
+				"Occupied",
+				"Reserved",
+				"Unavailable",
+				"Faulted"
+			]
+		},
+		"ChargingStationStatus": {
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"Available",
+				"Unavailable",
+				"Faulted"
+			]
+		},
+		"ChargingPointFaultInfo": {
+			"description": "This type represents information regarding a fault at the charging point.",
+			"type": "object",
+			"properties": {
+				"chargingPointFaultCode": {
+					"$ref": "#/definitions/ChargingPointFaultCode"
+				},
+				"faultText": {
+					"type": "string",
+					"additionalProperties": false
+				},
+				"faultTimeStamp": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"chargingPointFaultCode",
+				"faultTimeStamp"
+			],
+			"additionalProperties": false
+		},
+		"ChargingPointFaultCode": {
+			"description": "This type represents error codes regarding faults at the charging point.",
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"NoFaultKnown",
+				"UsageFailure",
+				"CommunicationFailure",
+				"OtherChargingPointFailure"
+			]
+		},
+		"ProcessStatus": {
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"Preparing",
+				"Charging",
+				"SuspendedEVSE",
+				"SuspendedEV",
+				"Finishing",
+				"Queued",
+				"ChargingRejectedTechnically"
+			]
+		},
+		"TractionBatteryInfo": {
+			"description": "This type represents information regarding a traction battery.",
+			"type": "object",
+			"properties": {
+				"stateOfHealth": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 100,
+					"additionalProperties": false
+				},
+				"stateOfCharge": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 100,
+					"additionalProperties": false
+				},
+				"temperature": {
+					"type": "integer",
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		"VehicleStatusInfo": {
+			"description": "This type represents status information regarding a vehicle.",
+			"type": "object",
+			"properties": {
+				"conservationChargingActive": {
+					"type": "boolean",
+					"additionalProperties": false
+				},
+				"systemPreconditioningActive": {
+					"type": "boolean",
+					"additionalProperties": false
+				},
+				"hvacPreconditioningActive": {
+					"type": "boolean",
+					"additionalProperties": false
+				},
+				"balancingActive": {
+					"type": "boolean",
+					"additionalProperties": false
+				},
+				"fossilFlameControlActive": {
+					"type": "boolean",
+					"additionalProperties": false
+				},
+				"batteryChargingVoltage": {
+					"type": "number",
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		"VehicleChargingStatus": {
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"ReadyToCharge",
+				"Charging",
+				"ChargingImpossible",
+				"Unknown"
+			]
+		},
+		"VehicleFaultInfo": {
+			"description": "This type represents error information regarding vehicles.",
+			"type": "object",
+			"properties": {
+				"vehicleFaultCode": {
+					"$ref": "#/definitions/VehicleFaultCode"
+				},
+				"faultText": {
+					"type": "string",
+					"additionalProperties": false
+				},
+				"faultTimeStamp": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"vehicleFaultCode",
+				"faultTimeStamp"
+			],
+			"additionalProperties": false
+		},
+		"VehicleFaultCode": {
+			"description": "This type represents error codes regarding faults at vehicles.",
+			"type": "string",
+			"additionalProperties": false
+		},
+		"PreconditioningInfo": {
+			"description": "This type represents information regarding preconditioning according to VDV261.",
+			"type": "object",
+			"properties": {
+				"hvBatteryPreconditioningTime": {
+					"type": "integer",
+					"additionalProperties": false
+				},
+				"hvBatteryChargingEnergy": {
+					"type": "integer",
+					"additionalProperties": false
+				},
+				"vehiclePreconditioningTime": {
+					"type": "integer",
+					"additionalProperties": false
+				},
+				"vehiclePreconditioningEnergy": {
+					"type": "integer",
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		"VehicleInfo": {
+			"description": "This type represents information regarding a vehicle.",
+			"type": "object",
+			"properties": {
+				"vehicleId": {
+					"$ref": "#/definitions/VehicleIdentifier"
+				},
+				"evccId": {
+					"$ref": "#/definitions/EvccIdentifier"
+				},
+				"mileage": {
+					"type": "integer",
+					"additionalProperties": false
+				},
+				"tractionBatteryInfo": {
+					"$ref": "#/definitions/TractionBatteryInfo"
+				},
+				"vehicleStatusInfo": {
+					"$ref": "#/definitions/VehicleStatusInfo"
+				},
+				"vehicleChargingStatus": {
+					"$ref": "#/definitions/VehicleChargingStatus"
+				},
+				"vehicleFaultInfo": {
+					"$ref": "#/definitions/VehicleFaultInfo"
+				},
+				"preconditioningInfo": {
+					"$ref": "#/definitions/PreconditioningInfo"
+				}
+			},
+			"required": [
+				"vehicleId",
+				"vehicleStatusInfo",
+				"vehicleChargingStatus",
+				"preconditioningInfo"
+			],
+			"additionalProperties": false
+		},
+		"ElectricData": {
+			"description": "This type represents electrical values for the current charging process.",
+			"type": "object",
+			"properties": {
+				"chargingCurrent": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"chargingVoltage": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"chargingPower": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"reactivePower": {
+					"type": "number",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"chargingPower"
+			],
+			"additionalProperties": false
+		},
+		"ChargingProcessInfo": {
+			"description": "This type represents information regarding a charging process.",
+			"type": "object",
+			"properties": {
+				"presystemId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"chargingRequestId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"chargingProcessId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"processStatus": {
+					"$ref": "#/definitions/ProcessStatus"
+				},
+				"startTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				},
+				"chargingPredictionData": {
+					"$ref": "#/definitions/ChargingPredictionData"
+				},
+				"electricData": {
+					"$ref": "#/definitions/ElectricData"
+				},
+				"deliveredEnergy": {
+					"type": "number",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"chargingProcessId",
+				"processStatus",
+				"startTime",
+				"chargingPredictionData",
+				"electricData"
+			],
+			"additionalProperties": false
+		},
+		"ChargingPredictionData": {
+			"description": "This type represents information regarding a charging process forecast.",
+			"type": "object",
+			"properties": {
+				"chargingPredictionDataMinSoc": {
+					"$ref": "#/definitions/ChargingPredictionDataMinSoc"
+				},
+				"chargingPredictionDataFinalSoc": {
+					"$ref": "#/definitions/ChargingPredictionDataFinalSoc"
+				},
+				"chargingPredictionDataDepartureTime": {
+					"$ref": "#/definitions/ChargingPredictionDataDepartureTime"
+				}
+			},
+			"additionalProperties": false
+		},
+		"ChargingPredictionDataMinSoc": {
+			"description": "This type represents information regarding a charging process time forecast given a fix minimum state of charge.",
+			"type": "object",
+			"properties": {
+				"requestedMinSoc": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"predictedTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"requestedMinSoc",
+				"predictedTime"
+			],
+			"additionalProperties": false
+		},
+		"ChargingPredictionDataFinalSoc": {
+			"description": "This type represents information regarding a charging process time forecast given a fix maximum state of charge.",
+			"type": "object",
+			"properties": {
+				"predictedFinalSoc": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"predictedTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"predictedFinalSoc",
+				"predictedTime"
+			],
+			"additionalProperties": false
+		},
+		"ChargingPredictionDataDepartureTime": {
+			"description": "This type represents information regarding a charging process state of charge forecast given a fix departure time.",
+			"type": "object",
+			"properties": {
+				"predictedDepartureTimeSoc": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"predictedTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"predictedDepartureTimeSoc",
+				"predictedTime"
+			]
+		},
+		"ChargingPointInfo": {
+			"type": "object",
+			"properties": {
+				"chargingPointId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"chargingPointStatus": {
+					"$ref": "#/definitions/ChargingPointStatus"
+				},
+				"insideTemperature": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"outsideTemperature": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"connectorTemperature": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"presentPower": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"energyMeterReading": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"chargingPointFaultInfo": {
+					"$ref": "#/definitions/ChargingPointFaultInfo"
+				},
+				"vehicleInfo": {
+					"$ref": "#/definitions/VehicleInfo"
+				},
+				"chargingProcessInfo": {
+					"$ref": "#/definitions/ChargingProcessInfo"
+				},
+				"scheduledChargingProcessList": {
+					"type": "array",
+					"items": {
+						"$ref": "#/definitions/ScheduledChargingProcess"
+					},
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"chargingPointId",
+				"chargingPointStatus"
+			],
+			"additionalProperties": false
+		},
+		"ScheduledChargingProcess": {
+			"description": "This type represents a charging process in the future.",
+			"type": "object",
+			"properties": {
+				"presystemId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"chargingRequestId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"chargingProcessId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"vehicleId": {
+					"$ref": "#/definitions/VehicleIdentifier"
+				},
+				"startTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				},
+				"chargingPredictionData": {
+					"$ref": "#/definitions/ChargingPredictionData"
+				}
+			},
+			"required": [
+				"chargingRequestId",
+				"vehicleId",
+				"chargingPredictionData"
+			],
+			"additionalProperties": false
+		},
+		"DepotInfo": {
+			"description": "This type represents depot information sent by a load management system to a presystem.",
+			"type": "object",
+			"properties": {
+				"depotId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"name": {
+					"description": "This type represents name of the depot.",
+					"type": "string",
+					"additionalProperties": false
+				},
+				"chargingStationInfoList": {
+					"type": "array",
+					"items": {
+						"$ref": "#/definitions/ChargingStationInfo"
+					},
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"depotId",
+				"chargingStationInfoList"
+			],
+			"additionalProperties": false
+		},
+		"ChargingStationInfo": {
+			"type": "object",
+			"properties": {
+				"chargingStationId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"chargingStationStatus": {
+					"$ref": "#/definitions/ChargingStationStatus"
+				},
+				"chargingPointInfoList": {
+					"type": "array",
+					"items": {
+						"$ref": "#/definitions/ChargingPointInfo"
+					},
+					"additionalProperties": false
+				},
+				"chargingStationFaultInfo": {
+					"$ref": "#/definitions/ChargingStationFaultInfo"
+				},
+				"totalPower": {
+					"type": "number",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"chargingStationId",
+				"chargingStationStatus",
+				"chargingPointInfoList"
+			],
+			"additionalProperties": false
+		}
+	}
+}

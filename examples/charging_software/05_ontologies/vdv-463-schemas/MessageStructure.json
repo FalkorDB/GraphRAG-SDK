@@ -1,0 +1,59 @@
+{
+   "$schema": "http://json-schema.org/draft-04/schema#",
+   "$id": "urn:VDV463:1:0:0:MessageStructure",
+   "comment": "VDV463 1.0.0 FINAL",
+   "title": "MessageStructure",
+   "type": "array",
+   "additionalProperties": false,
+   "description": "This type represents a generic message structure associated with the VDV463.",
+   "items": [
+      {
+         "type": "integer",
+         "additionalProperties": false,
+         "description": "This type represents the message type.",
+         "enum": [
+            1,
+            2,
+            3
+         ]
+      },
+      {
+         "type": "string",
+         "additionalProperties": false,
+         "description": "This type represents the source of the data of the message."
+      },
+      {
+         "description": "This type represents an unique identifier for the presystemId.",
+         "type": "string",
+         "additionalProperties": false
+      },
+      {
+         "type": "string",
+         "additionalProperties": false,
+         "description": "This type represents the current timestamp of the message.",
+         "format": "date-time"
+      },
+      {
+         "type": "string",
+         "additionalProperties": false,
+         "description": "This type represents the unique identifier of the message.",
+         "format": "uuid"
+      },
+      {
+         "type": "string",
+         "additionalProperties": false,
+         "description": "This type represents the action of the message.",
+         "enum": [
+            "BootNotification",
+            "ProvideChargingRequests",
+            "ProvideChargingInformation"
+         ]
+      },
+      {
+         "type": "object",
+         "description": "This type represents the payload of the message which is specified in separate JSON schemas."
+      }
+   ],
+   "minItems": 7,
+   "maxItems": 7
+}
