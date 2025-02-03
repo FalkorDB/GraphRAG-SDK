@@ -1,0 +1,4213 @@
+{
+  "entities": [
+    {
+      "label": "FileExtension",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HandlingConfig",
+      "attributes": [
+        {
+          "name": "diffType",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "textType",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Environment",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "env",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "python",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "platformio",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tool",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "compatibility",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "features",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Programmer",
+      "attributes": [
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "maximum_size",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "speed",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Microcontroller",
+      "attributes": [
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "lfuse",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "hfuse",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "efuse",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "baudRate",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HexFile",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Core",
+      "attributes": [
+        {
+          "name": "repositoryformatversion",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filemode",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bare",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "logallrefupdates",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "symlinks",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ignorecase",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Remote",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "fetch",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "remote",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "merge",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ref",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "branch_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "has_description",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "project_description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "directory",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "clone_hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DescriptionFile",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "exists",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ShellScript",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "executable",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "executable",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitCommand",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "parameters",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HookScript",
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Git",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "oid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "is_wip",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "commit_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "commit_hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "timezone",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Push",
+      "attributes": [
+        {
+          "name": "remote",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PushOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessage",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "script_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Configuration",
+      "attributes": [
+        {
+          "name": "allowunannotated",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "allowdeletetag",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "allowmodifytag",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "denycreatebranch",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "configuration_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "target_platform",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ref",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExcludePattern",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitProject",
+      "attributes": [
+        {
+          "name": "language",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Software",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "clone_url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "commit_hash",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Workflow",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "on",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "on_workflow_call",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "workflow_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Job",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "runs_on",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "fail_fast",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Release",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "needs",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "release_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version_number",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BuildJob",
+      "attributes": [
+        {
+          "name": "runs_on",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "strategy",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Strategy",
+      "attributes": [
+        {
+          "name": "fail_fast",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Matrix",
+      "attributes": [
+        {
+          "name": "include",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MatrixEntry",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "arduino_platform",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "fqbn",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Step",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CacheArduino",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "restore_keys",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetupArduinoCLI",
+      "attributes": [
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "InstallPlatform",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CopySupportFiles",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CompileSketch",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GetCompilerInfo",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UploadOutput",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Artifact",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Board",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "upload_protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "upload_maximum_size",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "upload_speed",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OpenEVSE",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "upload_tool",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "upload_maximum_size",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "upload_maximum_data_size",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_mcu",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_f_cpu",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_board",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_core",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_variant",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_target",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ATmega328",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "upload_tool",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "upload_maximum_size",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "upload_maximum_data_size",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_mcu",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_f_cpu",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_board",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_core",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_variant",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ATmega168",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "upload_tool",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "upload_maximum_size",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "upload_maximum_data_size",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_mcu",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_f_cpu",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_board",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_core",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "build_variant",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Avrdude",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProgrammersFile",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BoardsFile",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ArduinoCLI",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "firmware",
+      "attributes": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "build_target",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceLevel",
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GFCI",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "test_result",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EV",
+      "attributes": [
+        {
+          "name": "connection_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "charging_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ground",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "error_status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Relay",
+      "attributes": [
+        {
+          "name": "state",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "error_status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Temperature",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "service_required",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Current",
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "throttle_status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Issue",
+      "attributes": [
+        {
+          "name": "issue_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PullRequest",
+      "attributes": [
+        {
+          "name": "pull_request_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "source_branch",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnergyMeter",
+      "attributes": [
+        {
+          "name": "last_update_ms",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "watt_hours_tot",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "watt_seconds",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "b_flags",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "g_EnergyMeter",
+      "attributes": [
+        {
+          "name": "instance",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "USBasp",
+      "attributes": [
+        {
+          "name": "connection_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Program",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "copyright",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Fuse",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "I2CIO",
+      "attributes": [
+        {
+          "name": "i2c_addr",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "dir_mask",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "shadow",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "initialised",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "I2CDevice",
+      "attributes": [
+        {
+          "name": "device_addr",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "num_pins",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Pin",
+      "attributes": [
+        {
+          "name": "pin_number",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "direction",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareLibrary",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "author",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "thread_safe",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "I2CExpanderChip",
+      "attributes": [
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Class",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "methods",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PilotState",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "J1772Pilot",
+      "attributes": [
+        {
+          "name": "methods",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Setting",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UIString",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Library",
+      "attributes": [
+        {
+          "name": "author",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "thread_safe",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "extendable",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "methods",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "copyrightHolder",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LiquidTWI2",
+      "attributes": [
+        {
+          "name": "i2c_addr",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "backlight_inverted",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "device_detected",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MCP23008",
+      "attributes": [
+        {
+          "name": "registers",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MCP23017",
+      "attributes": [
+        {
+          "name": "registers",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Button",
+      "attributes": [
+        {
+          "name": "bits",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LED",
+      "attributes": [
+        {
+          "name": "colors",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Firmware",
+      "attributes": [
+        {
+          "name": "copyright",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "license",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "compatible_platforms",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TemperatureSensor",
+      "attributes": [
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MennekesLock",
+      "attributes": [
+        {
+          "name": "is_locked",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DigitalPin",
+      "attributes": [
+        {
+          "name": "register",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "index",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DevelopmentEnvironment",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Solution",
+      "attributes": [
+        {
+          "name": "format_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "visual_studio_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "minimum_visual_studio_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Project",
+      "attributes": [
+        {
+          "name": "project_guid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "project_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "project_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "board",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "sketch",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tools_version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "xmlns",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DateTime",
+      "attributes": [
+        {
+          "name": "year",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "month",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "day",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "hour",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "minute",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "second",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "unixtime",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RTC_DS1307",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StringResource",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Framework",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Buffer",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "size",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Method",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Callback",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ArduinoConfiguration",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "additional_urls",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "log_level",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "enable_usb_detection",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Input",
+      "attributes": [
+        {
+          "name": "raw1",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "measured1",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "raw2",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "measured2",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Calculation",
+      "attributes": [
+        {
+          "name": "scale",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "offset",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Calibration",
+      "attributes": [
+        {
+          "name": "method",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SolutionFile",
+      "attributes": [
+        {
+          "name": "format_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "visual_studio_version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Filter",
+      "attributes": [
+        {
+          "name": "unique_identifier",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "extensions",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SourceFile",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filter",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HeaderFile",
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filter",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SerialPort",
+      "attributes": [
+        {
+          "name": "device_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "baud_rate",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "operating_system",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TimeOut",
+      "attributes": [
+        {
+          "name": "elapsed_time_ms",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChecksumGenerator",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChecksumCalculation",
+      "attributes": [
+        {
+          "name": "algorithm",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommunicationProtocol",
+      "attributes": [
+        {
+          "name": "start_character",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "end_character",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MainFunction",
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "input_method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "CONFIGURED_AS",
+      "source": {
+        "label": "FileExtension"
+      },
+      "target": {
+        "label": "HandlingConfig"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ASSOCIATED_WITH",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Environment"
+      },
+      "attributes": [
+        {
+          "name": "environment_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PROGRAMS",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "Microcontroller"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONNECTS_TO",
+      "source": {
+        "label": "Programmer"
+      },
+      "target": {
+        "label": "Microcontroller"
+      },
+      "attributes": [
+        {
+          "name": "interface",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "WRITES",
+      "source": {
+        "label": "HexFile"
+      },
+      "target": {
+        "label": "Microcontroller"
+      },
+      "attributes": [
+        {
+          "name": "operation",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURED_FOR",
+      "source": {
+        "label": "Remote"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "DescriptionFile"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EDITED_TO",
+      "source": {
+        "label": "DescriptionFile"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SOURCES",
+      "source": {
+        "label": "ShellScript"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": [
+        {
+          "name": "source_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "script_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "ShellScript"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": [
+        {
+          "name": "execute_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "arguments",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "VERIFY_COMMITS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Git"
+      },
+      "attributes": [
+        {
+          "name": "verification_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "GitCommand"
+      },
+      "attributes": [
+        {
+          "name": "command_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "order",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "interactionType",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "backpack_model",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CHECKS",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": [
+        {
+          "name": "check_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PREVENTS",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Push"
+      },
+      "attributes": [
+        {
+          "name": "reason",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ECHOBACK_HANDLER",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "PushOption"
+      },
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REJECT_HANDLER",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "PushOption"
+      },
+      "attributes": [
+        {
+          "name": "exit_code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USED_BY",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Git"
+      },
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "target",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PREPARES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": [
+        {
+          "name": "process",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ENFORCE_POLICIES",
+      "source": {
+        "label": "Script"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "policy",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "part_of",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "pin_number",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "context",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "relationshipType",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "filter",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "implementation",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "AUTHORED_BY",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLONED",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Release"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": [
+        {
+          "name": "dependency",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_STRATEGY",
+      "source": {
+        "label": "BuildJob"
+      },
+      "target": {
+        "label": "Strategy"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_MATRIX",
+      "source": {
+        "label": "Strategy"
+      },
+      "target": {
+        "label": "Matrix"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "Matrix"
+      },
+      "target": {
+        "label": "MatrixEntry"
+      },
+      "attributes": [
+        {
+          "name": "project_guid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_STEP",
+      "source": {
+        "label": "BuildJob"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ACTION",
+      "source": {
+        "label": "CacheArduino"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": [
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SETUP_ARDUINO_CLI",
+      "source": {
+        "label": "SetupArduinoCLI"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": [
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INSTALL_PLATFORM",
+      "source": {
+        "label": "InstallPlatform"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "COPY_SUPPORT_FILES",
+      "source": {
+        "label": "CopySupportFiles"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "COMPILE_SKETCH",
+      "source": {
+        "label": "CompileSketch"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "GET_COMPILER_INFO",
+      "source": {
+        "label": "GetCompilerInfo"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "UPLOAD_OUTPUT",
+      "source": {
+        "label": "UploadOutput"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_JOB",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ENVIRONMENT",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Environment"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PRODUCES",
+      "source": {
+        "label": "Step"
+      },
+      "target": {
+        "label": "Artifact"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_PROGRAMMER",
+      "source": {
+        "label": "Board"
+      },
+      "target": {
+        "label": "Programmer"
+      },
+      "attributes": [
+        {
+          "name": "maximum_size",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "speed",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USES_FOR_UPLOAD",
+      "source": {
+        "label": "OpenEVSE"
+      },
+      "target": {
+        "label": "Avrdude"
+      },
+      "attributes": [
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "speed",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "BUILT_WITH",
+      "source": {
+        "label": "OpenEVSE"
+      },
+      "target": {
+        "label": "ATmega328"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OVERWRITES",
+      "source": {
+        "label": "ProgrammersFile"
+      },
+      "target": {
+        "label": "BoardsFile"
+      },
+      "attributes": [
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USED_FOR_SETUP",
+      "source": {
+        "label": "ArduinoCLI"
+      },
+      "target": {
+        "label": "OpenEVSE"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USED_FOR_BUILD",
+      "source": {
+        "label": "ArduinoCLI"
+      },
+      "target": {
+        "label": "firmware"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USED_FOR_UPLOAD",
+      "source": {
+        "label": "ArduinoCLI"
+      },
+      "target": {
+        "label": "firmware"
+      },
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SERVICE_LEVEL_REQUIRES",
+      "source": {
+        "label": "ServiceLevel"
+      },
+      "target": {
+        "label": "GFCI"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SERVICE_LEVEL_MONITORS",
+      "source": {
+        "label": "ServiceLevel"
+      },
+      "target": {
+        "label": "EV"
+      },
+      "attributes": [
+        {
+          "name": "monitoring_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "GFCI_PROTECTS",
+      "source": {
+        "label": "GFCI"
+      },
+      "target": {
+        "label": "Ground"
+      },
+      "attributes": [
+        {
+          "name": "protection_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "GFCI_CONTROLS",
+      "source": {
+        "label": "GFCI"
+      },
+      "target": {
+        "label": "Relay"
+      },
+      "attributes": [
+        {
+          "name": "control_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "TEMPERATURE_AFFECTS",
+      "source": {
+        "label": "Temperature"
+      },
+      "target": {
+        "label": "Current"
+      },
+      "attributes": [
+        {
+          "name": "effect",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CURRENT_SUPPLIES",
+      "source": {
+        "label": "Current"
+      },
+      "target": {
+        "label": "EV"
+      },
+      "attributes": [
+        {
+          "name": "supply_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SUBMITTED_VIA",
+      "source": {
+        "label": "Issue"
+      },
+      "target": {
+        "label": "GitHub"
+      },
+      "attributes": [
+        {
+          "name": "submission_date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CREATED_FROM",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": [
+        {
+          "name": "creation_date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "MERGED_INTO",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": [
+        {
+          "name": "merged_by",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "reviewed_by",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USED_FOR",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Build"
+      },
+      "attributes": [
+        {
+          "name": "build_date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "VALIDATED_BY",
+      "source": {
+        "label": "Release"
+      },
+      "target": {
+        "label": "Workflow"
+      },
+      "attributes": [
+        {
+          "name": "validation_date",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INSTANCE_OF",
+      "source": {
+        "label": "g_EnergyMeter"
+      },
+      "target": {
+        "label": "EnergyMeter"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROGRAMMED_WITH",
+      "source": {
+        "label": "Avrdude"
+      },
+      "target": {
+        "label": "Microcontroller"
+      },
+      "attributes": [
+        {
+          "name": "programmer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONNECTED_TO",
+      "source": {
+        "label": "USBasp"
+      },
+      "target": {
+        "label": "Microcontroller"
+      },
+      "attributes": [
+        {
+          "name": "connection_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SETS",
+      "source": {
+        "label": "Avrdude"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": [
+        {
+          "name": "command_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURED_WITH",
+      "source": {
+        "label": "Program"
+      },
+      "target": {
+        "label": "Programmer"
+      },
+      "attributes": [
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "TARGETS",
+      "source": {
+        "label": "Program"
+      },
+      "target": {
+        "label": "Microcontroller"
+      },
+      "attributes": [
+        {
+          "name": "target",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "SET",
+      "source": {
+        "label": "Program"
+      },
+      "target": {
+        "label": "Fuse"
+      },
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INTERACTS_WITH",
+      "source": {
+        "label": "I2CIO"
+      },
+      "target": {
+        "label": "I2CDevice"
+      },
+      "attributes": [
+        {
+          "name": "communication_method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "device_address",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "IS_PART_OF",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "SoftwareLibrary"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "IMPLEMENTED_IN",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Language"
+      },
+      "attributes": [
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONTROLS",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "LCD"
+      },
+      "attributes": [
+        {
+          "name": "display_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "BASED_ON",
+      "source": {
+        "label": "LCD"
+      },
+      "target": {
+        "label": "Chipset"
+      },
+      "attributes": [
+        {
+          "name": "chipset_model",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "COMMUNICATES_WITH",
+      "source": {
+        "label": "LiquidTWI2"
+      },
+      "target": {
+        "label": "MCP23008"
+      },
+      "attributes": [
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_BUTTONS",
+      "source": {
+        "label": "LiquidTWI2"
+      },
+      "target": {
+        "label": "Button"
+      },
+      "attributes": [
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONTROLS_BACKLIGHT",
+      "source": {
+        "label": "LiquidTWI2"
+      },
+      "target": {
+        "label": "LED"
+      },
+      "attributes": [
+        {
+          "name": "colors",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_REGISTERS",
+      "source": {
+        "label": "MCP23008"
+      },
+      "target": {
+        "label": "Button"
+      },
+      "attributes": [
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INITIALIZES",
+      "source": {
+        "label": "LiquidTWI2"
+      },
+      "target": {
+        "label": "MCP23008"
+      },
+      "attributes": [
+        {
+          "name": "parameters",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "MANAGES_DISPLAY",
+      "source": {
+        "label": "LiquidTWI2"
+      },
+      "target": {
+        "label": "LiquidTWI2"
+      },
+      "attributes": [
+        {
+          "name": "methods",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INITIALIZE",
+      "source": {
+        "label": "MennekesLock"
+      },
+      "target": {
+        "label": "MennekesLock"
+      },
+      "attributes": [
+        {
+          "name": "force",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURE_PIN",
+      "source": {
+        "label": "MennekesLock"
+      },
+      "target": {
+        "label": "DigitalPin"
+      },
+      "attributes": [
+        {
+          "name": "register",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "index",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "LOCK",
+      "source": {
+        "label": "MennekesLock"
+      },
+      "target": {
+        "label": "MennekesLock"
+      },
+      "attributes": [
+        {
+          "name": "force",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "UNLOCK",
+      "source": {
+        "label": "MennekesLock"
+      },
+      "target": {
+        "label": "MennekesLock"
+      },
+      "attributes": [
+        {
+          "name": "force",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "BUILD",
+      "source": {
+        "label": "DevelopmentEnvironment"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": [
+        {
+          "name": "build_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_CONFIGURATION",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": [
+        {
+          "name": "configuration_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "configuration_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "platform",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PROVIDES",
+      "source": {
+        "label": "RTC_DS1307"
+      },
+      "target": {
+        "label": "DateTime"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RECEIVES",
+      "source": {
+        "label": "RTC_DS1307"
+      },
+      "target": {
+        "label": "DateTime"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_METHOD",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "Method"
+      },
+      "attributes": [
+        {
+          "name": "methodName",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_BUFFER",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "Buffer"
+      },
+      "attributes": [
+        {
+          "name": "bufferName",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "ENABLES",
+      "source": {
+        "label": "Calculation"
+      },
+      "target": {
+        "label": "Calibration"
+      },
+      "attributes": [
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_PROJECT",
+      "source": {
+        "label": "SolutionFile"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": [
+        {
+          "name": "project_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "project_file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "project_guid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USES_CONFIGURATION",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": [
+        {
+          "name": "project_guid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_BUILD_CONFIGURATION",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "BuildConfiguration"
+      },
+      "attributes": [
+        {
+          "name": "project_guid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "DEFINES_BUILD",
+      "source": {
+        "label": "BuildConfiguration"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": [
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "platform",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "INCLUDED_IN",
+      "source": {
+        "label": "SourceFile"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": [
+        {
+          "name": "filename",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    }
+  ]
+}
