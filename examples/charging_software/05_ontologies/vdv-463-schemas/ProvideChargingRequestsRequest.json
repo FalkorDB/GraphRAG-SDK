@@ -1,0 +1,190 @@
+{
+	"$schema": "http://json-schema.org/draft-04/schema#",
+	"$id": "urn:VDV463:1:0:0:ProvideChargingRequestsRequest",
+	"comment": "VDV463 1.0.0 FINAL",
+	"title": "ProvideChargingRequestsRequest",
+	"description": "This type represents the data associated with charging requests sent by a presystem to a load management system.",
+	"type": "object",
+	"properties": {
+		"chargingRequestList": {
+			"type": "array",
+			"items": {
+				"$ref": "#/definitions/ChargingRequest"
+			},
+			"additionalProperties": false
+		}
+	},
+	"required": [
+		"chargingRequestList"
+	],
+	"additionalProperties": false,
+	"definitions": {
+		"VehicleIdentifier": {
+			"description": "This type represents an unique vehicle identifier associated with VDV261.",
+			"type": "string",
+			"additionalProperties": false
+		},
+		"UniqueIdentifier": {
+			"description": "This type represents an unique identifier.",
+			"type": "string",
+			"additionalProperties": false
+		},
+		"ChargingInstruction": {
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"Normal",
+				"Changed",
+				"Terminate"
+			]
+		},
+		"ChargingRequestData": {
+			"type": "object",
+			"properties": {
+				"expectedArrivalTimeAtChargingPoint": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				},
+				"expectedSocAtArrival": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 100,
+					"additionalProperties": false
+				},
+				"minTargetSoc": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 100,
+					"additionalProperties": false
+				},
+				"maxTargetSoc": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 100,
+					"additionalProperties": false
+				},
+				"requestedTimeForDeparture": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				},
+				"adHocCharging": {
+					"type": "boolean",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"minTargetSoc",
+				"maxTargetSoc"
+			],
+			"additionalProperties": false
+		},
+		"PreconditioningRequest": {
+			"type": "string",
+			"additionalProperties": false,
+			"enum": [
+				"WarmWaterAndVentilation",
+				"HotWaterAndHeating",
+				"NoWaterCoolingOrVentilation",
+				"NoClimaticPreconditioningOrSNA"
+			]
+		},
+		"AutomaticPreconditioning": {
+			"description": "This type imposes properties regarding automatic preconditioning.",
+			"type": "object",
+			"properties": {
+				"preconditioningRequest": {
+					"$ref": "#/definitions/PreconditioningRequest"
+				},
+				"ambientTemperature": {
+					"type": "number",
+					"additionalProperties": false
+				},
+				"requestedStartTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				},
+				"requestedFinishTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"preconditioningRequest"
+			],
+			"additionalProperties": false
+		},
+		"ManualPreconditioning": {
+			"description": "This type imposes properties regarding manual preconditioning.",
+			"type": "object",
+			"properties": {
+				"hvacPreconditioningStartTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				},
+				"hvacAuxiliaryConsumerPower": {
+					"type": "integer",
+					"additionalProperties": false
+				},
+				"systemPreconditioningStartTime": {
+					"type": "string",
+					"format": "date-time",
+					"additionalProperties": false
+				},
+				"systemAuxiliaryConsumerPower": {
+					"type": "integer",
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"hvacPreconditioningStartTime",
+				"systemPreconditioningStartTime"
+			],
+			"additionalProperties": false
+		},
+		"ChargingRequest": {
+			"description": "This type represents a charging request.",
+			"type": "object",
+			"properties": {
+				"chargingPointId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"vehicleId": {
+					"$ref": "#/definitions/VehicleIdentifier"
+				},
+				"chargingRequestId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"chargingProcessId": {
+					"$ref": "#/definitions/UniqueIdentifier"
+				},
+				"priority": {
+					"type": "integer",
+					"additionalProperties": false
+				},
+				"chargingInstruction": {
+					"$ref": "#/definitions/ChargingInstruction"
+				},
+				"chargingRequestData": {
+					"$ref": "#/definitions/ChargingRequestData"
+				},
+				"automaticPreconditioning": {
+					"$ref": "#/definitions/AutomaticPreconditioning"
+				},
+				"manualPreconditioning": {
+					"$ref": "#/definitions/ManualPreconditioning"
+				}
+			},
+			"required": [
+				"vehicleId",
+				"chargingRequestId",
+				"chargingRequestData"
+			],
+			"additionalProperties": false
+		}
+	}
+}
