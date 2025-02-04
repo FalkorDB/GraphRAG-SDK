@@ -1,40 +1,10 @@
 {
   "entities": [
     {
-      "label": "CodeOfConduct",
+      "label": "File",
       "attributes": [
         {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": false
-        },
-        {
-          "name": "title",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommunityLeader",
-      "attributes": [
-        {
-          "name": "responsibility",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommunityImpactGuideline",
-      "attributes": [
-        {
-          "name": "level",
+          "name": "extension",
           "type": "string",
           "unique": true,
           "required": true
@@ -43,19 +13,55 @@
           "name": "description",
           "type": "string",
           "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
           "required": true
         },
         {
-          "name": "consequence",
+          "name": "filename",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         }
       ],
       "description": ""
     },
     {
-      "label": "Website",
+      "label": "Directory",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoWorkspace",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Template",
       "attributes": [
         {
           "name": "url",
@@ -64,43 +70,19 @@
           "required": true
         },
         {
-          "name": "description",
+          "name": "type",
           "type": "string",
           "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ContributorCovenant",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
           "required": true
         }
       ],
       "description": ""
     },
     {
-      "label": "Email",
+      "label": "Tool",
       "attributes": [
         {
-          "name": "address",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SocialMediaAccount",
-      "attributes": [
-        {
-          "name": "platform",
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -118,10 +100,10 @@
           "required": true
         },
         {
-          "name": "version",
-          "type": "number",
-          "unique": true,
-          "required": true
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -154,7 +136,7 @@
           "required": false
         },
         {
-          "name": "reproduce_steps",
+          "name": "reproduction_steps",
           "type": "string",
           "unique": false,
           "required": false
@@ -194,41 +176,11 @@
           "type": "string",
           "unique": true,
           "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "InstallationProcedure",
-      "attributes": [
+        },
         {
-          "name": "description",
+          "name": "branch",
           "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "TestingProcedure",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SubmitProcedure",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
+          "unique": false,
           "required": true
         }
       ],
@@ -253,10 +205,16 @@
       "description": ""
     },
     {
-      "label": "Code",
+      "label": "Test",
       "attributes": [
         {
           "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
           "type": "string",
           "unique": true,
           "required": true
@@ -265,10 +223,10 @@
       "description": ""
     },
     {
-      "label": "Contributor",
+      "label": "Linting",
       "attributes": [
         {
-          "name": "role",
+          "name": "description",
           "type": "string",
           "unique": true,
           "required": true
@@ -295,7 +253,31 @@
       "description": ""
     },
     {
-      "label": "Linting",
+      "label": "Contribution",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Procedure",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Code",
       "attributes": [
         {
           "name": "description",
@@ -307,7 +289,223 @@
       "description": ""
     },
     {
-      "label": "Repository",
+      "label": "Change",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Document",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Judgment",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Consistency",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Environment",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Key",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Installation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Testing",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Submission",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Time",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Detail",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DetailLevel",
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProcedureName",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestingType",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SubmissionType",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BranchName",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeConsistency",
+      "attributes": [
+        {
+          "name": "consistency",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Module",
       "attributes": [
         {
           "name": "name",
@@ -316,27 +514,9 @@
           "required": true
         },
         {
-          "name": "format_version",
-          "type": "number",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description_file",
+          "name": "language",
           "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description_set",
-          "type": "boolean",
           "unique": false,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
           "required": true
         },
         {
@@ -344,6 +524,72 @@
           "type": "string",
           "unique": false,
           "required": false
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoVersion",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Client",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "server",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Package",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoMod",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "module_path",
+          "type": "string",
+          "unique": false,
+          "required": true
         }
       ],
       "description": ""
@@ -361,30 +607,6 @@
       "description": ""
     },
     {
-      "label": "Copyright",
-      "attributes": [
-        {
-          "name": "holder",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "start_year",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "end_year",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Software",
       "attributes": [
         {
@@ -392,16 +614,52 @@
           "type": "string",
           "unique": true,
           "required": true
+        },
+        {
+          "name": "year",
+          "type": "number",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "Condition",
+      "label": "CopyrightHolder",
       "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
         {
           "name": "description",
           "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
           "unique": true,
           "required": true
         }
@@ -409,16 +667,46 @@
       "description": ""
     },
     {
-      "label": "OcpiProtocol",
+      "label": "AmqpJob",
       "attributes": [
         {
-          "name": "version",
+          "name": "body",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
         },
         {
-          "name": "specification_url",
+          "name": "body_encoding",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "connection",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "exchange",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "headers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "routing_key",
           "type": "string",
           "unique": false,
           "required": false
@@ -427,16 +715,28 @@
       "description": ""
     },
     {
-      "label": "ClientLibrary",
+      "label": "Auth",
       "attributes": [
         {
-          "name": "name",
+          "name": "bearer_token",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
         },
         {
-          "name": "repository_url",
+          "name": "password",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "username",
           "type": "string",
           "unique": false,
           "required": false
@@ -445,28 +745,250 @@
       "description": ""
     },
     {
-      "label": "OapiCodegen",
+      "label": "HttpJob",
       "attributes": [
         {
-          "name": "name",
+          "name": "auth",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "headers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": false
         },
         {
           "name": "url",
           "type": "string",
           "unique": false,
           "required": false
+        },
+        {
+          "name": "valid_response_codes",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "GithubRepository",
+      "label": "Job",
       "attributes": [
         {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cron_schedule",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "execute_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "next_run",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tags",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "updated_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
           "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobCreate",
+      "attributes": [
+        {
+          "name": "cron_schedule",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "execute_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tags",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobExecution",
+      "attributes": [
+        {
+          "name": "end_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "id",
+          "type": "number",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "job_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "start_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "success",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobUpdate",
+      "attributes": [
+        {
+          "name": "cron_schedule",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "execute_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tags",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "format_version",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description_file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "transport_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url",
           "type": "string",
           "unique": true,
           "required": true
@@ -493,96 +1015,6 @@
       "description": ""
     },
     {
-      "label": "Branch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "remote",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "merge",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "ref",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Core",
-      "attributes": [
-        {
-          "name": "filemode",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "bare",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "logallrefupdates",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "symlinks",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "ignorecase",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "File",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Reference",
       "attributes": [
         {
@@ -596,6 +1028,24 @@
           "type": "string",
           "unique": true,
           "required": true
+        },
+        {
+          "name": "peeled",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "fully_peeled",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "sorted",
+          "type": "boolean",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -613,24 +1063,12 @@
       "description": ""
     },
     {
-      "label": "PackRefs",
+      "label": "Tag",
       "attributes": [
         {
-          "name": "peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "fully_peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "sorted",
-          "type": "boolean",
-          "unique": false,
+          "name": "name",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
@@ -646,7 +1084,7 @@
           "required": true
         },
         {
-          "name": "language",
+          "name": "description",
           "type": "string",
           "unique": false,
           "required": false
@@ -658,10 +1096,10 @@
           "required": true
         },
         {
-          "name": "description",
+          "name": "language",
           "type": "string",
           "unique": false,
-          "required": false
+          "required": true
         }
       ],
       "description": ""
@@ -670,19 +1108,13 @@
       "label": "CommitMessage",
       "attributes": [
         {
-          "name": "path",
+          "name": "file_path",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
           "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "file_path",
           "type": "string",
           "unique": true,
           "required": true
@@ -700,61 +1132,13 @@
           "required": true
         },
         {
-          "name": "command_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
           "name": "description",
           "type": "string",
           "unique": false,
           "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitConfiguration",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
         },
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "variable",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Line",
-      "attributes": [
-        {
-          "name": "content",
+          "name": "command_name",
           "type": "string",
           "unique": true,
           "required": true
@@ -766,7 +1150,19 @@
       "label": "Author",
       "attributes": [
         {
-          "name": "git_author_ident",
+          "name": "author_ident",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SignedOffByLine",
+      "attributes": [
+        {
+          "name": "line",
           "type": "string",
           "unique": true,
           "required": true
@@ -778,13 +1174,19 @@
       "label": "Watchman",
       "attributes": [
         {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "name": "version",
+          "type": "number",
+          "unique": false,
+          "required": false
         },
         {
-          "name": "description",
+          "name": "git_work_tree",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "last_update_token",
           "type": "string",
           "unique": false,
           "required": false
@@ -793,22 +1195,28 @@
       "description": ""
     },
     {
-      "label": "Git",
+      "label": "GitRepository",
       "attributes": [
         {
-          "name": "command",
+          "name": "working_directory",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "description",
+          "name": "path",
           "type": "string",
-          "unique": false,
-          "required": false
+          "unique": true,
+          "required": true
         },
         {
-          "name": "name",
+          "name": "directory",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
           "type": "string",
           "unique": true,
           "required": true
@@ -820,13 +1228,13 @@
       "label": "Query",
       "attributes": [
         {
-          "name": "fields",
+          "name": "expression",
           "type": "string",
           "unique": false,
           "required": false
         },
         {
-          "name": "expression",
+          "name": "fields",
           "type": "string",
           "unique": false,
           "required": false
@@ -835,10 +1243,10 @@
       "description": ""
     },
     {
-      "label": "UpdateToken",
+      "label": "ClockId",
       "attributes": [
         {
-          "name": "token_value",
+          "name": "id",
           "type": "string",
           "unique": true,
           "required": true
@@ -847,22 +1255,10 @@
       "description": ""
     },
     {
-      "label": "Directory",
+      "label": "JSONPackage",
       "attributes": [
         {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "JSON",
-      "attributes": [
-        {
-          "name": "package",
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -883,61 +1279,19 @@
       "description": ""
     },
     {
-      "label": "Command",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "command_text",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitRepository",
+      "label": "Executable",
       "attributes": [
         {
           "name": "path",
           "type": "string",
           "unique": true,
           "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
         }
       ],
       "description": ""
     },
     {
-      "label": "Message",
-      "attributes": [
-        {
-          "name": "content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "HookType",
+      "label": "ScriptingLanguage",
       "attributes": [
         {
           "name": "name",
@@ -949,55 +1303,49 @@
       "description": ""
     },
     {
-      "label": "Script",
+      "label": "Commit",
       "attributes": [
         {
-          "name": "content",
+          "name": "message",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "name",
+          "name": "oid",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "purpose",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Hook",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
+          "name": "ref",
           "type": "string",
           "unique": false,
           "required": false
         },
         {
-          "name": "description",
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitConfiguration",
+      "attributes": [
+        {
+          "name": "config_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
           "type": "string",
           "unique": false,
-          "required": false
+          "required": true
         }
       ],
       "description": ""
@@ -1027,7 +1375,7 @@
       "description": ""
     },
     {
-      "label": "GitOperation",
+      "label": "Encoding",
       "attributes": [
         {
           "name": "name",
@@ -1039,74 +1387,20 @@
       "description": ""
     },
     {
-      "label": "GitDirectory",
+      "label": "Script",
       "attributes": [
         {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Commit",
-      "attributes": [
-        {
-          "name": "oid",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "sha1",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PushOperation",
-      "attributes": [
-        {
-          "name": "local_ref",
+          "name": "language",
           "type": "string",
           "unique": false,
           "required": true
         },
         {
-          "name": "local_oid",
+          "name": "description",
           "type": "string",
           "unique": false,
-          "required": true
+          "required": false
         },
-        {
-          "name": "remote_ref",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "remote_oid",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitBranch",
-      "attributes": [
         {
           "name": "name",
           "type": "string",
@@ -1117,36 +1411,18 @@
       "description": ""
     },
     {
-      "label": "PerlScript",
+      "label": "Hook",
       "attributes": [
         {
-          "name": "content",
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ShellScript",
-      "attributes": [
+        },
         {
-          "name": "description",
+          "name": "stage",
           "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "TopicBranchAnalysis",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
+          "unique": false,
           "required": true
         }
       ],
@@ -1154,6 +1430,18 @@
     },
     {
       "label": "PushOption",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitEnvironmentVariable",
       "attributes": [
         {
           "name": "name",
@@ -1165,6 +1453,42 @@
           "name": "value",
           "type": "string",
           "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessageFile",
+      "attributes": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitSource",
+      "attributes": [
+        {
+          "name": "source_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Sha1",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
@@ -1183,85 +1507,7 @@
       "description": ""
     },
     {
-      "label": "GitHook",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Configuration",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "default_value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Git_Reference",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tag",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "annotated",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Git_Command",
+      "label": "SedCommand",
       "attributes": [
         {
           "name": "command",
@@ -1273,10 +1519,10 @@
       "description": ""
     },
     {
-      "label": "FileExtension",
+      "label": "GitVariable",
       "attributes": [
         {
-          "name": "extension",
+          "name": "variable",
           "type": "string",
           "unique": true,
           "required": true
@@ -1285,10 +1531,10 @@
       "description": ""
     },
     {
-      "label": "GitignoreFile",
+      "label": "SignedOffBy",
       "attributes": [
         {
-          "name": "path",
+          "name": "signature",
           "type": "string",
           "unique": true,
           "required": true
@@ -1309,16 +1555,22 @@
       "description": ""
     },
     {
-      "label": "Person",
+      "label": "ExcludePattern",
       "attributes": [
         {
-          "name": "email",
+          "name": "pattern",
           "type": "string",
           "unique": true,
           "required": true
-        },
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Email",
+      "attributes": [
         {
-          "name": "name",
+          "name": "address",
           "type": "string",
           "unique": true,
           "required": true
@@ -1339,6 +1591,78 @@
       "description": ""
     },
     {
+      "label": "CommitHash",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Url",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TimeZone",
+      "attributes": [
+        {
+          "name": "offset",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hash",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Timezone",
+      "attributes": [
+        {
+          "name": "utc_offset",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "EmailAddress",
       "attributes": [
         {
@@ -1351,49 +1675,31 @@
       "description": ""
     },
     {
-      "label": "Timezone",
+      "label": "Task",
       "attributes": [
         {
-          "name": "offset",
+          "name": "task_id",
           "type": "string",
           "unique": true,
           "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitCommit",
-      "attributes": [
+        },
         {
-          "name": "hash",
+          "name": "bug_description",
           "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Organization",
-      "attributes": [
+          "unique": false,
+          "required": false
+        },
         {
-          "name": "name",
+          "name": "steps_to_recreate",
           "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Protocol",
-      "attributes": [
+          "unique": false,
+          "required": false
+        },
         {
-          "name": "name",
+          "name": "solution",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -1417,7 +1723,31 @@
       "description": ""
     },
     {
-      "label": "ChangeType",
+      "label": "Feature",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ReviewInformation",
+      "attributes": [
+        {
+          "name": "info",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Documentation",
       "attributes": [
         {
           "name": "type",
@@ -1429,10 +1759,10 @@
       "description": ""
     },
     {
-      "label": "ReviewInfo",
+      "label": "Workflow",
       "attributes": [
         {
-          "name": "additional_info",
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -1441,25 +1771,43 @@
       "description": ""
     },
     {
-      "label": "Specification",
+      "label": "Event",
       "attributes": [
         {
-          "name": "file_path",
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Path",
+      "attributes": [
+        {
+          "name": "path",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "version",
+          "name": "route",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "summary",
           "type": "string",
           "unique": false,
           "required": false
-        },
-        {
-          "name": "title",
-          "type": "string",
-          "unique": true,
-          "required": true
         },
         {
           "name": "description",
@@ -1471,7 +1819,7 @@
       "description": ""
     },
     {
-      "label": "Job",
+      "label": "Action",
       "attributes": [
         {
           "name": "name",
@@ -1480,9 +1828,21 @@
           "required": true
         },
         {
-          "name": "runs_on",
+          "name": "version",
           "type": "string",
           "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Go",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
@@ -1498,7 +1858,7 @@
           "required": true
         },
         {
-          "name": "uses",
+          "name": "run",
           "type": "string",
           "unique": false,
           "required": false
@@ -1507,370 +1867,10 @@
       "description": ""
     },
     {
-      "label": "Workflow",
+      "label": "Api",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "on_push_branches",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "on_push_tags",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "on_pull_request_types",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tool",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "version",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "github_url",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "FileCategory",
-      "attributes": [
-        {
-          "name": "category_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Module",
-      "attributes": [
-        {
-          "name": "fileurl",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "filepath",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Component",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "enabled",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Content",
-      "attributes": [
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OrderEntry",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "VcsDirectoryMappings",
-      "attributes": [
-        {
-          "name": "directory",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "vcs",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ChargingProfile",
-      "attributes": [
-        {
-          "name": "charging_rate_unit",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "session_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "response_url",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Connector",
-      "attributes": [
-        {
-          "name": "format",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "standard",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "connector_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Token",
-      "attributes": [
-        {
-          "name": "contract_id",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "country_code",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "uid",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "token_uid",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Interface",
-      "attributes": [
-        {
-          "name": "role",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "VersionsData",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoVersion",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Version",
-      "attributes": [
-        {
-          "name": "version_number",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OcpiSpecification",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "documentation_url",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "specification_file",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Client",
-      "attributes": [
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Endpoint",
-      "attributes": [
-        {
-          "name": "url",
+          "name": "title",
           "type": "string",
           "unique": true,
           "required": true
@@ -1882,16 +1882,22 @@
           "required": false
         },
         {
-          "name": "method",
+          "name": "version",
           "type": "string",
           "unique": false,
           "required": false
-        },
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Server",
+      "attributes": [
         {
-          "name": "summary",
+          "name": "url",
           "type": "string",
-          "unique": false,
-          "required": false
+          "unique": true,
+          "required": true
         }
       ],
       "description": ""
@@ -1902,7 +1908,7 @@
         {
           "name": "name",
           "type": "string",
-          "unique": true,
+          "unique": false,
           "required": true
         },
         {
@@ -1918,13 +1924,13 @@
           "required": false
         },
         {
-          "name": "required",
-          "type": "boolean",
+          "name": "type",
+          "type": "string",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
-          "name": "type",
+          "name": "style",
           "type": "string",
           "unique": false,
           "required": false
@@ -1932,12 +1938,6 @@
         {
           "name": "explode",
           "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "style",
-          "type": "string",
           "unique": false,
           "required": false
         }
@@ -1950,7 +1950,7 @@
         {
           "name": "code",
           "type": "string",
-          "unique": true,
+          "unique": false,
           "required": true
         },
         {
@@ -1961,12 +1961,6 @@
         },
         {
           "name": "content_type",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "schema_ref",
           "type": "string",
           "unique": false,
           "required": false
@@ -1978,31 +1972,37 @@
       "label": "Schema",
       "attributes": [
         {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
           "name": "ref",
           "type": "string",
           "unique": true,
-          "required": true
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "RequestBody",
+      "label": "Info",
       "attributes": [
         {
-          "name": "content_type",
+          "name": "title",
           "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "schema_ref",
-          "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         },
         {
           "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "version",
           "type": "string",
           "unique": false,
           "required": false
@@ -2011,163 +2011,7 @@
       "description": ""
     },
     {
-      "label": "ClientInfo",
-      "attributes": [
-        {
-          "name": "country_code",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "party_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Location",
-      "attributes": [
-        {
-          "name": "location_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Evse",
-      "attributes": [
-        {
-          "name": "evse_uid",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Session",
-      "attributes": [
-        {
-          "name": "session_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tariff",
-      "attributes": [
-        {
-          "name": "tariff_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OcpiModule",
-      "attributes": [
-        {
-          "name": "module_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Url",
-      "attributes": [
-        {
-          "name": "url_value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ActiveChargingProfile",
-      "attributes": [
-        {
-          "name": "session_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "duration",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "response_url",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Country",
-      "attributes": [
-        {
-          "name": "code",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Party",
-      "attributes": [
-        {
-          "name": "party_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Credentials",
-      "attributes": [
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "token",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "VersionDetails",
+      "label": "Openapi",
       "attributes": [
         {
           "name": "version",
@@ -2179,10 +2023,46 @@
       "description": ""
     },
     {
-      "label": "Json",
+      "label": "RequestBody",
       "attributes": [
         {
-          "name": "package",
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ErrorResponse",
+      "attributes": [
+        {
+          "name": "error",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobStatus",
+      "attributes": [
+        {
+          "name": "status",
           "type": "string",
           "unique": true,
           "required": true
@@ -2191,10 +2071,10 @@
       "description": ""
     },
     {
-      "label": "Behavior",
+      "label": "JobType",
       "attributes": [
         {
-          "name": "report",
+          "name": "type",
           "type": "string",
           "unique": true,
           "required": true
@@ -2203,25 +2083,42 @@
       "description": ""
     },
     {
-      "label": "Individual",
+      "label": "Contact",
+      "attributes": [],
+      "description": ""
+    },
+    {
+      "label": "JsonPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Clone",
       "attributes": [
         {
           "name": "id",
           "type": "string",
           "unique": true,
-          "required": true
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "Permission",
+      "label": "Message",
       "attributes": [
         {
-          "name": "permission_name",
+          "name": "text",
           "type": "string",
           "unique": true,
-          "required": true
+          "required": false
         }
       ],
       "description": ""
@@ -2229,92 +2126,82 @@
   ],
   "relations": [
     {
-      "label": "RESPONSIBLE_FOR",
+      "label": "GENERATES",
       "source": {
-        "label": "CommunityLeader"
+        "label": "Tool"
       },
       "target": {
-        "label": "CodeOfConduct"
+        "label": "File"
+      },
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "LOCATED_IN",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Directory"
       },
       "attributes": []
     },
     {
       "label": "USES",
       "source": {
-        "label": "CodeOfConduct"
+        "label": "Template"
       },
       "target": {
-        "label": "CommunityImpactGuideline"
+        "label": "File"
+      },
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "Directory"
+      },
+      "target": {
+        "label": "File"
       },
       "attributes": []
     },
     {
-      "label": "REPORTED_TO",
+      "label": "DEFINES",
       "source": {
-        "label": "Behavior"
+        "label": "GoWorkspace"
       },
       "target": {
-        "label": "CommunityLeader"
+        "label": "Directory"
       },
       "attributes": []
     },
     {
-      "label": "ADAPTED_FROM",
+      "label": "CONTRIBUTING_TO",
       "source": {
-        "label": "CodeOfConduct"
+        "label": "Contribution"
       },
       "target": {
-        "label": "ContributorCovenant"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INSPIRED_BY",
-      "source": {
-        "label": "CommunityImpactGuideline"
-      },
-      "target": {
-        "label": "Website"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REPRESENTING_COMMUNITY",
-      "source": {
-        "label": "Individual"
-      },
-      "target": {
-        "label": "Email"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONTACT_METHOD",
-      "source": {
-        "label": "Enforcement"
-      },
-      "target": {
-        "label": "Email"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_FAQ",
-      "source": {
-        "label": "ContributorCovenant"
-      },
-      "target": {
-        "label": "Website"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_TRANSLATIONS",
-      "source": {
-        "label": "ContributorCovenant"
-      },
-      "target": {
-        "label": "Website"
+        "label": "Project"
       },
       "attributes": []
     },
@@ -2329,9 +2216,9 @@
       "attributes": []
     },
     {
-      "label": "REPORTS",
+      "label": "REPORTING",
       "source": {
-        "label": "Contributor"
+        "label": "Contribution"
       },
       "target": {
         "label": "Bug"
@@ -2339,9 +2226,9 @@
       "attributes": []
     },
     {
-      "label": "REQUESTS",
+      "label": "REQUESTING",
       "source": {
-        "label": "Contributor"
+        "label": "Contribution"
       },
       "target": {
         "label": "FeatureRequest"
@@ -2349,9 +2236,9 @@
       "attributes": []
     },
     {
-      "label": "SUBMITS",
+      "label": "SUBMIT",
       "source": {
-        "label": "Contributor"
+        "label": "Contribution"
       },
       "target": {
         "label": "PullRequest"
@@ -2364,34 +2251,14 @@
         "label": "PullRequest"
       },
       "target": {
-        "label": "InstallationProcedure"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONTRIBUTES_TO",
-      "source": {
-        "label": "Contributor"
-      },
-      "target": {
-        "label": "Project"
-      },
-      "attributes": []
-    },
-    {
-      "label": "FILES",
-      "source": {
-        "label": "Contributor"
-      },
-      "target": {
-        "label": "Issue"
+        "label": "Dependency"
       },
       "attributes": []
     },
     {
       "label": "ENSURES",
       "source": {
-        "label": "Code"
+        "label": "PullRequest"
       },
       "target": {
         "label": "Linting"
@@ -2399,12 +2266,132 @@
       "attributes": []
     },
     {
-      "label": "FORKS",
+      "label": "PROPOSE",
       "source": {
-        "label": "Contributor"
+        "label": "Change"
       },
       "target": {
-        "label": "Repository"
+        "label": "Document"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UTILIZE",
+      "source": {
+        "label": "Contribution"
+      },
+      "target": {
+        "label": "Judgment"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INSTALL",
+      "source": {
+        "label": "Dependency"
+      },
+      "target": {
+        "label": "Installation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUN",
+      "source": {
+        "label": "Code"
+      },
+      "target": {
+        "label": "Testing"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AFFECTS",
+      "source": {
+        "label": "Bug"
+      },
+      "target": {
+        "label": "Environment"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "Installation"
+      },
+      "target": {
+        "label": "ProcedureName"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BASED_ON",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "BranchName"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Issue"
+      },
+      "target": {
+        "label": "Detail"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TAKING",
+      "source": {
+        "label": "Contribution"
+      },
+      "target": {
+        "label": "Time"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_PART_OF",
+      "source": {
+        "label": "Client"
+      },
+      "target": {
+        "label": "Module"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPORTS",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Package"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_GO_MOD",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "GoMod"
       },
       "attributes": []
     },
@@ -2424,74 +2411,81 @@
         "label": "Software"
       },
       "target": {
-        "label": "Copyright"
+        "label": "CopyrightHolder"
       },
       "attributes": []
     },
     {
-      "label": "SUBJECT_TO",
+      "label": "YEAR",
       "source": {
-        "label": "Permission"
+        "label": "Software"
       },
       "target": {
-        "label": "Condition"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INCLUDES",
-      "source": {
         "label": "License"
       },
+      "attributes": [
+        {
+          "name": "year",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS_AMQP_JOB",
+      "source": {
+        "label": "Job"
+      },
       "target": {
-        "label": "Condition"
+        "label": "AmqpJob"
       },
       "attributes": []
     },
     {
-      "label": "IMPLEMENTS",
+      "label": "HAS_HTTP_JOB",
       "source": {
-        "label": "ClientLibrary"
+        "label": "Job"
       },
       "target": {
-        "label": "OcpiProtocol"
+        "label": "HttpJob"
       },
       "attributes": []
     },
     {
-      "label": "GENERATED_WITH",
+      "label": "HAS_AMQP",
       "source": {
-        "label": "ClientLibrary"
+        "label": "JobUpdate"
       },
       "target": {
-        "label": "OapiCodegen"
+        "label": "AmqpJob"
       },
       "attributes": []
     },
     {
-      "label": "HOSTED_ON",
+      "label": "HAS_HTTP",
       "source": {
-        "label": "ClientLibrary"
+        "label": "JobUpdate"
       },
       "target": {
-        "label": "GithubRepository"
+        "label": "HttpJob"
       },
       "attributes": []
     },
     {
-      "label": "CONFIGURES",
+      "label": "HAS_AUTH",
       "source": {
-        "label": "Repository"
+        "label": "HttpJob"
       },
       "target": {
-        "label": "Core"
+        "label": "Auth"
       },
       "attributes": []
     },
     {
-      "label": "HAS_REMOTE",
+      "label": "CONFIGURED_FOR",
       "source": {
-        "label": "Core"
+        "label": "Branch"
       },
       "target": {
         "label": "Remote"
@@ -2499,22 +2493,12 @@
       "attributes": []
     },
     {
-      "label": "HAS_BRANCH",
+      "label": "FETCHES_FROM",
       "source": {
-        "label": "Core"
+        "label": "Remote"
       },
       "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EDIT",
-      "source": {
         "label": "Repository"
-      },
-      "target": {
-        "label": "File"
       },
       "attributes": []
     },
@@ -2524,17 +2508,17 @@
         "label": "Reference"
       },
       "target": {
-        "label": "Head"
+        "label": "Tag"
       },
       "attributes": []
     },
     {
-      "label": "HAS",
+      "label": "VERSION",
       "source": {
-        "label": "PackRefs"
+        "label": "Module"
       },
       "target": {
-        "label": "Reference"
+        "label": "Tag"
       },
       "attributes": []
     },
@@ -2556,54 +2540,34 @@
       "target": {
         "label": "CommitMessage"
       },
+      "attributes": []
+    },
+    {
+      "label": "ADDS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "SignedOffByLine"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DETECTS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "SignedOffByLine"
+      },
       "attributes": [
         {
-          "name": "operation",
-          "type": "string",
+          "name": "duplicate",
+          "type": "boolean",
           "unique": false,
           "required": true
         }
       ]
-    },
-    {
-      "label": "CALLED_BY",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ADDS_TO",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONTAINS",
-      "source": {
-        "label": "CommitMessage"
-      },
-      "target": {
-        "label": "Line"
-      },
-      "attributes": []
-    },
-    {
-      "label": "AUTHORED_BY",
-      "source": {
-        "label": "Line"
-      },
-      "target": {
-        "label": "Author"
-      },
-      "attributes": []
     },
     {
       "label": "INTEGRATES_WITH",
@@ -2616,47 +2580,37 @@
       "attributes": []
     },
     {
-      "label": "USED_BY",
+      "label": "CONFIGURES",
       "source": {
-        "label": "HookScript"
+        "label": "GitRepository"
       },
       "target": {
-        "label": "Git"
+        "label": "HookScript"
       },
       "attributes": []
     },
     {
-      "label": "GENERATES",
+      "label": "PROVIDES",
       "source": {
         "label": "Watchman"
       },
       "target": {
-        "label": "UpdateToken"
+        "label": "ClockId"
       },
       "attributes": []
     },
     {
-      "label": "DETECTS",
+      "label": "DECODE",
       "source": {
+        "label": "JSONPackage"
+      },
+      "target": {
         "label": "Watchman"
       },
-      "target": {
-        "label": "File"
-      },
       "attributes": []
     },
     {
-      "label": "MODIFIES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GETS_CWD",
+      "label": "GETS_WORKING_DIR_FROM",
       "source": {
         "label": "HookScript"
       },
@@ -2666,47 +2620,17 @@
       "attributes": []
     },
     {
-      "label": "LAUNCHES",
+      "label": "UPDATES",
       "source": {
         "label": "HookScript"
       },
       "target": {
-        "label": "Command"
+        "label": "Repository"
       },
       "attributes": []
     },
     {
-      "label": "LOCATED_IN",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_A",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "HookType"
-      },
-      "attributes": []
-    },
-    {
-      "label": "WRITTEN_IN",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Script"
-      },
-      "attributes": []
-    },
-    {
-      "label": "APPLIES_TO",
+      "label": "PART_OF",
       "source": {
         "label": "HookScript"
       },
@@ -2716,12 +2640,32 @@
       "attributes": []
     },
     {
-      "label": "PERFORMS",
+      "label": "TRIGGERS",
       "source": {
-        "label": "Hook"
+        "label": "HookScript"
       },
       "target": {
-        "label": "GitOperation"
+        "label": "Executable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "VERIFIES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OPERATES_ON",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "File"
       },
       "attributes": []
     },
@@ -2736,89 +2680,39 @@
       "attributes": []
     },
     {
-      "label": "LOCATED_ON",
+      "label": "EXECUTED_BY",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "GitCommand"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UPDATED_TO",
       "source": {
         "label": "Commit"
       },
       "target": {
         "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "OPERATED_ON",
-      "source": {
-        "label": "PushOperation"
-      },
-      "target": {
-        "label": "Remote"
       },
       "attributes": []
     },
     {
       "label": "FORKED_FROM",
       "source": {
-        "label": "GitBranch"
+        "label": "Branch"
       },
       "target": {
-        "label": "GitBranch"
+        "label": "Branch"
       },
       "attributes": []
     },
     {
       "label": "MERGED_INTO",
       "source": {
-        "label": "GitBranch"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_COMMAND",
-      "source": {
-        "label": "ShellScript"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ANALYZES",
-      "source": {
-        "label": "ShellScript"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INVOKES",
-      "source": {
-        "label": "ShellScript"
-      },
-      "target": {
-        "label": "PerlScript"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INVOKED_BY",
-      "source": {
-        "label": "GitHook"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "UPDATES",
-      "source": {
-        "label": "GitHook"
+        "label": "Branch"
       },
       "target": {
         "label": "Branch"
@@ -2826,9 +2720,9 @@
       "attributes": []
     },
     {
-      "label": "TRIGGERS",
+      "label": "APPLIES_TO",
       "source": {
-        "label": "GitCommand"
+        "label": "Hook"
       },
       "target": {
         "label": "GitCommand"
@@ -2836,42 +2730,62 @@
       "attributes": []
     },
     {
-      "label": "UPDATES_TO",
+      "label": "WRITTEN_IN",
       "source": {
-        "label": "Branch"
+        "label": "Script"
       },
       "target": {
-        "label": "Commit"
+        "label": "Script"
       },
       "attributes": []
     },
     {
-      "label": "REFERENCES",
+      "label": "HANDLES",
       "source": {
-        "label": "GitHook"
+        "label": "Script"
       },
       "target": {
-        "label": "Commit"
+        "label": "PushOption"
       },
       "attributes": []
     },
     {
-      "label": "READS",
+      "label": "HAS_SOURCE",
       "source": {
-        "label": "GitHook"
+        "label": "CommitMessageFile"
       },
       "target": {
-        "label": "Commit"
+        "label": "CommitSource"
       },
       "attributes": []
     },
     {
-      "label": "DESCRIBES",
+      "label": "HAS_SHA1",
       "source": {
-        "label": "Repository"
+        "label": "CommitMessageFile"
       },
       "target": {
-        "label": "Commit"
+        "label": "Sha1"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LISTS_FILES",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_COMMENT_IN",
+      "source": {
+        "label": "Comment"
+      },
+      "target": {
+        "label": "File"
       },
       "attributes": []
     },
@@ -2881,74 +2795,114 @@
         "label": "GitCommand"
       },
       "target": {
-        "label": "FileExtension"
+        "label": "ExcludePattern"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FROM",
+      "source": {
+        "label": "Clone"
+      },
+      "target": {
+        "label": "Url"
       },
       "attributes": []
     },
     {
       "label": "AUTHOR",
       "source": {
-        "label": "Person"
+        "label": "CommitHash"
       },
       "target": {
-        "label": "Software"
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLONE",
+      "source": {
+        "label": "CommitHash"
+      },
+      "target": {
+        "label": "Clone"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLIENT",
+      "source": {
+        "label": "Clone"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMIT",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "CommitHash"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MESSAGE",
+      "source": {
+        "label": "CommitHash"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENT_BY",
+      "source": {
+        "label": "Email"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATED_AT",
+      "source": {
+        "label": "CommitHash"
+      },
+      "target": {
+        "label": "Timestamp"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EMAIL",
+      "source": {
+        "label": "Hash"
+      },
+      "target": {
+        "label": "Email"
       },
       "attributes": []
     },
     {
       "label": "CLONE_FROM",
       "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "AUTHORED",
-      "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "Person"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONED_FROM",
-      "source": {
-        "label": "Software"
+        "label": "Hash"
       },
       "target": {
         "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_COMMIT",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "GitCommit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_PROTOCOL",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Protocol"
       },
       "attributes": []
     },
     {
       "label": "HAS_TIMESTAMP",
       "source": {
-        "label": "GitCommit"
+        "label": "Hash"
       },
       "target": {
         "label": "Timestamp"
@@ -2966,9 +2920,9 @@
       "attributes": []
     },
     {
-      "label": "BELONGS_TO",
+      "label": "AUTHORED",
       "source": {
-        "label": "EmailAddress"
+        "label": "Commit"
       },
       "target": {
         "label": "Person"
@@ -2976,19 +2930,19 @@
       "attributes": []
     },
     {
-      "label": "COMMUNICATES_WITH",
+      "label": "COMMITTED_TO",
       "source": {
-        "label": "Software"
+        "label": "Commit"
       },
       "target": {
-        "label": "Protocol"
+        "label": "GitRepository"
       },
       "attributes": []
     },
     {
       "label": "POINTS_TO",
       "source": {
-        "label": "Reference"
+        "label": "Remote"
       },
       "target": {
         "label": "Branch"
@@ -2996,139 +2950,76 @@
       "attributes": []
     },
     {
-      "label": "REFERRED_TO",
+      "label": "DESCRIBES",
       "source": {
         "label": "YouTrackTask"
       },
       "target": {
-        "label": "ChangeType"
+        "label": "Feature"
       },
       "attributes": []
     },
     {
-      "label": "VALIDATES",
+      "label": "ON",
       "source": {
-        "label": "Tool"
+        "label": "Workflow"
       },
       "target": {
-        "label": "Specification"
+        "label": "Event"
       },
       "attributes": []
     },
     {
-      "label": "HAS_STEP",
+      "label": "TRIGGERED_BY",
+      "source": {
+        "label": "Event"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUNS_ON",
       "source": {
         "label": "Job"
       },
       "target": {
-        "label": "Step"
+        "label": "OperatingSystem"
       },
       "attributes": []
     },
     {
-      "label": "HAS_MODULE",
+      "label": "WITH",
       "source": {
-        "label": "Project"
+        "label": "Action"
       },
       "target": {
-        "label": "Module"
+        "label": "File"
       },
-      "attributes": []
+      "attributes": [
+        {
+          "name": "definition_file",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
     },
     {
-      "label": "HAS_COMPONENT",
+      "label": "HOSTED_BY",
       "source": {
-        "label": "Module"
+        "label": "Path"
       },
       "target": {
-        "label": "Component"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CONTENT",
-      "source": {
-        "label": "Module"
-      },
-      "target": {
-        "label": "Content"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_ORDER_ENTRY",
-      "source": {
-        "label": "Module"
-      },
-      "target": {
-        "label": "OrderEntry"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_MAPPING",
-      "source": {
-        "label": "VcsDirectoryMappings"
-      },
-      "target": {
-        "label": "Git"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MAPS_DIRECTORY",
-      "source": {
-        "label": "Component"
-      },
-      "target": {
-        "label": "VcsDirectoryMappings"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DEPENDS_ON",
-      "source": {
-        "label": "Module"
-      },
-      "target": {
-        "label": "Dependency"
-      },
-      "attributes": []
-    },
-    {
-      "label": "VERSION_OF",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Version"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GENERATED_FROM",
-      "source": {
-        "label": "Client"
-      },
-      "target": {
-        "label": "OcpiSpecification"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_ENDPOINT",
-      "source": {
-        "label": "Specification"
-      },
-      "target": {
-        "label": "Endpoint"
+        "label": "Server"
       },
       "attributes": []
     },
     {
       "label": "HAS_PARAMETER",
       "source": {
-        "label": "Endpoint"
+        "label": "Path"
       },
       "target": {
         "label": "Parameter"
@@ -3138,7 +3029,7 @@
     {
       "label": "HAS_RESPONSE",
       "source": {
-        "label": "Endpoint"
+        "label": "Path"
       },
       "target": {
         "label": "Response"
@@ -3158,7 +3049,7 @@
     {
       "label": "HAS_REQUEST_BODY",
       "source": {
-        "label": "Endpoint"
+        "label": "Path"
       },
       "target": {
         "label": "RequestBody"
@@ -3176,332 +3067,112 @@
       "attributes": []
     },
     {
-      "label": "SENDS_COMMAND",
+      "label": "HAS_JOB_EXECUTION",
       "source": {
-        "label": "Endpoint"
+        "label": "Job"
       },
       "target": {
-        "label": "Command"
+        "label": "JobExecution"
       },
       "attributes": []
     },
     {
-      "label": "GET_CLIENT_INFO",
+      "label": "REQUIRES_AUTH",
       "source": {
-        "label": "Endpoint"
+        "label": "HttpJob"
       },
       "target": {
-        "label": "ClientInfo"
+        "label": "Auth"
       },
       "attributes": []
     },
     {
-      "label": "MANAGES_LOCATION",
+      "label": "PART_OF_API",
       "source": {
-        "label": "Endpoint"
+        "label": "Server"
       },
       "target": {
-        "label": "Location"
+        "label": "Api"
       },
       "attributes": []
     },
     {
-      "label": "MANAGES_EVSE",
+      "label": "TAGGED_WITH",
       "source": {
-        "label": "Endpoint"
+        "label": "Path"
       },
       "target": {
-        "label": "Evse"
+        "label": "Tag"
       },
       "attributes": []
     },
     {
-      "label": "MANAGES_CONNECTOR",
+      "label": "HAS_STATUS",
       "source": {
-        "label": "Endpoint"
+        "label": "Job"
       },
       "target": {
-        "label": "Connector"
+        "label": "JobStatus"
       },
       "attributes": []
     },
     {
-      "label": "MANAGES_SESSION",
+      "label": "HAS_TYPE",
       "source": {
-        "label": "Endpoint"
+        "label": "Job"
       },
       "target": {
-        "label": "Session"
+        "label": "JobType"
       },
       "attributes": []
     },
     {
-      "label": "MANAGES_TARIFF",
+      "label": "HAS_SERVER",
       "source": {
-        "label": "Endpoint"
+        "label": "Api"
       },
       "target": {
-        "label": "Tariff"
+        "label": "Server"
       },
       "attributes": []
     },
     {
-      "label": "MANAGES_TOKEN",
+      "label": "DEFINED_IN",
       "source": {
-        "label": "Endpoint"
+        "label": "Schema"
       },
       "target": {
-        "label": "Token"
+        "label": "Api"
       },
       "attributes": []
     },
     {
-      "label": "GET_VERSIONS",
+      "label": "USES_CONTACT",
       "source": {
-        "label": "Endpoint"
+        "label": "Info"
       },
       "target": {
-        "label": "Version"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GET_VERSION_DETAILS",
-      "source": {
-        "label": "Endpoint"
-      },
-      "target": {
-        "label": "VersionDetails"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCATED_AT",
-      "source": {
-        "label": "Location"
-      },
-      "target": {
-        "label": "Country"
-      },
-      "attributes": []
-    },
-    {
-      "label": "OPERATED_BY",
-      "source": {
-        "label": "Location"
-      },
-      "target": {
-        "label": "Party"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PART_OF",
-      "source": {
-        "label": "Evse"
-      },
-      "target": {
-        "label": "Location"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONNECTED_TO",
-      "source": {
-        "label": "Connector"
-      },
-      "target": {
-        "label": "Evse"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USED_IN",
-      "source": {
-        "label": "Session"
-      },
-      "target": {
-        "label": "Location"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SUPPORTS_MODULE",
-      "source": {
-        "label": "Version"
-      },
-      "target": {
-        "label": "OcpiModule"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ENDPOINTS_AT",
-      "source": {
-        "label": "VersionDetails"
-      },
-      "target": {
-        "label": "Url"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REGISTERED_WITH",
-      "source": {
-        "label": "Credentials"
-      },
-      "target": {
-        "label": "Version"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_BEHAVIOR",
-      "source": {
-        "label": "CodeOfConduct"
-      },
-      "target": {
-        "label": "Behavior"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_ENFORCED_BY",
-      "source": {
-        "label": "CodeOfConduct"
-      },
-      "target": {
-        "label": "Enforcement"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CATEGORY",
-      "source": {
-        "label": "File"
-      },
-      "target": {
-        "label": "FileCategory"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_SCRIPT",
-      "source": {
-        "label": "GitHook"
-      },
-      "target": {
-        "label": "Script"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DEFINES",
-      "source": {
-        "label": "Git"
-      },
-      "target": {
-        "label": "Query"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_HOOK",
-      "source": {
-        "label": "Git"
-      },
-      "target": {
-        "label": "HookScript"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CREATES",
-      "source": {
-        "label": "GitOperation"
-      },
-      "target": {
-        "label": "Directory"
-      },
-      "attributes": []
-    },
-    {
-      "label": "FINDS",
-      "source": {
-        "label": "GitDirectory"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SENDS",
-      "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "Message"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REQUIRES_TESTING",
-      "source": {
-        "label": "Project"
-      },
-      "target": {
-        "label": "TestingProcedure"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SUPPORTS_SUBMIT",
-      "source": {
-        "label": "Project"
-      },
-      "target": {
-        "label": "SubmitProcedure"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_CONFIGURATION",
-      "source": {
-        "label": "Git"
-      },
-      "target": {
-        "label": "GitConfiguration"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_REFERENCE",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Git_Reference"
-      },
-      "attributes": []
-    },
-    {
-      "label": "WRITES",
-      "source": {
-        "label": "Git"
-      },
-      "target": {
-        "label": "Comment"
+        "label": "Contact"
       },
       "attributes": []
     },
     {
       "label": "HAS_TAG",
       "source": {
-        "label": "Repository"
+        "label": "Job"
       },
       "target": {
         "label": "Tag"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_OPENAPI",
+      "source": {
+        "label": "Api"
+      },
+      "target": {
+        "label": "Openapi"
       },
       "attributes": []
     }

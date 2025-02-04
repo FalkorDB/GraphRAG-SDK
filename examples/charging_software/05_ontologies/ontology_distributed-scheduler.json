@@ -1,0 +1,7623 @@
+{
+  "entities": [
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "extension",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Directory",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Configuration",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "prefix",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "api_host",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "db_host",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "db_user",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "db_name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "disable_tls",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "openapi_scheme",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "openapi_host",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "openapi_enable",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "version_build",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "version_desc",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "web_read_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "web_write_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "web_idle_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "web_shutdown_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "web_api_host",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "db_password",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "db_max_idle_conns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "db_max_open_conns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "db_disable_tls",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "interval",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_concurrent_jobs",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_job_lock_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Documentation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeOfConduct",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommunityLeader",
+      "attributes": [
+        {
+          "name": "responsibility",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Guideline",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "consequence",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ContributorCovenant",
+      "attributes": [
+        {
+          "name": "homepage",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Mozilla",
+      "attributes": [
+        {
+          "name": "code_of_conduct",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FAQ",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Translation",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Complaint",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "format_version",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "filemode",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bare",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "logallrefupdates",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "symlinks",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ignorecase",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description_file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "named",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "allow_unannotated",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allow_delete_tag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allow_modify_tag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allow_delete_branch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "deny_create_branch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "git_dir",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Issue",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PullRequest",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Team",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Bug",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeSample",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Testcase",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Change",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Feature",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Patch",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SecurityVulnerability",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Service",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "restart",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "image",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "hostname",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "container_name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Port",
+      "attributes": [
+        {
+          "name": "port_number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "host_port",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "container_port",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnvironmentVariable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Volume",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Version",
+      "attributes": [
+        {
+          "name": "version_number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Image",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Healthcheck",
+      "attributes": [
+        {
+          "name": "test_command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "interval",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "retries",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Build",
+      "attributes": [
+        {
+          "name": "context",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "dockerfile",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "command_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "command_line",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "short_description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "use",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "short",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PostgresConfiguration",
+      "attributes": [
+        {
+          "name": "user",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "database",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RabbitmqConfiguration",
+      "attributes": [
+        {
+          "name": "erlang_cookie",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "default_user",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "default_pass",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DockerCompose",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dependency",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Module",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "go_version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Library",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Api",
+      "attributes": [
+        {
+          "name": "api_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "api_host",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "read_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "write_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "idle_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "shutdown_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "swagger_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "base_path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Runner",
+      "attributes": [
+        {
+          "name": "runner_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "max_concurrent_jobs",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "instance_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "interval",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "job_lock_duration",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "job_service",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "executor_factory",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "log",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ticker",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ctx",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "job_semaphore",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tool",
+      "attributes": [
+        {
+          "name": "tool_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "System",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Guide",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Job",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "runs_on",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "updated_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cron_schedule",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "execute_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "next_run",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tags",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "http_job",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "amqp_job",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "locked_until",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "locked_by",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "id_must_be_valid_uuid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "fields_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "schedule_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Remote",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Reference",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Head",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tag",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "annotated",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "tag_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HookScript",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessage",
+      "attributes": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Line",
+      "attributes": [
+        {
+          "name": "text",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitCommand",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "command_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Author",
+      "attributes": [
+        {
+          "name": "author_ident",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SedCommand",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Watchman",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Git",
+      "attributes": [
+        {
+          "name": "core_fsmonitor",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Query",
+      "attributes": [
+        {
+          "name": "expression",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "since",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "fields",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "statement",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "WorkingDirectory",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Clock",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JSONPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OperatingSystem",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FilePath",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ShellScript",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitConfiguration",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FileSystem",
+      "attributes": [
+        {
+          "name": "encoding",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "hook_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExitCode",
+      "attributes": [
+        {
+          "name": "code",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "meaning",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "script_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Error",
+      "attributes": [
+        {
+          "name": "error_message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHookScript",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "oid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ref",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogMessage",
+      "attributes": [
+        {
+          "name": "pattern",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitBranch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TopicBranch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Operation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "summary",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PushOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitVariable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PerlCommand",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Variable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConfigurationVariable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Index",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ref",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "old_revision",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "new_revision",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TrackingBranch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExcludePattern",
+      "attributes": [
+        {
+          "name": "pattern",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Comment",
+      "attributes": [
+        {
+          "name": "text",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Software",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Timestamp",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "time",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Scheduler",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Email",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Timezone",
+      "attributes": [
+        {
+          "name": "offset",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChangeType",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Contributor",
+      "attributes": [
+        {
+          "name": "username",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ContributingDocument",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CLA",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Test",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "db_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Workflow",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "on_push_branches",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "on_push_paths_ignore",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "on_pull_request_branches",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Event",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Action",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Path",
+      "attributes": [
+        {
+          "name": "path_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AwsCredential",
+      "attributes": [
+        {
+          "name": "aws_access_key_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "aws_secret_access_key",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "aws_region",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DockerImage",
+      "attributes": [
+        {
+          "name": "file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "registry",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Cache",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Step",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "run",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoVersion",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Golang",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AlpineLinux",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoLangRuntime",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AlpineLinuxRuntime",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoModule",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoSum",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoSwaggo",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "package_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoApplication",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "source_path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SourceCode",
+      "attributes": [
+        {
+          "name": "location",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Binary",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SwaggerDocs",
+      "attributes": [
+        {
+          "name": "generation_command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Application",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Database",
+      "attributes": [
+        {
+          "name": "host",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "user",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_idle_conns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max_open_conns",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "disable_tls",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "database_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Openapi",
+      "attributes": [
+        {
+          "name": "scheme",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "enable",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Logger",
+      "attributes": [
+        {
+          "name": "log_level",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "level",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "logger_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HTTPServer",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "read_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "write_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "idle_timeout",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobService",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "get_err",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "fin_err",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExecutorFactory",
+      "attributes": [
+        {
+          "name": "timeout",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "execute_err",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "factory_err",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Package",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Function",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Import",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tooling",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CliTool",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Os",
+      "attributes": [
+        {
+          "name": "package_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Cobra",
+      "attributes": [
+        {
+          "name": "package_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpJob",
+      "attributes": [
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "valid_response_codes",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "headers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "endpoint",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "http_method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AmqpJob",
+      "attributes": [
+        {
+          "name": "connection",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "exchange",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "routing_key",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body_encoding",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "headers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Auth",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "bearer_token",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type_must_be_valid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobExecution",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "job_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "start_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "end_time",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "success",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "error_message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "stop_time",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ErrorResponse",
+      "attributes": [
+        {
+          "name": "error",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Parameter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "in",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "required",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Response",
+      "attributes": [
+        {
+          "name": "code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HTTPJob",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "headers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "valid_response_codes",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url_cannot_be_empty",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "method_cannot_be_empty",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AMQPJob",
+      "attributes": [
+        {
+          "name": "connection",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "exchange",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "routing_key",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body_encoding",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "headers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "exchange_must_be_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "routing_key_must_be_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobType",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "job_type_http",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "job_type_amqp",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "is_http_or_amqp",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobStatus",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "is_valid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ManagementApi",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RunnerService",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PostgresDatabase",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Executor",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "executor_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "interface",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "err",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OneOffJob",
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RecurringJob",
+      "attributes": [
+        {
+          "name": "cron_schedule",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LockingMechanism",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RetryMechanism",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "WebServerParameter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "default_value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DatabaseConnectionParameter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "default_value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OpenApiParameter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "default_value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RunnerParameter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "default_value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProgrammingLanguage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HTTPExecutor",
+      "attributes": [
+        {
+          "name": "client",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AMQPExecutor",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HTTPRequest",
+      "attributes": [
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HTTPResponse",
+      "attributes": [
+        {
+          "name": "status_code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AMQPConnection",
+      "attributes": [
+        {
+          "name": "connection_string",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AMQPMessage",
+      "attributes": [
+        {
+          "name": "exchange",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "routing_key",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body_encoding",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Header",
+      "attributes": [
+        {
+          "name": "key",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BodyEncoding",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "is_valid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Client",
+      "attributes": [
+        {
+          "name": "client_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpHeader",
+      "attributes": [
+        {
+          "name": "content_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Authentication",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "username",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpExecutor",
+      "attributes": [
+        {
+          "name": "client",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpResponse",
+      "attributes": [
+        {
+          "name": "status_code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Status",
+      "attributes": [
+        {
+          "name": "code",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Context",
+      "attributes": [
+        {
+          "name": "context",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timeout",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "context_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ctx",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Base64",
+      "attributes": [
+        {
+          "name": "encoding",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Credential",
+      "attributes": [
+        {
+          "name": "username",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthorizationHeader",
+      "attributes": [
+        {
+          "name": "header",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Factory",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "field",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpClient",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Option",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RetryOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "RetryExecutor",
+      "attributes": [
+        {
+          "name": "executor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Backoff",
+      "attributes": [
+        {
+          "name": "max_retries",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "exponential_backoff",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MockExecutor",
+      "attributes": [
+        {
+          "name": "call_count",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "should_fail",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "failures_left",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Config",
+      "attributes": [
+        {
+          "name": "user",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "password",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "max_idle_conns",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_open_conns",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "disable_tls",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "job_service",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "executor_factory",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "log",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "instance_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "interval",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "max_concurrent_jobs",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "job_lock_duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "URL",
+      "attributes": [
+        {
+          "name": "scheme",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "raw_query",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Connection",
+      "attributes": [
+        {
+          "name": "ssl_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Time",
+      "attributes": [
+        {
+          "name": "duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "time_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "now",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "at",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "locked_until",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Migration",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Darwin",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Driver",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SqlxDB",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobExecutionStatus",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Table",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DockerContainer",
+      "attributes": [
+        {
+          "name": "image",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "port",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "container_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Container",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NetworkSetting",
+      "attributes": [
+        {
+          "name": "host_ip",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "host_port",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Docker",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IPAddress",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Log",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JSON",
+      "attributes": [
+        {
+          "name": "data",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Process",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogLevel",
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Encoder",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Zapcore",
+      "attributes": [
+        {
+          "name": "package",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Stdout",
+      "attributes": [
+        {
+          "name": "stream",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Stderr",
+      "attributes": [
+        {
+          "name": "stream",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Otelzap",
+      "attributes": [
+        {
+          "name": "package",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "APIMuxConfig",
+      "attributes": [
+        {
+          "name": "log",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "db",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "openapi",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Router",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobStore",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobsHandler",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HealthCheck",
+      "attributes": [
+        {
+          "name": "endpoint",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OpenApiConfig",
+      "attributes": [
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "scheme",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HandlerFunc",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Gin",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Middleware",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HTTP",
+      "attributes": [
+        {
+          "name": "status_code",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Route",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SwaggerInfo",
+      "attributes": [
+        {
+          "name": "schemes",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GinEngine",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BasicAuth",
+      "attributes": [
+        {
+          "name": "username_must_be_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "password_must_be_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BearerAuth",
+      "attributes": [
+        {
+          "name": "token_must_be_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CustomError",
+      "attributes": [
+        {
+          "name": "code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CronSchedule",
+      "attributes": [
+        {
+          "name": "is_valid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExecuteAt",
+      "attributes": [
+        {
+          "name": "is_in_the_future",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResponseCode",
+      "attributes": [
+        {
+          "name": "is_valid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JobId",
+      "attributes": [
+        {
+          "name": "is_valid_uuid",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusCode",
+      "attributes": [
+        {
+          "name": "code",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthMethod",
+      "attributes": [
+        {
+          "name": "is_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AuthType",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Constant",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Testing",
+      "attributes": [
+        {
+          "name": "t",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "test_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Instance",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "instance_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Postgres",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "package_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DBTest",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Model",
+      "attributes": [
+        {
+          "name": "model_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "job_type",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "job_status",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Stack",
+      "attributes": [
+        {
+          "name": "stack_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UUID",
+      "attributes": [
+        {
+          "name": "uuid_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "String",
+      "attributes": [
+        {
+          "name": "string_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Integer",
+      "attributes": [
+        {
+          "name": "integer_value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Boolean",
+      "attributes": [
+        {
+          "name": "boolean_value",
+          "type": "boolean",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Storer",
+      "attributes": [
+        {
+          "name": "interface_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Uuid",
+      "attributes": [
+        {
+          "name": "uuid_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Uint64",
+      "attributes": [
+        {
+          "name": "uint64_value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Uint",
+      "attributes": [
+        {
+          "name": "uint_value",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NullTime",
+      "attributes": [
+        {
+          "name": "is_null",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Transaction",
+      "attributes": [
+        {
+          "name": "transaction_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Jobdb",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "execute_at",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cron_schedule",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "created_at",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "updated_at",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Httpjob",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "auth_type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "auth_password",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "auth_username",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "auth_bearer_token",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "headers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PgStore",
+      "attributes": [
+        {
+          "name": "db",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "log",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NullString",
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SqlxDb",
+      "attributes": [
+        {
+          "name": "db",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OtelsapLogger",
+      "attributes": [
+        {
+          "name": "log",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Store",
+      "attributes": [
+        {
+          "name": "storer",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExecutionDb",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "Directory"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TYPE_OF",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "RESPONSIBLE_FOR",
+      "source": {
+        "label": "CommunityLeader"
+      },
+      "target": {
+        "label": "CodeOfConduct"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "FOLLOWS",
+      "source": {
+        "label": "CommunityLeader"
+      },
+      "target": {
+        "label": "Guideline"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADAPTED_FROM",
+      "source": {
+        "label": "CodeOfConduct"
+      },
+      "target": {
+        "label": "ContributorCovenant"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INSPIRED_BY",
+      "source": {
+        "label": "Guideline"
+      },
+      "target": {
+        "label": "Mozilla"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_FAQ",
+      "source": {
+        "label": "CodeOfConduct"
+      },
+      "target": {
+        "label": "FAQ"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TRANSLATION",
+      "source": {
+        "label": "CodeOfConduct"
+      },
+      "target": {
+        "label": "Translation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REPORTED_TO",
+      "source": {
+        "label": "Complaint"
+      },
+      "target": {
+        "label": "CommunityLeader"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REPORTS",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "Bug"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATES",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "Issue"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROPOSES",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "PullRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RESPONSIBLE",
+      "source": {
+        "label": "Team"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDRESSES",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "Issue"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "Change"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Port"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "EnvironmentVariable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Version"
+      },
+      "target": {
+        "label": "Service"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PORT",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Port"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ENVIRONMENT_VARIABLE",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "EnvironmentVariable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_VOLUME",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Volume"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_IMAGE",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Image"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_HEALTHCHECK",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Healthcheck"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_BUILD",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Build"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COMMAND",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURES",
+      "source": {
+        "label": "Service"
+      },
+      "target": {
+        "label": "PostgresConfiguration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_VERSION",
+      "source": {
+        "label": "DockerCompose"
+      },
+      "target": {
+        "label": "Service"
+      },
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "REQUIRES",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Library"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUPPORTS",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_MODULE",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Module"
+      },
+      "attributes": []
+    },
+    {
+      "label": "VERSION_OF",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Version"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BUILDS",
+      "source": {
+        "label": "Api"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUNS",
+      "source": {
+        "label": "Api"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MIGRATES",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "Api"
+      },
+      "attributes": [
+        {
+          "name": "host",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "GENERATES",
+      "source": {
+        "label": "Tool"
+      },
+      "target": {
+        "label": "Api"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONSISTS_OF",
+      "source": {
+        "label": "System"
+      },
+      "target": {
+        "label": "Api"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_LOCATED_IN",
+      "source": {
+        "label": "Guide"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MANAGES",
+      "source": {
+        "label": "System"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ALLOWS",
+      "source": {
+        "label": "System"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURED_FOR",
+      "source": {
+        "label": "Remote"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MERGED_INTO",
+      "source": {
+        "label": "Branch"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EDIT",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REFERS_TO",
+      "source": {
+        "label": "Reference"
+      },
+      "target": {
+        "label": "Head"
+      },
+      "attributes": []
+    },
+    {
+      "label": "POINTS_TO",
+      "source": {
+        "label": "Reference"
+      },
+      "target": {
+        "label": "Module"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOCATED_AT",
+      "source": {
+        "label": "Reference"
+      },
+      "target": {
+        "label": "Tag"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOCATED_IN",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTED_BY",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "ShellScript"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AUTHORED_BY",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "Author"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "SedCommand"
+      },
+      "target": {
+        "label": "GitCommand"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INTEGRATES_WITH",
+      "source": {
+        "label": "Watchman"
+      },
+      "target": {
+        "label": "Git"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS",
+      "source": {
+        "label": "Watchman"
+      },
+      "target": {
+        "label": "Query"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROVIDES",
+      "source": {
+        "label": "Query"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GETS_WORKING_DIRECTORY_FROM",
+      "source": {
+        "label": "WorkingDirectory"
+      },
+      "target": {
+        "label": "OperatingSystem"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UPDATES",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PREPARES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WRITTEN_IN",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "ShellScript"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHECKS",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXISTS_WITH",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "ExitCode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TRIGGERS",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPLEMENTED_BY",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPLIES_TO",
+      "source": {
+        "label": "GitConfiguration"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INVOLVES",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPACTS",
+      "source": {
+        "label": "Error"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ENCODING",
+      "source": {
+        "label": "Repository"
+      },
+      "target": {
+        "label": "FileSystem"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CALLED_BY",
+      "source": {
+        "label": "GitHookScript"
+      },
+      "target": {
+        "label": "GitCommand"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUSHED_TO",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXAMINES",
+      "source": {
+        "label": "GitHookScript"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USED_IN",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "GitHookScript"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPLIED_TO",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FORKS_FROM",
+      "source": {
+        "label": "TopicBranch"
+      },
+      "target": {
+        "label": "GitBranch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTROLS",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Operation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CALLED_WITH",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "GitBranch"
+      },
+      "attributes": [
+        {
+          "name": "parameter_position",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "READS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "GitVariable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WRITES_TO",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SETS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Variable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUSHES_TO",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHECKED_OUT_TO",
+      "source": {
+        "label": "Branch"
+      },
+      "target": {
+        "label": "WorkingDirectory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AUTHORED",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMITTED_AT",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Timestamp"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLONED_FROM",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_A",
+      "source": {
+        "label": "Distributed"
+      },
+      "target": {
+        "label": "Scheduler"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WROTE",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENT",
+      "source": {
+        "label": "Email"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INTRODUCES",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "ChangeType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "READ",
+      "source": {
+        "label": "Contributor"
+      },
+      "target": {
+        "label": "ContributingDocument"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SIGNED",
+      "source": {
+        "label": "Contributor"
+      },
+      "target": {
+        "label": "CLA"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PASSES",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "Test"
+      },
+      "attributes": [
+        {
+          "name": "location",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "ADDED",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "Documentation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MERGED_AND_PUBLISHED_IN",
+      "source": {
+        "label": "PullRequest"
+      },
+      "target": {
+        "label": "Module"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ON_PUSH",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Event"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_JOB",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ACTION",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Action"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURES_CREDENTIALS",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "AwsCredential"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOGS_INTO",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "DockerImage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_CACHE",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Cache"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BUILDS_AND_PUSHES",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "DockerImage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IGNORE_PATH",
+      "source": {
+        "label": "Event"
+      },
+      "target": {
+        "label": "Path"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES_TAG",
+      "source": {
+        "label": "Event"
+      },
+      "target": {
+        "label": "Tag"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STEP",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DOWNLOADS",
+      "source": {
+        "label": "WorkingDirectory"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": []
+    },
+    {
+      "label": "VERIFIES",
+      "source": {
+        "label": "WorkingDirectory"
+      },
+      "target": {
+        "label": "Dependency"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COPIES",
+      "source": {
+        "label": "DockerImage"
+      },
+      "target": {
+        "label": "GoModule"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INSTALLS",
+      "source": {
+        "label": "DockerImage"
+      },
+      "target": {
+        "label": "GoSwaggo"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SETS_COMMAND",
+      "source": {
+        "label": "DockerImage"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONFIGURATION",
+      "source": {
+        "label": "Application"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXPOSES",
+      "source": {
+        "label": "Application"
+      },
+      "target": {
+        "label": "Api"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_LOGGER",
+      "source": {
+        "label": "Application"
+      },
+      "target": {
+        "label": "Logger"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROVIDES_API",
+      "source": {
+        "label": "HTTPServer"
+      },
+      "target": {
+        "label": "JobService"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INITIALIZES",
+      "source": {
+        "label": "Runner"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPORTS",
+      "source": {
+        "label": "Package"
+      },
+      "target": {
+        "label": "Import"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BELONGS_TO",
+      "source": {
+        "label": "Tooling"
+      },
+      "target": {
+        "label": "Package"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDS_COMMAND",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_ROOT",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "CliTool"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXISTS",
+      "source": {
+        "label": "Os"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_HTTP_JOB",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "HttpJob"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_AMQP_JOB",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "AmqpJob"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUIRES_AUTH",
+      "source": {
+        "label": "HttpJob"
+      },
+      "target": {
+        "label": "Auth"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PARAMETER",
+      "source": {
+        "label": "Path"
+      },
+      "target": {
+        "label": "Parameter"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESPONSE",
+      "source": {
+        "label": "Path"
+      },
+      "target": {
+        "label": "Response"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TYPE",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STATUS",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobStatus"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTION",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobExecution"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMPOSED_OF",
+      "source": {
+        "label": "Scheduler"
+      },
+      "target": {
+        "label": "ManagementApi"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STORES",
+      "source": {
+        "label": "RunnerService"
+      },
+      "target": {
+        "label": "PostgresDatabase"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FETCHES",
+      "source": {
+        "label": "RunnerService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LEVERAGES",
+      "source": {
+        "label": "Scheduler"
+      },
+      "target": {
+        "label": "LockingMechanism"
+      },
+      "attributes": []
+    },
+    {
+      "label": "QUERIES",
+      "source": {
+        "label": "RunnerService"
+      },
+      "target": {
+        "label": "PostgresDatabase"
+      },
+      "attributes": [
+        {
+          "name": "jobs_due",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "PERFORMS",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTE",
+      "source": {
+        "label": "HTTPExecutor"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATE",
+      "source": {
+        "label": "HTTPExecutor"
+      },
+      "target": {
+        "label": "HTTPRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SEND",
+      "source": {
+        "label": "HTTPExecutor"
+      },
+      "target": {
+        "label": "HTTPRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RECEIVE",
+      "source": {
+        "label": "HTTPExecutor"
+      },
+      "target": {
+        "label": "HTTPResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUBLISH",
+      "source": {
+        "label": "AMQPExecutor"
+      },
+      "target": {
+        "label": "AMQPMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONNECT",
+      "source": {
+        "label": "AMQPExecutor"
+      },
+      "target": {
+        "label": "AMQPConnection"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ENCODED_WITH",
+      "source": {
+        "label": "AMQPMessage"
+      },
+      "target": {
+        "label": "BodyEncoding"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_HEADER",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "HttpHeader"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUIRES_AUTHENTICATION",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Authentication"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RETURNS",
+      "source": {
+        "label": "HttpExecutor"
+      },
+      "target": {
+        "label": "HttpResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WITH_CONTEXT",
+      "source": {
+        "label": "HttpExecutor"
+      },
+      "target": {
+        "label": "Context"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ENCODES",
+      "source": {
+        "label": "Base64"
+      },
+      "target": {
+        "label": "Credential"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDS_AUTHORIZATION",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "AuthorizationHeader"
+      },
+      "attributes": []
+    },
+    {
+      "label": "NEW_EXECUTOR",
+      "source": {
+        "label": "Factory"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTOR_TYPE",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPLEMENTS",
+      "source": {
+        "label": "AMQPExecutor"
+      },
+      "target": {
+        "label": "Executor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MODIFIES",
+      "source": {
+        "label": "Option"
+      },
+      "target": {
+        "label": "Executor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WITH_RETRY",
+      "source": {
+        "label": "Factory"
+      },
+      "target": {
+        "label": "RetryOption"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPLIES",
+      "source": {
+        "label": "RetryExecutor"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTES_IN",
+      "source": {
+        "label": "Executor"
+      },
+      "target": {
+        "label": "Context"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHECKS_STATUS",
+      "source": {
+        "label": "Database"
+      },
+      "target": {
+        "label": "Context"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RELATES_TO",
+      "source": {
+        "label": "Context"
+      },
+      "target": {
+        "label": "Time"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MIGRATE",
+      "source": {
+        "label": "Migration"
+      },
+      "target": {
+        "label": "Database"
+      },
+      "attributes": []
+    },
+    {
+      "label": "NEW",
+      "source": {
+        "label": "Generic"
+      },
+      "target": {
+        "label": "Driver"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXECUTION",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobExecution"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REFERENCES",
+      "source": {
+        "label": "JobExecution"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ON_TABLE",
+      "source": {
+        "label": "Index"
+      },
+      "target": {
+        "label": "Table"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STARTS",
+      "source": {
+        "label": "DockerContainer"
+      },
+      "target": {
+        "label": "Database"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STOPS",
+      "source": {
+        "label": "DockerContainer"
+      },
+      "target": {
+        "label": "Database"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STARTS_CONTAINER",
+      "source": {
+        "label": "Docker"
+      },
+      "target": {
+        "label": "Container"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_IMAGE",
+      "source": {
+        "label": "Container"
+      },
+      "target": {
+        "label": "Image"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXPOSES_PORT",
+      "source": {
+        "label": "Container"
+      },
+      "target": {
+        "label": "Port"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUNS_COMMAND",
+      "source": {
+        "label": "OperatingSystem"
+      },
+      "target": {
+        "label": "Command"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INSPECTS_CONTAINER",
+      "source": {
+        "label": "Docker"
+      },
+      "target": {
+        "label": "Container"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_NETWORK_SETTING",
+      "source": {
+        "label": "Container"
+      },
+      "target": {
+        "label": "NetworkSetting"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STOPS_CONTAINER",
+      "source": {
+        "label": "Docker"
+      },
+      "target": {
+        "label": "Container"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REMOVES_CONTAINER",
+      "source": {
+        "label": "Docker"
+      },
+      "target": {
+        "label": "Container"
+      },
+      "attributes": []
+    },
+    {
+      "label": "JOINS_HOST_PORT",
+      "source": {
+        "label": "IPAddress"
+      },
+      "target": {
+        "label": "Port"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DUMPS_CONTAINER_LOGS",
+      "source": {
+        "label": "Docker"
+      },
+      "target": {
+        "label": "Log"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UNMARSHALS_JSON",
+      "source": {
+        "label": "JSON"
+      },
+      "target": {
+        "label": "NetworkSetting"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MOUNTS",
+      "source": {
+        "label": "Router"
+      },
+      "target": {
+        "label": "OpenApiConfig"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HANDLES",
+      "source": {
+        "label": "APIMux"
+      },
+      "target": {
+        "label": "HTTPRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RECEIVES",
+      "source": {
+        "label": "JobsHandler"
+      },
+      "target": {
+        "label": "HTTPResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GET",
+      "source": {
+        "label": "GinEngine"
+      },
+      "target": {
+        "label": "Route"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HANDLER",
+      "source": {
+        "label": "Route"
+      },
+      "target": {
+        "label": "SwaggerInfo"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ERROR",
+      "source": {
+        "label": "CustomError"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_TYPE",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_HTTP",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "HTTPJob"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_AMQP",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "AMQPJob"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUIRES_BASIC",
+      "source": {
+        "label": "AuthMethod"
+      },
+      "target": {
+        "label": "BasicAuth"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUIRES_BEARER",
+      "source": {
+        "label": "AuthMethod"
+      },
+      "target": {
+        "label": "BearerAuth"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CRON_SCHEDULE",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "CronSchedule"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXECUTE_AT",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "ExecuteAt"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESPONSE_CODE",
+      "source": {
+        "label": "CustomError"
+      },
+      "target": {
+        "label": "StatusCode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_BODY_ENCODING",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "BodyEncoding"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ID",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobId"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_JOB_TYPE",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TESTED_BY",
+      "source": {
+        "label": "Error"
+      },
+      "target": {
+        "label": "Test"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXPECTED",
+      "source": {
+        "label": "Error"
+      },
+      "target": {
+        "label": "Status"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INVALID",
+      "source": {
+        "label": "Error"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_AUTH",
+      "source": {
+        "label": "HttpJob"
+      },
+      "target": {
+        "label": "Auth"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STATUS_OF",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "JobStatus"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ENCODING_OF",
+      "source": {
+        "label": "AmqpJob"
+      },
+      "target": {
+        "label": "BodyEncoding"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_AUTH_TYPE",
+      "source": {
+        "label": "Auth"
+      },
+      "target": {
+        "label": "AuthType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GET_JOBS_TO_RUN",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FINISH_JOB_EXECUTION",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ASSERT_JOBS_PROCESSED",
+      "source": {
+        "label": "Testing"
+      },
+      "target": {
+        "label": "JobService"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXECUTOR",
+      "source": {
+        "label": "ExecutorFactory"
+      },
+      "target": {
+        "label": "Executor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXECUTOR_FACTORY",
+      "source": {
+        "label": "Runner"
+      },
+      "target": {
+        "label": "ExecutorFactory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_JOB_SERVICE",
+      "source": {
+        "label": "Runner"
+      },
+      "target": {
+        "label": "JobService"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FINISHES_JOB_EXECUTION",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STOPS_WITH",
+      "source": {
+        "label": "Runner"
+      },
+      "target": {
+        "label": "Context"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATE_JOB",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GET_JOB",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UPDATE_JOB",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LIST_JOBS",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DELETE_JOB",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GET_JOB_EXECUTIONS",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "JobExecution"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_DATABASE",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Postgres"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_CONTEXT",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Context"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SCHEDULED_BY",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Time"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PART_OF_TEST",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Test"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUNS_ON",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Instance"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTAINERIZES",
+      "source": {
+        "label": "DBTest"
+      },
+      "target": {
+        "label": "DockerContainer"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TESTS",
+      "source": {
+        "label": "Testing"
+      },
+      "target": {
+        "label": "Test"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_UUID",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "UUID"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STRING",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "String"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_INTEGER",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Integer"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_BOOLEAN",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Boolean"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_STACK",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Stack"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_TIME",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Time"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_DATABASE",
+      "source": {
+        "label": "Postgres"
+      },
+      "target": {
+        "label": "Database"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STACK",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Stack"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_MODEL",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Model"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SCHEDULES",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Time"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOGS",
+      "source": {
+        "label": "JobService"
+      },
+      "target": {
+        "label": "Stack"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FINISH_JOB",
+      "source": {
+        "label": "Storer"
+      },
+      "target": {
+        "label": "Job"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATE_JOB_EXECUTION",
+      "source": {
+        "label": "Storer"
+      },
+      "target": {
+        "label": "JobExecution"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TAGS",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "String"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ROLLBACK",
+      "source": {
+        "label": "Transaction"
+      },
+      "target": {
+        "label": "Postgres"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_HTTPJOB",
+      "source": {
+        "label": "Jobdb"
+      },
+      "target": {
+        "label": "Httpjob"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TYPE",
+      "source": {
+        "label": "Jobdb"
+      },
+      "target": {
+        "label": "Model"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STATUS",
+      "source": {
+        "label": "Jobdb"
+      },
+      "target": {
+        "label": "Model"
+      },
+      "attributes": []
+    }
+  ]
+}
