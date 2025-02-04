@@ -27,7 +27,7 @@ class TestKGLiteLLM(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Get the model name from the environment variable
-        model_name = os.getenv("TEST_MODEL", "gemini/gemini-1.5-flash-001")
+        model_name = os.getenv("TEST_MODEL", "gemini/gemini-2.0-flash-exp")
 
         cls.ontology = Ontology()
 
@@ -92,20 +92,20 @@ class TestKGLiteLLM(unittest.TestCase):
         self.kg.process_sources(sources)
         inputs = [
             "How many actors acted in a movie?",
-            "Which actors acted in the movie Madoff: The Monster of Wall Street?",
-            "What is the role of Joseph Scotto in the movie Madoff: The Monster of Wall Street?",
-            "Did Donna Pastorello act in Madoff: The Monster of Wall Street?",
-            "Who played the role of Mark Madoff in Madoff: The Monster of Wall Street?",
-            "Did Melony Feliciano have a named role in Madoff: The Monster of Wall Street?",
+            "Which actors acted in a movie?",
+            "What is the role of Joseph Scotto in a movie?",
+            "Did Donna Pastorello act in a movie?",
+            "Who played the role of Mark Madoff in a movie?",
+            "Did Melony Feliciano have a named role in a movie?",
         ]
 
         expected_outputs = [
             "Over than 10 actors acted in a movie.",
-            "Joseph Scotto, Melony Feliciano, and Donna Pastorello acted in the movie Madoff: The Monster of Wall Street.",
-            "Joseph Scotto played the role of Bernie Madoff in Madoff: The Monster of Wall Street.",
-            "Yes, Donna Pastorello acted in Madoff: The Monster of Wall Street as Eleanor Squillari.",
-            "Alex Olson played the role of Mark Madoff in Madoff: The Monster of Wall Street.",
-            "No, Melony Feliciano acted as a background extra in Madoff: The Monster of Wall Street.",
+            "Joseph Scotto, Melony Feliciano, and Donna Pastorello acted in a movie",
+            "Joseph Scotto played the role of Bernie Madoff in a movie.",
+            "Yes, Donna Pastorello acted in a movie as Eleanor Squillari.",
+            "Alex Olson played the role of Mark Madoff in a movie.",
+            "No, Melony Feliciano acted as a background extra in a movie.",
         ]
         answer_combined_metric = CombineMetrics(threshold=0.5)
         scores = []
