@@ -29,7 +29,7 @@ class TestKGLiteLLM(unittest.TestCase):
         # Get the model name from the environment variable
         model_name = os.getenv("TEST_MODEL", "gemini/gemini-2.0-flash-exp")
 
-        cls.ontology = Ontology([], [])
+        cls.ontology = Ontology()
 
         cls.ontology.add_entity(
             Entity(
@@ -67,7 +67,7 @@ class TestKGLiteLLM(unittest.TestCase):
                         name="role",
                         attr_type=AttributeType.STRING,
                         unique=False,
-                        required=False,
+                        required=True,
                     ),
                 ],
             )
@@ -85,15 +85,15 @@ class TestKGLiteLLM(unittest.TestCase):
         )
 
     def test_llm(self):
-        file_path = "tests/data/madoff.txt"
+        url = "https://www.imdb.com/title/tt23732458/"
 
-        sources = [Source(file_path)]
+        sources = [Source(url)]
 
         self.kg.process_sources(sources)
         inputs = [
             "How many actors acted in a movie?",
             "Which actors acted in the movie Madoff: The Monster of Wall Street?",
-            "What is the role of Joseph Scotto in Madoff: The Monster of Wall Street?",
+            "What is the role of Joseph Scotto in the movie Madoff: The Monster of Wall Street?",
             "Did Donna Pastorello act in Madoff: The Monster of Wall Street?",
             "Who played the role of Mark Madoff in Madoff: The Monster of Wall Street?",
             "Did Melony Feliciano have a named role in Madoff: The Monster of Wall Street?",
@@ -107,7 +107,6 @@ class TestKGLiteLLM(unittest.TestCase):
             "Alex Olson played the role of Mark Madoff in Madoff: The Monster of Wall Street.",
             "No, Melony Feliciano acted as a background extra in Madoff: The Monster of Wall Street.",
         ]
-
         answer_combined_metric = CombineMetrics(threshold=0.5)
         scores = []
 

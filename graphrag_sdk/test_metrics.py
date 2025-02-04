@@ -47,15 +47,14 @@ class CombineMetrics(BaseMetric):
 
     def measure(self, test_case: LLMTestCase):
         try:
-            relevancy_metric, faithfulness_metric, graph_context_recall_metric, graph_context_relevancy_metric = self.initialize_metrics()
+            graph_context_recall_metric, graph_context_relevancy_metric = self.initialize_metrics()
             # Remember, deepeval's default metrics follow the same pattern as your custom metric!
+            # relevancy_metric.measure(test_case)
             graph_context_relevancy_metric.measure(test_case)
             graph_context_recall_metric.measure(test_case)
-            relevancy_metric.measure(test_case)
-            faithfulness_metric.measure(test_case)
-
+            
             # Custom logic to set score, reason, and success
-            self.set_score_reason_success(relevancy_metric, faithfulness_metric, graph_context_recall_metric, graph_context_relevancy_metric)
+            self.set_score_reason_success(graph_context_recall_metric, graph_context_relevancy_metric)
             return self.score
         except Exception as e:
             # Set and re-raise error
@@ -71,7 +70,7 @@ class CombineMetrics(BaseMetric):
 
     @property
     def __name__(self):
-        return "Composite Relevancy Faithfulness Metric"
+        return "Composite Graph Context Metric"
 
 
     ######################
@@ -92,46 +91,39 @@ class CombineMetrics(BaseMetric):
             strict_mode=self.strict_mode
         )
         
-        relevancy_metric = AnswerRelevancyMetric(
-            threshold=self.threshold,
-            model=self.evaluation_model,
-            include_reason=self.include_reason,
-            async_mode=self.async_mode,
-            strict_mode=self.strict_mode
-        )
-        faithfulness_metric = FaithfulnessMetric(
-            threshold=self.threshold,
-            model=self.evaluation_model,
-            include_reason=self.include_reason,
-            async_mode=self.async_mode,
-            strict_mode=self.strict_mode
-        )
-        return relevancy_metric, faithfulness_metric, graph_context_recall_metric, graph_context_relevancy_metric
+        # relevancy_metric = AnswerRelevancyMetric(
+        #     threshold=self.threshold,
+        #     model=self.evaluation_model,
+        #     include_reason=self.include_reason,
+        #     async_mode=self.async_mode,
+        #     strict_mode=self.strict_mode
+        # )
+        # faithfulness_metric = FaithfulnessMetric(
+        #     threshold=self.threshold,
+        #     model=self.evaluation_model,
+        #     include_reason=self.include_reason,
+        #     async_mode=self.async_mode,
+        #     strict_mode=self.strict_mode
+        # )
+        return graph_context_recall_metric, graph_context_relevancy_metric
 
     def set_score_reason_success(
         self,
-        relevancy_metric: BaseMetric,
-        faithfulness_metric: BaseMetric,
         graph_context_recall_metric: BaseMetric,
         graph_context_relevancy_metric: BaseMetric,
     ):
-        # Get scores and reasons for both
-        relevancy_score = relevancy_metric.score
-        relevancy_reason = relevancy_metric.reason
-        faithfulness_score = faithfulness_metric.score
-        faithfulness_reason = faithfulness_metric.reason
         graph_context_recall_metric_score = graph_context_recall_metric.score
         graph_context_recall_metric_reason = graph_context_recall_metric.reason
         graph_context_relevancy_metric_score = graph_context_relevancy_metric.score
         graph_context_relevancy_metric_reason = graph_context_relevancy_metric.reason
 
         # Custom logic to set score
-        composite_score = min(relevancy_score, faithfulness_score, graph_context_recall_metric_score, graph_context_relevancy_metric_score)
+        composite_score = min(graph_context_recall_metric_score, graph_context_relevancy_metric_score)
         self.score = 0 if self.strict_mode and composite_score < self.threshold else composite_score
 
         # Custom logic to set reason
         if self.include_reason:
-            self.reason = relevancy_reason + "\n" + faithfulness_reason + "\n" + graph_context_recall_metric_reason + "\n" + graph_context_relevancy_metric_reason
+            self.reason = graph_context_recall_metric_reason + "\n" + graph_context_relevancy_metric_reason
 
         # Custom logic to set success
         self.success = self.score >= self.threshold
@@ -229,7 +221,7 @@ class GraphContextualRecall(BaseMetric):
         self, expected_output: str, retrieval_context: List[str], cypher_query: Optional[str] = None
     ) -> List[ContextualRecallVerdict]:
         prompt = GraphContextualRecallTemplate.generate_verdicts(
-            expected_output=expected_output, retrieval_context=retrieval_context
+            expected_output=expected_output, retrieval_context=retrieval_context, cypher_query=cypher_query
         )
         if self.using_native_model:
             res, cost = self.model.generate(prompt)
@@ -304,10 +296,10 @@ JSON:
 """
 
     @staticmethod
-    def generate_verdicts(expected_output, retrieval_context):
+    def generate_verdicts(expected_output, retrieval_context, cypher_query):
         return f"""
-For EACH sentence in the given expected output below, determine whether the sentence can be attributed to the nodes of retrieval contexts that generated from the cypher query. Please generate a list of JSON with two keys: `verdict` and `reason`.
-The `verdict` key should STRICTLY be either a 'yes' or 'no'. Answer 'yes' if the sentence can be attributed to any parts of the retrieval context and the cypher query, else answer 'no'.
+For EACH sentence in the given expected output below, determine whether the sentence can be attributed to the nodes of retrieval contexts (cypher query and its output). Please generate a list of JSON with two keys: `verdict` and `reason`.
+The `verdict` key should STRICTLY be either a 'yes' or 'no'. Answer 'yes' if the sentence can be attributed to any parts of the retrieval context (cypher query and its output), else answer 'no'.
 The `reason` key should provide a reason why to the verdict. In the reason, you should aim to include the node(s) count in the retrieval context (eg., 1st node, and 2nd node in the retrieval context) that is attributed to said sentence. You should also aim to quote the specific part of the retrieval context to justify your verdict, but keep it extremely concise and cut short the quote with an ellipsis if possible. 
 
 
@@ -329,6 +321,9 @@ Since you are going to generate a verdict for each sentence, the number of 'verd
 
 Expected Output:
 {expected_output}
+
+Cypher Query:
+{cypher_query}
 
 Retrieval Context:
 {retrieval_context}
@@ -432,7 +427,7 @@ class GraphContextualRelevancy(BaseMetric):
         self, input: str, context: str, cypher_query: Optional[str] = None
     ) -> ContextualRelevancyVerdicts:
         prompt = GraphContextualRelevancyTemplate.generate_verdicts(
-            input=input, context=context
+            input=input, context=context, cypher_query=cypher_query
         )
         if self.using_native_model:
             res, cost = self.model.generate(prompt)
@@ -502,7 +497,7 @@ JSON:
 """
 
     @staticmethod
-    def generate_verdicts(input: str, context: str):
+    def generate_verdicts(input: str, context: str, cypher_query: Optional[str] = None):
         return f"""Based on the input and context (cypher and query output), please generate a JSON object to indicate whether each statement found in the context is relevant to the provided input. The JSON will be a list of 'verdicts', with 2 mandatory fields: 'verdict' and 'statement', and 1 optional field: 'reason'.
 You should first extract statements found in the context, which are high level information found in the context, before deciding on a verdict and optionally a reason for each statement.
 The 'verdict' key should STRICTLY be either 'yes' or 'no', and states whether the statement is relevant to the input.
@@ -531,6 +526,9 @@ Example:
 
 Input:
 {input}
+
+Cypher Query:
+{cypher_query}
 
 Context:
 {context}
