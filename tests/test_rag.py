@@ -27,7 +27,7 @@ class TestKGLiteLLM(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Get the model name from the environment variable
-        model_name = os.getenv("TEST_MODEL", "gemini/gemini-2.0-flash-exp")
+        model_name = os.getenv("TEST_MODEL", "gemini/gemini-1.5-flash-001")
 
         cls.ontology = Ontology()
 
@@ -72,7 +72,7 @@ class TestKGLiteLLM(unittest.TestCase):
                 ],
             )
         )
-        cls.graph_name = "IMDB_deep"
+        cls.graph_name = model_name.split("/")[0]
 
         # Use the model name from the environment variable
         model = LiteModel(model_name=model_name, generation_config=GenerativeModelConfig(temperature=0))
@@ -115,16 +115,16 @@ class TestKGLiteLLM(unittest.TestCase):
             answer = chat.send_message(input_text)
 
             test_case = LLMTestCase(
-                input=input_text,
-                actual_output=answer["response"],
-                retrieval_context=["Cypher Query: " + answer["cypher"] + " Output: " + answer["context"]],
-                context=["Cypher Query: " + answer["cypher"] + " Output: " + answer["context"]],
-                name="kg_rag_test",
-                expected_output=expected_output,
-                additional_metadata=None,
+            input=input_text,
+            actual_output=answer["response"],
+            retrieval_context=[answer["context"]],
+            context=[answer["context"]],
+            name="kg_rag_test",
+            expected_output=expected_output,
+            additional_metadata=answer["cypher"],
             )
-
             score = answer_combined_metric.measure(test_case)
             scores.append(score)
 
+        self.kg.delete()
         assert np.mean(scores) >= 0.5
