@@ -26,5 +26,6 @@ class TextLoader():
 
         with open(self.path, 'r') as f:
             yield Document(
-                f.read()
+                f.read(),
+                self.path
             )

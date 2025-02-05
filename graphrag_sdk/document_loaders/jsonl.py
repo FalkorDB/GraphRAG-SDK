@@ -24,4 +24,4 @@ class JSONLLoader:
                         * self.rows_per_document
                     ]
                 )
-                yield Document(content)
+                yield Document(content, f"{self.path}#{i}")
