@@ -10,7 +10,7 @@ homepage = "http://RAG-SDK.readthedocs.io"
 keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
 
 [tool.poetry.dependencies]
-python = "^3.9.0"
+python = ">=3.10.0,<3.14"
 falkordb = "^1.0.9"
 typing-extensions = "^4.12.1"
 bs4 = "^0.0.2"
@@ -21,7 +21,9 @@ python-abc = "^0.2.0"
 ratelimit = "^2.2.1"
 python-dotenv = "^1.0.1"
 fix-busted-json = "^0.0.18"
+rich = "^13.9.4"
 ipykernel = "^6.29.5"
+deepeval = "^2.2.6"
 vertexai = { version = "^1.49.0", optional = true } 
 ollama = { version = "^0.2.1", optional = true }
 openai = { version = "^1.35.9", optional = true }

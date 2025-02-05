@@ -433,12 +433,9 @@ Ontology:
 
 
 For example, given the question "Which managers own Neo4j stocks?", the OpenCypher statement should look like this:
-```
 MATCH (m:Manager)-[:OWNS]->(s:Stock)
 WHERE s.name CONTAINS 'Neo4j'
-RETURN m, s
-```
-"""
+RETURN m, s"""
 
 CYPHER_GEN_PROMPT = """
 Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
@@ -447,7 +444,7 @@ Respect the order of the relationships, the arrows should always point from the 
 Please think if your answer is a valid Cypher query, and correct it if it is not.
 
 Question: {question}
-"""
+Your generated Cypher: """
 
 
 CYPHER_GEN_PROMPT_WITH_ERROR = """
@@ -472,9 +469,8 @@ If you cannot generate an OpenCypher statement for any reason, return an empty s
 Respect the order of the relationships; the arrows should always point from the "source" to the "target".
 
 Last Answer: {last_answer}
-
 Question: {question}
-"""
+Your generated Cypher: """
 
 GRAPH_QA_SYSTEM = """
 You are an assistant that helps to form nice and human understandable answers.
