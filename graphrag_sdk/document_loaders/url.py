@@ -47,5 +47,4 @@ class URLLoader():
         # Remove extra newlines
         content = re.sub(r'\n{2,}', '\n', content)
 
-        yield Document(content)
-        #return f"{self.source}\n{self.content}"
+        yield Document(content, self.url)

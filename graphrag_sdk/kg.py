@@ -77,8 +77,7 @@ class KnowledgeGraph:
         self._ontology = ontology
         self._name = name
         self._model_config = model_config
-        self.sources = set([])
-        self.failed_sources = set([])
+        self.failed_documents = set([])
 
         if cypher_system_instruction is None:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
@@ -162,19 +161,12 @@ class KnowledgeGraph:
             raise Exception("Ontology is not defined")
 
         # Create graph with sources
-        failed_sources = self._create_graph_with_sources(sources, instructions, hide_progress)
+        self._create_graph_with_sources(sources, instructions, hide_progress)
 
-        # Add processed sources
-        for src in sources:
-            if src not in failed_sources:
-                self.sources.add(src)
-                self.failed_sources.discard(src)
-            else:
-                self.failed_sources.add(src)
 
     def _create_graph_with_sources(
         self, sources: list[AbstractSource] | None = None, instructions: str = None, hide_progress: bool = False
-    ) -> list[AbstractSource]:
+) -> None:
 
         step = ExtractDataStep(
             sources=list(sources),
@@ -184,10 +176,8 @@ class KnowledgeGraph:
             hide_progress=hide_progress,
         )
 
-        failed_sources = step.run(instructions)
-        
-        return failed_sources
-        
+        self.failed_documents = step.run(instructions)
+                
     def delete(self) -> None:
         """
         Deletes the knowledge graph and any other related resource
