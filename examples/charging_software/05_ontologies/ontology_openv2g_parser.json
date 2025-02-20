@@ -1,0 +1,192 @@
+{
+  "entities": [
+    {
+      "label": "Project",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "languages",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Library",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "tag",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Directory",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Lua",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "REQUIRES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Lua"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DECLARES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MAKES_AVAILABLE",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "GitRepository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDS_SUBDIRECTORY",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Library"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES_DIRECTORIES",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Directory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_SOURCE",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LINKS_LIBRARIES",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Library"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_LIBRARIES",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Lua"
+      },
+      "attributes": []
+    }
+  ]
+}
