@@ -3,7 +3,7 @@ import logging
 import graphrag_sdk
 from .entity import Entity
 from falkordb import Graph
-from typing import Optional
+from typing import Optional, Union
 from .relation import Relation
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
@@ -81,12 +81,12 @@ class Ontology(object):
         return step.run(boundaries=boundaries)
 
     @staticmethod
-    def from_json(txt: dict | str):
+    def from_json(txt: Union[dict, str]):
         """
         Creates an Ontology object from a JSON representation.
 
         Args:
-            txt (dict | str): The JSON representation of the ontology. It can be either a dictionary or a string.
+            txt (Union[dict, str]): The JSON representation of the ontology. It can be either a dictionary or a string.
 
         Returns:
             The Ontology object created from the JSON representation.

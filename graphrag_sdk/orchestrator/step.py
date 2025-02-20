@@ -1,6 +1,7 @@
-from abc import ABC, abstractmethod
-from .step_result import StepResult
 from json import loads
+from typing import Union
+from .step_result import StepResult
+from abc import ABC, abstractmethod
 
 class StepBlockType:
     PARALLEL = "parallel"
@@ -40,7 +41,7 @@ class PlanStep(ABC):
         pass
 
     @staticmethod
-    def from_json(json: dict| str) -> "PlanStep":
+    def from_json(json: Union[dict, str]) -> "PlanStep":
         json =  json if isinstance(json, dict) else loads(json)
         from graphrag_sdk.orchestrator.steps import PLAN_STEP_TYPE_MAP
         block = StepBlockType.from_str(json["block"])

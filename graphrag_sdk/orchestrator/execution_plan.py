@@ -1,4 +1,5 @@
 from json import loads
+from typing import Union
 from graphrag_sdk.orchestrator.step import PlanStep, StepBlockType
 
 
@@ -10,7 +11,7 @@ class ExecutionPlan:
         self.steps = steps
 
     @staticmethod
-    def from_json(json: str | dict) -> "ExecutionPlan":
+    def from_json(json: Union[str, dict]) -> "ExecutionPlan":
         if isinstance(json, str):
             json = loads(json)
         return ExecutionPlan([PlanStep.from_json(step) for step in json])

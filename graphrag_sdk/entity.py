@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Union
 from .attribute import Attribute
 from falkordb import Node as GraphNode
 import re
@@ -20,7 +21,7 @@ class Entity:
 
     Methods:
         from_graph(entity: GraphNode) -> Entity: Creates an Entity object from a GraphNode object.
-        from_json(txt: dict | str) -> Entity: Creates an Entity object from a JSON string or dictionary.
+        from_json(txt: Union[dict, str]) -> Entity: Creates an Entity object from a JSON string or dictionary.
         to_json() -> dict: Converts the Entity object to a JSON dictionary.
         merge(entity2: Entity) -> Entity: Overwrites attributes of self with attributes of entity2.
         get_unique_attributes() -> list[Attribute]: Returns a list of unique attributes of the entity.
@@ -64,12 +65,12 @@ class Entity:
         )
 
     @staticmethod
-    def from_json(txt: dict | str):
+    def from_json(txt: Union[dict, str]):
         """
         Create an Entity object from a JSON representation.
 
         Args:
-            txt (dict | str): The JSON representation of the Entity. It can be either a dictionary or a string.
+            txt Union[dict, str]: The JSON representation of the Entity. It can be either a dictionary or a string.
 
         Returns:
             Entity: The Entity object created from the JSON representation.

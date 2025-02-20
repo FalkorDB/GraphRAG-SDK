@@ -1,12 +1,13 @@
 import re
 import logging
 import graphrag_sdk
+from typing import Union
 from fix_busted_json import repair_json
 
 logger = logging.getLogger(__name__)
 
 
-def extract_json(text: str | dict, skip_repair=False) -> str:
+def extract_json(text: Union[str, dict], skip_repair=False) -> str:
     if not isinstance(text, str):
         text = str(text)
     regex = r"(?:```)?(?:json)?([^`]*)(?:\\n)?(?:```)?"
@@ -79,7 +80,7 @@ def extract_cypher(text: str):
 
 def validate_cypher(
     cypher: str, ontology: graphrag_sdk.Ontology
-) -> list[str] | None:
+) -> Union[list[str], None]:
     try:
         if not cypher or len(cypher) == 0:
             return ["Cypher statement is empty"]

@@ -1,7 +1,7 @@
 import logging
 import warnings
-from typing import Optional
 from falkordb import FalkorDB
+from typing import Optional, Union
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.chat_session import ChatSession
@@ -45,14 +45,14 @@ class KnowledgeGraph:
             model (GenerativeModel): The Google GenerativeModel to use.
             host (str): FalkorDB hostname.
             port (int): FalkorDB port number.
-            username (str|None): FalkorDB username.
-            password (str|None): FalkorDB password.
-            ontology (Ontology|None): Ontology to use.
-            cypher_system_instruction (str|None): Cypher system instruction. Make sure you have {ontology} in the instruction.
-            qa_system_instruction (str|None): QA system instruction.
-            cypher_gen_prompt (str|None): Cypher generation prompt. Make sure you have {question} in the prompt.
-            qa_prompt (str|None): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.
-            cypher_gen_prompt_history (str|None): Cypher generation prompt with history. Make sure you have {question} and {last_answer} in the prompt.
+            username (Union[str, None]): FalkorDB username.
+            password (Union[str, None]): FalkorDB password.
+            ontology (Union[Ontology, None]): Ontology to use.
+            cypher_system_instruction (Union[str, None]): Cypher system instruction. Make sure you have {ontology} in the instruction.
+            qa_system_instruction (Union[str, None]): QA system instruction.
+            cypher_gen_prompt (Union[str, None]): Cypher generation prompt. Make sure you have {question} in the prompt.
+            qa_prompt (Union[str, None]): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.
+            cypher_gen_prompt_history (Union[str, None]): Cypher generation prompt with history. Make sure you have {question} and {last_answer} in the prompt.
         """
 
         if not isinstance(name, str) or name == "":
@@ -165,7 +165,7 @@ class KnowledgeGraph:
 
 
     def _create_graph_with_sources(
-        self, sources: list[AbstractSource] | None = None, instructions: str = None, hide_progress: bool = False
+        self, sources: Union[list[AbstractSource], None] = None, instructions: str = None, hide_progress: bool = False
 ) -> None:
 
         step = ExtractDataStep(

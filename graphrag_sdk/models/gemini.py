@@ -1,4 +1,6 @@
 import os
+from typing import Union
+
 from .model import (
     OutputMethod,
     GenerativeModel,
@@ -23,8 +25,8 @@ class GeminiGenerativeModel(GenerativeModel):
     def __init__(
         self,
         model_name: str,
-        generation_config: GoogleGenerationConfig | None = None,
-        system_instruction: str | None = None,
+        generation_config: Union[GoogleGenerationConfig, None] = None,
+        system_instruction: Union[str, None] = None,
     ):
         self._model_name = model_name
         self._generation_config = generation_config
@@ -59,7 +61,7 @@ class GeminiGenerativeModel(GenerativeModel):
 
         return self
 
-    def start_chat(self, args: dict | None = None) -> GenerativeModelChatSession:
+    def start_chat(self, args: Union[dict, None] = None) -> GenerativeModelChatSession:
         return GeminiChatSession(self, args)
 
     def parse_generate_content_response(
@@ -99,7 +101,7 @@ class GeminiGenerativeModel(GenerativeModel):
 
 class GeminiChatSession(GenerativeModelChatSession):
 
-    def __init__(self, model: GeminiGenerativeModel, args: dict | None = None):
+    def __init__(self, model: GeminiGenerativeModel, args: Union[dict, None] = None):
         self._model = model
         self._chat_session = self._model._model.start_chat(
             history=args.get("history", []) if args is not None else [],
