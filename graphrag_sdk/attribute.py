@@ -1,6 +1,7 @@
 import re
 import json
 import logging
+from typing import Union
 from graphrag_sdk.fixtures.regex import *
 
 logger = logging.getLogger(__name__)
@@ -89,12 +90,12 @@ class Attribute:
         self.required = required
 
     @staticmethod
-    def from_json(txt: str | dict):
+    def from_json(txt: Union[str, dict]):
         """
         Creates an Attribute object from a JSON string or dictionary.
 
         Args:
-            txt (str | dict): The JSON string or dictionary representing the Attribute.
+            txt (Union[str, dict]): The JSON string or dictionary representing the Attribute.
 
         Returns:
             Attribute: The created Attribute object.
