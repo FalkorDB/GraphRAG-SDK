@@ -1,0 +1,5684 @@
+{
+  "entities": [
+    {
+      "label": "VisualStudio",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MacOS",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Go",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JetBrainsIDE",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Project",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "license",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "project_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "project_logo",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Changelog",
+      "attributes": [
+        {
+          "name": "format",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "versioning",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Link",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Version",
+      "attributes": [
+        {
+          "name": "version_number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeOfConduct",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "default_to_linux_foundation",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EmailAddress",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Organization",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Contributor",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "process",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Document",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "License",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "year",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "osi_approved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Certificate",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodingStyle",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PullRequest",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Role",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TechnicalSteeringCommittee",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "members",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "chairperson_elected",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "regular_open_meetings",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Committer",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "responsibilities",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "status_loss_conditions",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Contribution",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Copyright",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Test",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "reproduction_instructions",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "test_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Documentation",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "changes_made",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BugFix",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Change",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "documentation_update_required",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ContributionProcess",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DevelopmentWorkflow",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Community",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GovernancePolicy",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TechnicalCharter",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "adopted_date",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "approved",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SupportDocument",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "File",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language_specific_packaging",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ContributionGuideline",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Header",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Module",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "dependent_changes_merged_and_published",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Library",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoVersion",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Technology",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Software",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "copyright_year",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "copyright_holder",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "license_identifier",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Checksum",
+      "attributes": [
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "algorithm",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Lead",
+      "attributes": [
+        {
+          "name": "responsibilities",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Release",
+      "attributes": [
+        {
+          "name": "schedule",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "documentation_provided",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Communication",
+      "attributes": [
+        {
+          "name": "channels",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "respect",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "tools_accessibility",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Voting",
+      "attributes": [
+        {
+          "name": "process",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConflictResolution",
+      "attributes": [
+        {
+          "name": "preference",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MeetingAgendaTemplate",
+      "attributes": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Workflow",
+      "attributes": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "event",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Schedule",
+      "attributes": [
+        {
+          "name": "iso_8601_interval",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "meeting_frequency",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cron",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Item",
+      "attributes": [
+        {
+          "name": "label",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Licensor",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LegalEntity",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Person",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SourceForm",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ObjectForm",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Work",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DerivativeWork",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CopyrightOwner",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OCPPCloudConnector",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LFEnergyFoundation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CIIBestPractices",
+      "attributes": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Process",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "pid",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SupportStatus",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SecurityPolicy",
+      "attributes": [
+        {
+          "name": "section",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommunicationChannel",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "details",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IssueTracker",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SecurityContact",
+      "attributes": [
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ContributionGuide",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Dependency",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Repository",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "repositoryformatversion",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "filemode",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bare",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "logallrefupdates",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "symlinks",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ignorecase",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description_file",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "named",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Remote",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "remote",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Reference",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Commit",
+      "attributes": [
+        {
+          "name": "sha1",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "oid",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ref",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "author_email",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "commit_hash",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "author",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PackRefs",
+      "attributes": [
+        {
+          "name": "peeled",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "fully_peeled",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "sorted",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HookScript",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommitMessage",
+      "attributes": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitConfiguration",
+      "attributes": [
+        {
+          "name": "git_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "variable",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Author",
+      "attributes": [
+        {
+          "name": "git_author_ident",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SignedOffByLine",
+      "attributes": [
+        {
+          "name": "line",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitCommand",
+      "attributes": [
+        {
+          "name": "command",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Watchman",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Git",
+      "attributes": [
+        {
+          "name": "config_core_fsmonitor",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Hook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Query",
+      "attributes": [
+        {
+          "name": "expression",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "field",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Clock",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "WorkingDirectory",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JSONPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OperatingSystem",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Response",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "status_code",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Script",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Command",
+      "attributes": [
+        {
+          "name": "command_text",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitHook",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitDirectory",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitBranch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitRepository",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "repository_url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TopicBranch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Configuration",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "allow_unannotated",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allow_delete_tag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allow_modify_tag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "allow_delete_branch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "deny_create_branch",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PushOption",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommunicationProtocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Variable",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ref",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Git_Directory",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Project_Description",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tag",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "annotated",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tracking_Branch",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Comment",
+      "attributes": [
+        {
+          "name": "text",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Pattern",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GitignoreFile",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Line",
+      "attributes": [
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Email",
+      "attributes": [
+        {
+          "name": "email_address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Origin",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Main",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BugReport",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "labels",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "assignees",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Step",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "uses",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "token",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "schedules",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "create_within",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "issue_title",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "agenda_label",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "run",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Browser",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Device",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AdditionalContext",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExpectedBehavior",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Desktop",
+      "attributes": [],
+      "description": ""
+    },
+    {
+      "label": "Smartphone",
+      "attributes": [],
+      "description": ""
+    },
+    {
+      "label": "FeatureRequest",
+      "attributes": [
+        {
+          "name": "title",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "labels",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "assignees",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "problem_description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "solution_description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "alternatives_considered",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "additional_context",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Problem",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Solution",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Alternative",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Context",
+      "attributes": [
+        {
+          "name": "information",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Meeting",
+      "attributes": [
+        {
+          "name": "date_time",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "agenda_available",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "initial_meeting_held",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "project_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "date_and_time",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Timezone",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Agenda",
+      "attributes": [
+        {
+          "name": "label",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "repo",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Issue",
+      "attributes": [
+        {
+          "name": "number",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "html_url",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Code",
+      "attributes": [
+        {
+          "name": "style_guidelines_followed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "self_reviewed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "commented",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "generates_no_new_warnings",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "unit_tests_pass",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Job",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "runs_on",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Github",
+      "attributes": [
+        {
+          "name": "server_url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "repository",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GithubAction",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MailingList",
+      "attributes": [
+        {
+          "name": "email",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "guidelines_followed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Secret",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EmailSubject",
+      "attributes": [
+        {
+          "name": "subject",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Label",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingSoftware",
+      "attributes": [
+        {
+          "name": "license",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "copyright_year",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "spdx_license_identifier",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Server",
+      "attributes": [
+        {
+          "name": "address",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "root_path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "health_check_path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Message",
+      "attributes": [
+        {
+          "name": "message_type_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "charge_box_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "payload",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "timestamp",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message_type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message_format",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LocalStore",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseDataConverter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConnectionHandler",
+      "attributes": [
+        {
+          "name": "sub_protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargePoint",
+      "attributes": [
+        {
+          "name": "charge_box_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Endpoint",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Operation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Connection",
+      "attributes": [
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "WebsocketConnection",
+      "attributes": [
+        {
+          "name": "uri_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Converter",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConnectionStore",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpRequest",
+      "attributes": [
+        {
+          "name": "request_uri",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "HttpResponse",
+      "attributes": [
+        {
+          "name": "status_code",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Websocket",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StoreIt",
+      "attributes": [
+        {
+          "name": "put",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "get",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "delete",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DoIt",
+      "attributes": [
+        {
+          "name": "connection_writer",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "connection_reader",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "r_message",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "connected",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "call_disconnect",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SubProtocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Client",
+      "attributes": [
+        {
+          "name": "charge_box_id",
+          "type": "string",
+          "unique": true,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OCPPCC",
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message_type_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "charge_box_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "payload",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVSEdata",
+      "attributes": [
+        {
+          "name": "read_channel",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "write_channel",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "URI",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Error",
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "error_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessageType",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVSEData",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargeBox",
+      "attributes": [
+        {
+          "name": "charge_box_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServerOptions",
+      "attributes": [
+        {
+          "name": "addr",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "root_path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "health_check_path",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Handler",
+      "attributes": [
+        {
+          "name": "function",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResponseWriter",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Request",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "endpoint",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Log",
+      "attributes": [
+        {
+          "name": "fatal",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Method",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusCode",
+      "attributes": [
+        {
+          "name": "code",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LFProjects",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Policy",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Trademark",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DeveloperCertificateOfOrigin",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoverningBoard",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "vote_required",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SeriesAgreement",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OperatingAgreement",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "UpstreamProject",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Marketing",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TSC",
+      "attributes": [
+        {
+          "name": "location_for_documents",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "meeting_cadence",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Governance",
+      "attributes": [
+        {
+          "name": "technical_governance_documented",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Support",
+      "attributes": [
+        {
+          "name": "ways_to_get_help_listed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TAC",
+      "attributes": [
+        {
+          "name": "vote_required",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Infrastructure",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Website",
+      "attributes": [
+        {
+          "name": "needed",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CIBuildEnvironment",
+      "attributes": [
+        {
+          "name": "needed",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LFXInsights",
+      "attributes": [
+        {
+          "name": "project_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LFXSecurity",
+      "attributes": [
+        {
+          "name": "project_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DomainName",
+      "attributes": [
+        {
+          "name": "created_or_transferred",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SocialMediaAccount",
+      "attributes": [
+        {
+          "name": "created_or_transferred",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Logo",
+      "attributes": [
+        {
+          "name": "format",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Outreach",
+      "attributes": [
+        {
+          "name": "new_project_announcement_done",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LFEnergyProperties",
+      "attributes": [
+        {
+          "name": "website_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "landscape_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EarlyAdoption",
+      "attributes": [
+        {
+          "name": "growth_demonstrated",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TechnicalGovernance",
+      "attributes": [
+        {
+          "name": "operational",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GrowthPlan",
+      "attributes": [
+        {
+          "name": "release_plans_for_next_18_months",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "target_end_users",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "regulatory_or_standards_body_requirements",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "plans_for_growth_of_project_contributors",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GraduatedProject",
+      "attributes": [
+        {
+          "name": "governing_body_defined",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "growth_plan_completed",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "healthy_number_of_contributions",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "public_list_of_project_adopters",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "achievement_of_core_infrastructure_initiative_best_practices_badge",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BestPracticeBadge",
+      "attributes": [
+        {
+          "name": "level",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Committers",
+      "attributes": [
+        {
+          "name": "file_exists",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DCOProbot",
+      "attributes": [
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "IssueFeatureTracker",
+      "attributes": [
+        {
+          "name": "administrator",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeScan",
+      "attributes": [
+        {
+          "name": "completed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TechnicalCharterProposal",
+      "attributes": [
+        {
+          "name": "completed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProjectContributionProposal",
+      "attributes": [
+        {
+          "name": "completed",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ServiceDeskRequest",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ArtworkRepo",
+      "attributes": [
+        {
+          "name": "location",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeOwners",
+      "attributes": [
+        {
+          "name": "file_exists",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TscMeeting",
+      "attributes": [
+        {
+          "name": "date",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Lf",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MeetingCadence",
+      "attributes": [
+        {
+          "name": "frequency",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "VotingMember",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Attendee",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AgendaItem",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProjectIntakeProgress",
+      "attributes": [
+        {
+          "name": "link",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ActionItem",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Chairperson",
+      "attributes": [
+        {
+          "name": "election_status",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Cadence",
+      "attributes": [
+        {
+          "name": "frequency",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JetBrainsIde",
+      "attributes": [
+        {
+          "name": "file_extension",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcppCloudConnector",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "protocol",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LfEnergyFoundation",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CiiBestPractices",
+      "attributes": [
+        {
+          "name": "project_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JsonPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcppCc",
+      "attributes": [
+        {
+          "name": "timestamp",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message_type_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charge_box_id",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "payload",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseData",
+      "attributes": [
+        {
+          "name": "read_channel",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "write_channel",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Uri",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LfProjects",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tsc",
+      "attributes": [
+        {
+          "name": "location_for_documents",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "meeting_cadence",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tac",
+      "attributes": [
+        {
+          "name": "vote_required",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CiBuildEnvironment",
+      "attributes": [
+        {
+          "name": "needed",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LfxInsights",
+      "attributes": [
+        {
+          "name": "project_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LfxSecurity",
+      "attributes": [
+        {
+          "name": "project_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LfEnergyProperties",
+      "attributes": [
+        {
+          "name": "website_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "landscape_added",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcoProbot",
+      "attributes": [
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    }
+  ],
+  "relations": [
+    {
+      "label": "IGNORE",
+      "source": {
+        "label": "VisualStudio"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": [
+        {
+          "name": "reason",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Changelog"
+      },
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "BASED_ON",
+      "source": {
+        "label": "Changelog"
+      },
+      "target": {
+        "label": "Link"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADHERES_TO",
+      "source": {
+        "label": "Changelog"
+      },
+      "target": {
+        "label": "Link"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTAINS",
+      "source": {
+        "label": "Changelog"
+      },
+      "target": {
+        "label": "Version"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AVAILABLE_AT",
+      "source": {
+        "label": "CodeOfConduct"
+      },
+      "target": {
+        "label": "CodeOfConduct"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTACT",
+      "source": {
+        "label": "Organization"
+      },
+      "target": {
+        "label": "EmailAddress"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTRIBUTES_TO",
+      "source": {
+        "label": "Contributor"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "License"
+      },
+      "attributes": [
+        {
+          "name": "purpose",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "REQUIRES",
+      "source": {
+        "label": "Contribution"
+      },
+      "target": {
+        "label": "CodingStyle"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUBMITS",
+      "source": {
+        "label": "Contributor"
+      },
+      "target": {
+        "label": "PullRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REVIEWS",
+      "source": {
+        "label": "Committer"
+      },
+      "target": {
+        "label": "PullRequest"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OVERSEES",
+      "source": {
+        "label": "TechnicalSteeringCommittee"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXPLAINS",
+      "source": {
+        "label": "ContributionProcess"
+      },
+      "target": {
+        "label": "BugFix"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DESCRIBES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Community"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SEE",
+      "source": {
+        "label": "Community"
+      },
+      "target": {
+        "label": "GovernancePolicy"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REFERS_TO",
+      "source": {
+        "label": "Community"
+      },
+      "target": {
+        "label": "SupportDocument"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GOVERNS",
+      "source": {
+        "label": "GovernancePolicy"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DETAILS",
+      "source": {
+        "label": "TechnicalCharter"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "File"
+      },
+      "target": {
+        "label": "Header"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SIGNOFF",
+      "source": {
+        "label": "Contributor"
+      },
+      "target": {
+        "label": "Certificate"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONTRIBUTION_GUIDELINE",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "ContributionGuideline"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REQUIRES_VERSION",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "GoVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDS_ON",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Library"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BELONGS_TO",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Organization"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPLEMENTED_WITH",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Technology"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEVELOPED_BY",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Organization"
+      },
+      "attributes": []
+    },
+    {
+      "label": "VERSION_OF",
+      "source": {
+        "label": "Module"
+      },
+      "target": {
+        "label": "Software"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CHECKSUM",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Checksum"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ROLE",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Contributor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_GUIDELINES",
+      "source": {
+        "label": "Contributor"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPROVES",
+      "source": {
+        "label": "Committer"
+      },
+      "target": {
+        "label": "Contributor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MANAGES_PERMISSIONS",
+      "source": {
+        "label": "Committer"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ELECTS",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Lead"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AGREES_ON",
+      "source": {
+        "label": "Committer"
+      },
+      "target": {
+        "label": "Release"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RESOLVED_BY",
+      "source": {
+        "label": "ConflictResolution"
+      },
+      "target": {
+        "label": "Voting"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UPDATES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Readmemd"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDS_MEMBERS",
+      "source": {
+        "label": "MeetingAgendaTemplate"
+      },
+      "target": {
+        "label": "TscMember"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SETS",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Schedule"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDED_TO",
+      "source": {
+        "label": "Item"
+      },
+      "target": {
+        "label": "MeetingAgenda"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GRANTS_TO",
+      "source": {
+        "label": "Licensor"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUBMITTED_BY",
+      "source": {
+        "label": "Contribution"
+      },
+      "target": {
+        "label": "Contributor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AUTHORED_BY",
+      "source": {
+        "label": "Work"
+      },
+      "target": {
+        "label": "CopyrightOwner"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPLEMENTS",
+      "source": {
+        "label": "OCPPCloudConnector"
+      },
+      "target": {
+        "label": "Protocol"
+      },
+      "attributes": [
+        {
+          "name": "conformance",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HOSTED_BY",
+      "source": {
+        "label": "OCPPCloudConnector"
+      },
+      "target": {
+        "label": "LFEnergyFoundation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_LICENSE",
+      "source": {
+        "label": "OCPPCloudConnector"
+      },
+      "target": {
+        "label": "License"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INVOKED_BY",
+      "source": {
+        "label": "Process"
+      },
+      "target": {
+        "label": "Committer"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS",
+      "source": {
+        "label": "Version"
+      },
+      "target": {
+        "label": "SupportStatus"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MANAGES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "IssueTracker"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_SECURITY_CONTACT",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "SecurityContact"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONTRIBUTION_GUIDE",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "ContributionGuide"
+      },
+      "attributes": []
+    },
+    {
+      "label": "POINTS_TO",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURED_WITH",
+      "source": {
+        "label": "Branch"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_REF",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Reference"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOCATED_IN",
+      "source": {
+        "label": "Reference"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IS_BRANCH",
+      "source": {
+        "label": "Remote"
+      },
+      "target": {
+        "label": "Branch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CREATES",
+      "source": {
+        "label": "GitConfiguration"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": [
+        {
+          "name": "is_annotated",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CHECKS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDS",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "SignedOffByLine"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WRITES_TO",
+      "source": {
+        "label": "SignedOffByLine"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INTEGRATES_WITH",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "Watchman"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OUTPUTS",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "QUERIES",
+      "source": {
+        "label": "Watchman"
+      },
+      "target": {
+        "label": "Query"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROVIDES",
+      "source": {
+        "label": "Watchman"
+      },
+      "target": {
+        "label": "Clock"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MONITORS",
+      "source": {
+        "label": "Watchman"
+      },
+      "target": {
+        "label": "WorkingDirectory"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DECODES",
+      "source": {
+        "label": "JSONPackage"
+      },
+      "target": {
+        "label": "Response"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LAUNCHES",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "Watchman"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUNS_ON",
+      "source": {
+        "label": "Process"
+      },
+      "target": {
+        "label": "OperatingSystem"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXECUTED_BY",
+      "source": {
+        "label": "Command"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ENABLE",
+      "source": {
+        "label": "Hook"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURES",
+      "source": {
+        "label": "GitConfiguration"
+      },
+      "target": {
+        "label": "Hook"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPLEMENTED_IN",
+      "source": {
+        "label": "GitHook"
+      },
+      "target": {
+        "label": "Script"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPLIES_TO",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Remote"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FORKED_FROM",
+      "source": {
+        "label": "TopicBranch"
+      },
+      "target": {
+        "label": "GitBranch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MERGED_INTO",
+      "source": {
+        "label": "TopicBranch"
+      },
+      "target": {
+        "label": "GitBranch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REFERENCES",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "GitBranch"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TRIGGERS",
+      "source": {
+        "label": "PushOption"
+      },
+      "target": {
+        "label": "CommunicationProtocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ACCESSES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "Variable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "MODIFIES",
+      "source": {
+        "label": "HookScript"
+      },
+      "target": {
+        "label": "CommitMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "READS_FROM",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "Variable"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UPDATES_TO",
+      "source": {
+        "label": "GitRepository"
+      },
+      "target": {
+        "label": "Commit"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHECKS_OUT",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXCLUDES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RUNS",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+      "label": "EXCLUDES_FROM",
+      "source": {
+        "label": "GitCommand"
+      },
+      "target": {
+        "label": "GitignoreFile"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STARTS_WITH",
+      "source": {
+        "label": "Line"
+      },
+      "target": {
+        "label": "Comment"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AUTHORED",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Person"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CLONED_FROM",
+      "source": {
+        "label": "Commit"
+      },
+      "target": {
+        "label": "Repository"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EMAIL",
+      "source": {
+        "label": "Author"
+      },
+      "target": {
+        "label": "Email"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Remote"
+      },
+      "target": {
+        "label": "Origin"
+      },
+      "attributes": []
+    },
+    {
+      "label": "NAMED",
+      "source": {
+        "label": "Origin"
+      },
+      "target": {
+        "label": "Main"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_STEP",
+      "source": {
+        "label": "BugReport"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ON_DEVICE",
+      "source": {
+        "label": "Browser"
+      },
+      "target": {
+        "label": "Device"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_VERSION",
+      "source": {
+        "label": "Browser"
+      },
+      "target": {
+        "label": "Version"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONTEXT",
+      "source": {
+        "label": "BugReport"
+      },
+      "target": {
+        "label": "AdditionalContext"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_EXPECTED_BEHAVIOR",
+      "source": {
+        "label": "BugReport"
+      },
+      "target": {
+        "label": "ExpectedBehavior"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RELATES_TO",
+      "source": {
+        "label": "FeatureRequest"
+      },
+      "target": {
+        "label": "Problem"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROPOSES",
+      "source": {
+        "label": "FeatureRequest"
+      },
+      "target": {
+        "label": "Solution"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONSIDERS",
+      "source": {
+        "label": "FeatureRequest"
+      },
+      "target": {
+        "label": "Alternative"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SCHEDULED_IN",
+      "source": {
+        "label": "Meeting"
+      },
+      "target": {
+        "label": "Timezone"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_AGENDA",
+      "source": {
+        "label": "Meeting"
+      },
+      "target": {
+        "label": "Agenda"
+      },
+      "attributes": []
+    },
+    {
+      "label": "FIXES",
+      "source": {
+        "label": "Change"
+      },
+      "target": {
+        "label": "Issue"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TESTED_BY",
+      "source": {
+        "label": "Change"
+      },
+      "target": {
+        "label": "Test"
+      },
+      "attributes": []
+    },
+    {
+      "label": "IMPACT_ON",
+      "source": {
+        "label": "Change"
+      },
+      "target": {
+        "label": "Documentation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEPENDENT_ON",
+      "source": {
+        "label": "Change"
+      },
+      "target": {
+        "label": "Module"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SCHEDULED_BY",
+      "source": {
+        "label": "Schedule"
+      },
+      "target": {
+        "label": "Workflow"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONSISTS_OF",
+      "source": {
+        "label": "Job"
+      },
+      "target": {
+        "label": "Step"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_EMAIL",
+      "source": {
+        "label": "GithubAction"
+      },
+      "target": {
+        "label": "Email"
+      },
+      "attributes": [
+        {
+          "name": "from_mail_address",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "TRIGGERED_BY",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Issue"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_SECRET",
+      "source": {
+        "label": "GithubAction"
+      },
+      "target": {
+        "label": "Secret"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_TO_MAILING_LIST",
+      "source": {
+        "label": "GithubAction"
+      },
+      "target": {
+        "label": "MailingList"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_SUBJECT",
+      "source": {
+        "label": "GithubAction"
+      },
+      "target": {
+        "label": "EmailSubject"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_PROTOCOL",
+      "source": {
+        "label": "ChargingSoftware"
+      },
+      "target": {
+        "label": "CommunicationProtocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS",
+      "source": {
+        "label": "ChargePoint"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HANDLES_CONNECTION",
+      "source": {
+        "label": "Server"
+      },
+      "target": {
+        "label": "ConnectionHandler"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STORES_CONNECTION",
+      "source": {
+        "label": "ConnectionHandler"
+      },
+      "target": {
+        "label": "LocalStore"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONVERTS_DATA",
+      "source": {
+        "label": "ConnectionHandler"
+      },
+      "target": {
+        "label": "EvseDataConverter"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PERFORMS",
+      "source": {
+        "label": "Message"
+      },
+      "target": {
+        "label": "Operation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMMUNICATES_WITH",
+      "source": {
+        "label": "ConnectionHandler"
+      },
+      "target": {
+        "label": "CommunicationProtocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "STORES",
+      "source": {
+        "label": "LocalStore"
+      },
+      "target": {
+        "label": "Item"
+      },
+      "attributes": []
+    },
+    {
+      "label": "UPGRADES_TO",
+      "source": {
+        "label": "HttpRequest"
+      },
+      "target": {
+        "label": "WebsocketConnection"
+      },
+      "attributes": [
+        {
+          "name": "sub_protocol",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "WRITES",
+      "source": {
+        "label": "Converter"
+      },
+      "target": {
+        "label": "WebsocketConnection"
+      },
+      "attributes": [
+        {
+          "name": "payload",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "READS",
+      "source": {
+        "label": "WebsocketConnection"
+      },
+      "target": {
+        "label": "Converter"
+      },
+      "attributes": [
+        {
+          "name": "message",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "PUTS",
+      "source": {
+        "label": "ConnectionStore"
+      },
+      "target": {
+        "label": "WebsocketConnection"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GETS",
+      "source": {
+        "label": "ConnectionStore"
+      },
+      "target": {
+        "label": "WebsocketConnection"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DIALS",
+      "source": {
+        "label": "Websocket"
+      },
+      "target": {
+        "label": "Client"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ENFORCES",
+      "source": {
+        "label": "ConnectionHandler"
+      },
+      "target": {
+        "label": "SubProtocol"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RECEIVES",
+      "source": {
+        "label": "EVSEdata"
+      },
+      "target": {
+        "label": "OCPPCC"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LOCATED_AT",
+      "source": {
+        "label": "OCPPCC"
+      },
+      "target": {
+        "label": "URI"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REPORTS",
+      "source": {
+        "label": "EVSEdata"
+      },
+      "target": {
+        "label": "Error"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TYPE",
+      "source": {
+        "label": "OCPPCC"
+      },
+      "target": {
+        "label": "MessageType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONNECTION_READER",
+      "source": {
+        "label": "EVSEData"
+      },
+      "target": {
+        "label": "ChargeBox"
+      },
+      "attributes": []
+    },
+    {
+      "label": "POPULATES",
+      "source": {
+        "label": "EVSEData"
+      },
+      "target": {
+        "label": "OCPPCC"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_ERROR",
+      "source": {
+        "label": "Test"
+      },
+      "target": {
+        "label": "OCPPCC"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_HANDLER",
+      "source": {
+        "label": "ServerOptions"
+      },
+      "target": {
+        "label": "Handler"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LISTENS_ON",
+      "source": {
+        "label": "Protocol"
+      },
+      "target": {
+        "label": "Endpoint"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TEST",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Test"
+      },
+      "attributes": []
+    },
+    {
+      "label": "TARGETS",
+      "source": {
+        "label": "Request"
+      },
+      "target": {
+        "label": "Endpoint"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RETURNS",
+      "source": {
+        "label": "Endpoint"
+      },
+      "target": {
+        "label": "StatusCode"
+      },
+      "attributes": []
+    },
+    {
+      "label": "RESPONSIBLE_FOR",
+      "source": {
+        "label": "TechnicalSteeringCommittee"
+      },
+      "target": {
+        "label": "Project"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_COMMITTER",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Committer"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_CONTRIBUTOR",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "Contributor"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SUBJECT_TO",
+      "source": {
+        "label": "TechnicalCharter"
+      },
+      "target": {
+        "label": "SeriesAgreement"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COMPLIES_WITH",
+      "source": {
+        "label": "Contributor"
+      },
+      "target": {
+        "label": "Policy"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INCORPORATES",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "UpstreamProject"
+      },
+      "attributes": []
+    },
+    {
+      "label": "COORDINATES",
+      "source": {
+        "label": "TechnicalSteeringCommittee"
+      },
+      "target": {
+        "label": "Marketing"
+      },
+      "attributes": []
+    },
+    {
+      "label": "AMENDS",
+      "source": {
+        "label": "TechnicalCharter"
+      },
+      "target": {
+        "label": "TechnicalCharter"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DISCUSSES",
+      "source": {
+        "label": "TSC"
+      },
+      "target": {
+        "label": "Meeting"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ATTENDED",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "TscMeeting"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHAIRPERSON",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "TscMeeting"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_TO",
+      "source": {
+        "label": "TscMeeting"
+      },
+      "target": {
+        "label": "Lf"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DETERMINES",
+      "source": {
+        "label": "TscMeeting"
+      },
+      "target": {
+        "label": "MeetingCadence"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ATTENDED_BY",
+      "source": {
+        "label": "Meeting"
+      },
+      "target": {
+        "label": "VotingMember"
+      },
+      "attributes": []
+    },
+    {
+      "label": "REVIEWED",
+      "source": {
+        "label": "Meeting"
+      },
+      "target": {
+        "label": "ProjectIntakeProgress"
+      },
+      "attributes": []
+    },
+    {
+      "label": "BUILDS",
+      "source": {
+        "label": "Workflow"
+      },
+      "target": {
+        "label": "Agenda"
+      },
+      "attributes": [
+        {
+          "name": "tool",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    }
+  ]
+}
