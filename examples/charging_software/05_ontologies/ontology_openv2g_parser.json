@@ -1,6 +1,8 @@
 {
   "entities": [
     {
+<<<<<<< HEAD
+=======
       "label": "CodingLanguage",
       "attributes": [
         {
@@ -727,6 +729,7 @@
       "description": ""
     },
     {
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       "label": "Project",
       "attributes": [
         {
@@ -746,6 +749,8 @@
           "type": "string",
           "unique": false,
           "required": false
+<<<<<<< HEAD
+=======
         },
         {
           "name": "description_set",
@@ -758,6 +763,7 @@
           "type": "string",
           "unique": false,
           "required": true
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
         }
       ],
       "description": ""
@@ -770,6 +776,8 @@
           "type": "string",
           "unique": true,
           "required": true
+<<<<<<< HEAD
+=======
         },
         {
           "name": "vendor",
@@ -788,6 +796,7 @@
           "type": "string",
           "unique": true,
           "required": true
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
         }
       ],
       "description": ""
@@ -806,12 +815,15 @@
           "type": "string",
           "unique": false,
           "required": true
+<<<<<<< HEAD
+=======
         },
         {
           "name": "path",
           "type": "string",
           "unique": true,
           "required": true
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
         }
       ],
       "description": ""
@@ -829,6 +841,8 @@
       "description": ""
     },
     {
+<<<<<<< HEAD
+=======
       "label": "SourceFile",
       "attributes": [
         {
@@ -1375,6 +1389,7 @@
       "description": ""
     },
     {
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       "label": "File",
       "attributes": [
         {
@@ -1387,6 +1402,8 @@
           "name": "type",
           "type": "string",
           "unique": false,
+<<<<<<< HEAD
+=======
           "required": true
         },
         {
@@ -1411,12 +1428,22 @@
           "name": "license",
           "type": "string",
           "unique": false,
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
           "required": false
         }
       ],
       "description": ""
     },
     {
+<<<<<<< HEAD
+      "label": "Lua",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": false
+=======
       "label": "Script",
       "attributes": [
         {
@@ -2924,6 +2951,7 @@
           "type": "string",
           "unique": true,
           "required": true
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
         }
       ],
       "description": ""
@@ -2931,6 +2959,8 @@
   ],
   "relations": [
     {
+<<<<<<< HEAD
+=======
       "label": "CONFIGURED_FOR",
       "source": {
         "label": "FormattingConfiguration"
@@ -2958,12 +2988,17 @@
       ]
     },
     {
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       "label": "REQUIRES",
       "source": {
         "label": "Project"
       },
       "target": {
+<<<<<<< HEAD
+        "label": "Lua"
+=======
         "label": "Package"
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       },
       "attributes": []
     },
@@ -2998,7 +3033,11 @@
       "attributes": []
     },
     {
+<<<<<<< HEAD
+      "label": "CREATES",
+=======
       "label": "ADDS_LIBRARY",
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       "source": {
         "label": "Project"
       },
@@ -3018,6 +3057,19 @@
       "attributes": []
     },
     {
+<<<<<<< HEAD
+      "label": "HAS_SOURCE",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "File"
+      },
+      "attributes": []
+    },
+    {
+=======
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       "label": "LINKS_LIBRARIES",
       "source": {
         "label": "Library"
@@ -3028,11 +3080,18 @@
       "attributes": []
     },
     {
+<<<<<<< HEAD
+      "label": "USES_LIBRARIES",
+=======
       "label": "ADDS_SOURCES",
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       "source": {
         "label": "Library"
       },
       "target": {
+<<<<<<< HEAD
+        "label": "Lua"
+=======
         "label": "SourceFile"
       },
       "attributes": []
@@ -4246,6 +4305,7 @@
       },
       "target": {
         "label": "FileLicense"
+>>>>>>> 99cbc3365370eefe3150a100f2afd57e8231820a
       },
       "attributes": []
     }
