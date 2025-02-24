@@ -1,31 +1,25 @@
 from typing import Iterator
 from graphrag_sdk.document import Document
 
-class TextLoader():
+class StringLoader():
     """
-    Load Text
+    Load String 
     """
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, string: str) -> None:
         """
         Initialize loader
 
         Parameters:
-            path (str): path to Text.
+            string (str): string from memory.
         """
-
-        self.path = path
+        self.string = string
 
     def load(self) -> Iterator[Document]:
         """
-        Load Text
+        Load string from memory
 
         Returns:
             Iterator[Document]: document iterator
         """
-
-        with open(self.path, 'r') as f:
-            yield Document(
-                f.read(),
-                self.path
-            )
+        yield Document(self.string)

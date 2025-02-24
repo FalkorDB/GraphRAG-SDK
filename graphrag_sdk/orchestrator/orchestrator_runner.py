@@ -1,3 +1,4 @@
+from typing import Union
 from graphrag_sdk.agents import Agent
 from graphrag_sdk.models import GenerativeModelChatSession
 from .execution_plan import ExecutionPlan
@@ -76,7 +77,7 @@ class OrchestratorRunner:
     def get_agent(self, agent_id: str) -> Agent:
         return next(agent for agent in self._agents if agent.agent_id == agent_id)
 
-    def get_session(self, session_id: str) -> GenerativeModelChatSession | None:
+    def get_session(self, session_id: str) -> Union[GenerativeModelChatSession, None]:
         return self._agent_sessions.get(session_id, None)
 
     def set_session(self, session_id: str, session: GenerativeModelChatSession):
@@ -160,7 +161,7 @@ class OrchestratorRunner:
 
     def _get_orchestrator_decision(
         self,
-        next_step: PlanStep | None = None,
+        next_step: Union[PlanStep, None] = None,
     ) -> OrchestratorDecision:
 
         response = self.chat.send_message(

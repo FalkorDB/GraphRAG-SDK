@@ -69,40 +69,52 @@ class ExtractDataStep(Step):
 
     def run(self, instructions: str = None) -> list[AbstractSource]:
 
-        tasks: list[Future[Ontology]] = []
+        # Each task is represented by a tuple containing:
+        #   1. A Future object (the asynchronous processing task)
+        #   2. A string (the ID of the document being processed)
+        tasks: list[tuple[Future, str]] = []
         
-        with tqdm(total=len(self.sources), desc="Process Documents", disable=self.hide_progress) as pbar:
+        # Collect documents from all sources
+        documents = [
+            (document, source.instruction)
+            for source in self.sources
+            for document in source.load()
+            if document.not_empty()
+            ]
+        
+        with tqdm(total=len(documents), desc="Process Documents", disable=self.hide_progress) as pbar:
             with ThreadPoolExecutor(max_workers=self.config["max_workers"]) as executor:
-
-                # Process each source document in parallel
-                for source in self.sources:
+                
+                # Concurrency document processing
+                for document, instructions in documents:
                     task_id = "extract_data_step_" + str(uuid4())
                     task = executor.submit(
-                        self._process_source,
+                        self._process_document,
                         task_id,
                         self._create_chat(),
-                        source,
+                        document,
                         self.ontology,
                         self.graph,
                         instructions,
                     )
-                    tasks.append(task)
+                    tasks.append((task, document.id))
                     
                 # Wait for all tasks to be completed
-                while any(task.running() or not task.done() for task in tasks):
+                while any(task[0].running() or not task[0].done() for task in tasks):
                     time.sleep(RENDER_STEP_SIZE)
                     with self.counter_lock:
                         pbar.n = self.process_files
                     pbar.refresh()
 
-        failed_sources = [self.sources[idx] for idx, task in enumerate(tasks) if task.exception()]     
-        return failed_sources
+        # Collect failed documents
+        failed_documents = [task[1] for task in tasks if task[0].exception()]     
+        return failed_documents
 
-    def _process_source(
+    def _process_document(
         self,
         task_id: str,
         chat_session: GenerativeModelChatSession,
-        source: AbstractSource,
+        document: Document,
         ontology: Ontology,
         graph: Graph,
         source_instructions: str = "",
@@ -125,10 +137,7 @@ class ExtractDataStep(Step):
 
             logger.debug(f"Processing task: {task_id}")
             _task_logger.debug(f"Processing task: {task_id}")
-            
-            document = next(source.load())
-            source_instructions = source.instruction
-                
+                            
             text = document.content[: self.config["max_input_tokens"]]
             user_message = EXTRACT_DATA_PROMPT.format(
                 text=text,

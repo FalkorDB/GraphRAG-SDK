@@ -29,4 +29,4 @@ class CSVLoader:
                         ]
                     ]
                 )
-                yield Document(content)
+                yield Document(content, f"{self.path}#{i}")

@@ -1,5 +1,6 @@
-from abc import ABC, abstractmethod
 from enum import Enum
+from typing import Union
+from abc import ABC, abstractmethod
 
 
 class FinishReason:
@@ -30,12 +31,12 @@ class GenerativeModelConfig:
 
     def __init__(
         self,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        top_k: int | None = None,
-        max_output_tokens: int | None = None,
-        stop_sequences: list[str] | None = None,
-        response_format: dict | None = None,
+        temperature: Union[float, None] = None,
+        top_p: Union[float, None] = None,
+        top_k: Union[int, None] = None,
+        max_output_tokens: Union[int, None] = None,
+        stop_sequences: Union[list[str], None] = None,
+        response_format: Union[dict, None] = None,
     ):
         self.temperature = temperature
         self.top_p = top_p
@@ -103,7 +104,7 @@ class GenerativeModel(ABC):
         pass
 
     @abstractmethod
-    def start_chat(self, args: dict | None) -> GenerativeModelChatSession:
+    def start_chat(self, args: Union[dict, None]) -> GenerativeModelChatSession:
         pass
 
     @staticmethod

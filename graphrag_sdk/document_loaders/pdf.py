@@ -35,6 +35,6 @@ class PDFLoader():
 
         reader = PdfReader(self.path)
         yield from [
-            Document(page.extract_text())
-            for page in reader.pages
+            Document(page_content.extract_text(), f"{self.path}#{page_num}")
+            for page_num, page_content in enumerate(reader.pages)
         ]

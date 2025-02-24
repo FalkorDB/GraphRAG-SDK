@@ -1,7 +1,7 @@
 import logging
 import warnings
-from typing import Optional
 from falkordb import FalkorDB
+from typing import Optional, Union
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.chat_session import ChatSession
@@ -45,40 +45,39 @@ class KnowledgeGraph:
             model (GenerativeModel): The Google GenerativeModel to use.
             host (str): FalkorDB hostname.
             port (int): FalkorDB port number.
-            username (str|None): FalkorDB username.
-            password (str|None): FalkorDB password.
-            ontology (Ontology|None): Ontology to use.
-            cypher_system_instruction (str|None): Cypher system instruction. Make sure you have {ontology} in the instruction.
-            qa_system_instruction (str|None): QA system instruction.
-            cypher_gen_prompt (str|None): Cypher generation prompt. Make sure you have {question} in the prompt.
-            qa_prompt (str|None): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.
-            cypher_gen_prompt_history (str|None): Cypher generation prompt with history. Make sure you have {question} and {last_answer} in the prompt.
+            username (Union[str, None]): FalkorDB username.
+            password (Union[str, None]): FalkorDB password.
+            ontology (Union[Ontology, None]): Ontology to use.
+            cypher_system_instruction (Union[str, None]): Cypher system instruction. Make sure you have {ontology} in the instruction.
+            qa_system_instruction (Union[str, None]): QA system instruction.
+            cypher_gen_prompt (Union[str, None]): Cypher generation prompt. Make sure you have {question} in the prompt.
+            qa_prompt (Union[str, None]): QA prompt. Make sure you have {question}, {context} and {cypher} in the prompt.
+            cypher_gen_prompt_history (Union[str, None]): Cypher generation prompt with history. Make sure you have {question} and {last_answer} in the prompt.
         """
 
         if not isinstance(name, str) or name == "":
             raise Exception("name should be a non empty string")
 
-        # connect to database
+        # Connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
         ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
 
         # Load / Save ontology to database
         if ontology is None:
-            # load ontology from DB
-            ontology = Ontology.from_graph(ontology_graph)
-        else:
-            # save ontology to DB
-            ontology.save_to_graph(ontology_graph)
+            # Load ontology from DB
+            ontology = Ontology.from_schema_graph(ontology_graph)
             
-        if ontology is None:
-            raise Exception("Ontology is not defined")
+            if len(ontology.entities) == 0:
+                raise Exception("The ontology is empty. Load a valid ontology or create one using the ontology module.")
+        else:
+            # Save ontology to DB
+            ontology.save_to_graph(ontology_graph)
 
         self._ontology = ontology
         self._name = name
         self._model_config = model_config
-        self.sources = set([])
-        self.failed_sources = set([])
+        self.failed_documents = set([])
 
         if cypher_system_instruction is None:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
@@ -162,19 +161,12 @@ class KnowledgeGraph:
             raise Exception("Ontology is not defined")
 
         # Create graph with sources
-        failed_sources = self._create_graph_with_sources(sources, instructions, hide_progress)
+        self._create_graph_with_sources(sources, instructions, hide_progress)
 
-        # Add processed sources
-        for src in sources:
-            if src not in failed_sources:
-                self.sources.add(src)
-                self.failed_sources.discard(src)
-            else:
-                self.failed_sources.add(src)
 
     def _create_graph_with_sources(
-        self, sources: list[AbstractSource] | None = None, instructions: str = None, hide_progress: bool = False
-    ) -> list[AbstractSource]:
+        self, sources: Union[list[AbstractSource], None] = None, instructions: str = None, hide_progress: bool = False
+) -> None:
 
         step = ExtractDataStep(
             sources=list(sources),
@@ -184,10 +176,8 @@ class KnowledgeGraph:
             hide_progress=hide_progress,
         )
 
-        failed_sources = step.run(instructions)
-        
-        return failed_sources
-        
+        self.failed_documents = step.run(instructions)
+                
     def delete(self) -> None:
         """
         Deletes the knowledge graph and any other related resource

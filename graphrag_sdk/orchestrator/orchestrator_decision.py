@@ -1,5 +1,6 @@
-from graphrag_sdk.orchestrator.step import PlanStep
 from json import loads
+from typing import Union
+from graphrag_sdk.orchestrator.step import PlanStep
 
 
 class OrchestratorDecisionCode:
@@ -21,7 +22,7 @@ class OrchestratorDecisionCode:
 
 class OrchestratorDecision:
     def __init__(
-        self, code: OrchestratorDecisionCode, new_step: PlanStep | None = None
+        self, code: OrchestratorDecisionCode, new_step: Union[PlanStep, None] = None
     ):
         self.code = code
         self.new_step = new_step
@@ -33,7 +34,7 @@ class OrchestratorDecision:
         }
 
     @staticmethod
-    def from_json(json: dict | str) -> "OrchestratorDecision":
+    def from_json(json: Union[dict, str]) -> "OrchestratorDecision":
         json = json if isinstance(json, dict) else loads(json)
         return OrchestratorDecision(
             OrchestratorDecisionCode.from_str(json["code"]),

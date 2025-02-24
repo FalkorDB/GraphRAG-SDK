@@ -6,6 +6,7 @@ from .model import (
     FinishReason,
     GenerativeModelChatSession,
 )
+from typing import Union
 from openai import OpenAI
 
 
@@ -16,8 +17,8 @@ class OpenAiGenerativeModel(GenerativeModel):
     def __init__(
         self,
         model_name: str,
-        generation_config: GenerativeModelConfig | None = None,
-        system_instruction: str | None = None,
+        generation_config: Union[GenerativeModelConfig, None] = None,
+        system_instruction: Union[str, None] = None,
     ):
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
@@ -36,7 +37,7 @@ class OpenAiGenerativeModel(GenerativeModel):
 
         return self
 
-    def start_chat(self, args: dict | None = None) -> GenerativeModelChatSession:
+    def start_chat(self, args: Union[dict, None] = None) -> GenerativeModelChatSession:
         return OpenAiChatSession(self, args)
 
     def parse_generate_content_response(self, response: any) -> GenerationResponse:
@@ -75,7 +76,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
 
     _history = []
 
-    def __init__(self, model: OpenAiGenerativeModel, args: dict | None = None):
+    def __init__(self, model: OpenAiGenerativeModel, args: Union[dict, None] = None):
         self._model = model
         self._args = args
         self._history = (
