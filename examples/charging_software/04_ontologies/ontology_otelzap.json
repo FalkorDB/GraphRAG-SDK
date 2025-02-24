@@ -25,6 +25,18 @@
       "description": ""
     },
     {
+      "label": "ZapcoreObjectEncoder",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "Complex128",
       "attributes": [
         {
@@ -49,79 +61,7 @@
       "description": ""
     },
     {
-      "label": "ArrayMarshaler",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ObjectMarshaler",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Interface",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Duration",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Byte",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Time",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Bool",
       "attributes": [
         {
           "name": "value",
@@ -217,18 +157,6 @@
       "description": ""
     },
     {
-      "label": "String",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Uint",
       "attributes": [
         {
@@ -301,10 +229,46 @@
       "description": ""
     },
     {
-      "label": "MapObjectEncoder",
+      "label": "String",
       "attributes": [
         {
-          "name": "name",
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Bool",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ByteString",
+      "attributes": [
+        {
+          "name": "value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Time",
+      "attributes": [
+        {
+          "name": "value",
           "type": "string",
           "unique": true,
           "required": true
@@ -325,10 +289,58 @@
       "description": ""
     },
     {
-      "label": "ZapcoreObjectEncoder",
+      "label": "ArrayMarshaler",
       "attributes": [
         {
           "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ObjectMarshaler",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Interface",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MapObjectEncoder",
+      "attributes": [
+        {
+          "name": "fields",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FieldExtractorCore",
+      "attributes": [
+        {
+          "name": "extra_fields",
           "type": "string",
           "unique": true,
           "required": true
@@ -349,10 +361,16 @@
       "description": ""
     },
     {
-      "label": "Uber_go",
+      "label": "Zap",
       "attributes": [
         {
           "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
           "type": "string",
           "unique": true,
           "required": true
@@ -361,7 +379,7 @@
       "description": ""
     },
     {
-      "label": "Package",
+      "label": "Field",
       "attributes": [
         {
           "name": "name",
@@ -370,22 +388,16 @@
           "required": true
         },
         {
-          "name": "import_path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "version",
+          "name": "type",
           "type": "string",
           "unique": false,
-          "required": false
+          "required": true
         }
       ],
       "description": ""
     },
     {
-      "label": "Otelzap",
+      "label": "Entry",
       "attributes": [
         {
           "name": "name",
@@ -397,7 +409,7 @@
       "description": ""
     },
     {
-      "label": "Encoding",
+      "label": "CheckedEntry",
       "attributes": [
         {
           "name": "name",
@@ -409,76 +421,10 @@
       "description": ""
     },
     {
-      "label": "FieldExtractorCore",
+      "label": "Level",
       "attributes": [
         {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Zapcore_Core",
-      "attributes": [
-        {
-          "name": "interface_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Zap_Field",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Zapcore_Entry",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Zapcore_CheckedEntry",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Zapcore_Level",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "level",
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -526,8 +472,8 @@
           "required": false
         },
         {
-          "name": "extra_fields",
-          "type": "string",
+          "name": "trace_id_field",
+          "type": "boolean",
           "unique": false,
           "required": false
         },
@@ -536,6 +482,12 @@
           "type": "boolean",
           "unique": false,
           "required": false
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
         }
       ],
       "description": ""
@@ -559,18 +511,6 @@
       "description": ""
     },
     {
-      "label": "Sync",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Context",
       "attributes": [
         {
@@ -581,6 +521,18 @@
         },
         {
           "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SyncRWMutex",
+      "attributes": [
+        {
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -631,13 +583,31 @@
           "name": "version",
           "type": "string",
           "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Go",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
       "description": ""
     },
     {
-      "label": "IndirectDependency",
+      "label": "Software",
       "attributes": [
         {
           "name": "name",
@@ -649,16 +619,16 @@
           "name": "version",
           "type": "string",
           "unique": false,
-          "required": true
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "Checksum",
+      "label": "Hash",
       "attributes": [
         {
-          "name": "hash",
+          "name": "value",
           "type": "string",
           "unique": true,
           "required": true
@@ -667,19 +637,49 @@
           "name": "algorithm",
           "type": "string",
           "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
       "description": ""
     },
     {
-      "label": "GoMod",
+      "label": "Version",
+      "attributes": [
+        {
+          "name": "number",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GoModule",
       "attributes": [
         {
           "name": "path",
           "type": "string",
           "unique": true,
           "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -692,9 +692,15 @@
           "type": "string",
           "unique": true,
           "required": true
-        },
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ZapcoreLevel",
+      "attributes": [
         {
-          "name": "name",
+          "name": "level",
           "type": "string",
           "unique": true,
           "required": true
@@ -703,43 +709,31 @@
       "description": ""
     },
     {
-      "label": "AttributeKey",
+      "label": "Configuration",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Span",
-      "attributes": [
-        {
-          "name": "span_id",
+          "name": "description",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "trace_id",
-          "type": "string",
+          "name": "stack_trace",
+          "type": "boolean",
           "unique": false,
           "required": false
         },
         {
-          "name": "name",
+          "name": "extra_fields",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "Level",
+      "label": "Attribute_Key",
       "attributes": [
         {
           "name": "name",
@@ -769,6 +763,30 @@
       "description": ""
     },
     {
+      "label": "Span",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Event",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "Log",
       "attributes": [
         {
@@ -787,30 +805,48 @@
       "description": ""
     },
     {
-      "label": "OtelzapLogger",
+      "label": "Test",
       "attributes": [
         {
-          "name": "type",
+          "name": "test_name",
           "type": "string",
           "unique": true,
           "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "Zap",
+      "label": "TracerProvider",
       "attributes": [
         {
-          "name": "level",
+          "name": "name",
           "type": "string",
-          "unique": false,
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tracer",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OtelzapLogger",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
@@ -820,108 +856,6 @@
       "label": "Url",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Version",
-      "attributes": [
-        {
-          "name": "version_number",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Function",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "return_type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Repository",
-      "attributes": [
-        {
-          "name": "format_version",
-          "type": "number",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "filemode",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "bare",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "logallrefupdates",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "symlinks",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "ignorecase",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "description_file",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "named",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description_set",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
           "name": "url",
           "type": "string",
           "unique": true,
@@ -931,28 +865,10 @@
       "description": ""
     },
     {
-      "label": "Remote",
+      "label": "Trace",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Branch",
-      "attributes": [
-        {
-          "name": "name",
+          "name": "trace_id",
           "type": "string",
           "unique": true,
           "required": true
@@ -961,841 +877,31 @@
       "description": ""
     },
     {
-      "label": "Reference",
+      "label": "Stacktrace",
       "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "fully_peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "sorted",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Head",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "HookScript",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
         {
           "name": "description",
           "type": "string",
-          "unique": false,
-          "required": false
-        },
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Package",
+      "attributes": [
         {
           "name": "name",
           "type": "string",
           "unique": true,
           "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitRepository",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
         },
         {
-          "name": "directory",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommitMessage",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "file",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Executable",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Author",
-      "attributes": [
-        {
-          "name": "identifier",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SignedOffByLine",
-      "attributes": [
-        {
-          "name": "line_content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitVariable",
-      "attributes": [
-        {
-          "name": "variable_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SedCommand",
-      "attributes": [
-        {
-          "name": "command_text",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Watchman",
-      "attributes": [
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
+          "name": "version",
           "type": "string",
           "unique": false,
           "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Git",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "UpdateToken",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Query",
-      "attributes": [
-        {
-          "name": "expression",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "fields",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "FileSystem",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "JSON",
-      "attributes": [
-        {
-          "name": "package_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OperatingSystem",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "WorkingDirectory",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "status",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Process",
-      "attributes": [
-        {
-          "name": "id",
-          "type": "number",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Response",
-      "attributes": [
-        {
-          "name": "content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Script",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Command",
-      "attributes": [
-        {
-          "name": "command_text",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Hook",
-      "attributes": [
-        {
-          "name": "hook_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "event",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitConfiguration",
-      "attributes": [
-        {
-          "name": "key",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "File",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "content",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "extension",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PreCommitHook",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Commit",
-      "attributes": [
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "message",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Ref",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "oid",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Test",
-      "attributes": [
-        {
-          "name": "condition",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitBranch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Configuration",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "allow_unannotated",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_delete_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_modify_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_delete_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "deny_create_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "MergeStatus",
-      "attributes": [
-        {
-          "name": "branch",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "is_merged",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PushOption",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value_prefix",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitEnvironmentVariable",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ShellCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PerlCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Index",
-      "attributes": [
-        {
-          "name": "status",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tag",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "annotated",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Project",
-      "attributes": [
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Comment",
-      "attributes": [
-        {
-          "name": "text",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Pattern",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Person",
-      "attributes": [
-        {
-          "name": "email",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CloneOperation",
-      "attributes": [
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "operation_type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Organization",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Software",
-      "attributes": [
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommunicationProtocol",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommunicationParameter",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
         }
       ],
       "description": ""
@@ -1813,6 +919,24 @@
       "description": ""
     },
     {
+      "label": "IndirectPackage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "GoogleCloudGo",
       "attributes": [
         {
@@ -1825,7 +949,7 @@
       "description": ""
     },
     {
-      "label": "BigQuery",
+      "label": "GolangOrg",
       "attributes": [
         {
           "name": "name",
@@ -1837,691 +961,7 @@
       "description": ""
     },
     {
-      "label": "Datastore",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Pubsub",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Storage",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DmitriShuralyovGpuMtl",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "BurntSushiToml",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "BurntSushiXgb",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OneOfOneXxhash",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "AntihaxOptional",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "BenbjohnsonClock",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CenkaltiBackoffV4",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CensusInstrumentationOpencensusProto",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CespareXxhash",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CespareXxhashV2",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ChzyerLogex",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ChzyerReadline",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ChzyerTest",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Client9Misspell",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CncfUdpaGo",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CncfXdsGo",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DavecghGoSpew",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "EnvoyproxyGoControlPlane",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "EnvoyproxyProtocGenValidate",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GhodssYaml",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoGlfw",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoGlfwV3",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoLogrLogr",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoLogrStdr",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangGlog",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangGroupcache",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangMock",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangProtobuf",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleBtree",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleGoCmp",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleMartian",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleMartianV3",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GooglePprof",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleRenameio",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleUuid",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleapisGaxGoV2",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GrpcEcosystemGrpcGateway",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GrpcEcosystemGrpcGatewayV2",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "HashicorpGolangLru",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "IanlancetaylorDemangle",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "JstemmerGoJunitReport",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "KisielkGotool",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "KrPretty",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "KrPty",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "KrText",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PkgErrors",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PmezardGoDifflib",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PrometheusClientModel",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "RogpeppeFastuuid",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "RogpeppeGoInternal",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SpaolacciMurmur3",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "StretchrObjx",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "StretchrTestify",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "UptraceUptraceGo",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "YuinGoldmark",
+      "label": "GithubCom",
       "attributes": [
         {
           "name": "name",
@@ -2545,7 +985,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoContribInstrumentationRuntime",
+      "label": "GoOpentelemetryIo",
       "attributes": [
         {
           "name": "name",
@@ -2557,7 +997,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtel",
+      "label": "GoUberOrg",
       "attributes": [
         {
           "name": "name",
@@ -2569,7 +1009,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelExportersJaeger",
+      "label": "GopkgIn",
       "attributes": [
         {
           "name": "name",
@@ -2581,7 +1021,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelExportersOtlpInternalRetry",
+      "label": "HonnefCo",
       "attributes": [
         {
           "name": "name",
@@ -2593,7 +1033,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelExportersOtlpOtlpmetric",
+      "label": "RscIo",
       "attributes": [
         {
           "name": "name",
@@ -2605,7 +1045,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelExportersOtlpOtlpmetricOtlpmetricgrpc",
+      "label": "GoogleapisCom",
       "attributes": [
         {
           "name": "name",
@@ -2617,7 +1057,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelExportersOtlptrace",
+      "label": "GooglesourceCom",
       "attributes": [
         {
           "name": "name",
@@ -2629,7 +1069,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelExportersOtlptraceOtlptracegrpc",
+      "label": "Function",
       "attributes": [
         {
           "name": "name",
@@ -2641,10 +1081,10 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelExportersStdoutStdouttrace",
+      "label": "Otel",
       "attributes": [
         {
-          "name": "name",
+          "name": "tracer_name",
           "type": "string",
           "unique": true,
           "required": true
@@ -2653,451 +1093,7 @@
       "description": ""
     },
     {
-      "label": "GoOpentelemetryIoOtelMetric",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoOpentelemetryIoOtelSdk",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoOpentelemetryIoOtelSdkMetric",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoOpentelemetryIoOtelTrace",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoOpentelemetryIoProtoOtlp",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoUberOrgAtomic",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoUberOrgGoleak",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoUberOrgMultierr",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoUberOrgZap",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXCrypto",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXExp",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXImage",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXLint",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXMobile",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXMod",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXNet",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXOauth2",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXSync",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXSys",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXTerm",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXText",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXTime",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXTools",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GolangOrgXXerrors",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleGolangOrgApi",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleGolangOrgAppengine",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleGolangOrgGenproto",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleGolangOrgGrpc",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GoogleGolangOrgProtobuf",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GopkgInCheckV1",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GopkgInErrgoV2",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GopkgInYamlV2",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GopkgInYamlV3",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "HonnefCoGoTools",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "RscIoBinaryregexp",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "RscIoQuoteV3",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "RscIoSampler",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Otelzap_Logger",
+      "label": "Sync",
       "attributes": [
         {
           "name": "type",
@@ -3109,10 +1105,22 @@
       "description": ""
     },
     {
-      "label": "Tracer",
+      "label": "Otelplay",
       "attributes": [
         {
-          "name": "name",
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Otelzap",
+      "attributes": [
+        {
+          "name": "type",
           "type": "string",
           "unique": true,
           "required": true
@@ -3169,10 +1177,10 @@
       "description": ""
     },
     {
-      "label": "Endpoint",
+      "label": "Project",
       "attributes": [
         {
-          "name": "url",
+          "name": "id",
           "type": "string",
           "unique": true,
           "required": true
@@ -3181,10 +1189,946 @@
       "description": ""
     },
     {
-      "label": "Dsn",
+      "label": "AttributeKey",
       "attributes": [
         {
-          "name": "value",
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerWithCtx",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SugaredLoggerWithCtx",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ZapLevel",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Caller",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StackTraceType",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TraceId",
+      "attributes": [
+        {
+          "name": "id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExtraField",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ZapOption",
+      "attributes": [
+        {
+          "name": "description",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ModuleDependency",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PackageImport",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ErrorLog",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OtelTrace",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProjectLink",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExportedEnvironmentVariable",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ZapPackage",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FunctionContext",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PackageDefinition",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StackConfig",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CallConfig",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ExtraConfig",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TraceIdConfig",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SugaredLoggerHas",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SugaredLoggerContext",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EventAttribute",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TracerStart",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SpanEvent",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LogError",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestRun",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerConfiguration",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestInitialization",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionIncludes",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionAdd",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ConfigurationStacktrace",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ModuleHasDependency",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FunctionPassesContext",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PackageDefinesFunction",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareHasModule",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SoftwareHasHash",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionConfiguresCaller",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionConfiguresCallerDepth",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionConfiguresStacktrace",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionConfiguresExtrafields",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionConfiguresTraceidfield",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SugaredloggerwithctxHasSugaredlogger",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerwithctxHasLogger",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OtelzaploggerProvidesOption",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ProjectPartOfLink",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EnvironmentvariableExportsToExporter",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BufferarrayencoderImplementsZapcorearrayencoder",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BufferarrayencoderAppendsComplex128",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ArraymarshalerReturnsError",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "BufferarrayencoderCreatesMapobjectencoder",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FieldextractorcoreHasField",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FieldextractorcoreUsesZap",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FieldextractorcoreWithField",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FieldextractorcoreCheckEntry",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FieldextractorcoreWriteEntry",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "FieldextractorcoreEnabledLevel",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerHasSugaredlogger",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerReplacesLogger",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerSafeForSyncrwmutex",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ModuleRequiresDependency",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "VersionIsVersionOfGopackage",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "GomoduleUsesPackageGopackage",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionAppliesConfiguration",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionSetsMinimalevelZapcorelevel",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OptionSetsErrorstatuslevelZapcorelevel",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerHasLevel",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TracerStartsSpan",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SpanHasEvent",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestRunsLogger",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerConfiguredWithConfiguration",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "TestInitializesTracerprovider",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PackageImportsPackage",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OtelTracesGo",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerGeneratesLog",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "LoggerLogsError",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EventHasAttribute",
+      "attributes": [
+        {
+          "name": "type",
           "type": "string",
           "unique": true,
           "required": true
@@ -3215,36 +2159,9 @@
       "attributes": []
     },
     {
-      "label": "IMPORTS",
-      "source": {
-        "label": "Otelzap"
-      },
-      "target": {
-        "label": "Fmt"
-      },
-      "attributes": [
-        {
-          "name": "alias",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "label": "MARSHALS_LOG",
-      "source": {
-        "label": "ObjectMarshaler"
-      },
-      "target": {
-        "label": "ZapcoreObjectEncoder"
-      },
-      "attributes": []
-    },
-    {
       "label": "RETURNS",
       "source": {
-        "label": "AppendObject"
+        "label": "ArrayMarshaler"
       },
       "target": {
         "label": "Error"
@@ -3252,22 +2169,12 @@
       "attributes": []
     },
     {
-      "label": "USES",
+      "label": "CREATES",
       "source": {
         "label": "BufferArrayEncoder"
       },
       "target": {
-        "label": "Encoding"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONTAINS",
-      "source": {
-        "label": "Package"
-      },
-      "target": {
-        "label": "Otelzap"
+        "label": "MapObjectEncoder"
       },
       "attributes": []
     },
@@ -3277,16 +2184,59 @@
         "label": "FieldExtractorCore"
       },
       "target": {
-        "label": "Zap_Field"
+        "label": "Field"
       },
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ]
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "FieldExtractorCore"
+      },
+      "target": {
+        "label": "Zap"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WITH",
+      "source": {
+        "label": "FieldExtractorCore"
+      },
+      "target": {
+        "label": "Field"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CHECK",
+      "source": {
+        "label": "FieldExtractorCore"
+      },
+      "target": {
+        "label": "Entry"
+      },
+      "attributes": []
+    },
+    {
+      "label": "WRITE",
+      "source": {
+        "label": "FieldExtractorCore"
+      },
+      "target": {
+        "label": "Entry"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ENABLED",
+      "source": {
+        "label": "FieldExtractorCore"
+      },
+      "target": {
+        "label": "Level"
+      },
+      "attributes": []
     },
     {
       "label": "HAS",
@@ -3299,12 +2249,22 @@
       "attributes": []
     },
     {
-      "label": "WITH_CTX",
+      "label": "REPLACES",
       "source": {
         "label": "Logger"
       },
       "target": {
-        "label": "Context"
+        "label": "Logger"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SAFE_FOR",
+      "source": {
+        "label": "Logger"
+      },
+      "target": {
+        "label": "SyncRWMutex"
       },
       "attributes": []
     },
@@ -3314,47 +2274,57 @@
         "label": "Module"
       },
       "target": {
-        "label": "Package"
+        "label": "Dependency"
       },
       "attributes": []
     },
     {
-      "label": "REQUIRES_INDIRECTLY",
+      "label": "HAS_MODULE",
       "source": {
-        "label": "Module"
+        "label": "Software"
       },
       "target": {
-        "label": "IndirectDependency"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CHECKSUM",
-      "source": {
         "label": "Module"
       },
-      "target": {
-        "label": "Checksum"
-      },
       "attributes": []
     },
     {
-      "label": "USES_GO_MOD",
+      "label": "HAS_HASH",
       "source": {
-        "label": "Module"
+        "label": "Software"
       },
       "target": {
-        "label": "GoMod"
+        "label": "Hash"
       },
       "attributes": []
     },
     {
-      "label": "APPLIES_CONFIGURATION",
+      "label": "IS_VERSION_OF",
+      "source": {
+        "label": "Version"
+      },
+      "target": {
+        "label": "GoPackage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_PACKAGE",
+      "source": {
+        "label": "GoModule"
+      },
+      "target": {
+        "label": "GoPackage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "APPLIES",
       "source": {
         "label": "Option"
       },
       "target": {
-        "label": "Logger"
+        "label": "Configuration"
       },
       "attributes": []
     },
@@ -3364,7 +2334,7 @@
         "label": "Option"
       },
       "target": {
-        "label": "Zapcore_Level"
+        "label": "ZapcoreLevel"
       },
       "attributes": []
     },
@@ -3374,7 +2344,7 @@
         "label": "Option"
       },
       "target": {
-        "label": "Zapcore_Level"
+        "label": "ZapcoreLevel"
       },
       "attributes": []
     },
@@ -3386,7 +2356,31 @@
       "target": {
         "label": "Logger"
       },
-      "attributes": []
+      "attributes": [
+        {
+          "name": "on",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURES_CALLER_DEPTH",
+      "source": {
+        "label": "Option"
+      },
+      "target": {
+        "label": "Logger"
+      },
+      "attributes": [
+        {
+          "name": "depth",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ]
     },
     {
       "label": "CONFIGURES_STACK_TRACE",
@@ -3396,7 +2390,14 @@
       "target": {
         "label": "Logger"
       },
-      "attributes": []
+      "attributes": [
+        {
+          "name": "on",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
     },
     {
       "label": "CONFIGURES_EXTRA_FIELDS",
@@ -3404,7 +2405,7 @@
         "label": "Option"
       },
       "target": {
-        "label": "Logger"
+        "label": "Field"
       },
       "attributes": []
     },
@@ -3416,25 +2417,32 @@
       "target": {
         "label": "Logger"
       },
+      "attributes": [
+        {
+          "name": "on",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_LOGGER",
+      "source": {
+        "label": "LoggerWithCtx"
+      },
+      "target": {
+        "label": "Logger"
+      },
       "attributes": []
     },
     {
       "label": "HAS_CONTEXT",
       "source": {
-        "label": "Logger"
+        "label": "LoggerWithCtx"
       },
       "target": {
         "label": "Context"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOGS_TO",
-      "source": {
-        "label": "Logger"
-      },
-      "target": {
-        "label": "Span"
       },
       "attributes": []
     },
@@ -3446,12 +2454,29 @@
       "target": {
         "label": "Level"
       },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS_SUGARED_LOGGER",
+      "source": {
+        "label": "SugaredLoggerWithCtx"
+      },
+      "target": {
+        "label": "SugaredLogger"
+      },
       "attributes": []
     },
     {
       "label": "HAS_ATTRIBUTE",
       "source": {
-        "label": "Log"
+        "label": "Event"
       },
       "target": {
         "label": "Attribute"
@@ -3459,7 +2484,17 @@
       "attributes": []
     },
     {
-      "label": "CREATES_LOG",
+      "label": "STARTS",
+      "source": {
+        "label": "Tracer"
+      },
+      "target": {
+        "label": "Span"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GENERATES",
       "source": {
         "label": "Logger"
       },
@@ -3468,7 +2503,7 @@
       },
       "attributes": [
         {
-          "name": "stack_trace",
+          "name": "format",
           "type": "string",
           "unique": false,
           "required": false
@@ -3476,52 +2511,42 @@
       ]
     },
     {
-      "label": "STARTS",
-      "source": {
-        "label": "Span"
-      },
-      "target": {
-        "label": "Context"
-      },
-      "attributes": []
-    },
-    {
       "label": "HAS_EVENT",
       "source": {
         "label": "Span"
       },
       "target": {
-        "label": "Log"
+        "label": "Event"
       },
       "attributes": []
     },
     {
-      "label": "CLONES",
+      "label": "RUNS",
       "source": {
-        "label": "Logger"
+        "label": "Test"
       },
       "target": {
         "label": "Logger"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_OPTION",
-      "source": {
-        "label": "Logger"
-      },
-      "target": {
-        "label": "Attribute"
       },
       "attributes": []
     },
     {
       "label": "CONFIGURED_WITH",
       "source": {
-        "label": "OtelzapLogger"
+        "label": "Logger"
       },
       "target": {
-        "label": "Option"
+        "label": "Configuration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INITIALIZES",
+      "source": {
+        "label": "Test"
+      },
+      "target": {
+        "label": "TracerProvider"
       },
       "attributes": []
     },
@@ -3531,469 +2556,49 @@
         "label": "OtelzapLogger"
       },
       "target": {
-        "label": "Zap"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_VERSION",
-      "source": {
-        "label": "Package"
-      },
-      "target": {
-        "label": "Version"
-      },
-      "attributes": []
-    },
-    {
-      "label": "FETCHES_FROM",
-      "source": {
-        "label": "Remote"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCATED_AT",
-      "source": {
-        "label": "Reference"
-      },
-      "target": {
-        "label": "Head"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PART_OF",
-      "source": {
-        "label": "Module"
-      },
-      "target": {
-        "label": "Remote"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CALLS",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "WRITES_TO",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "READS",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXTRACTS",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "Author"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ADDS",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "SignedOffByLine"
-      },
-      "attributes": []
-    },
-    {
-      "label": "FINDS_DUPLICATES_IN",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INTEGRATES_WITH",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Git"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GENERATES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "UpdateToken"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MODIFIES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "FileSystem"
-      },
-      "attributes": []
-    },
-    {
-      "label": "QUERIES",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "FileSystem"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DECODES",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "Response"
-      },
-      "attributes": [
-        {
-          "name": "format",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "DETECTS",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "FileSystem"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RUNS_ON",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "OperatingSystem"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LAUNCHES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Process"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HANDLES",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "Error"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXECUTES",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Command"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_A",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCATED_IN",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONFIGURES",
-      "source": {
-        "label": "GitConfiguration"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "APPLIES_TO",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IMPLEMENTED_IN",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "Script"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REFERENCES",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Ref"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CHECKS",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EVALUATES",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Test"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TRIGGERS",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TARGETS",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CHECKS_MERGE_STATUS",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "MergeStatus"
+        "label": "Option"
       },
       "attributes": []
     },
     {
       "label": "INCLUDES",
       "source": {
-        "label": "HookScript"
+        "label": "Option"
       },
       "target": {
-        "label": "ShellCommand"
+        "label": "Field"
       },
       "attributes": []
     },
     {
-      "label": "UPDATES",
+      "label": "ADDS",
       "source": {
-        "label": "HookScript"
+        "label": "Option"
       },
       "target": {
-        "label": "GitRepository"
+        "label": "Trace"
       },
       "attributes": []
     },
     {
-      "label": "TRIGGERED_BY",
+      "label": "CONFIGURES",
       "source": {
-        "label": "HookScript"
+        "label": "Option"
       },
       "target": {
-        "label": "Commit"
+        "label": "Stacktrace"
       },
-      "attributes": []
+      "attributes": [
+        {
+          "name": "on",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
     },
     {
-      "label": "REFLECTS",
-      "source": {
-        "label": "Index"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CHANGES_IN",
-      "source": {
-        "label": "WorkingDirectory"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MANAGES",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXCLUDES",
-      "source": {
-        "label": "Project"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REPRESENTS",
-      "source": {
-        "label": "Comment"
-      },
-      "target": {
-        "label": "Project"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DEFINES",
-      "source": {
-        "label": "Project"
-      },
-      "target": {
-        "label": "Pattern"
-      },
-      "attributes": []
-    },
-    {
-      "label": "AUTHORED",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Person"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONE",
-      "source": {
-        "label": "CloneOperation"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONED_FROM",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PERFORMED_BY",
-      "source": {
-        "label": "CloneOperation"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS",
-      "source": {
-        "label": "Reference"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DEPENDS_ON",
+      "label": "DEPENDENCY",
       "source": {
         "label": "Module"
       },
@@ -4003,29 +2608,59 @@
       "attributes": []
     },
     {
-      "label": "CREATES",
+      "label": "IMPORTS",
+      "source": {
+        "label": "Package"
+      },
+      "target": {
+        "label": "Package"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "Package"
+      },
+      "target": {
+        "label": "Function"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PASSES",
       "source": {
         "label": "Function"
       },
       "target": {
-        "label": "Otelzap_Logger"
+        "label": "Context"
       },
       "attributes": []
     },
     {
-      "label": "CONFIGURED_BY",
+      "label": "LOGS",
       "source": {
-        "label": "Exporter"
+        "label": "Logger"
       },
       "target": {
-        "label": "EnvironmentVariable"
+        "label": "Error"
       },
       "attributes": []
     },
     {
-      "label": "REFERS_TO",
+      "label": "TRACES",
       "source": {
-        "label": "Software"
+        "label": "Otel"
+      },
+      "target": {
+        "label": "Go"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PART_OF",
+      "source": {
+        "label": "Project"
       },
       "target": {
         "label": "Link"
@@ -4033,24 +2668,85 @@
       "attributes": []
     },
     {
-      "label": "HAS_ENDPOINT",
+      "label": "EXPORTS_TO",
       "source": {
-        "label": "Exporter"
+        "label": "EnvironmentVariable"
       },
       "target": {
-        "label": "Endpoint"
+        "label": "Exporter"
       },
       "attributes": []
     },
     {
-      "label": "USES_DSN",
+      "label": "ENABLES",
       "source": {
-        "label": "Exporter"
+        "label": "FieldExtractorCore"
       },
       "target": {
-        "label": "Dsn"
+        "label": "Level"
       },
       "attributes": []
+    },
+    {
+      "label": "CONFIGURES_DEPTH",
+      "source": {
+        "label": "Option"
+      },
+      "target": {
+        "label": "Logger"
+      },
+      "attributes": [
+        {
+          "name": "depth",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURES_STACK",
+      "source": {
+        "label": "Option"
+      },
+      "target": {
+        "label": "Logger"
+      },
+      "attributes": [
+        {
+          "name": "on",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "CONFIGURES_FIELD",
+      "source": {
+        "label": "Option"
+      },
+      "target": {
+        "label": "Field"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURES_TRACE",
+      "source": {
+        "label": "Option"
+      },
+      "target": {
+        "label": "Logger"
+      },
+      "attributes": [
+        {
+          "name": "on",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
     }
   ]
 }

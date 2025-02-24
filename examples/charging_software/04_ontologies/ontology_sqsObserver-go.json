@@ -4,7 +4,7 @@
       "label": "SoftwareModule",
       "attributes": [
         {
-          "name": "module_name",
+          "name": "module_path",
           "type": "string",
           "unique": true,
           "required": true
@@ -13,24 +13,6 @@
           "name": "language",
           "type": "string",
           "unique": false,
-          "required": false
-        },
-        {
-          "name": "version",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Protocol",
-      "attributes": [
-        {
-          "name": "protocol_name",
-          "type": "string",
-          "unique": true,
           "required": true
         },
         {
@@ -38,12 +20,6 @@
           "type": "string",
           "unique": false,
           "required": false
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
         }
       ],
       "description": ""
@@ -61,10 +37,10 @@
       "description": ""
     },
     {
-      "label": "Dependency",
+      "label": "Library",
       "attributes": [
         {
-          "name": "dependency_name",
+          "name": "library_name",
           "type": "string",
           "unique": true,
           "required": true
@@ -74,37 +50,7 @@
           "type": "string",
           "unique": false,
           "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "License",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Organization",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Software",
-      "attributes": [
+        },
         {
           "name": "name",
           "type": "string",
@@ -112,8 +58,8 @@
           "required": true
         },
         {
-          "name": "year",
-          "type": "number",
+          "name": "language",
+          "type": "string",
           "unique": false,
           "required": false
         }
@@ -139,13 +85,13 @@
           "name": "container_expiration_seconds",
           "type": "number",
           "unique": false,
-          "required": false
+          "required": true
         },
         {
           "name": "backoff_duration",
           "type": "number",
           "unique": false,
-          "required": false
+          "required": true
         }
       ],
       "description": ""
@@ -154,88 +100,22 @@
       "label": "Localstack",
       "attributes": [
         {
-          "name": "sess",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "b",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "region",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "services",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "container_expiration_seconds",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "backoff_duration",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "AwsConfig",
-      "attributes": [
-        {
-          "name": "region",
+          "name": "session",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "endpoint",
+          "name": "backoff",
           "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "aws_id",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "aws_secret",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "aws_token",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "disable_ssl",
-          "type": "boolean",
           "unique": false,
           "required": false
         },
         {
-          "name": "credentials_chain_verbose_errors",
-          "type": "boolean",
-          "unique": false,
-          "required": false
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
         }
       ],
       "description": ""
@@ -244,13 +124,25 @@
       "label": "Session",
       "attributes": [
         {
+          "name": "region",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "endpoint",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
           "name": "session_id",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "session_details",
+          "name": "session_data",
           "type": "string",
           "unique": true,
           "required": true
@@ -259,19 +151,7 @@
       "description": ""
     },
     {
-      "label": "DockerPool",
-      "attributes": [
-        {
-          "name": "pool_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DockerContainer",
+      "label": "Container",
       "attributes": [
         {
           "name": "repository",
@@ -287,6 +167,42 @@
         },
         {
           "name": "port",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Backoff",
+      "attributes": [
+        {
+          "name": "interval",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Aws",
+      "attributes": [
+        {
+          "name": "aws_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "aws_secret",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "aws_token",
           "type": "string",
           "unique": true,
           "required": true
@@ -316,33 +232,9 @@
           "required": true
         },
         {
-          "name": "default_timeout",
-          "type": "number",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SQS",
-      "attributes": [
-        {
-          "name": "sqs_service",
+          "name": "observer_type",
           "type": "string",
           "unique": true,
-          "required": true
-        },
-        {
-          "name": "poll_duration",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "message_timeout",
-          "type": "number",
-          "unique": false,
           "required": true
         }
       ],
@@ -352,22 +244,16 @@
       "label": "Queue",
       "attributes": [
         {
-          "name": "queue_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
           "name": "queue_url",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "name": "visibility_timeout",
+          "type": "number",
+          "unique": false,
+          "required": false
         },
         {
           "name": "poll_duration",
@@ -376,10 +262,16 @@
           "required": false
         },
         {
-          "name": "visibility_timeout",
-          "type": "number",
-          "unique": false,
-          "required": false
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "queue_name",
+          "type": "string",
+          "unique": true,
+          "required": true
         },
         {
           "name": "url",
@@ -398,6 +290,60 @@
           "type": "number",
           "unique": false,
           "required": false
+        },
+        {
+          "name": "tag",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "message_retention_period",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Sqs",
+      "attributes": [
+        {
+          "name": "message_body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "receipt_handle",
+          "type": "string",
+          "unique": true,
+          "required": false
+        },
+        {
+          "name": "sqs_service",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Logger",
+      "attributes": [
+        {
+          "name": "logger_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "logger_instance",
+          "type": "string",
+          "unique": true,
+          "required": true
         }
       ],
       "description": ""
@@ -406,7 +352,7 @@
       "label": "ApiMessage",
       "attributes": [
         {
-          "name": "message_body",
+          "name": "message_id",
           "type": "string",
           "unique": true,
           "required": true
@@ -414,23 +360,11 @@
         {
           "name": "message_type",
           "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "message_content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "content",
-          "type": "string",
           "unique": false,
           "required": true
         },
         {
-          "name": "message_id",
+          "name": "content",
           "type": "string",
           "unique": true,
           "required": true
@@ -487,88 +421,16 @@
       "description": ""
     },
     {
-      "label": "Logger",
-      "attributes": [
-        {
-          "name": "logger_instance",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Context",
       "attributes": [
         {
+          "name": "context_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
           "name": "context_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "package",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Message",
-      "attributes": [
-        {
-          "name": "receipt_handle",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "body",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Mutex",
-      "attributes": [
-        {
-          "name": "mutex_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Error",
-      "attributes": [
-        {
-          "name": "error_message",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "message",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
           "type": "string",
           "unique": true,
           "required": true
@@ -580,10 +442,10 @@
       "label": "ObserverManager",
       "attributes": [
         {
-          "name": "interface_name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "name": "has_observer_with_tag",
+          "type": "boolean",
+          "unique": false,
+          "required": false
         },
         {
           "name": "default_poll_duration",
@@ -598,10 +460,16 @@
           "required": false
         },
         {
-          "name": "is_default",
-          "type": "boolean",
-          "unique": false,
-          "required": false
+          "name": "manager_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
         },
         {
           "name": "description",
@@ -616,10 +484,28 @@
       "label": "Manager",
       "attributes": [
         {
-          "name": "struct_name",
+          "name": "mu",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "once",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "observers",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "tags",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -628,15 +514,27 @@
       "label": "Observer",
       "attributes": [
         {
+          "name": "tag",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
           "name": "interface_name",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "interface_type",
+          "name": "queue_name",
           "type": "string",
           "unique": true,
+          "required": true
+        },
+        {
+          "name": "poll_duration",
+          "type": "number",
+          "unique": false,
           "required": true
         },
         {
@@ -646,28 +544,10 @@
           "required": true
         },
         {
-          "name": "name",
+          "name": "interface_type",
           "type": "string",
           "unique": true,
           "required": true
-        },
-        {
-          "name": "tag",
-          "type": "string",
-          "unique": true,
-          "required": false
-        },
-        {
-          "name": "queue_name",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "poll_duration",
-          "type": "number",
-          "unique": false,
-          "required": false
         },
         {
           "name": "message_timeout",
@@ -682,10 +562,10 @@
       "label": "MultipleObserver",
       "attributes": [
         {
-          "name": "interface_name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "name": "default",
+          "type": "boolean",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -694,25 +574,25 @@
       "label": "Publisher",
       "attributes": [
         {
-          "name": "interface_name",
+          "name": "default",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "type",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
           "name": "interface_type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Sync",
-      "attributes": [
-        {
-          "name": "package",
           "type": "string",
           "unique": true,
           "required": true
@@ -745,22 +625,10 @@
       "description": ""
     },
     {
-      "label": "TestSuite",
+      "label": "ObserverManagerTestSuite",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Log",
-      "attributes": [
-        {
-          "name": "description",
+          "name": "test_name",
           "type": "string",
           "unique": true,
           "required": true
@@ -781,54 +649,6 @@
       "description": ""
     },
     {
-      "label": "Channel",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SingleSqsObserver",
-      "attributes": [
-        {
-          "name": "consumer_chan",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Sqs",
-      "attributes": [
-        {
-          "name": "sqs_service",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "poll_duration",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "message_timeout",
-          "type": "number",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Configuration",
       "attributes": [
         {
@@ -844,106 +664,16 @@
           "required": true
         },
         {
-          "name": "queue_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "tag",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
           "name": "poll_duration",
           "type": "number",
           "unique": false,
           "required": true
         },
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "allow_unannotated",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_delete_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_modify_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_delete_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "deny_create_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
           "name": "message_timeout",
           "type": "number",
           "unique": false,
           "required": true
-        },
-        {
-          "name": "package",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "message_retention_period",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "delay_seconds",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "max_number_of_messages",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "visibility_timeout",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "wait_time_seconds",
-          "type": "number",
-          "unique": false,
-          "required": false
         }
       ],
       "description": ""
@@ -980,12 +710,6 @@
           "type": "string",
           "unique": true,
           "required": true
-        },
-        {
-          "name": "session",
-          "type": "string",
-          "unique": true,
-          "required": true
         }
       ],
       "description": ""
@@ -1006,40 +730,10 @@
           "required": true
         },
         {
-          "name": "message_structure",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "AwsSession",
-      "attributes": [
-        {
-          "name": "session",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Library",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
+          "name": "message_type",
           "type": "string",
           "unique": false,
-          "required": false
+          "required": true
         }
       ],
       "description": ""
@@ -1048,32 +742,8 @@
       "label": "WorkerPool",
       "attributes": [
         {
-          "name": "amount_of_workers",
+          "name": "size",
           "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Goroutine",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Api",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
           "unique": true,
           "required": true
         }
@@ -1093,90 +763,12 @@
       "description": ""
     },
     {
-      "label": "Priority",
-      "attributes": [
-        {
-          "name": "level",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Semantics",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Switch",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Polling",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Documentation",
-      "attributes": [
-        {
-          "name": "file_path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "SqsObserver",
       "attributes": [
         {
           "name": "language",
           "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
           "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SqsConfiguration",
-      "attributes": [
-        {
-          "name": "poll_duration",
-          "type": "number",
-          "unique": false,
           "required": true
         }
       ],
@@ -1195,6 +787,24 @@
       "description": ""
     },
     {
+      "label": "SqsConfiguration",
+      "attributes": [
+        {
+          "name": "poll_duration",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message_timeout",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "Version",
       "attributes": [
         {
@@ -1202,10 +812,64 @@
           "type": "string",
           "unique": true,
           "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Message",
+      "attributes": [
+        {
+          "name": "message_type",
+          "type": "string",
+          "unique": true,
+          "required": true
         },
         {
-          "name": "number",
+          "name": "message_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "data",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "protocol_version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SQS",
+      "attributes": [
+        {
+          "name": "poll_duration",
           "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "message_timeout",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "service",
+          "type": "string",
           "unique": true,
           "required": true
         }
@@ -1216,7 +880,7 @@
       "label": "MessageType",
       "attributes": [
         {
-          "name": "name",
+          "name": "message_type",
           "type": "string",
           "unique": true,
           "required": true
@@ -1225,10 +889,10 @@
       "description": ""
     },
     {
-      "label": "Producer",
+      "label": "Status",
       "attributes": [
         {
-          "name": "name",
+          "name": "status",
           "type": "string",
           "unique": true,
           "required": true
@@ -1237,970 +901,10 @@
       "description": ""
     },
     {
-      "label": "SqsSingleObserver",
+      "label": "Error",
       "attributes": [
         {
-          "name": "queue_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "session",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "number_of_consumers",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SqsMultipleObserver",
-      "attributes": [
-        {
-          "name": "session",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Repository",
-      "attributes": [
-        {
-          "name": "format_version",
-          "type": "number",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description_file",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "named",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "transport_method",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "git_dir",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Remote",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Branch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "oid",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "File",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Description",
-      "attributes": [
-        {
-          "name": "content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Reference",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "fully_peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "sorted",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Head",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tag",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "annotated",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "tag_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "HookScript",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommitMessage",
-      "attributes": [
-        {
-          "name": "file_path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "command_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "FilePath",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Script",
-      "attributes": [
-        {
-          "name": "content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Author",
-      "attributes": [
-        {
-          "name": "git_author_ident",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SignedOffByLine",
-      "attributes": [
-        {
-          "name": "signed_off_by",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Watchman",
-      "attributes": [
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "purpose",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Git",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "UpdateToken",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Query",
-      "attributes": [
-        {
-          "name": "expression",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "WorkingDirectory",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ClockId",
-      "attributes": [
-        {
-          "name": "id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "JSONPackage",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OperationSystem",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Response",
-      "attributes": [
-        {
-          "name": "content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Command",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Hook",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitRepository",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Commit",
-      "attributes": [
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "oid",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "ref",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "message",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitConfiguration",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "configuration_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitDirectory",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitHook",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitBranch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ExitStatus",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "number",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "meaning",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PerlScript",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "purpose",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitPush",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PushOption",
-      "attributes": [
-        {
-          "name": "option_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "prefix",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ScriptCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PerlCommand",
-      "attributes": [
-        {
-          "name": "command_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Variable",
-      "attributes": [
-        {
-          "name": "variable_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ConfigurationVariable",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Ref",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Git_Object",
-      "attributes": [
-        {
-          "name": "sha1",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Comment",
-      "attributes": [
-        {
-          "name": "text",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Project",
-      "attributes": [
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ExcludePattern",
-      "attributes": [
-        {
-          "name": "pattern",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Email",
-      "attributes": [
-        {
-          "name": "address",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Person",
-      "attributes": [
-        {
-          "name": "username",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "email",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "EmailAddress",
-      "attributes": [
-        {
-          "name": "address",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Timestamp",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "number",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "TimeZone",
-      "attributes": [
-        {
-          "name": "offset",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommitHash",
-      "attributes": [
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Origin",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Master",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Refs",
-      "attributes": [
-        {
-          "name": "name",
+          "name": "error_message",
           "type": "string",
           "unique": true,
           "required": true
@@ -2213,30 +917,6 @@
       "attributes": [
         {
           "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Status",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "String",
-      "attributes": [
-        {
-          "name": "value",
           "type": "string",
           "unique": true,
           "required": true
@@ -2263,30 +943,6 @@
       "description": ""
     },
     {
-      "label": "QueueUrlOutput",
-      "attributes": [
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ReceiptHandle",
-      "attributes": [
-        {
-          "name": "handle_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "MessageAttribute",
       "attributes": [
         {
@@ -2303,6 +959,90 @@
         }
       ],
       "description": ""
+    },
+    {
+      "label": "QueueURL",
+      "attributes": [
+        {
+          "name": "url",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "MessageHandle",
+      "attributes": [
+        {
+          "name": "handle",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Timeout",
+      "attributes": [
+        {
+          "name": "visibility_timeout",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "wait_time_seconds",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NumberOfMessages",
+      "attributes": [
+        {
+          "name": "max_number_of_messages",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AWSSDK",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Option",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
     }
   ],
   "relations": [
@@ -2312,22 +1052,12 @@
         "label": "SoftwareModule"
       },
       "target": {
-        "label": "Dependency"
+        "label": "Library"
       },
       "attributes": []
     },
     {
-      "label": "SUPPORTS",
-      "source": {
-        "label": "SoftwareModule"
-      },
-      "target": {
-        "label": "Protocol"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES",
+      "label": "GO_VERSION",
       "source": {
         "label": "SoftwareModule"
       },
@@ -2337,182 +1067,52 @@
       "attributes": []
     },
     {
-      "label": "IMPLEMENTS",
-      "source": {
-        "label": "SoftwareModule"
-      },
-      "target": {
-        "label": "Protocol"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DEPENDS_ON",
-      "source": {
-        "label": "SoftwareModule"
-      },
-      "target": {
-        "label": "Dependency"
-      },
-      "attributes": []
-    },
-    {
-      "label": "VERSION_OF",
-      "source": {
-        "label": "Dependency"
-      },
-      "target": {
-        "label": "SoftwareModule"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_COPYRIGHT",
-      "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "Organization"
-      },
-      "attributes": [
-        {
-          "name": "year",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "HAS_CONFIGURATION",
+      "label": "HAS",
       "source": {
         "label": "Localstack"
       },
       "target": {
-        "label": "LocalstackConfig"
+        "label": "Session"
+      },
+      "attributes": []
+    },
+    {
+      "label": "CONFIGURED_WITH",
+      "source": {
+        "label": "Session"
+      },
+      "target": {
+        "label": "Aws"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "Localstack"
+      },
+      "target": {
+        "label": "Container"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GETS_MESSAGES_FROM",
+      "source": {
+        "label": "MultipleQueueObserver"
+      },
+      "target": {
+        "label": "Sqs"
       },
       "attributes": []
     },
     {
       "label": "CREATES",
       "source": {
-        "label": "Localstack"
+        "label": "MultipleQueueObserver"
       },
       "target": {
         "label": "Session"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RUNS",
-      "source": {
-        "label": "DockerPool"
-      },
-      "target": {
-        "label": "DockerContainer"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CREATED_WITH",
-      "source": {
-        "label": "Localstack"
-      },
-      "target": {
-        "label": "DockerContainer"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ESTABLISHES",
-      "source": {
-        "label": "Localstack"
-      },
-      "target": {
-        "label": "DockerPool"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONFIGURES",
-      "source": {
-        "label": "AwsConfig"
-      },
-      "target": {
-        "label": "Session"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONFIGURED_BY",
-      "source": {
-        "label": "DockerContainer"
-      },
-      "target": {
-        "label": "LocalstackConfig"
-      },
-      "attributes": []
-    },
-    {
-      "label": "OBSERVES",
-      "source": {
-        "label": "MultipleQueueObserver"
-      },
-      "target": {
-        "label": "Queue"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SENDS_MESSAGE",
-      "source": {
-        "label": "SQS"
-      },
-      "target": {
-        "label": "Queue"
-      },
-      "attributes": [
-        {
-          "name": "visibility_timeout",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "poll_duration",
-          "type": "number",
-          "unique": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "label": "HAS",
-      "source": {
-        "label": "MultipleQueueObserver"
-      },
-      "target": {
-        "label": "Logger"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HANDLES",
-      "source": {
-        "label": "MultipleQueueObserver"
-      },
-      "target": {
-        "label": "Context"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCKS",
-      "source": {
-        "label": "Mutex"
-      },
-      "target": {
-        "label": "SQS"
       },
       "attributes": []
     },
@@ -2527,59 +1127,9 @@
       "attributes": []
     },
     {
-      "label": "DELETES_MESSAGE",
-      "source": {
-        "label": "SQS"
-      },
-      "target": {
-        "label": "Message"
-      },
-      "attributes": []
-    },
-    {
-      "label": "UNMARSHALS",
+      "label": "STARTS",
       "source": {
         "label": "MultipleQueueObserver"
-      },
-      "target": {
-        "label": "Message"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ADDS_TO",
-      "source": {
-        "label": "MultipleQueueObserver"
-      },
-      "target": {
-        "label": "Queue"
-      },
-      "attributes": []
-    },
-    {
-      "label": "OCCURS_IN",
-      "source": {
-        "label": "Error"
-      },
-      "target": {
-        "label": "MultipleQueueObserver"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_DEFAULT",
-      "source": {
-        "label": "Manager"
-      },
-      "target": {
-        "label": "MultipleObserver"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LISTENS",
-      "source": {
-        "label": "Publisher"
       },
       "target": {
         "label": "Context"
@@ -2587,24 +1137,112 @@
       "attributes": []
     },
     {
-      "label": "HAS_OBSERVER",
+      "label": "IMPLEMENTS",
       "source": {
-        "label": "ObserverManager"
+        "label": "Manager"
       },
       "target": {
-        "label": "ObserverMock"
+        "label": "ObserverManager"
       },
       "attributes": []
     },
     {
-      "label": "USES_PUBLISHER",
+      "label": "GETS",
       "source": {
         "label": "ObserverManager"
+      },
+      "target": {
+        "label": "MultipleObserver"
+      },
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "SETS",
+      "source": {
+        "label": "ObserverManager"
+      },
+      "target": {
+        "label": "MultipleObserver"
+      },
+      "attributes": [
+        {
+          "name": "as_default",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "ADDS",
+      "source": {
+        "label": "ObserverManager"
+      },
+      "target": {
+        "label": "Observer"
+      },
+      "attributes": []
+    },
+    {
+      "label": "LISTENS",
+      "source": {
+        "label": "ObserverManager"
+      },
+      "target": {
+        "label": "Publisher"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_OBSERVER",
+      "source": {
+        "label": "ObserverManagerTestSuite"
+      },
+      "target": {
+        "label": "ObserverMock"
+      },
+      "attributes": [
+        {
+          "name": "tag",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "USES_PUBLISHER",
+      "source": {
+        "label": "ObserverManagerTestSuite"
       },
       "target": {
         "label": "PublisherMock"
       },
       "attributes": []
+    },
+    {
+      "label": "SENDS_MESSAGE",
+      "source": {
+        "label": "PublisherMock"
+      },
+      "target": {
+        "label": "ApiMessage"
+      },
+      "attributes": [
+        {
+          "name": "queue",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
     },
     {
       "label": "OBSERVES_QUEUE",
@@ -2617,59 +1255,46 @@
       "attributes": []
     },
     {
-      "label": "USES_CHANNEL",
+      "label": "HAS_DEFAULT_PUBLISHER",
       "source": {
-        "label": "ObserverMock"
-      },
-      "target": {
-        "label": "Channel"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_CONTEXT",
-      "source": {
-        "label": "ObserverMock"
-      },
-      "target": {
-        "label": "Context"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_LOG",
-      "source": {
-        "label": "ObserverMock"
-      },
-      "target": {
-        "label": "Log"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_TAG",
-      "source": {
-        "label": "ObserverMock"
-      },
-      "target": {
-        "label": "ObserverTag"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RUNS_TEST",
-      "source": {
-        "label": "TestSuite"
-      },
-      "target": {
         "label": "ObserverManager"
       },
+      "target": {
+        "label": "PublisherMock"
+      },
       "attributes": []
     },
     {
-      "label": "USES_QUEUE",
+      "label": "ADDS_OBSERVER",
       "source": {
-        "label": "SingleSqsObserver"
+        "label": "ObserverManager"
+      },
+      "target": {
+        "label": "ObserverMock"
+      },
+      "attributes": [
+        {
+          "name": "tag",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "GET_MESSAGE",
+      "source": {
+        "label": "Sqs"
+      },
+      "target": {
+        "label": "ApiMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "OBSERVES",
+      "source": {
+        "label": "Observer"
       },
       "target": {
         "label": "Queue"
@@ -2677,32 +1302,12 @@
       "attributes": []
     },
     {
-      "label": "GET_MESSAGES_FROM",
+      "label": "CONFIGURED_BY",
       "source": {
-        "label": "SingleSqsObserver"
-      },
-      "target": {
-        "label": "Sqs"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_CONFIGURATION",
-      "source": {
-        "label": "SingleSqsObserver"
+        "label": "Observer"
       },
       "target": {
         "label": "Configuration"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_SESSION",
-      "source": {
-        "label": "SingleSqsObserver"
-      },
-      "target": {
-        "label": "Session"
       },
       "attributes": []
     },
@@ -2714,7 +1319,14 @@
       "target": {
         "label": "Queue"
       },
-      "attributes": []
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
     },
     {
       "label": "CONTAINS",
@@ -2727,19 +1339,59 @@
       "attributes": []
     },
     {
-      "label": "RUNS_IN",
+      "label": "LOGS_WITH",
       "source": {
-        "label": "Library"
+        "label": "SqsPublisher"
       },
       "target": {
-        "label": "Goroutine"
+        "label": "Logger"
       },
       "attributes": []
     },
     {
-      "label": "POLLS",
+      "label": "LISTENS_ON",
       "source": {
-        "label": "WorkerPool"
+        "label": "SqsPublisher"
+      },
+      "target": {
+        "label": "Context"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PROPOSES",
+      "source": {
+        "label": "Library"
+      },
+      "target": {
+        "label": "Improvement"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GETS_URL_FROM",
+      "source": {
+        "label": "Queue"
+      },
+      "target": {
+        "label": "AwsSqsClient"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SETS_DEFAULT_POLL_DURATION",
+      "source": {
+        "label": "MultipleQueueObserver"
+      },
+      "target": {
+        "label": "Configuration"
+      },
+      "attributes": []
+    },
+    {
+      "label": "ADDS_QUEUES_TO_OBSERVE",
+      "source": {
+        "label": "MultipleQueueObserver"
       },
       "target": {
         "label": "Queue"
@@ -2747,52 +1399,22 @@
       "attributes": []
     },
     {
-      "label": "DOCUMENATION_IN",
-      "source": {
-        "label": "Library"
-      },
-      "target": {
-        "label": "Documentation"
-      },
-      "attributes": []
-    },
-    {
-      "label": "POLL_WITH",
-      "source": {
-        "label": "Library"
-      },
-      "target": {
-        "label": "Polling"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MANAGES",
-      "source": {
-        "label": "ObserverManager"
-      },
-      "target": {
-        "label": "MultipleQueueObserver"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PUBLISHES",
-      "source": {
-        "label": "SqsPublisher"
-      },
-      "target": {
-        "label": "ApiMessage"
-      },
-      "attributes": []
-    },
-    {
       "label": "SENDS",
       "source": {
-        "label": "Producer"
+        "label": "Publisher"
       },
       "target": {
         "label": "PublisherMessage"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PUBLISHES_TO",
+      "source": {
+        "label": "PublisherMessage"
+      },
+      "target": {
+        "label": "Queue"
       },
       "attributes": []
     },
@@ -2807,17 +1429,17 @@
       "attributes": []
     },
     {
-      "label": "DEFINES",
+      "label": "HAS_MESSAGE_TYPE",
       "source": {
         "label": "ApiMessage"
       },
       "target": {
-        "label": "MessageType"
+        "label": "Message"
       },
       "attributes": []
     },
     {
-      "label": "USES_VERSION",
+      "label": "HAS_VERSION",
       "source": {
         "label": "ApiMessage"
       },
@@ -2827,483 +1449,12 @@
       "attributes": []
     },
     {
-      "label": "PUBLISHES_TO",
+      "label": "GETS_OBSERVER",
       "source": {
-        "label": "SqsPublisher"
+        "label": "ObserverManager"
       },
       "target": {
-        "label": "Queue"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONFIGURED_WITH",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Remote"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MERGE",
-      "source": {
-        "label": "Branch"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EDIT",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REFERS_TO",
-      "source": {
-        "label": "Reference"
-      },
-      "target": {
-        "label": "Head"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXECUTES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": [
-        {
-          "name": "event",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "LOCATED_IN",
-      "source": {
-        "label": "CommitMessage"
-      },
-      "target": {
-        "label": "FilePath"
-      },
-      "attributes": []
-    },
-    {
-      "label": "WRITES_MESSAGE_TO",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CHECKS",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "CommitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INCLUDES",
-      "source": {
-        "label": "CommitMessage"
-      },
-      "target": {
-        "label": "SignedOffByLine"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INTEGRATES_WITH",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Watchman"
-      },
-      "attributes": []
-    },
-    {
-      "label": "OUTPUTS",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "UpdateToken"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MODIFIES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "QUERIES",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GETS",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "ClockId"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DECODES",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "JSONPackage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RUNS_ON",
-      "source": {
-        "label": "WorkingDirectory"
-      },
-      "target": {
-        "label": "OperationSystem"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RETURNS",
-      "source": {
-        "label": "Command"
-      },
-      "target": {
-        "label": "Response"
-      },
-      "attributes": []
-    },
-    {
-      "label": "UPDATES",
-      "source": {
-        "label": "Command"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_AN_EXAMPLE_OF",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TRIGGERS",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": [
-        {
-          "name": "condition",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "label": "CALLS",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "WRITTEN_IN",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Script"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PUSHES_TO",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCATED_ON",
-      "source": {
-        "label": "Branch"
-      },
-      "target": {
-        "label": "Remote"
-      },
-      "attributes": []
-    },
-    {
-      "label": "APPLIES_TO",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXITS_WITH",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "ExitStatus"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CHECKS_BRANCH",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "OPERATES_ON",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RELATES_TO",
-      "source": {
-        "label": "GitHook"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONTROLS",
-      "source": {
-        "label": "ConfigurationVariable"
-      },
-      "target": {
-        "label": "GitHook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REFERENCES",
-      "source": {
-        "label": "Ref"
-      },
-      "target": {
-        "label": "Git_Object"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_TYPE",
-      "source": {
-        "label": "Ref"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": [
-        {
-          "name": "condition",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "label": "EXCLUDES",
-      "source": {
-        "label": "Project"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_COMMENT",
-      "source": {
-        "label": "File"
-      },
-      "target": {
-        "label": "Comment"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_PATTERN",
-      "source": {
-        "label": "Project"
-      },
-      "target": {
-        "label": "ExcludePattern"
-      },
-      "attributes": []
-    },
-    {
-      "label": "AUTHORED",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Person"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SENT_FROM",
-      "source": {
-        "label": "Email"
-      },
-      "target": {
-        "label": "Person"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONED_FROM",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "AUTHOR",
-      "source": {
-        "label": "CommitHash"
-      },
-      "target": {
-        "label": "EmailAddress"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONE_FROM",
-      "source": {
-        "label": "CommitHash"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TIMESTAMP",
-      "source": {
-        "label": "CommitHash"
-      },
-      "target": {
-        "label": "Timestamp"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TIMEZONE",
-      "source": {
-        "label": "Timestamp"
-      },
-      "target": {
-        "label": "TimeZone"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CREATED_AT",
-      "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "Timestamp"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PART_OF",
-      "source": {
-        "label": "Remote"
-      },
-      "target": {
-        "label": "Origin"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONSUMES",
-      "source": {
-        "label": "Publisher"
-      },
-      "target": {
-        "label": "PublisherMessage"
+        "label": "Observer"
       },
       "attributes": []
     },
@@ -3318,22 +1469,32 @@
       "attributes": []
     },
     {
-      "label": "HAS_MESSAGE_TYPE",
+      "label": "CONSUMES_MESSAGES_FROM",
       "source": {
-        "label": "ApiMessage"
+        "label": "Publisher"
       },
       "target": {
-        "label": "MessageType"
+        "label": "PublisherMessage"
       },
       "attributes": []
     },
     {
-      "label": "USES_PROTOCOL_VERSION",
+      "label": "SENDS_MESSAGES_TO",
       "source": {
-        "label": "ApiMessage"
+        "label": "ObserverManager"
       },
       "target": {
-        "label": "ProtocolVersion"
+        "label": "Queue"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GROUPS",
+      "source": {
+        "label": "Configuration"
+      },
+      "target": {
+        "label": "Queue"
       },
       "attributes": []
     },
@@ -3358,12 +1519,32 @@
       "attributes": []
     },
     {
-      "label": "LOCATED_AT",
+      "label": "HAS_PROTOCOL_VERSION",
       "source": {
-        "label": "Message"
+        "label": "ApiMessage"
       },
       "target": {
-        "label": "QueueUrlOutput"
+        "label": "ProtocolVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DELETES",
+      "source": {
+        "label": "SQS"
+      },
+      "target": {
+        "label": "Message"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_URL",
+      "source": {
+        "label": "Queue"
+      },
+      "target": {
+        "label": "QueueURL"
       },
       "attributes": []
     },
@@ -3378,22 +1559,22 @@
       "attributes": []
     },
     {
-      "label": "DELETED_FROM",
+      "label": "CONFIGURE",
       "source": {
-        "label": "ReceiptHandle"
+        "label": "SQS"
       },
       "target": {
-        "label": "Queue"
+        "label": "Timeout"
       },
       "attributes": []
     },
     {
-      "label": "HAS_SESSION",
+      "label": "LIMITS",
       "source": {
-        "label": "QueueUrlOutput"
+        "label": "SQS"
       },
       "target": {
-        "label": "Session"
+        "label": "NumberOfMessages"
       },
       "attributes": []
     }

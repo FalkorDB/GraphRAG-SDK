@@ -12,7 +12,7 @@ from graphrag_sdk import KnowledgeGraph, Ontology
 
 logging.basicConfig(level=logging.INFO)
 
-folder = "some_iso_norm"  # "everest-core"
+folder = "otelzap"  # "everest-core"
 path_in = "examples/charging_software/03_data_in/code_repos"
 # path_in = "examples/charging_software/03_data_in/code_repos"
 
@@ -35,19 +35,19 @@ if __name__ == "__main__":
         logging.info("Specify LLM to be used.")
     
     ################### CREATE ONTOLOGIES FROM SOURCES ########################
-    # # Source configuration: Data folder.
-    # src_files = path_in+"/"+folder
-    # sources = []
+    # Source configuration: Data folder.
+    src_files = path_in+"/"+folder
+    sources = []
 
-    # # For each file in the source directory and its subdirectories, create a new Source object.
-    # for root, dirs, files in os.walk(src_files):
-    #     for file in files:
-    #         sources.append(Source(os.path.join(root, file)))
+    # For each file in the source directory and its subdirectories, create a new Source object.
+    for root, dirs, files in os.walk(src_files):
+        for file in files:
+            sources.append(Source(os.path.join(root, file)))
 
-    # # # Generate ontology
-    # f_name = "ontology_"+folder+".json"
+    # Generate ontology
+    f_name = "ontology_"+folder+".json"
 
-    # generate_ontology(sources, model, f_name)
+    generate_ontology(sources, model, f_name)
 
     ######################### MERGE JSON ONTOLOGIES ###########################
 
@@ -62,34 +62,31 @@ if __name__ == "__main__":
 
     ########### CREATE KNOWLEDGE GRAPH FROM (MERGED) ONTOLOGIES ###############
 
-    ontologies_dir = "examples"+"/"+"charging_software"+"/"+"04_ontologies"
-    name_onto = "ontology_citrineos"
-    fname_onto = name_onto+".json"
+    # ontologies_dir = "examples"+"/"+"charging_software"+"/"+"04_ontologies"
+    # name_onto = "ontology_"+folder
+    # fname_onto = name_onto+".json"
 
-    with open(os.path.join(ontologies_dir, fname_onto), "r") as f:
-        ontology = Ontology.from_json(json.loads(f.read()))
+    # with open(os.path.join(ontologies_dir, fname_onto), "r") as f:
+    #     ontology = Ontology.from_json(json.loads(f.read()))
     
     # Build knowledge graph with unified config
     kg = KnowledgeGraph(
-        name=name_onto,
+        name=folder,
         model_config=KnowledgeGraphModelConfig.with_model(model),
         ontology=ontology,
         host="localhost",
         port=6379
     )
     
-    # # # kg.process_sources(sources)  # Only if directly from sources to kg.
-
-    # Example usage
-    # graph = build_knowledge_graph("redis://localhost:6379", ontology)
+    # # kg.process_sources(sources)  # Only if directly from sources to kg.
 
     ########### INTERACT WITH KNOWLEDGE GRAPH, SAVE IT AS .rdb file ###########
 
-    # # Add chat interface from quickstart
-    # def query_kg(question: str):
-    #     chat = kg.chat_session()
-    #     return chat.send_message(question)
+    # Add chat interface from quickstart
+    def query_kg(question: str):
+        chat = kg.chat_session()
+        return chat.send_message(question)
     
-    # print(query_kg("Explain key EV charging concepts in this knowledge base"))
+    print(query_kg("Explain key EV charging concepts in this knowledge base"))
 
     logging.info("This is the end.")

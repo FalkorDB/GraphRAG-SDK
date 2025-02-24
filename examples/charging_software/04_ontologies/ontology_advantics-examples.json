@@ -1,22 +1,16 @@
 {
   "entities": [
     {
-      "label": "File",
+      "label": "Repository",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
+          "name": "description",
           "type": "string",
           "unique": false,
           "required": false
         },
         {
-          "name": "path",
+          "name": "url",
           "type": "string",
           "unique": true,
           "required": true
@@ -25,7 +19,79 @@
       "description": ""
     },
     {
-      "label": "Directory",
+      "label": "EVSEController",
+      "attributes": [
+        {
+          "name": "manufacturer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ip_address",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "config_file_path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PEVController",
+      "attributes": [
+        {
+          "name": "manufacturer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ip_address",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "config_file_path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargingStandard",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CANInterface",
       "attributes": [
         {
           "name": "name",
@@ -50,9 +116,15 @@
           "type": "string",
           "unique": false,
           "required": false
-        },
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Tool",
+      "attributes": [
         {
-          "name": "hash",
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -61,7 +133,19 @@
       "description": ""
     },
     {
-      "label": "Configuration",
+      "label": "ConfigurationFile",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OCPPServer",
       "attributes": [
         {
           "name": "name",
@@ -70,82 +154,22 @@
           "required": true
         },
         {
-          "name": "file_path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "License",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "year",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "holder",
+          "name": "version",
           "type": "string",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Permission",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "required": false
         },
         {
-          "name": "granted",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ChargeController",
-      "attributes": [
-        {
-          "name": "model",
+          "name": "websocket_link",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
       "label": "Hardware",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ChargingStandard",
       "attributes": [
         {
           "name": "name",
@@ -169,553 +193,19 @@
       "description": ""
     },
     {
-      "label": "IPAddress",
-      "attributes": [
-        {
-          "name": "address",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OCPP",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CANAdapter",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "PowerTransferSession",
       "attributes": [
         {
           "name": "status",
           "type": "string",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SteVe",
-      "attributes": [
-        {
-          "name": "server_address",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Repository",
-      "attributes": [
-        {
-          "name": "repositoryformatversion",
-          "type": "number",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "filemode",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "bare",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "logallrefupdates",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "symlinks",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "ignorecase",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": false
-        },
-        {
-          "name": "allow_unannotated",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "allow_delete_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "allow_modify_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "allow_delete_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "deny_create_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Remote",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "fetch",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "remote_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Branch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "remote",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "merge",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Reference",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "HookScript",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommitMessage",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "file",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "source",
-          "type": "string",
-          "unique": false,
           "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "GitCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Script",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Commit",
-      "attributes": [
-        {
-          "name": "message",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "commit_id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "sha1",
-          "type": "string",
-          "unique": true,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Watchman",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "git_work_tree",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Git",
-      "attributes": [
-        {
-          "name": "config_fsmonitor",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "UpdateToken",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Query",
-      "attributes": [
-        {
-          "name": "expression",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "WorkingDirectory",
-      "attributes": [
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Command",
-      "attributes": [
-        {
-          "name": "command_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Hook",
-      "attributes": [
-        {
-          "name": "hook_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitConfiguration",
-      "attributes": [
-        {
-          "name": "allownonascii",
-          "type": "boolean",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "variable",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Error",
-      "attributes": [
-        {
-          "name": "message",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitHook",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "hook_type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Ref",
-      "attributes": [
-        {
-          "name": "ref_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "oid",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "old_revision",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "new_revision",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Workflow",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Operation",
+      "label": "LinuxSystem",
       "attributes": [
         {
           "name": "name",
@@ -727,275 +217,17 @@
       "description": ""
     },
     {
-      "label": "Merge",
+      "label": "ChargePoint",
       "attributes": [
         {
-          "name": "source_branch",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "target_branch",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PushOption",
-      "attributes": [
-        {
-          "name": "name",
+          "name": "charge_box_id",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "value",
+          "name": "registration_status",
           "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Echo",
-      "attributes": [
-        {
-          "name": "message",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Rejection",
-      "attributes": [
-        {
-          "name": "reason",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PushOptionValue",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PerlCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SignedOff",
-      "attributes": [
-        {
-          "name": "by",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitOperation",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tag",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "annotated",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Config",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Project",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "FilePattern",
-      "attributes": [
-        {
-          "name": "pattern",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Person",
-      "attributes": [
-        {
-          "name": "email",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitRepository",
-      "attributes": [
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Email",
-      "attributes": [
-        {
-          "name": "address",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "User",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CloneOperation",
-      "attributes": [
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Action",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Protocol",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
           "unique": false,
           "required": true
         }
@@ -1021,7 +253,7 @@
           "name": "author",
           "type": "string",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "company",
@@ -1043,7 +275,7 @@
       "attributes": [
         {
           "name": "id",
-          "type": "string",
+          "type": "number",
           "unique": true,
           "required": true
         },
@@ -1130,48 +362,6 @@
           "type": "number",
           "unique": false,
           "required": true
-        },
-        {
-          "name": "notes",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "unit",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "slope",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "intercept",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "min",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "max",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "endianess",
-          "type": "string",
-          "unique": false,
-          "required": false
         }
       ],
       "description": ""
@@ -1195,40 +385,418 @@
       "description": ""
     },
     {
-      "label": "CommunicationProtocol",
+      "label": "Value",
       "attributes": [
         {
-          "name": "name",
+          "name": "type",
           "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PlugAndPins",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "PowerFunction",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
+          "unique": false,
           "required": true
         },
         {
-          "name": "value",
+          "name": "slope",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "unit",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "min",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "max",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "intercept",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ControllerStatus",
+      "attributes": [
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargeSession",
+      "attributes": [
+        {
+          "name": "communication_protocol",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "plug_and_pins",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargeStatus",
+      "attributes": [
+        {
+          "name": "vehicle_ready_for_charging",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DcPowerControl",
+      "attributes": [
+        {
+          "name": "target_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "current_range_max",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "current_range_min",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_function",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "setpoints_mode",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "output_contactors",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "lower_output_voltage",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ChargeSessionFinished",
+      "attributes": [
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EmergencyStop",
+      "attributes": [
+        {
+          "name": "origin",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvInformationBattery",
+      "attributes": [
+        {
+          "name": "battery_capacity",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "present_state_of_charge",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvInformationVoltages",
+      "attributes": [
+        {
+          "name": "ev_minimum_voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_maximum_voltage",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvInformationChargeLimits",
+      "attributes": [
+        {
+          "name": "ev_minimum_charge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_maximum_charge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_minimum_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_maximum_charge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvInformationDischargeLimits",
+      "attributes": [
+        {
+          "name": "ev_minimum_discharge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_maximum_discharge_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_minimum_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ev_maximum_discharge_power",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AdmCoCui1Inputs",
+      "attributes": [
+        {
+          "name": "switch0",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "switch1",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "switch2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "switch3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "switch4",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "switch5",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "colibri_temperature",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cpu_temperature",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "pistol_ptc1",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "pistol_ptc2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AdmCsSeccInputs",
+      "attributes": [
+        {
+          "name": "digital_input1",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "digital_input2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "digital_input3",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "digital_input4",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "cpu_temperature",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "pistol_ptc1",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "pistol_ptc2",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcppControl",
+      "attributes": [
+        {
+          "name": "dynamic_target_current",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerModulesStatus",
+      "attributes": [
+        {
+          "name": "present_voltage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "present_current",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "power_modules_temperature",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "enclosure_temperature",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "system_enable",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "insulation_resistance",
           "type": "number",
           "unique": false,
           "required": true
@@ -1237,355 +805,103 @@
       "description": ""
     },
     {
-      "label": "SetpointsMode",
+      "label": "DcPowerParameters",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
+          "name": "maximum_voltage",
           "type": "number",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OutputContactor",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "LowerOutputVoltage",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ChargeSessionState",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "EmergencyStopOrigin",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ControllerState",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "required": false
         },
         {
-          "name": "value",
+          "name": "maximum_charge_current",
           "type": "number",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DigitalInput",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DigitalOutput",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Switch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommunicationStage",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "required": false
         },
         {
-          "name": "value",
+          "name": "maximum_discharge_current",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
+        },
+        {
+          "name": "range_target_current",
+          "type": "number",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "Pins",
+      "label": "SequenceControl",
       "attributes": [
         {
-          "name": "name",
+          "name": "start_charge_authorisation",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
         },
         {
-          "name": "value",
-          "type": "number",
+          "name": "chademo_start_button",
+          "type": "string",
           "unique": false,
-          "required": true
+          "required": false
+        },
+        {
+          "name": "ccs_authorisation_done",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "ccs_authorisation_valid",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "charge_parameters_done",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "user_stop_button",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "RcdStatus",
+      "label": "AdmCsSeccOutputs",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
+          "name": "digital_output1",
           "type": "number",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "AcReadyToDeliverPower",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "required": false
         },
         {
-          "name": "value",
+          "name": "digital_output2",
           "type": "number",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "AcReadyToCharge",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "required": false
         },
         {
-          "name": "value",
+          "name": "digital_output3",
           "type": "number",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DcCloseContactors",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
+          "required": false
         },
         {
-          "name": "value",
+          "name": "digital_output4",
           "type": "number",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DcContactorsClosed",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DcNormalEndOfCharge",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CpState",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "InletLockState",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DcContactorPositiveFeedback",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DcContactorNegativeFeedback",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "StopCharge",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
-          "required": true
+          "required": false
         }
       ],
       "description": ""
@@ -1609,6 +925,60 @@
           "name": "value",
           "type": "number",
           "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AdvanticsEVSEInterfaceV3",
+      "attributes": [
+        {
+          "name": "protocol_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Application",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "console",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "can_config_path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CAN_Message",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "frame_id",
+          "type": "string",
+          "unique": false,
           "required": true
         }
       ],
@@ -2023,6 +1393,108 @@
       "description": ""
     },
     {
+      "label": "Configuration",
+      "attributes": [
+        {
+          "name": "path",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "interface",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "bitrate",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Pistol",
+      "attributes": [
+        {
+          "name": "index",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CAN",
+      "attributes": [
+        {
+          "name": "bus_config",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EVSE_Log",
+      "attributes": [
+        {
+          "name": "log_filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DigitalInput",
+      "attributes": [
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "input_number",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DigitalOutput",
+      "attributes": [
+        {
+          "name": "state",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "output_number",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "VehicleControl",
       "attributes": [
         {
@@ -2137,18 +1609,24 @@
       "description": ""
     },
     {
+      "label": "AdvanticsPevInterfaceV2",
+      "attributes": [
+        {
+          "name": "_db",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "CanMessage",
       "attributes": [
         {
           "name": "name",
           "type": "string",
           "unique": true,
-          "required": true
-        },
-        {
-          "name": "frame_id",
-          "type": "number",
-          "unique": false,
           "required": true
         },
         {
@@ -2168,12 +1646,66 @@
           "type": "string",
           "unique": false,
           "required": true
+        },
+        {
+          "name": "frame_id",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
       "label": "Database",
+      "attributes": [
+        {
+          "name": "file_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CanBus",
+      "attributes": [
+        {
+          "name": "bus_config",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Protocol",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Communication",
+      "attributes": [
+        {
+          "name": "method",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Socketcan",
       "attributes": [
         {
           "name": "name",
@@ -2186,6 +1718,60 @@
     },
     {
       "label": "FrameId",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ControllerState",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PowerFunction",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SetpointsMode",
       "attributes": [
         {
           "name": "name",
@@ -2233,186 +1819,186 @@
           "name": "ccs_authorisation_duration",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "ccs_authorisation_success",
           "type": "boolean",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "charge_parameters_negotiation_duration",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "power_modules_wake_up_duration",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "power_modules_dead_time",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "voltage_ramp_up_slope",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "voltage_ramp_down_slope",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "current_ramp_up_slope",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "current_ramp_down_slope",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "charge_duration",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "maximum_voltage",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "maximum_charge_current",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "maximum_discharge_current",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "charger_dead_time",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "charger_voltage_ramp_up_slope",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "contactors_delay",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "maximum_energy_request",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "target_energy_request",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "minimum_energy_request",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "maximum_v2x_energy_request",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "minimum_v2x_energy_request",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         },
         {
           "name": "departure_time",
           "type": "number",
           "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Package",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
       "description": ""
     },
     {
-      "label": "RampSimulator",
+      "label": "SocketcanInterface",
       "attributes": [
         {
-          "name": "voltage_ramp_up",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "voltage_ramp_down",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "current_ramp_up",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "current_ramp_down",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "update_dt",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Application",
-      "attributes": [
-        {
-          "name": "bus_config",
+          "name": "interface_type",
           "type": "string",
           "unique": true,
           "required": true
         },
         {
-          "name": "interface_config",
+          "name": "channel",
           "type": "string",
           "unique": false,
+          "required": true
+        },
+        {
+          "name": "bitrate",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CommunicationStage",
+      "attributes": [
+        {
+          "name": "stage",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
@@ -2422,15 +2008,15 @@
       "label": "ChargingProtocol",
       "attributes": [
         {
-          "name": "name",
-          "type": "string",
+          "name": "protocol",
+          "type": "number",
           "unique": true,
           "required": true
         },
         {
-          "name": "value",
-          "type": "number",
-          "unique": false,
+          "name": "name",
+          "type": "string",
+          "unique": true,
           "required": true
         }
       ],
@@ -2440,6 +2026,216 @@
       "label": "InletPins",
       "attributes": [
         {
+          "name": "pins",
+          "type": "number",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseController",
+      "attributes": [
+        {
+          "name": "manufacturer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ip_address",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "config_file_path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "PevController",
+      "attributes": [
+        {
+          "name": "manufacturer",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "ip_address",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "config_file_path",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CanInterface",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcppServer",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "websocket_link",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AdvanticsEvseInterfaceV3",
+      "attributes": [
+        {
+          "name": "protocol_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Can",
+      "attributes": [
+        {
+          "name": "bus_config",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "EvseLog",
+      "attributes": [
+        {
+          "name": "log_filename",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NetworkDefinition",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "AdvanticsCanMessage",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "arbitration_id",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "is_extended_id",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CanSignal",
+      "attributes": [
+        {
+          "name": "name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "V2xEnergyRequest",
+      "attributes": [
+        {
           "name": "name",
           "type": "string",
           "unique": true,
@@ -2449,7 +2245,7 @@
           "name": "value",
           "type": "number",
           "unique": false,
-          "required": true
+          "required": false
         }
       ],
       "description": ""
@@ -2457,22 +2253,22 @@
   ],
   "relations": [
     {
-      "label": "GENERATED_BY",
+      "label": "SUPPORTS",
       "source": {
-        "label": "File"
+        "label": "EVSEController"
       },
       "target": {
-        "label": "Software"
+        "label": "ChargingStandard"
       },
       "attributes": []
     },
     {
-      "label": "CONTAINS",
+      "label": "PROVIDES",
       "source": {
-        "label": "Directory"
+        "label": "EVSEController"
       },
       "target": {
-        "label": "File"
+        "label": "CANInterface"
       },
       "attributes": []
     },
@@ -2482,21 +2278,31 @@
         "label": "Software"
       },
       "target": {
-        "label": "File"
+        "label": "CANInterface"
       },
       "attributes": []
     },
     {
       "label": "CONFIGURED_BY",
       "source": {
-        "label": "Software"
+        "label": "EVSEController"
       },
       "target": {
-        "label": "Configuration"
+        "label": "ConfigurationFile"
+      },
+      "attributes": []
+    },
+    {
+      "label": "INTEGRATES_WITH",
+      "source": {
+        "label": "EVSEController"
+      },
+      "target": {
+        "label": "OCPPServer"
       },
       "attributes": [
         {
-          "name": "config_type",
+          "name": "ocpp_version",
           "type": "string",
           "unique": false,
           "required": true
@@ -2504,293 +2310,36 @@
       ]
     },
     {
-      "label": "HAS_PERMISSION",
+      "label": "REQUIRES",
       "source": {
-        "label": "License"
-      },
-      "target": {
-        "label": "Permission"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GOVERNS",
-      "source": {
-        "label": "License"
-      },
-      "target": {
-        "label": "Software"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_SOFTWARE",
-      "source": {
-        "label": "ChargeController"
-      },
-      "target": {
-        "label": "Software"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_STANDARD",
-      "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "ChargingStandard"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PROVIDES_INTERFACE",
-      "source": {
-        "label": "ChargeController"
-      },
-      "target": {
-        "label": "Interface"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_IP_ADDRESS",
-      "source": {
-        "label": "ChargeController"
-      },
-      "target": {
-        "label": "IPAddress"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SUPPORTS_OCPP",
-      "source": {
-        "label": "ChargeController"
-      },
-      "target": {
-        "label": "OCPP"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_ADAPTER",
-      "source": {
-        "label": "ChargeController"
-      },
-      "target": {
-        "label": "CANAdapter"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PARTICIPATES_IN",
-      "source": {
-        "label": "ChargeController"
-      },
-      "target": {
         "label": "PowerTransferSession"
       },
+      "target": {
+        "label": "EVSEController"
+      },
       "attributes": []
     },
     {
-      "label": "INTEGRATED_WITH",
-      "source": {
-        "label": "ChargeController"
-      },
-      "target": {
-        "label": "SteVe"
-      },
-      "attributes": [
-        {
-          "name": "websocket_link",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "REQUIRES_HARDWARE",
+      "label": "HOSTED_ON",
       "source": {
         "label": "Software"
       },
       "target": {
-        "label": "Hardware"
+        "label": "LinuxSystem"
       },
       "attributes": []
     },
     {
       "label": "COMMUNICATES_VIA",
       "source": {
-        "label": "ChargeController"
+        "label": "EVSEController"
       },
       "target": {
-        "label": "Interface"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_REMOTE",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Remote"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_BRANCH",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HEAD",
-      "source": {
-        "label": "Reference"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXECUTES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CHECKS",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MONITORS",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "UPDATED_SINCE",
-      "source": {
-        "label": "File"
-      },
-      "target": {
-        "label": "UpdateToken"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCATED_IN",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "WorkingDirectory"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PERFORM",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "Query"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ENABLES",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IMPLEMENTS",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCATED_AT",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "Command"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INVOKES",
-      "source": {
-        "label": "Command"
-      },
-      "target": {
-        "label": "Command"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONFIGURES",
-      "source": {
-        "label": "GitConfiguration"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TRIGGERS",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "Error"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TRIGGERED_BY",
-      "source": {
-        "label": "GitHook"
-      },
-      "target": {
-        "label": "GitCommand"
+        "label": "PEVController"
       },
       "attributes": [
         {
-          "name": "event",
+          "name": "protocol",
           "type": "string",
           "unique": false,
           "required": true
@@ -2798,551 +2347,136 @@
       ]
     },
     {
-      "label": "HAS_REF",
+      "label": "PRODUCES",
       "source": {
-        "label": "Commit"
+        "label": "Node"
       },
       "target": {
-        "label": "Ref"
+        "label": "AdmCsSeccOutputs"
       },
       "attributes": []
     },
     {
-      "label": "PUSHED_TO",
+      "label": "CONTAINS",
       "source": {
-        "label": "Ref"
+        "label": "Bus"
       },
       "target": {
-        "label": "Remote"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_COMMIT",
-      "source": {
-        "label": "Ref"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "UPDATES",
-      "source": {
-        "label": "Remote"
-      },
-      "target": {
-        "label": "Ref"
-      },
-      "attributes": [
-        {
-          "name": "update_type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "MERGED_INTO",
-      "source": {
-        "label": "Branch"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PART_OF",
-      "source": {
-        "label": "Branch"
-      },
-      "target": {
-        "label": "Workflow"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PERFORMS",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "Operation"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MODIFIES",
-      "source": {
-        "label": "Operation"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MERGES",
-      "source": {
-        "label": "Merge"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": [
-        {
-          "name": "is_fully_merged",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "label": "COMPARES",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "label": "USES_OPTION",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "PushOption"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_OPTION",
-      "source": {
-        "label": "PushOption"
-      },
-      "target": {
-        "label": "Echo"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_VALUE",
-      "source": {
-        "label": "PushOption"
-      },
-      "target": {
-        "label": "PushOptionValue"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PREPARES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "CommitMessage"
+        "label": "Message"
       },
       "attributes": []
     },
     {
       "label": "HAS",
       "source": {
-        "label": "CommitMessage"
+        "label": "Message"
       },
       "target": {
-        "label": "Commit"
+        "label": "Signal"
       },
       "attributes": []
     },
     {
-      "label": "SIGNED_OFF",
+      "label": "PART_OF",
       "source": {
-        "label": "Commit"
+        "label": "Document"
       },
       "target": {
-        "label": "SignedOff"
+        "label": "NetworkDefinition"
       },
       "attributes": []
     },
     {
-      "label": "APPLIES_TO",
+      "label": "LOCATED_IN",
       "source": {
-        "label": "GitCommand"
+        "label": "Node"
       },
       "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REFERS_TO",
-      "source": {
-        "label": "GitOperation"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CONFIGURATION",
-      "source": {
-        "label": "GitOperation"
-      },
-      "target": {
-        "label": "GitConfiguration"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CONFIG",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Config"
-      },
-      "attributes": []
-    },
-    {
-      "label": "UPDATED_REF",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Ref"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_A",
-      "source": {
-        "label": "Ref"
-      },
-      "target": {
-        "label": "Tag"
-      },
-      "attributes": [
-        {
-          "name": "is_type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "HAS_PROJECT",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "Project"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_ANNOTATED_TAG",
-      "source": {
-        "label": "Tag"
-      },
-      "target": {
-        "label": "Ref"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CONFIGURED_FOR",
-      "source": {
-        "label": "Config"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXCLUDES",
-      "source": {
-        "label": "Command"
-      },
-      "target": {
-        "label": "FilePattern"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USED_IN",
-      "source": {
-        "label": "FilePattern"
-      },
-      "target": {
-        "label": "Project"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USED_FOR",
-      "source": {
-        "label": "Command"
-      },
-      "target": {
-        "label": "Project"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONE_FROM",
-      "source": {
-        "label": "Person"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": [
-        {
-          "name": "timestamp",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "SENT_BY",
-      "source": {
-        "label": "Email"
-      },
-      "target": {
-        "label": "User"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PERFORMED_BY",
-      "source": {
-        "label": "CloneOperation"
-      },
-      "target": {
-        "label": "User"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONED_FROM",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "AUTHORED",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Person"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PERFORMED",
-      "source": {
-        "label": "Person"
-      },
-      "target": {
-        "label": "Action"
+        "label": "Bus"
       },
       "attributes": []
     },
     {
       "label": "COMMUNICATES_WITH",
       "source": {
-        "label": "Software"
+        "label": "AdvanticsEVSEInterfaceV3"
       },
       "target": {
-        "label": "Protocol"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_NODE",
-      "source": {
-        "label": "Document"
-      },
-      "target": {
-        "label": "Node"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_BUS",
-      "source": {
-        "label": "Document"
-      },
-      "target": {
-        "label": "Bus"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_MESSAGE",
-      "source": {
-        "label": "Bus"
-      },
-      "target": {
-        "label": "Message"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PRODUCER",
-      "source": {
-        "label": "Message"
-      },
-      "target": {
-        "label": "Node"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_SIGNAL",
-      "source": {
-        "label": "Message"
-      },
-      "target": {
-        "label": "Signal"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_LABEL",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "Label"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_PROTOCOL",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "CommunicationProtocol"
+        "label": "CAN"
       },
       "attributes": [
         {
-          "name": "name",
+          "name": "protocol",
           "type": "string",
-          "unique": true,
+          "unique": false,
           "required": true
         }
       ]
     },
     {
-      "label": "USES_PLUG_AND_PINS",
+      "label": "UPDATES",
       "source": {
-        "label": "Signal"
+        "label": "AdvanticsEVSEInterfaceV3"
       },
       "target": {
-        "label": "PlugAndPins"
+        "label": "ChargerControl"
       },
       "attributes": []
     },
     {
-      "label": "USES_POWER_FUNCTION",
+      "label": "LISTENS_TO",
       "source": {
-        "label": "Signal"
+        "label": "AdvanticsEVSEInterfaceV3"
       },
       "target": {
-        "label": "PowerFunction"
+        "label": "CAN_Message"
       },
       "attributes": []
     },
     {
-      "label": "USES_SETPOINTS_MODE",
+      "label": "CONTROLS",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "SetpointsMode"
+        "label": "ChargerControl"
       },
       "attributes": []
     },
     {
-      "label": "USES_OUTPUT_CONTACTOR",
+      "label": "MONITORS",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "OutputContactor"
+        "label": "ChargerStatus"
       },
       "attributes": []
     },
     {
-      "label": "USES_LOWER_OUTPUT_VOLTAGE",
+      "label": "CONFIGURES",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "LowerOutputVoltage"
+        "label": "ChargerParameters"
       },
       "attributes": []
     },
     {
-      "label": "HAS_CHARGE_SESSION_STATE",
+      "label": "REPORTS",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "ChargeSessionState"
+        "label": "SessionStatus"
       },
       "attributes": []
     },
     {
-      "label": "HAS_EMERGENCY_STOP_ORIGIN",
+      "label": "HAS_INPUT",
       "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "EmergencyStopOrigin"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REPORTS_CONTROLLER_STATE",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "ControllerState"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REPORTS_DIGITAL_INPUT",
-      "source": {
-        "label": "Signal"
+        "label": "ChargerStatus"
       },
       "target": {
         "label": "DigitalInput"
@@ -3350,9 +2484,9 @@
       "attributes": []
     },
     {
-      "label": "REPORTS_DIGITAL_OUTPUT",
+      "label": "HAS_OUTPUT",
       "source": {
-        "label": "Signal"
+        "label": "ChargerParameters"
       },
       "target": {
         "label": "DigitalOutput"
@@ -3360,262 +2494,82 @@
       "attributes": []
     },
     {
-      "label": "REPORTS_SWITCH",
+      "label": "UPDATES_VEHICLE_CONTROL",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "Switch"
+        "label": "VehicleControl"
       },
       "attributes": []
     },
     {
-      "label": "PRODUCED_BY",
+      "label": "UPDATES_CHARGER_STATUS",
       "source": {
-        "label": "Message"
+        "label": "Application"
       },
       "target": {
-        "label": "Node"
+        "label": "ChargerStatus"
       },
       "attributes": []
     },
     {
-      "label": "HAS_COMMUNICATION_STAGE",
+      "label": "UPDATES_VEHICLE_PARAMETERS",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "CommunicationStage"
+        "label": "VehicleParameters"
       },
       "attributes": []
     },
     {
-      "label": "HAS_PROTOCOL",
+      "label": "UPDATES_SESSION_STATUS",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "Protocol"
+        "label": "SessionStatus"
       },
       "attributes": []
     },
     {
-      "label": "HAS_PINS",
+      "label": "UPDATES_VEHICLE_STATUS",
       "source": {
-        "label": "Signal"
+        "label": "Application"
       },
       "target": {
-        "label": "Pins"
+        "label": "VehicleStatus"
       },
       "attributes": []
     },
     {
-      "label": "HAS_RCD_STATUS",
+      "label": "RECEIVES",
       "source": {
-        "label": "Signal"
+        "label": "AdvanticsPevInterfaceV2"
       },
       "target": {
-        "label": "RcdStatus"
+        "label": "CanMessage"
       },
       "attributes": []
     },
     {
-      "label": "HAS_READY_TO_DELIVER_POWER",
+      "label": "USES_DATABASE",
       "source": {
-        "label": "Signal"
+        "label": "AdvanticsPevInterfaceV2"
       },
       "target": {
-        "label": "AcReadyToDeliverPower"
+        "label": "Database"
       },
       "attributes": []
     },
     {
-      "label": "HAS_READY_TO_CHARGE",
+      "label": "SETS",
       "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "AcReadyToCharge"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CLOSE_CONTACTORS",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "DcCloseContactors"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CONTACTORS_CLOSED",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "DcContactorsClosed"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_NORMAL_END_OF_CHARGE",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "DcNormalEndOfCharge"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CP_STATE",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "CpState"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_INLET_LOCK_STATE",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "InletLockState"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_DC_CONTACTOR_POSITIVE_FEEDBACK",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "DcContactorPositiveFeedback"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_DC_CONTACTOR_NEGATIVE_FEEDBACK",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "DcContactorNegativeFeedback"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_STOP_CHARGE",
-      "source": {
-        "label": "Signal"
-      },
-      "target": {
-        "label": "StopCharge"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DEFINED_IN",
-      "source": {
-        "label": "Message"
-      },
-      "target": {
-        "label": "Bus"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_INTERFACE",
-      "source": {
-        "label": "Channel"
-      },
-      "target": {
-        "label": "Interface"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_BITRATE",
-      "source": {
-        "label": "Channel"
+        "label": "Configuration"
       },
       "target": {
         "label": "Bitrate"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CONTROL",
-      "source": {
-        "label": "ChargerControl"
-      },
-      "target": {
-        "label": "AdvanticsEVSEInterfaceV3"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_STATUS",
-      "source": {
-        "label": "ChargerStatus"
-      },
-      "target": {
-        "label": "AdvanticsEVSEInterfaceV3"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_PARAMETERS",
-      "source": {
-        "label": "ChargerParameters"
-      },
-      "target": {
-        "label": "AdvanticsEVSEInterfaceV3"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_SESSION",
-      "source": {
-        "label": "SessionStatus"
-      },
-      "target": {
-        "label": "AdvanticsEVSEInterfaceV3"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_VEHICLE_STATUS",
-      "source": {
-        "label": "VehicleStatus"
-      },
-      "target": {
-        "label": "AdvanticsEVSEInterfaceV3"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOADED_FROM",
-      "source": {
-        "label": "Database"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SUPPORTS",
-      "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "Protocol"
       },
       "attributes": []
     },
@@ -3630,7 +2584,17 @@
       "attributes": []
     },
     {
-      "label": "RECEIVES",
+      "label": "DEPENDENCY",
+      "source": {
+        "label": "Software"
+      },
+      "target": {
+        "label": "Package"
+      },
+      "attributes": []
+    },
+    {
+      "label": "SENDS_PERIODICALLY",
       "source": {
         "label": "Simulator"
       },
@@ -3640,92 +2604,22 @@
       "attributes": []
     },
     {
-      "label": "HAS_STATE",
+      "label": "HAS_STATUS",
       "source": {
-        "label": "Simulator"
+        "label": "ChargeSession"
       },
       "target": {
-        "label": "ControllerState"
+        "label": "ChargeStatus"
       },
       "attributes": []
     },
     {
-      "label": "CONTROLS_SEQUENCE_FLAGS",
+      "label": "HAS_CONTROL",
       "source": {
-        "label": "Simulator"
+        "label": "ChargePoint"
       },
       "target": {
-        "label": "SequenceFlags"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_RAMP_SIMULATOR",
-      "source": {
-        "label": "Simulator"
-      },
-      "target": {
-        "label": "RampSimulator"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_FRAME_ID",
-      "source": {
-        "label": "CanMessage"
-      },
-      "target": {
-        "label": "FrameId"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_APPLICATION",
-      "source": {
-        "label": "Simulator"
-      },
-      "target": {
-        "label": "Application"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CHANNEL",
-      "source": {
-        "label": "Interface"
-      },
-      "target": {
-        "label": "Channel"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_FRAME_ID",
-      "source": {
-        "label": "Simulator"
-      },
-      "target": {
-        "label": "FrameId"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_CHARGING_PROTOCOL",
-      "source": {
-        "label": "Simulator"
-      },
-      "target": {
-        "label": "ChargingProtocol"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES_INLET_PINS",
-      "source": {
-        "label": "Simulator"
-      },
-      "target": {
-        "label": "InletPins"
+        "label": "DcPowerControl"
       },
       "attributes": []
     }

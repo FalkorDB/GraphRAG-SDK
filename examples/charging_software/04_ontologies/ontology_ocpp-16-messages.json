@@ -1,240 +1,6 @@
 {
   "entities": [
     {
-      "label": "File",
-      "attributes": [
-        {
-          "name": "extension",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Directory",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "VisualStudio",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tool",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "BuildResult",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Package",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "License",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "version",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Licensor",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "LegalEntity",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "control_definition",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Person",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "email",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "SourceForm",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ObjectForm",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Work",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "form",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "DerivativeWork",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "form",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Contribution",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Contributor",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Protocol",
       "attributes": [
         {
@@ -244,367 +10,7 @@
           "required": true
         },
         {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Organization",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Standard",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "availability",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitRepository",
-      "attributes": [
-        {
-          "name": "repositoryformatversion",
-          "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "filemode",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "bare",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "logallrefupdates",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "symlinks",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "ignorecase",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "working_directory",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Remote",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "fetch",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Branch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "remote",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "merge",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Repository",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": false
-        },
-        {
-          "name": "allow_unannotated",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_delete_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_modify_tag",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "allow_delete_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "deny_create_branch",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "description_set",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "url",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Reference",
-      "attributes": [
-        {
-          "name": "ref",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "fully_peeled",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "sorted",
-          "type": "boolean",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Head",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Commit",
-      "attributes": [
-        {
-          "name": "hash",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "message",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Script",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Hook",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitCommand",
-      "attributes": [
-        {
-          "name": "command",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "options",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Author",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Watchman",
-      "attributes": [
-        {
           "name": "version",
-          "type": "number",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "query_language",
           "type": "string",
           "unique": false,
           "required": false
@@ -613,211 +19,7 @@
       "description": ""
     },
     {
-      "label": "UpdateToken",
-      "attributes": [
-        {
-          "name": "token",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Query",
-      "attributes": [
-        {
-          "name": "expression",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "fields",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Os",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "JsonLibrary",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Command",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "HookScript",
-      "attributes": [
-        {
-          "name": "file_name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitConfiguration",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitHook",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "description",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitBranch",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Operation",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitWorkflow",
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitRef",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "GitMessage",
-      "attributes": [
-        {
-          "name": "content",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Option",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Action",
+      "label": "ChargingStation",
       "attributes": [
         {
           "name": "type",
@@ -829,181 +31,7 @@
       "description": ""
     },
     {
-      "label": "CommitMessage",
-      "attributes": [
-        {
-          "name": "file_path",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommitSource",
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Ref",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "old_revision",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "new_revision",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Tag",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "annotated",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "FilePattern",
-      "attributes": [
-        {
-          "name": "pattern",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "language",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Comment",
-      "attributes": [
-        {
-          "name": "text",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "User",
-      "attributes": [
-        {
-          "name": "email",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Timestamp",
-      "attributes": [
-        {
-          "name": "value",
-          "type": "number",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Software",
-      "attributes": [
-        {
-          "name": "id",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "name_space",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "generated_code",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "protocol_version",
-          "type": "string",
-          "unique": false,
-          "required": false
-        },
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        },
-        {
-          "name": "programming_language",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "CommunicationProtocol",
+      "label": "ManagementSystem",
       "attributes": [
         {
           "name": "name",
@@ -1015,10 +43,10 @@
       "description": ""
     },
     {
-      "label": "ChargingProcess",
+      "label": "OpenChargeAlliance",
       "attributes": [
         {
-          "name": "id",
+          "name": "abbreviation",
           "type": "string",
           "unique": true,
           "required": true
@@ -1032,7 +60,7 @@
         {
           "name": "format_version",
           "type": "string",
-          "unique": true,
+          "unique": false,
           "required": true
         },
         {
@@ -1050,7 +78,7 @@
         {
           "name": "solution_guid",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         }
       ],
@@ -1066,13 +94,13 @@
           "required": true
         },
         {
-          "name": "project_type_guid",
+          "name": "id",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         },
         {
-          "name": "project_guid",
+          "name": "type_guid",
           "type": "string",
           "unique": false,
           "required": true
@@ -1087,16 +115,22 @@
       "description": ""
     },
     {
-      "label": "SolutionConfiguration",
+      "label": "CPUConfiguration",
       "attributes": [
         {
-          "name": "configuration_name",
+          "name": "configuration",
           "type": "string",
           "unique": true,
           "required": true
-        },
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OCPPVersion",
+      "attributes": [
         {
-          "name": "platform",
+          "name": "version",
           "type": "string",
           "unique": true,
           "required": true
@@ -1112,12 +146,18 @@
           "type": "string",
           "unique": true,
           "required": true
+        },
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "System",
+      "label": "Annotation",
       "attributes": [
         {
           "name": "name",
@@ -1129,43 +169,7 @@
       "description": ""
     },
     {
-      "label": "NewtonsoftJson",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ComponentModelDataAnnotations",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "NJsonSchema",
-      "attributes": [
-        {
-          "name": "version",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "OcppServer",
+      "label": "Library",
       "attributes": [
         {
           "name": "name",
@@ -1180,10 +184,10 @@
       "label": "AuthorizeResponse",
       "attributes": [
         {
-          "name": "id_tag_info",
+          "name": "njsonschema_version",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -1200,17 +204,17 @@
         {
           "name": "parent_id_tag",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": false
         },
         {
           "name": "status",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         },
         {
-          "name": "id_tag",
+          "name": "property",
           "type": "string",
           "unique": true,
           "required": true
@@ -1222,7 +226,7 @@
       "label": "IdTagInfoStatus",
       "attributes": [
         {
-          "name": "status",
+          "name": "status_value",
           "type": "string",
           "unique": true,
           "required": true
@@ -1236,7 +240,7 @@
         {
           "name": "charge_point_vendor",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         },
         {
@@ -1248,13 +252,13 @@
         {
           "name": "charge_point_serial_number",
           "type": "string",
-          "unique": true,
+          "unique": false,
           "required": false
         },
         {
           "name": "charge_box_serial_number",
           "type": "string",
-          "unique": true,
+          "unique": false,
           "required": false
         },
         {
@@ -1284,7 +288,55 @@
         {
           "name": "meter_serial_number",
           "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OCPP16",
+      "attributes": [
+        {
+          "name": "name_space",
+          "type": "string",
           "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ComponentModelDataAnnotations",
+      "attributes": [
+        {
+          "name": "string_length_20",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "string_length_25",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "string_length_50",
+          "type": "number",
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "required_allow_empty_strings",
+          "type": "boolean",
+          "unique": false,
           "required": false
         }
       ],
@@ -1293,12 +345,6 @@
     {
       "label": "BootNotificationResponse",
       "attributes": [
-        {
-          "name": "status",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
         {
           "name": "current_time",
           "type": "string",
@@ -1319,6 +365,18 @@
       "attributes": [
         {
           "name": "status_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Namespace",
+      "attributes": [
+        {
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -1362,20 +420,8 @@
         {
           "name": "vendor_id",
           "type": "string",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "message_id",
-          "type": "string",
           "unique": true,
-          "required": false
-        },
-        {
-          "name": "data",
-          "type": "string",
-          "unique": false,
-          "required": false
+          "required": true
         }
       ],
       "description": ""
@@ -1402,22 +448,28 @@
           "required": true
         },
         {
+          "name": "data",
+          "type": "string",
+          "unique": false,
+          "required": false
+        },
+        {
           "name": "name",
           "type": "string",
           "unique": true,
           "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Data",
-      "attributes": [
+        },
         {
-          "name": "content",
+          "name": "namespace",
           "type": "string",
-          "unique": true,
-          "required": true
+          "unique": false,
+          "required": false
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -1425,12 +477,6 @@
     {
       "label": "DataTransferResponse",
       "attributes": [
-        {
-          "name": "status",
-          "type": "string",
-          "unique": false,
-          "required": true
-        },
         {
           "name": "data",
           "type": "string",
@@ -1466,9 +512,33 @@
           "type": "string",
           "unique": false,
           "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcppServer",
+      "attributes": [
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": true,
+          "required": true
         },
         {
-          "name": "error_code",
+          "name": "protocol_version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Action",
+      "attributes": [
+        {
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -1477,12 +547,30 @@
       "description": ""
     },
     {
-      "label": "OcppAction",
+      "label": "HeartbeatRequest",
+      "attributes": [
+        {
+          "name": "type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CodeGenerator",
       "attributes": [
         {
           "name": "name",
           "type": "string",
           "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
           "required": true
         }
       ],
@@ -1501,30 +589,12 @@
       "description": ""
     },
     {
-      "label": "Namespace",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "MeterValuesRequest",
       "attributes": [
         {
           "name": "connector_id",
           "type": "number",
-          "unique": false,
-          "required": true
-        },
-        {
-          "name": "transaction_id",
-          "type": "number",
-          "unique": false,
+          "unique": true,
           "required": true
         }
       ],
@@ -1548,7 +618,7 @@
         {
           "name": "value",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         },
         {
@@ -1591,7 +661,7 @@
       "description": ""
     },
     {
-      "label": "CodeGenerator",
+      "label": "Class",
       "attributes": [
         {
           "name": "name",
@@ -1600,21 +670,9 @@
           "required": true
         },
         {
-          "name": "version",
+          "name": "language",
           "type": "string",
           "unique": false,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "ProgrammingLanguage",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
           "required": true
         }
       ],
@@ -1626,7 +684,7 @@
         {
           "name": "type",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         }
       ],
@@ -1636,15 +694,9 @@
       "label": "ResetRequestType",
       "attributes": [
         {
-          "name": "name",
+          "name": "value",
           "type": "string",
           "unique": true,
-          "required": true
-        },
-        {
-          "name": "value",
-          "type": "number",
-          "unique": false,
           "required": true
         }
       ],
@@ -1654,7 +706,7 @@
       "label": "ResetResponse",
       "attributes": [
         {
-          "name": "status",
+          "name": "generated_code",
           "type": "string",
           "unique": true,
           "required": true
@@ -1666,9 +718,39 @@
       "label": "ResetResponseStatus",
       "attributes": [
         {
-          "name": "value",
+          "name": "status_value",
           "type": "string",
           "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JsonConverter",
+      "attributes": [
+        {
+          "name": "converter_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JsonProperty",
+      "attributes": [
+        {
+          "name": "property_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "required",
+          "type": "string",
+          "unique": false,
           "required": true
         }
       ],
@@ -1686,7 +768,7 @@
         {
           "name": "id_tag",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         },
         {
@@ -1723,6 +805,126 @@
       "description": ""
     },
     {
+      "label": "IdTag",
+      "attributes": [
+        {
+          "name": "id_tag",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Meter",
+      "attributes": [
+        {
+          "name": "meter_start",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Reservation",
+      "attributes": [
+        {
+          "name": "reservation_id",
+          "type": "number",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Timestamp",
+      "attributes": [
+        {
+          "name": "timestamp_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ocpp16Message",
+      "attributes": [
+        {
+          "name": "message_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "JsonSchema",
+      "attributes": [
+        {
+          "name": "schema_version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NewtonsoftJsonProperty",
+      "attributes": [
+        {
+          "name": "property_name",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "NewtonsoftJsonRequired",
+      "attributes": [
+        {
+          "name": "required_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DataAnnotationsRequired",
+      "attributes": [
+        {
+          "name": "allow_empty_strings",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "DataAnnotationsStringLength",
+      "attributes": [
+        {
+          "name": "max_length",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
       "label": "StartTransactionResponse",
       "attributes": [
         {
@@ -1740,7 +942,7 @@
         {
           "name": "connector_id",
           "type": "number",
-          "unique": true,
+          "unique": false,
           "required": true
         },
         {
@@ -1771,7 +973,19 @@
       "description": ""
     },
     {
-      "label": "Status",
+      "label": "StatusNotificationRequestErrorCode",
+      "attributes": [
+        {
+          "name": "error_code",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusNotificationRequestStatus",
       "attributes": [
         {
           "name": "status",
@@ -1783,10 +997,10 @@
       "description": ""
     },
     {
-      "label": "Class",
+      "label": "StatusNotificationResponse",
       "attributes": [
         {
-          "name": "name",
+          "name": "namespace",
           "type": "string",
           "unique": true,
           "required": true
@@ -1820,6 +1034,12 @@
           "type": "number",
           "unique": true,
           "required": true
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
@@ -1924,9 +1144,15 @@
       "label": "StopTransactionResponse",
       "attributes": [
         {
-          "name": "id_tag_info",
+          "name": "generated_code",
           "type": "string",
           "unique": true,
+          "required": true
+        },
+        {
+          "name": "namespace",
+          "type": "string",
+          "unique": false,
           "required": true
         }
       ],
@@ -1945,30 +1171,6 @@
       "description": ""
     },
     {
-      "label": "Library",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
-      "label": "Version",
-      "attributes": [
-        {
-          "name": "name",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ],
-      "description": ""
-    },
-    {
       "label": "Property",
       "attributes": [
         {
@@ -1978,8 +1180,8 @@
           "required": true
         },
         {
-          "name": "required",
-          "type": "boolean",
+          "name": "type",
+          "type": "string",
           "unique": false,
           "required": true
         }
@@ -1990,9 +1192,9 @@
       "label": "UnlockConnectorResponse",
       "attributes": [
         {
-          "name": "status",
+          "name": "generated_code",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         }
       ],
@@ -2000,6 +1202,96 @@
     },
     {
       "label": "UnlockConnectorResponseStatus",
+      "attributes": [
+        {
+          "name": "status_value",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "CpuConfiguration",
+      "attributes": [
+        {
+          "name": "configuration",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "OcppVersion",
+      "attributes": [
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Ocpp16",
+      "attributes": [
+        {
+          "name": "name_space",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusNotification",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Reset",
+      "attributes": [
+        {
+          "name": "reset_type",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "StatusNotificationStatus",
+      "attributes": [
+        {
+          "name": "status",
+          "type": "string",
+          "unique": true,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "ResetType",
       "attributes": [
         {
           "name": "value",
@@ -2013,181 +1305,14 @@
   ],
   "relations": [
     {
-      "label": "GENERATED_BY",
+      "label": "COMMUNICATES_WITH",
       "source": {
-        "label": "File"
+        "label": "ChargingStation"
       },
       "target": {
-        "label": "VisualStudio"
+        "label": "ManagementSystem"
       },
       "attributes": []
-    },
-    {
-      "label": "CONTAINS",
-      "source": {
-        "label": "Directory"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GENERATED_BY_TOOL",
-      "source": {
-        "label": "File"
-      },
-      "target": {
-        "label": "Tool"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PART_OF",
-      "source": {
-        "label": "BuildResult"
-      },
-      "target": {
-        "label": "Directory"
-      },
-      "attributes": []
-    },
-    {
-      "label": "STORED_IN",
-      "source": {
-        "label": "File"
-      },
-      "target": {
-        "label": "Directory"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RELATED_TO",
-      "source": {
-        "label": "Package"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GRANTS",
-      "source": {
-        "label": "Licensor"
-      },
-      "target": {
-        "label": "License"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DEFINED_BY",
-      "source": {
-        "label": "LegalEntity"
-      },
-      "target": {
-        "label": "License"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXERCISES",
-      "source": {
-        "label": "Person"
-      },
-      "target": {
-        "label": "License"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MODIFIES",
-      "source": {
-        "label": "SourceForm"
-      },
-      "target": {
-        "label": "Work"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TRANSFORMS_TO",
-      "source": {
-        "label": "SourceForm"
-      },
-      "target": {
-        "label": "ObjectForm"
-      },
-      "attributes": []
-    },
-    {
-      "label": "BASED_ON",
-      "source": {
-        "label": "DerivativeWork"
-      },
-      "target": {
-        "label": "Work"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SUBMITTED_TO",
-      "source": {
-        "label": "Contribution"
-      },
-      "target": {
-        "label": "Licensor"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INCORPORATED_IN",
-      "source": {
-        "label": "Contribution"
-      },
-      "target": {
-        "label": "Work"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_CONTRIBUTION",
-      "source": {
-        "label": "Contributor"
-      },
-      "target": {
-        "label": "Contribution"
-      },
-      "attributes": []
-    },
-    {
-      "label": "IS_CONTRIBUTOR",
-      "source": {
-        "label": "Licensor"
-      },
-      "target": {
-        "label": "Contributor"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LICENSES",
-      "source": {
-        "label": "Contributor"
-      },
-      "target": {
-        "label": "Work"
-      },
-      "attributes": [
-        {
-          "name": "type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
     },
     {
       "label": "DEVELOPED_BY",
@@ -2195,511 +1320,32 @@
         "label": "Protocol"
       },
       "target": {
-        "label": "Organization"
+        "label": "OpenChargeAlliance"
       },
       "attributes": []
     },
     {
-      "label": "IS_STANDARD",
+      "label": "STANDARD_FOR",
       "source": {
         "label": "Protocol"
       },
       "target": {
-        "label": "Standard"
+        "label": "ChargingStation"
       },
       "attributes": []
     },
     {
-      "label": "HAS_REMOTE",
+      "label": "APPLICATION_PROTOCOL_FOR",
       "source": {
-        "label": "GitRepository"
+        "label": "Protocol"
       },
       "target": {
-        "label": "Remote"
+        "label": "ChargingStation"
       },
       "attributes": []
     },
     {
-      "label": "HAS_BRANCH",
-      "source": {
-        "label": "GitRepository"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_FILE",
-      "source": {
-        "label": "Repository"
-      },
-      "target": {
-        "label": "File"
-      },
-      "attributes": []
-    },
-    {
-      "label": "LOCATED_IN",
-      "source": {
-        "label": "Reference"
-      },
-      "target": {
-        "label": "Head"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TYPE_OF",
-      "source": {
-        "label": "Head"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "POINTS_TO",
-      "source": {
-        "label": "Reference"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_HOOK",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "USES",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "AUTHORED_BY",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Author"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MONITORS",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MODIFIED",
-      "source": {
-        "label": "File"
-      },
-      "target": {
-        "label": "GitRepository"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS",
-      "source": {
-        "label": "GitRepository"
-      },
-      "target": {
-        "label": "UpdateToken"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GENERATES",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "UpdateToken"
-      },
-      "attributes": []
-    },
-    {
-      "label": "SENDS",
-      "source": {
-        "label": "Watchman"
-      },
-      "target": {
-        "label": "Query"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RUNS_ON",
-      "source": {
-        "label": "GitRepository"
-      },
-      "target": {
-        "label": "Os"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXECUTES",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Command"
-      },
-      "attributes": []
-    },
-    {
-      "label": "ENABLES",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_DESCRIPTION",
-      "source": {
-        "label": "Script"
-      },
-      "target": {
-        "label": "Script"
-      },
-      "attributes": [
-        {
-          "name": "description",
-          "type": "string",
-          "unique": true,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "TRIGGERS",
-      "source": {
-        "label": "Hook"
-      },
-      "target": {
-        "label": "HookScript"
-      },
-      "attributes": [
-        {
-          "name": "condition",
-          "type": "string",
-          "unique": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "label": "IS_A_HOOK_OF",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Hook"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INVOKES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "HookScript"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CHECKS",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "FORKED_FROM",
-      "source": {
-        "label": "GitBranch"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "MERGED_INTO",
-      "source": {
-        "label": "GitBranch"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_COMMIT",
-      "source": {
-        "label": "GitBranch"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "PREVENTS",
-      "source": {
-        "label": "Operation"
-      },
-      "target": {
-        "label": "Operation"
-      },
-      "attributes": [
-        {
-          "name": "reason",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "REBASE_BRANCH",
-      "source": {
-        "label": "Operation"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REBASE_ON",
-      "source": {
-        "label": "Operation"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DESCRIBES",
-      "source": {
-        "label": "GitWorkflow"
-      },
-      "target": {
-        "label": "GitBranch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REFERENCES",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "GitRef"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_MESSAGE",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "GitMessage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "COMPARES",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "GitRef"
-      },
-      "attributes": [
-        {
-          "name": "comparison_type",
-          "type": "string",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "HAS_SOURCE",
-      "source": {
-        "label": "CommitMessage"
-      },
-      "target": {
-        "label": "CommitSource"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CALLED_BY",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "EXECUTED_BY",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "HookScript"
-      },
-      "attributes": []
-    },
-    {
-      "label": "INCLUDES",
-      "source": {
-        "label": "HookScript"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "TRIGGERED_BY",
-      "source": {
-        "label": "GitHook"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": []
-    },
-    {
-      "label": "UPDATES",
-      "source": {
-        "label": "GitHook"
-      },
-      "target": {
-        "label": "Commit"
-      },
-      "attributes": []
-    },
-    {
-      "label": "APPLIES_TO",
-      "source": {
-        "label": "GitCommand"
-      },
-      "target": {
-        "label": "GitCommand"
-      },
-      "attributes": [
-        {
-          "name": "conditional",
-          "type": "boolean",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "CREATES",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "DELETES",
-      "source": {
-        "label": "Commit"
-      },
-      "target": {
-        "label": "Branch"
-      },
-      "attributes": []
-    },
-    {
-      "label": "CLONED_FROM",
-      "source": {
-        "label": "User"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": [
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "CLONE_FROM",
-      "source": {
-        "label": "User"
-      },
-      "target": {
-        "label": "Repository"
-      },
-      "attributes": [
-        {
-          "name": "timestamp",
-          "type": "number",
-          "unique": false,
-          "required": true
-        }
-      ]
-    },
-    {
-      "label": "CONTROLS",
-      "source": {
-        "label": "Software"
-      },
-      "target": {
-        "label": "ChargingProcess"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_PROJECT",
+      "label": "CONTAINS",
       "source": {
         "label": "VisualStudioSolution"
       },
@@ -2709,17 +1355,47 @@
       "attributes": []
     },
     {
-      "label": "HAS_CONFIGURATION",
+      "label": "CONFIGURES",
       "source": {
-        "label": "VisualStudioSolution"
+        "label": "Project"
       },
       "target": {
-        "label": "SolutionConfiguration"
+        "label": "CPUConfiguration"
       },
       "attributes": []
     },
     {
-      "label": "HAS_ID_TAG_INFO",
+      "label": "USES_PROTOCOL",
+      "source": {
+        "label": "Project"
+      },
+      "target": {
+        "label": "OCPPVersion"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_PROPERTY",
+      "source": {
+        "label": "AuthorizeRequest"
+      },
+      "target": {
+        "label": "Annotation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES",
+      "source": {
+        "label": "AuthorizeRequest"
+      },
+      "target": {
+        "label": "Library"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS",
       "source": {
         "label": "AuthorizeResponse"
       },
@@ -2739,22 +1415,22 @@
       "attributes": []
     },
     {
-      "label": "HAS_PROPERTY_GROUP",
+      "label": "PART_OF",
       "source": {
-        "label": "Project"
+        "label": "BootNotificationRequest"
       },
       "target": {
-        "label": "PropertyGroup"
+        "label": "OCPP16"
       },
       "attributes": []
     },
     {
-      "label": "HAS_PACKAGE_REFERENCE",
+      "label": "LOCATED_IN",
       "source": {
-        "label": "Project"
+        "label": "BootNotificationResponse"
       },
       "target": {
-        "label": "PackageReference"
+        "label": "Namespace"
       },
       "attributes": []
     },
@@ -2769,19 +1445,29 @@
       "attributes": []
     },
     {
-      "label": "HAS_DATA",
+      "label": "HAS_MESSAGE",
       "source": {
         "label": "DataTransferRequest"
       },
       "target": {
-        "label": "Data"
+        "label": "Message"
       },
       "attributes": []
     },
     {
-      "label": "HAS_ERROR",
+      "label": "MESSAGE_PROTOCOL",
       "source": {
-        "label": "OcppAction"
+        "label": "DataTransferResponse"
+      },
+      "target": {
+        "label": "OCPP16"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES",
+      "source": {
+        "label": "OcppServer"
       },
       "target": {
         "label": "ErrorCode"
@@ -2789,81 +1475,164 @@
       "attributes": []
     },
     {
-      "label": "BELONGS_TO",
+      "label": "APPLIES_TO",
       "source": {
-        "label": "HeartbeatResponse"
+        "label": "ErrorCode"
       },
       "target": {
-        "label": "Namespace"
+        "label": "Action"
       },
       "attributes": []
     },
     {
-      "label": "HAS_METER_VALUE",
+      "label": "GENERATED_BY",
       "source": {
-        "label": "MeterValuesRequest"
+        "label": "HeartbeatRequest"
       },
       "target": {
-        "label": "MeterValue"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_SAMPLED_VALUE",
-      "source": {
-        "label": "MeterValue"
-      },
-      "target": {
-        "label": "SampledValue"
-      },
-      "attributes": []
-    },
-    {
-      "label": "GENERATED_CODE_WITH",
-      "source": {
         "label": "CodeGenerator"
-      },
-      "target": {
-        "label": "ProgrammingLanguage"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_TYPE",
-      "source": {
-        "label": "ResetRequest"
-      },
-      "target": {
-        "label": "ResetRequestType"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_REQUEST",
-      "source": {
-        "label": "Connector"
-      },
-      "target": {
-        "label": "StartTransactionRequest"
-      },
-      "attributes": []
-    },
-    {
-      "label": "REQUEST",
-      "source": {
-        "label": "StartTransactionRequest"
-      },
-      "target": {
-        "label": "Connector"
       },
       "attributes": [
         {
-          "name": "connector_id",
-          "type": "number",
-          "unique": true,
+          "name": "library",
+          "type": "string",
+          "unique": false,
           "required": true
         }
       ]
+    },
+    {
+      "label": "INCLUDES",
+      "source": {
+        "label": "Namespace"
+      },
+      "target": {
+        "label": "HeartbeatResponse"
+      },
+      "attributes": []
+    },
+    {
+      "label": "GENERATED_CODE",
+      "source": {
+        "label": "Class"
+      },
+      "target": {
+        "label": "Class"
+      },
+      "attributes": [
+        {
+          "name": "generator",
+          "type": "string",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_CONNECTOR",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "Connector"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_ID_TAG",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "IdTag"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_METER",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "Meter"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESERVATION",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "Reservation"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_TIMESTAMP",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "Timestamp"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINED_BY",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "JsonSchema"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_PROPERTY",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "NewtonsoftJsonProperty"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_REQUIREMENT",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "NewtonsoftJsonRequired"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_STRING_LENGTH",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "DataAnnotationsStringLength"
+      },
+      "attributes": []
+    },
+    {
+      "label": "USES_ANNOTATION",
+      "source": {
+        "label": "StartTransactionRequest"
+      },
+      "target": {
+        "label": "DataAnnotationsRequired"
+      },
+      "attributes": []
     },
     {
       "label": "HAS_ERROR_CODE",
@@ -2871,17 +1640,7 @@
         "label": "StatusNotificationRequest"
       },
       "target": {
-        "label": "ErrorCode"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_REASON",
-      "source": {
-        "label": "StopTransactionRequest"
-      },
-      "target": {
-        "label": "StopTransactionRequestReason"
+        "label": "StatusNotificationRequestErrorCode"
       },
       "attributes": []
     },
@@ -2892,6 +1651,26 @@
       },
       "target": {
         "label": "TransactionData"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_SAMPLED_VALUE",
+      "source": {
+        "label": "TransactionData"
+      },
+      "target": {
+        "label": "SampledValue"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_REASON",
+      "source": {
+        "label": "StopTransactionRequest"
+      },
+      "target": {
+        "label": "StopTransactionRequestReason"
       },
       "attributes": []
     },
@@ -2956,52 +1735,62 @@
       "attributes": []
     },
     {
-      "label": "HAS_NAMESPACE",
+      "label": "IS_TYPE_OF",
       "source": {
         "label": "UnlockConnectorRequest"
       },
       "target": {
-        "label": "Namespace"
+        "label": "Class"
       },
       "attributes": []
     },
     {
-      "label": "DEFINES",
+      "label": "HAS_TYPE",
       "source": {
-        "label": "Namespace"
-      },
-      "target": {
-        "label": "Message"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_PROPERTY",
-      "source": {
-        "label": "UnlockConnectorRequest"
-      },
-      "target": {
         "label": "Property"
       },
-      "attributes": []
-    },
-    {
-      "label": "USES_LIBRARY",
-      "source": {
-        "label": "CodeGenerator"
-      },
       "target": {
-        "label": "Library"
+        "label": "Class"
       },
       "attributes": []
     },
     {
-      "label": "HAS_VERSION",
+      "label": "HAS_STATUS_NOTIFICATION",
       "source": {
-        "label": "Library"
+        "label": "ChargingStation"
       },
       "target": {
-        "label": "Version"
+        "label": "StatusNotification"
+      },
+      "attributes": []
+    },
+    {
+      "label": "PERFORMS",
+      "source": {
+        "label": "ChargingStation"
+      },
+      "target": {
+        "label": "Reset"
+      },
+      "attributes": []
+    },
+    {
+      "label": "HAS_RESET_TYPE",
+      "source": {
+        "label": "ResetRequest"
+      },
+      "target": {
+        "label": "ResetType"
+      },
+      "attributes": []
+    },
+    {
+      "label": "DEFINES_STATUS",
+      "source": {
+        "label": "StatusNotificationRequest"
+      },
+      "target": {
+        "label": "StatusNotificationStatus"
       },
       "attributes": []
     }
