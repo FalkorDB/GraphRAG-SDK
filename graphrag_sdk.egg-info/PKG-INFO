@@ -18,6 +18,10 @@ Requires-Dist: ratelimit>=2.2.1
 Requires-Dist: python-dotenv>=1.0.1
 Requires-Dist: fix-busted-json>=0.0.18
 Requires-Dist: ipykernel>=6.29.5
+Requires-Dist: tqdm>=4.67.1
+Requires-Dist: ollama>=0.4.7
+Requires-Dist: litellm>=1.59.8
+Requires-Dist: google-generativeai>=0.8.4
 Provides-Extra: litellm
 Requires-Dist: litellm>=1.52.14; extra == "litellm"
 Requires-Dist: ollama>=0.2.1; extra == "litellm"

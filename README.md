@@ -20,13 +20,16 @@ Simplify the development of your next GenAI application with GraphRAG-SDK, a spe
 Or use on premise with Docker. Go to project root and run this in bash:
 
 ```sh
-docker run -p 6379:6379 -p 3000:3000 -it --rm -v "/$(pwd)/examples/charging_software/data:/data" falkordb/falkordb:latest
+docker run -p 6379:6379 -p 3000:3000 -it --rm -v "/$(pwd)/examples/charging_software/docker_data:/data" falkordb/falkordb:latest
 
 ```
 
 ### UV Installation
 
 ```bash
+# Create uv virtual environment
+uv venv
+
 # Install core SDK
 uv pip install graphrag_sdk
 
@@ -35,6 +38,9 @@ uv pip install "graphrag_sdk[litellm]"
 
 # Local development setup
 uv pip install -e ".[dev]"
+
+# For using google, you might need:
+uv pip install -U google-generativeai
 ```
 
 ### Configure Credentials. See [.env](.env.template) for examples.
