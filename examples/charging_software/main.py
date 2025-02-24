@@ -63,14 +63,15 @@ if __name__ == "__main__":
     ########### CREATE KNOWLEDGE GRAPH FROM (MERGED) ONTOLOGIES ###############
 
     ontologies_dir = "examples"+"/"+"charging_software"+"/"+"04_ontologies"
-    fname_onto = "ontology_citrineos.json"
+    name_onto = "ontology_citrineos"
+    fname_onto = name_onto+".json"
 
     with open(os.path.join(ontologies_dir, fname_onto), "r") as f:
         ontology = Ontology.from_json(json.loads(f.read()))
     
     # Build knowledge graph with unified config
     kg = KnowledgeGraph(
-        name="charging-demo",
+        name=name_onto,
         model_config=KnowledgeGraphModelConfig.with_model(model),
         ontology=ontology,
         host="localhost",
@@ -80,13 +81,15 @@ if __name__ == "__main__":
     # # # kg.process_sources(sources)  # Only if directly from sources to kg.
 
     # Example usage
-    graph = build_knowledge_graph("redis://localhost:6379", ontology)
+    # graph = build_knowledge_graph("redis://localhost:6379", ontology)
 
     ########### INTERACT WITH KNOWLEDGE GRAPH, SAVE IT AS .rdb file ###########
 
-    # Add chat interface from quickstart
-    def query_kg(question: str):
-        chat = kg.chat_session()
-        return chat.send_message(question)
+    # # Add chat interface from quickstart
+    # def query_kg(question: str):
+    #     chat = kg.chat_session()
+    #     return chat.send_message(question)
     
-    print(query_kg("Explain key EV charging concepts in this knowledge base"))
+    # print(query_kg("Explain key EV charging concepts in this knowledge base"))
+
+    logging.info("This is the end.")
