@@ -64,7 +64,7 @@ class ChatSession:
             )
         self.last_answer = None
 
-    def send_message(self, message: str) -> str:
+    def send_message(self, message: str) -> dict:
         """
         Sends a message to the chat session.
 
