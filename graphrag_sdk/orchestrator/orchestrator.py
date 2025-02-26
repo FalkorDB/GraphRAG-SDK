@@ -26,6 +26,7 @@ class Orchestrator:
     def __init__(self, model: GenerativeModel, backstory: Optional[str] = ""):
         """
         Initialize the Orchestrator with a generative model and an optional backstory.
+        
         Args:
             model (GenerativeModel): The model that powers the orchestration process.
             backstory (Optional[str]): Optional backstory or context to be included in the orchestration system.
@@ -57,10 +58,12 @@ class Orchestrator:
     def ask(self, question: str) -> OrchestratorResult:
         """
         Ask the orchestrator a question and run the corresponding execution plan.
+        
         Args:
             question (str): The user's question.
+            
         Returns:
-            OrchestratorRunner: The result of executing the plan.
+            OrchestratorResult: The result of executing the plan.
         """
         return self.runner(question).run()
 
