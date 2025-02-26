@@ -2,12 +2,13 @@ import re
 import json
 import logging
 from typing import Union
+from enum import Enum
 from graphrag_sdk.fixtures.regex import *
 
 logger = logging.getLogger(__name__)
 
 
-class AttributeType:
+class AttributeType(Enum):
     """
     Represents the types of attributes in the system.
     """
