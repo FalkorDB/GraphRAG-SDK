@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 from graphrag_sdk.agents import Agent
 from graphrag_sdk.helpers import extract_json
 from graphrag_sdk.models import GenerativeModel, GenerativeModelChatSession
@@ -22,12 +23,12 @@ class Orchestrator:
     and assigns agents to execute tasks.
     """
 
-    def __init__(self, model: GenerativeModel, backstory: str = ""):
+    def __init__(self, model: GenerativeModel, backstory: Optional[str] = ""):
         """
         Initialize the Orchestrator with a generative model and an optional backstory.
         Args:
             model (GenerativeModel): The model that powers the orchestration process.
-            backstory (str): Optional backstory or context to be included in the orchestration system.
+            backstory (Optional[str]): Optional backstory or context to be included in the orchestration system.
         """
         self._model = model
         self._backstory = backstory

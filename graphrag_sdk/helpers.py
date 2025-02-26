@@ -7,13 +7,13 @@ from fix_busted_json import repair_json
 
 logger = logging.getLogger(__name__)
 
-def extract_json(text: Union[str, dict], skip_repair=False) -> str:
+def extract_json(text: Union[str, dict], skip_repair: Optional[bool] = False) -> str:
     """
     Extracts JSON from a string or dictionary, optionally skipping JSON repair.
     
     Args:
         text (Union[str, dict]): The input text or dictionary.
-        skip_repair (bool): Flag to skip JSON repair. Defaults to False.
+        skip_repair (Optional[bool]): Flag to skip JSON repair. Defaults to False.
         
     Returns:
         str: The extracted JSON as a string.
@@ -120,9 +120,11 @@ def validate_cypher(
 ) -> Optional[list[str]]:
     """
     Validates a Cypher query against the ontology.
+    
     Args:
         cypher (str): The Cypher query.
         ontology (Ontology): The ontology to validate against.
+        
     Returns:
         Optional[list[str]]: A list of validation errors, or None if valid.
     """
