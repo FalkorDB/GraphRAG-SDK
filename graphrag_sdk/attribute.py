@@ -153,7 +153,7 @@ class Attribute:
         """
         json_data = {
             "name": self.name,
-            "type": self.type,
+            "type": self.type.value,
             "unique": self.unique,
             "required": self.required,
         }
