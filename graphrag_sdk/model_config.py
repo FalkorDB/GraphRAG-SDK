@@ -47,7 +47,7 @@ class KnowledgeGraphModelConfig:
             cypher_generation=model,
             qa=model,
         )
-    
+
     @staticmethod
     def from_json(json: dict) -> "KnowledgeGraphModelConfig":
         """
@@ -65,7 +65,7 @@ class KnowledgeGraphModelConfig:
             GenerativeModel.from_json(json["cypher_generation"]),
             GenerativeModel.from_json(json["qa"]),
         )
-    
+
     def to_json(self) -> dict:
         """
         Converts the model configuration to a JSON dictionary.

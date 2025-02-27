@@ -1,7 +1,8 @@
 from typing import Iterator
 from graphrag_sdk.document import Document
 
-class TextLoader():
+
+class TextLoader:
     """
     Load Text
     """

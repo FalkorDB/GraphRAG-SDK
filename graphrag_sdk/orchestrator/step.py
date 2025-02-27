@@ -76,12 +76,13 @@ class PlanStep(ABC):
         """
         json =  json if isinstance(json, dict) else loads(json)
         from graphrag_sdk.orchestrator.steps import PLAN_STEP_TYPE_MAP
+
         block = StepBlockType.from_str(json["block"])
         step_type = PLAN_STEP_TYPE_MAP[block]
 
         if step_type is None:
             raise ValueError(f"Unknown step block type: {block}")
- 
+
         return step_type.from_json(json)
 
     @abstractmethod

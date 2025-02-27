@@ -1,7 +1,8 @@
 from typing import Iterator
 from graphrag_sdk.document import Document
 
-class PDFLoader():
+
+class PDFLoader:
     """
     Load PDF
     """
@@ -15,11 +16,11 @@ class PDFLoader():
         """
 
         try:
-            import pypdf
-        except ImportError:
-            raise ImportError(
-                "pypdf package not found, please install it with " "`pip install pypdf`"
-        )
+            __import__("pypdf")
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(
+                "pypdf package not found, please install it with `pip install pypdf`"
+            )
 
         self.path = path
 
@@ -30,8 +31,8 @@ class PDFLoader():
         Returns:
             Iterator[Document]: document iterator
         """
-        
-        from pypdf import PdfReader # pylint: disable=import-outside-toplevel
+
+        from pypdf import PdfReader  # pylint: disable=import-outside-toplevel
 
         reader = PdfReader(self.path)
         yield from [

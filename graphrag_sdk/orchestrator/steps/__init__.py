@@ -17,5 +17,5 @@ __all__ = [
     "ParallelStep",
     "SummaryStep",
     "UserInputStep",
-    "PLAN_STEP_TYPE_MAP"
+    "PLAN_STEP_TYPE_MAP",
 ]

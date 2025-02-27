@@ -84,12 +84,12 @@ def stringify_falkordb_response(response: Union[list, str]) -> str:
     elif not isinstance(response[0], list):
         data = str(response).strip()
     else:
-        for l, _ in enumerate(response):
-            if not isinstance(response[l], list):
-                response[l] = str(response[l])
+        for line, _ in enumerate(response):
+            if not isinstance(response[line], list):
+                response[line] = str(response[line])
             else:
-                for i, __ in enumerate(response[l]):
-                    response[l][i] = str(response[l][i])
+                for i, __ in enumerate(response[line]):
+                    response[line][i] = str(response[line][i])
         data = str(response).strip()
 
     return data
@@ -194,10 +194,10 @@ def validate_cypher_relations_exist(cypher: str, ontology: Ontology) -> list[str
     for relation in relation_labels:
         for label in relation.split("|"):
             max_idx = min(
-                    label.index("*") if "*" in label else len(label),
-                    label.index("{") if "{" in label else len(label),
-                    label.index("]") if "]" in label else len(label),
-                    )
+                label.index("*") if "*" in label else len(label),
+                label.index("{") if "{" in label else len(label),
+                label.index("]") if "]" in label else len(label),
+            )
             label = label[:max_idx]
             if label not in [relation.label for relation in ontology.relations]:
                 not_found_relation_labels.append(label)

@@ -66,10 +66,12 @@ class GraphQueryGenerationStep(Step):
         for i in range(retries):
             try:
                 cypher_prompt = (
-                    (self.cypher_prompt.format(question=question) 
+                    self.cypher_prompt.format(question=question)
                     if self.last_answer is None
-                    else self.cypher_prompt_with_history.format(question=question, last_answer=self.last_answer))
-                )   
+                    else self.cypher_prompt_with_history.format(
+                        question=question, last_answer=self.last_answer
+                    )
+                )
                 logger.debug(f"Cypher Prompt: {cypher_prompt}")
                 cypher_statement_response = self.chat_session.send_message(
                     cypher_prompt,

@@ -8,7 +8,6 @@ from falkordb import Graph
 from threading import Lock
 from typing import Optional
 from graphrag_sdk.steps.Step import Step
-from graphrag_sdk.document import Document
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models.model import OutputMethod
@@ -188,14 +187,27 @@ class ExtractDataStep(Step):
             responses: list[GenerationResponse] = []
             response_idx = 0
 
-            responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
+            responses.append(
+                self._call_model(
+                    chat_session, user_message, output_method=OutputMethod.JSON
+                )
+            )
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
-            while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
+            while (
+                responses[response_idx].finish_reason == FinishReason.MAX_TOKENS
+                and response_idx < retries
+            ):
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
-                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))
+                responses.append(
+                    self._call_model(
+                        chat_session,
+                        COMPLETE_DATA_EXTRACTION,
+                        output_method=OutputMethod.JSON,
+                    )
+                )
                 _task_logger.debug(
                     f"Model response after continue: {responses[response_idx].text}"
                 )
@@ -215,7 +227,7 @@ class ExtractDataStep(Step):
                 data = json.loads(extract_json(last_respond))
             except Exception as e:
                 _task_logger.debug(f"Error extracting JSON: {e}")
-                _task_logger.debug(f"Prompting model to fix JSON")
+                _task_logger.debug("Prompting model to fix JSON")
                 json_fix_response = self._call_model(
                     self._create_chat(),
                     FIX_JSON_PROMPT.format(json=last_respond, error=str(e)),
@@ -229,7 +241,7 @@ class ExtractDataStep(Step):
                     f"Invalid data format. Missing entities or relations. {data}"
                 )
                 raise Exception(
-                    f"Invalid data format. Missing 'entities' or 'relations' in JSON."
+                    "Invalid data format. Missing 'entities' or 'relations' in JSON."
                 )
             for entity in data["entities"]:
                 try:
@@ -244,7 +256,7 @@ class ExtractDataStep(Step):
                 except Exception as e:
                     _task_logger.error(f"Error creating relation: {e}")
                     continue
-            
+
         except Exception as e:
             logger.exception(f"Task id: {task_id} failed - {e}")
             raise e

@@ -12,7 +12,8 @@ from .model import (
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) 
+logger.setLevel(logging.INFO)
+
 
 class LiteModel(GenerativeModel):
     """
@@ -27,7 +28,7 @@ class LiteModel(GenerativeModel):
     ):
         """
         Initialize the LiteModel with the required parameters.
-        
+
         LiteLLM model_name format: <provider>/<model_name>
          Examples:
          - openai/gpt-4o
@@ -42,21 +43,20 @@ class LiteModel(GenerativeModel):
         """
 
         env_val = validate_environment(model_name)
-        if not env_val['keys_in_environment']:
+        if not env_val["keys_in_environment"]:
             raise ValueError(f"Missing {env_val['missing_keys']} in the environment.")
         self.model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
         self.model = model_name
-        
+
         if provider == "ollama":
             self.ollama_client = Client()
             self.check_and_pull_model()
         if not self.check_valid_key(model_name):
             raise ValueError(f"Invalid keys for model {model_name}.")
-        
 
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
-        
+
     def check_valid_key(self, model: str):
         """
         Checks if the environment key is valid for a specific model by making a litellm.completion call with max_tokens=10
@@ -69,13 +69,11 @@ class LiteModel(GenerativeModel):
         """
         messages = [{"role": "user", "content": "Hey, how's it going?"}]
         try:
-            completion(
-                model=model, messages=messages, max_tokens=10
-            )
+            completion(model=model, messages=messages, max_tokens=10)
             return True
-        except:
+        except:  # noqa: E722
             return False
-            
+
     def check_and_pull_model(self) -> None:
         """
         Checks if the specified model is available locally, and pulls it if not.
@@ -89,7 +87,9 @@ class LiteModel(GenerativeModel):
         """
         # Get the list of available models
         response = self.ollama_client.list()  # This returns a dictionary
-        available_models = [model['name'] for model in response['models']]  # Extract model names
+        available_models = [
+            model["name"] for model in response["models"]
+        ]  # Extract model names
 
         # Check if the model is already pulled
         if self.model_name in available_models:
@@ -191,7 +191,9 @@ class LiteModelChatSession(GenerativeModelChatSession):
             else []
         )
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(
+        self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT
+    ) -> GenerationResponse:
         """
         Send a message in the chat session and receive the model's response.
 
@@ -208,14 +210,16 @@ class LiteModelChatSession(GenerativeModelChatSession):
             response = completion(
                 model=self._model.model,
                 messages=self._chat_history,
-                **generation_config
+                **generation_config,
             )
         except Exception as e:
-            raise ValueError(f"Error during completion request, please check the credentials - {e}")
+            raise ValueError(
+                f"Error during completion request, please check the credentials - {e}"
+            )
         content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
-    
+
     def _adjust_generation_config(self, output_method: OutputMethod):
         """
         Adjust the generation configuration based on the specified output method.
@@ -228,9 +232,9 @@ class LiteModelChatSession(GenerativeModelChatSession):
         """
         config = self._model.generation_config.to_json()
         if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
+            config["temperature"] = 0
+            config["response_format"] = {"type": "json_object"}
+
         return config
 
     def get_chat_history(self) -> list[dict]:
@@ -246,7 +250,7 @@ class LiteModelChatSession(GenerativeModelChatSession):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
-        
+
         Example:
             Before:
             [
@@ -269,7 +273,7 @@ class LiteModelChatSession(GenerativeModelChatSession):
         else:
             # Reset to initial state with just system message if present
             self._chat_history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+                [{"role": "system", "content": self._model.system_instruction}]
+                if self._model.system_instruction is not None
+                else []
+            )

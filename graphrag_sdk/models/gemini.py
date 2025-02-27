@@ -87,7 +87,8 @@ class GeminiGenerativeModel(GenerativeModel):
                 == protos.Candidate.FinishReason.MAX_TOKENS
                 else (
                     FinishReason.STOP
-                    if response.candidates[0].finish_reason == protos.Candidate.FinishReason.STOP
+                    if response.candidates[0].finish_reason
+                    == protos.Candidate.FinishReason.STOP
                     else FinishReason.OTHER
                 )
             ),
@@ -166,17 +167,14 @@ class GeminiChatSession(GenerativeModelChatSession):
             dict: The configuration settings for generation.
         """
         if output_method == OutputMethod.JSON:
-            return {
-                "response_mime_type": "application/json",
-                "temperature": 0
-            }
+            return {"response_mime_type": "application/json", "temperature": 0}
         return self._model._generation_config
-    
+
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
-        
+
         Example:
             Before:
             [
@@ -193,4 +191,3 @@ class GeminiChatSession(GenerativeModelChatSession):
             self._chat_session.history.pop()
         else:
             self._chat_session.history = []
-

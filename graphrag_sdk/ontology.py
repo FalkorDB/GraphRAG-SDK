@@ -318,7 +318,7 @@ class Ontology(object):
                 f"""
 *** WARNING ***
 The following entities do not have unique attributes:
-{', '.join(entities_without_unique_attributes)}
+{", ".join(entities_without_unique_attributes)}
 """
             )
             return False

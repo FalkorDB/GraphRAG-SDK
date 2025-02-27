@@ -4,6 +4,7 @@ from graphrag_sdk.orchestrator.step import PlanStep
 from concurrent.futures import ThreadPoolExecutor, wait
 from graphrag_sdk.orchestrator.step_result import StepResult
 from graphrag_sdk.orchestrator.orchestrator_runner import OrchestratorRunner
+from graphrag_sdk.orchestrator.step import PlanStep
 
 
 class ParallelStepResult(StepResult):
@@ -43,10 +44,7 @@ class ParallelStepResult(StepResult):
             ParallelStepResult: An instance of ParallelStepResult.
         """
         return ParallelStepResult(
-            [
-                StepResult.from_json(result)
-                for result in json["results"]
-            ]
+            [StepResult.from_json(result) for result in json["results"]]
         )
 
     def __str__(self) -> str:
@@ -89,7 +87,7 @@ class ParallelProperties:
         """
         return ParallelProperties(
             [
-                graphrag_sdk.orchestrator.step.PlanStep.from_json(step)
+                PlanStep.from_json(step)
                 for step in (json if isinstance(json, list) else json["steps"])
             ]
         )
@@ -102,10 +100,10 @@ class ParallelProperties:
             dict: A dictionary representation of the parallel properties.
         """
         return {"steps": [step.to_json() for step in self.steps]}
-    
+
     def __str__(self) -> str:
         return f"ParallelProperties(steps={self.steps})"
-    
+
     def __repr__(self) -> str:
         return str(self)
 

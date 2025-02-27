@@ -28,7 +28,6 @@ class TestValidateCypher1(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls._ontology = Ontology()
 
         cls._ontology.add_entity(
@@ -55,19 +54,16 @@ class TestValidateCypher1(unittest.TestCase):
         )
 
     def test_validate_cypher_entities_exist(self):
-
         errors = validate_cypher_entities_exist(self.cypher, self._ontology)
 
         assert len(errors) == 0
 
     def test_validate_cypher_relations_exist(self):
-
         errors = validate_cypher_relations_exist(self.cypher, self._ontology)
 
         assert len(errors) == 0
 
     def test_validate_cypher_relation_directions(self):
-
         errors = validate_cypher_relation_directions(self.cypher, self._ontology)
 
         assert len(errors) == 0
@@ -80,7 +76,7 @@ class TestValidateCypher1(unittest.TestCase):
 
 class TestValidateCypher2(unittest.TestCase):
     """
-        Test a cypher query with the wrong relation direction
+    Test a cypher query with the wrong relation direction
     """
 
     cypher = """
@@ -89,7 +85,6 @@ class TestValidateCypher2(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls._ontology = Ontology([], [])
 
         cls._ontology.add_entity(
@@ -116,19 +111,16 @@ class TestValidateCypher2(unittest.TestCase):
         )
 
     def test_validate_cypher_entities_exist(self):
-
         errors = validate_cypher_entities_exist(self.cypher, self._ontology)
 
         assert len(errors) == 0
 
     def test_validate_cypher_relations_exist(self):
-
         errors = validate_cypher_relations_exist(self.cypher, self._ontology)
 
         assert len(errors) == 0
 
     def test_validate_cypher_relation_directions(self):
-
         errors = validate_cypher_relation_directions(self.cypher, self._ontology)
 
         assert len(errors) == 1
@@ -151,7 +143,6 @@ class TestValidateCypher3(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls._ontology = Ontology([], [])
 
         cls._ontology.add_entity(
@@ -201,19 +192,16 @@ class TestValidateCypher3(unittest.TestCase):
         )
 
     def test_validate_cypher_nodes_exist(self):
-
         errors = validate_cypher_entities_exist(self.cypher, self._ontology)
 
         assert len(errors) == 0
 
     def test_validate_cypher_edges_exist(self):
-
         errors = validate_cypher_relations_exist(self.cypher, self._ontology)
 
         assert len(errors) == 0
 
     def test_validate_cypher_edge_directions(self):
-
         errors = validate_cypher_relation_directions(self.cypher, self._ontology)
 
         assert len(errors) == 0

@@ -21,7 +21,6 @@ class TestKG(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls.ontology = Ontology([], [])
 
         cls.ontology.add_entity(

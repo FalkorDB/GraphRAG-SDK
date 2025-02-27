@@ -24,7 +24,6 @@ class TestKGGemini(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls.ontology = Ontology([], [])
 
         cls.ontology.add_entity(
@@ -84,14 +83,14 @@ class TestKGGemini(unittest.TestCase):
         sources = [Source(file_path)]
 
         self.kg.process_sources(sources)
-        
+
         chat = self.kg.chat_session()
         answer = chat.send_message("How many actors acted in a movie?")
-        answer = answer['response']
+        answer = answer["response"]
 
         logger.info(f"Answer: {answer}")
 
-        actors_count = re.findall(r'\d+', answer)
+        actors_count = re.findall(r"\d+", answer)
         num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
         assert num_actors > 10, "The number of actors found should be greater than 10"

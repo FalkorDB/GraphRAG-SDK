@@ -35,12 +35,12 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
-        
+
         # Credentials
         self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
         self.azure_endpoint = os.getenv("AZURE_ENDPOINT")
         self.api_version = os.getenv("AZURE_API_VERSION")
-        
+
         if not self.api_key or not self.azure_endpoint or not self.api_version:
             raise ValueError(
                 "Missing credentials in the environment: AZURE_OPENAI_API_KEY, AZURE_ENDPOINT, or AZURE_API_VERSION."
@@ -144,7 +144,6 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
     A chat session for interacting with the Azure OpenAI model, maintaining conversation history.
     """
 
-
     _history = []
 
     def __init__(self, model: AzureOpenAiGenerativeModel, system_instruction: Optional[str] = None):
@@ -162,7 +161,9 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
             else []
         )
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(
+        self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT
+    ) -> GenerationResponse:
         """
         Send a message in the chat session and receive the model's response.
 
@@ -205,16 +206,16 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
         """
         config = self._model.generation_config.to_json()
         if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
+            config["temperature"] = 0
+            config["response_format"] = {"type": "json_object"}
+
         return config
-    
+
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
-        
+
         Example:
             Before:
             [
@@ -226,7 +227,7 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
             [
                 {"role": "system", "content": "System message"},
             ]
-        
+
         Note: Does nothing if the chat history is empty or contains only a system message.
         """
         # Keep at least the system message if present
@@ -237,7 +238,7 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
         else:
             # Reset to initial state with just system message if present
             self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+                [{"role": "system", "content": self._model.system_instruction}]
+                if self._model.system_instruction is not None
+                else []
+            )

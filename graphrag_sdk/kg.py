@@ -83,7 +83,10 @@ class KnowledgeGraph:
             cypher_system_instruction = CYPHER_GEN_SYSTEM
         else:
             if "{ontology}" not in cypher_system_instruction:
-                warnings.warn("Cypher system instruction should contain {ontology}", category=UserWarning)
+                warnings.warn(
+                    "Cypher system instruction should contain {ontology}",
+                    category=UserWarning,
+                )
 
         if qa_system_instruction is None:
             qa_system_instruction = GRAPH_QA_SYSTEM
@@ -106,9 +109,14 @@ class KnowledgeGraph:
             cypher_gen_prompt_history = CYPHER_GEN_PROMPT_WITH_HISTORY
         else:
             if "{question}" not in cypher_gen_prompt_history:
-                raise Exception("Cypher generation prompt with history should contain {question}")
+                raise Exception(
+                    "Cypher generation prompt with history should contain {question}"
+                )
             if "{last_answer}" not in cypher_gen_prompt_history:
-                warnings.warn("Cypher generation prompt with history should contain {last_answer}", category=UserWarning)
+                warnings.warn(
+                    "Cypher generation prompt with history should contain {last_answer}",
+                    category=UserWarning,
+                )
 
         # Assign the validated values
         self.cypher_system_instruction = cypher_system_instruction

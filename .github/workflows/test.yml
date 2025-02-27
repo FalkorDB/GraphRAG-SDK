@@ -60,6 +60,11 @@ jobs:
       - name: Install dependencies
         run: poetry install --extras "all"
 
+      - name: Run Lint
+        run: |
+          poetry run ruff check ./graphrag_sdk/
+          poetry run black ./graphrag_sdk/ --check
+
       - name: Wait for Ollama to be ready
         run: |
           until curl -s http://localhost:11434; do

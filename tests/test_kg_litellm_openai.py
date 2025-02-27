@@ -1,7 +1,6 @@
 import re
 import logging
 import unittest
-from falkordb import FalkorDB
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
 from graphrag_sdk.source import Source_FromRawText
@@ -16,6 +15,7 @@ load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+
 class TestKGLiteLLM(unittest.TestCase):
     """
     Test Knowledge Graph
@@ -23,7 +23,6 @@ class TestKGLiteLLM(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-
         cls.ontology = Ontology([], [])
 
         cls.ontology.add_entity(
@@ -76,7 +75,6 @@ class TestKGLiteLLM(unittest.TestCase):
         )
 
     def test_kg_creation(self):
-
         file_path = "tests/data/madoff.txt"
         with open(file_path) as f:
             string = f.read()
@@ -87,11 +85,11 @@ class TestKGLiteLLM(unittest.TestCase):
 
         chat = self.kg.chat_session()
         answer = chat.send_message("How many actors acted in a movie?")
-        answer = answer['response']
+        answer = answer["response"]
 
         logger.info(f"Answer: {answer}")
 
-        actors_count = re.findall(r'\d+', answer)
+        actors_count = re.findall(r"\d+", answer)
         num_actors = 0 if len(actors_count) == 0 else int(actors_count[0])
 
         assert num_actors > 10, "The number of actors found should be greater than 10"

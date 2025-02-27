@@ -18,10 +18,6 @@ class JSONLLoader:
             num_documents = num_rows // self.rows_per_document
             for i in range(num_documents):
                 content = "\n".join(
-                    rows[
-                        i
-                        * self.rows_per_document : (i + 1)
-                        * self.rows_per_document
-                    ]
+                    rows[i * self.rows_per_document : (i + 1) * self.rows_per_document]
                 )
                 yield Document(content, f"{self.path}#{i}")

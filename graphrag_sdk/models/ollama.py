@@ -11,7 +11,8 @@ from .model import (
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) 
+logger.setLevel(logging.INFO)
+
 
 class OllamaGenerativeModel(GenerativeModel):
     """
@@ -60,7 +61,9 @@ class OllamaGenerativeModel(GenerativeModel):
         """
         # Get the list of available models
         response = self.client.list()  # This returns a dictionary
-        available_models = [model['name'] for model in response['models']]  # Extract model names
+        available_models = [
+            model["name"] for model in response["models"]
+        ]  # Extract model names
 
         # Check if the model is already pulled
         if self.model_name in available_models:
@@ -96,9 +99,8 @@ class OllamaGenerativeModel(GenerativeModel):
             GenerationResponse: Parsed response containing the generated text.
         """
         return GenerationResponse(
-            text=response["message"]["content"],
-            finish_reason=FinishReason.STOP
-            )
+            text=response["message"]["content"], finish_reason=FinishReason.STOP
+        )
 
     def to_json(self) -> dict:
         """
@@ -132,6 +134,7 @@ class OllamaGenerativeModel(GenerativeModel):
             system_instruction=json["system_instruction"],
         )
 
+
 class OllamaChatSession(GenerativeModelChatSession):
     """
     A chat session for interacting with the Ollama model, maintaining conversation history.
@@ -151,7 +154,7 @@ class OllamaChatSession(GenerativeModelChatSession):
             if system_instruction is not None
             else []
         )
-    
+
     def get_chat_history(self) -> list[dict]:
         """
         Retrieve the conversation history for the current chat session.
@@ -161,7 +164,9 @@ class OllamaChatSession(GenerativeModelChatSession):
         """
         return self._chat_history.copy()
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(
+        self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT
+    ) -> GenerationResponse:
         """
         Send a message in the chat session and receive the model's response.
 
@@ -177,12 +182,12 @@ class OllamaChatSession(GenerativeModelChatSession):
         response = self._model.client.chat(
             model=self._model.model_name,
             messages=self._chat_history,
-            options=Options(**generation_config)
+            options=Options(**generation_config),
         )
         content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
-    
+
     def _adjust_generation_config(self, output_method: OutputMethod) -> dict:
         """
         Adjust the generation configuration based on the specified output method.
@@ -195,16 +200,16 @@ class OllamaChatSession(GenerativeModelChatSession):
         """
         config = self._model.generation_config.to_json()
         if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['format'] = 'json'
-        
+            config["temperature"] = 0
+            config["format"] = "json"
+
         return config
-    
+
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
-        
+
         Example:
             Before:
             [
@@ -227,7 +232,7 @@ class OllamaChatSession(GenerativeModelChatSession):
         else:
             # Reset to initial state with just system message if present
             self._chat_history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+                [{"role": "system", "content": self._model.system_instruction}]
+                if self._model.system_instruction is not None
+                else []
+            )

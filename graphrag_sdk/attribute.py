@@ -58,18 +58,18 @@ class AttributeType:
         raise ValueError(f"Invalid attribute type: {txt}")
 
 class Attribute:
-    """ Represents an attribute of an entity or relation in the ontology.
+    """Represents an attribute of an entity or relation in the ontology.
 
-        Args:
-            name (str): The name of the attribute.
-            attr_type (AttributeType): The type of the attribute.
-            unique (bool): Whether the attribute is unique.
-            required (bool): Whether the attribute is required.
+    Args:
+        name (str): The name of the attribute.
+        attr_type (AttributeType): The type of the attribute.
+        unique (bool): Whether the attribute is unique.
+        required (bool): Whether the attribute is required.
 
-        Examples:
-            >>> attr = Attribute("name", AttributeType.STRING, True, True)
-            >>> print(attr)
-            name: "string!*"
+    Examples:
+        >>> attr = Attribute("name", AttributeType.STRING, True, True)
+        >>> print(attr)
+        name: "string!*"
     """
 
     def __init__(
@@ -168,4 +168,4 @@ class Attribute:
         Returns:
             str: A string representation of the Attribute object.
         """
-        return f"{self.name}: \"{self.type}{'!' if self.unique else ''}{'*' if self.required else ''}\""
+        return f'{self.name}: "{self.type}{"!" if self.unique else ""}{"*" if self.required else ""}"'

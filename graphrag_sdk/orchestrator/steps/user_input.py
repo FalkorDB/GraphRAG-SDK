@@ -96,10 +96,10 @@ class UserInputProperties:
         return {
             "question": self.question,
         }
-    
+
     def __str__(self) -> str:
         return f"UserInputProperties(question={self.question})"
-    
+
     def __repr__(self) -> str:
         return str(self)
 

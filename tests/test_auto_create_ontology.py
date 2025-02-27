@@ -1,4 +1,5 @@
 from dotenv import load_dotenv
+
 load_dotenv()
 from graphrag_sdk.ontology import Ontology
 import unittest
@@ -19,7 +20,6 @@ class TestAutoDetectOntology(unittest.TestCase):
     """
 
     def test_auto_detect_ontology(self):
-
         file_path = "tests/data/madoff.txt"
 
         sources = [Source(file_path)]

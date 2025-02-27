@@ -158,16 +158,16 @@ class OpenAiChatSession(GenerativeModelChatSession):
         """
         config = self._model.generation_config.to_json()
         if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
+            config["temperature"] = 0
+            config["response_format"] = {"type": "json_object"}
+
         return config
-    
+
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
         Preserves the system message if present.
-        
+
         Example:
             Before:
             [
@@ -190,7 +190,7 @@ class OpenAiChatSession(GenerativeModelChatSession):
         else:
             # Reset to initial state with just system message if present
             self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+                [{"role": "system", "content": self._model.system_instruction}]
+                if self._model.system_instruction is not None
+                else []
+            )

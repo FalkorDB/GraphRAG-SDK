@@ -25,9 +25,17 @@ class ChatSession:
         >>> chat_session.send_message("What is the capital of France?")
     """
 
-    def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph,
-                cypher_system_instruction: str, qa_system_instruction: str,
-                cypher_gen_prompt: str, qa_prompt: str, cypher_gen_prompt_history: str):
+    def __init__(
+        self,
+        model_config: KnowledgeGraphModelConfig,
+        ontology: Ontology,
+        graph: Graph,
+        cypher_system_instruction: str,
+        qa_system_instruction: str,
+        cypher_gen_prompt: str,
+        qa_prompt: str,
+        cypher_gen_prompt_history: str,
+    ):
         """
         Initializes a new ChatSession object.
 
@@ -73,9 +81,9 @@ class ChatSession:
 
         Returns:
             dict: The response to the message in the following format:
-                    {"question": message, 
-                    "response": answer, 
-                    "context": context, 
+                    {"question": message,
+                    "response": answer,
+                    "context": context,
                     "cypher": cypher}
         """
         cypher_step = GraphQueryGenerationStep(
@@ -84,7 +92,7 @@ class ChatSession:
             ontology=self.ontology,
             last_answer=self.last_answer,
             cypher_prompt=self.cypher_prompt,
-            cypher_prompt_with_history=self.cypher_prompt_with_history
+            cypher_prompt_with_history=self.cypher_prompt_with_history,
         )
 
         (context, cypher) = cypher_step.run(message)
@@ -94,8 +102,8 @@ class ChatSession:
                 "question": message,
                 "response": "I am sorry, I could not find the answer to your question",
                 "context": None,
-                "cypher": None
-                }
+                "cypher": None,
+            }
 
         qa_step = QAStep(
             chat_session=self.qa_chat_session,
@@ -104,7 +112,7 @@ class ChatSession:
 
         answer = qa_step.run(message, cypher, context)
         self.last_answer = answer
-        
+
         return {
             "question": message, 
             "response": answer, 
