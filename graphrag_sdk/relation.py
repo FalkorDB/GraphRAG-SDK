@@ -1,8 +1,8 @@
-import json
 import re
+import json
 import logging
-from typing import Union
 from .attribute import Attribute
+from typing import Union, Optional
 from falkordb import Node as GraphNode, Edge as GraphEdge
 from graphrag_sdk.fixtures.regex import (
     EDGE_LABEL_REGEX,
@@ -12,7 +12,6 @@ from graphrag_sdk.fixtures.regex import (
 
 
 logger = logging.getLogger(__name__)
-
 
 class _RelationEntity:
     """
@@ -35,7 +34,7 @@ class _RelationEntity:
         self.label = re.sub(r"([^a-zA-Z0-9_])", "", label)
 
     @staticmethod
-    def from_json(txt: str):
+    def from_json(txt: str) -> "_RelationEntity":
         """
         Creates a _RelationEntity object from a JSON string.
 
@@ -48,7 +47,7 @@ class _RelationEntity:
         txt = txt if isinstance(txt, dict) else json.loads(txt)
         return _RelationEntity(txt.get("label", txt))
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Converts the _RelationEntity object to a JSON string.
 
@@ -77,7 +76,7 @@ class Relation:
         label (str): The label of the relation.
         source (Union[_RelationEntity, str]): The source entity of the relation.
         target (Union[_RelationEntity, str]): The target entity of the relation.
-        attributes (list[Attribute]): The attributes associated with the relation.
+        attributes (Optional[list[Attribute]]): The attributes associated with the relation.
 
     Methods:
         from_graph(relation: GraphEdge, entities: list[GraphNode]) -> Relation:
@@ -101,7 +100,7 @@ class Relation:
         label: str,
         source: Union[_RelationEntity, str],
         target: Union[_RelationEntity, str],
-        attributes: list[Attribute] = None,
+        attributes: Optional[list[Attribute]] = None,
     ):
         """
         Initializes a Relation object.
@@ -110,7 +109,7 @@ class Relation:
             label (str): The label of the relation.
             source (Union[_RelationEntity, str]): The source entity of the relation.
             target (Union[_RelationEntity, str]): The target entity of the relation.
-            attributes (list[Attribute], optional): The attributes associated with the relation. Defaults to None.
+            attributes (Optional[list[Attribute]]): The attributes associated with the relation. Defaults to None.
         """
         attributes = attributes or []
         if isinstance(source, str):
@@ -129,7 +128,7 @@ class Relation:
         self.attributes = attributes
 
     @staticmethod
-    def from_graph(relation: GraphEdge, entities: list[GraphNode]):
+    def from_graph(relation: GraphEdge, entities: list[GraphNode]) -> "Relation":
         """
         Creates a Relation object from a graph edge and a list of graph nodes.
 
@@ -156,7 +155,7 @@ class Relation:
         )
 
     @staticmethod
-    def from_json(txt: Union[dict, str]):
+    def from_json(txt: Union[dict, str]) -> "Relation":
         """
         Creates a Relation object from a JSON string or dictionary.
 
@@ -179,7 +178,7 @@ class Relation:
         )
 
     @staticmethod
-    def from_string(txt: str):
+    def from_string(txt: str) -> "Relation":
         """
         Creates a Relation object from a string representation.
 
@@ -220,7 +219,7 @@ class Relation:
             "attributes": [attr.to_json() for attr in self.attributes],
         }
 
-    def combine(self, relation2: "Relation"):
+    def combine(self, relation2: "Relation") -> "Relation":
         """
         Overwrites attributes of self with attributes of relation2.
 
@@ -240,7 +239,7 @@ class Relation:
 
         return self
 
-    def to_graph_query(self):
+    def to_graph_query(self) -> str:
         """
         Generates a Cypher query string for creating the relation in a graph database.
 

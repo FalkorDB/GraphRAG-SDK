@@ -1,8 +1,6 @@
 import re
-import os
 import logging
 import unittest
-import vertexai
 from falkordb import FalkorDB
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
@@ -13,12 +11,10 @@ from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.gemini import GeminiGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
 
-load_dotenv()
 
+load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-vertexai.init(project=os.getenv("PROJECT_ID"), location=os.getenv("REGION"))
 
 
 class TestKGGemini(unittest.TestCase):

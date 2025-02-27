@@ -31,7 +31,7 @@ class KnowledgeGraphModelConfig:
         self.qa = qa
 
     @staticmethod
-    def with_model(model: GenerativeModel):
+    def with_model(model: GenerativeModel) -> "KnowledgeGraphModelConfig":
         """
         Creates a new KnowledgeGraphModelConfig instance with the given generative model.
 
