@@ -14,7 +14,7 @@ class HTMLLoader:
         """
         Initialize loader
 
-        Parameters:
+        Args:
             path (str): path to HTML.
         """
 

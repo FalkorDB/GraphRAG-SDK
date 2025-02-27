@@ -13,7 +13,7 @@ class URLLoader():
         """
         Initialize loader
 
-        Parameters:
+        Args:
             url (str): url.
         """
 

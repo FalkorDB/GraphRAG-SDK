@@ -10,7 +10,7 @@ class TextLoader():
         """
         Initialize loader
 
-        Parameters:
+        Args:
             path (str): path to Text.
         """
 
