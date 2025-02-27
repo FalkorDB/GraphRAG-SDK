@@ -1,5 +1,6 @@
-from abc import ABC, abstractmethod
 from enum import Enum
+from typing import Optional
+from abc import ABC, abstractmethod
 
 
 class FinishReason:
@@ -16,15 +17,13 @@ class OutputMethod(Enum):
 class GenerativeModelConfig:
     """
     Configuration for a generative model
-
     Args:
-        temperature (float): The temperature to use for sampling.
-        top_p (float): The top-p value to use for sampling.
-        top_k (int): The top-k value to use for sampling.
-        max_output_tokens (int): The maximum number of tokens to generate.
-        stop_sequences (list[str]): The stop sequences to use for sampling.
-        response_format (dict): The format of the response.
-
+        temperature (Optional[float]): The temperature to use for sampling.
+        top_p (Optional[float]): The top-p value to use for sampling.
+        top_k (Optional[int]): The top-k value to use for sampling.
+        max_output_tokens (Optional[int]): The maximum number of tokens to generate.
+        stop_sequences (Optional[list[str]]): The stop sequences to use for sampling.
+        response_format (Optional[dict]): The format of the response.
     Examples:
 
         >>> config = GenerativeModelConfig(temperature=0.5, top_p=0.9, top_k=50, max_output_tokens=100, stop_sequences=[".", "?", "!"])
@@ -32,12 +31,12 @@ class GenerativeModelConfig:
 
     def __init__(
         self,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        top_k: int | None = None,
-        max_output_tokens: int | None = None,
-        stop_sequences: list[str] | None = None,
-        response_format: dict | None = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
+        stop_sequences: Optional[list[str]] = None,
+        response_format: Optional[dict] = None,
     ):
         self.temperature = temperature
         self.top_p = top_p
@@ -102,13 +101,9 @@ class GenerativeModel(ABC):
     """
 
     @abstractmethod
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         pass
-
-    @abstractmethod
-    def start_chat(self, args: dict | None) -> GenerativeModelChatSession:
-        pass
-
+    
     @staticmethod
     @abstractmethod
     def from_json(json: dict) -> "GenerativeModel":

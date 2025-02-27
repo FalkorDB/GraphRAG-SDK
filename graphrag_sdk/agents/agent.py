@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 
-
 class AgentResponseCode:
     """
     Represents the response codes for an agent.

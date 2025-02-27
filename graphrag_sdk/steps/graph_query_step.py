@@ -1,5 +1,6 @@
 import logging
 from falkordb import Graph
+from typing import Optional
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.models import (
@@ -25,11 +26,23 @@ class GraphQueryGenerationStep(Step):
         graph: Graph,
         ontology: Ontology,
         chat_session: GenerativeModelChatSession,
-        config: dict = None,
-        last_answer: str = None,
-        cypher_prompt: str = None,
-        cypher_prompt_with_history: str = None,
+        config: Optional[dict] = None,
+        last_answer: Optional[str] = None,
+        cypher_prompt: Optional[str] = None,
+        cypher_prompt_with_history: Optional[str] = None,
     ) -> None:
+        """
+        Initializes the GraphQueryGenerationStep object.
+        
+        Args:
+            graph (Graph): The graph object to query.
+            ontology (Ontology): The ontology object.
+            chat_session (GenerativeModelChatSession): The chat session object.
+            config (Optional[dict]): The configuration object.
+            last_answer (Optional[str]): The last answer.
+            cypher_prompt (Optional[str]): The Cypher prompt.
+            cypher_prompt_with_history (Optional[str]): The Cypher prompt with history.
+        """
         self.ontology = ontology
         self.config = config or {}
         self.graph = graph
@@ -38,7 +51,17 @@ class GraphQueryGenerationStep(Step):
         self.cypher_prompt = cypher_prompt
         self.cypher_prompt_with_history = cypher_prompt_with_history
 
-    def run(self, question: str, retries: int = 10):
+    def run(self, question: str, retries: Optional[int] = 10):
+        """
+        Run the step to generate and validate a Cypher query.
+        
+        Args:
+            question (str): The question being asked to generate the query.
+            retries (Optional[int]): Number of retries allowed in case of errors.
+            
+        Returns:
+            tuple[Optional[str], Optional[str]]: The context and the generated Cypher query.
+        """
         cypher = ""
         for i in range(retries):
             try:

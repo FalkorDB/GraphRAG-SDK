@@ -11,7 +11,7 @@ class PDFLoader:
         """
         Initialize loader
 
-        Parameters:
+        Args:
             path (str): path to PDF.
         """
 
@@ -35,4 +35,7 @@ class PDFLoader:
         from pypdf import PdfReader  # pylint: disable=import-outside-toplevel
 
         reader = PdfReader(self.path)
-        yield from [Document(page.extract_text()) for page in reader.pages]
+        yield from [
+            Document(page_content.extract_text(), f"{self.path}#{page_num}")
+            for page_num, page_content in enumerate(reader.pages)
+        ]

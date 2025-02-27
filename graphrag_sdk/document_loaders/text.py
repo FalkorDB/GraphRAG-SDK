@@ -11,7 +11,7 @@ class TextLoader:
         """
         Initialize loader
 
-        Parameters:
+        Args:
             path (str): path to Text.
         """
 
@@ -25,5 +25,8 @@ class TextLoader:
             Iterator[Document]: document iterator
         """
 
-        with open(self.path, "r") as f:
-            yield Document(f.read())
+        with open(self.path, 'r') as f:
+            yield Document(
+                f.read(),
+                self.path
+            )

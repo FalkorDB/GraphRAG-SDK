@@ -1,5 +1,5 @@
-from graphrag_sdk.kg import KnowledgeGraph
 from .agent import Agent
+from graphrag_sdk.kg import KnowledgeGraph
 
 
 class KGAgent(Agent):
@@ -55,15 +55,12 @@ class KGAgent(Agent):
         return self._agent_id
 
     @agent_id.setter
-    def agent_id(self, value):
+    def agent_id(self, value) -> None:
         """
         Sets the agent ID.
 
-        Parameters:
-        value (str): The ID of the agent.
-
-        Returns:
-        None
+        Args:
+            value (str): The ID of the agent.
         """
         self._agent_id = value
 
@@ -72,21 +69,18 @@ class KGAgent(Agent):
         """
         Returns the introduction of the agent.
 
-        :return: The introduction of the agent.
-        :rtype: str
+        Returns:
+            str: The introduction of the agent.
         """
         return self._introduction
 
     @introduction.setter
-    def introduction(self, value):
+    def introduction(self, value) -> None:
         """
         Sets the introduction of the agent.
 
-        Parameters:
-        value (str): The introduction of the agent.
-
-        Returns:
-        None
+        Args:
+            value (str): The introduction of the agent.
         """
         self._introduction = value
 
@@ -111,15 +105,12 @@ class KGAgent(Agent):
         return self._kg
 
     @kg.setter
-    def kg(self, value: KnowledgeGraph):
+    def kg(self, value: KnowledgeGraph) -> None:
         """
         Sets the knowledge graph for the agent.
 
-        Parameters:
+        Args:
             value (KnowledgeGraph): The knowledge graph to be set.
-
-        Returns:
-            None
         """
         self._kg = value
 
@@ -137,7 +128,7 @@ class KGAgent(Agent):
         output = self.chat_session.send_message(params["prompt"])
         return output["response"]
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """
         Returns a string representation of the KGAgent object.
 
