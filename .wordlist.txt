@@ -39,3 +39,4 @@ Embeddings
 NLP
 graphrag
 gemini
+codecov
