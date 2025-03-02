@@ -31,7 +31,7 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             model_name (str): Name of the Azure OpenAI model.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): System-level instruction for the model.
-            kwargs (Any): Additional arguments required by Azure OpenAI API.
+            kwargs (Any): Additional arguments optional by Azure OpenAI API.
         """
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
