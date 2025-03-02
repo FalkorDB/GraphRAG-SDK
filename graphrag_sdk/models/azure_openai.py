@@ -1,4 +1,5 @@
 import os
+from typing import Any
 from typing import Optional
 from openai import AzureOpenAI
 from .model import (
@@ -16,13 +17,12 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
     A generative model that interfaces with Azure's OpenAI API for chat completions.
     """
 
-    client: AzureOpenAI = None
-
     def __init__(
         self,
         model_name: str,
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
+        **kwargs: Any,
     ):
         """
         Initialize the AzureOpenAiGenerativeModel with required parameters.
@@ -31,10 +31,12 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             model_name (str): Name of the Azure OpenAI model.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): System-level instruction for the model.
+            kwargs (Any): Additional arguments required by Azure OpenAI API.
         """
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
+        self.additional_params = kwargs
         
         # Credentials
         self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
@@ -45,6 +47,13 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             raise ValueError(
                 "Missing credentials in the environment: AZURE_OPENAI_API_KEY, AZURE_ENDPOINT, or AZURE_API_VERSION."
             )
+            
+        self.client = AzureOpenAI(
+            azure_endpoint=self.azure_endpoint,
+            api_version=self.api_version,
+            api_key=self.api_key,
+            **self.additional_params,  # Azure additional parameters
+        )
 
 
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
