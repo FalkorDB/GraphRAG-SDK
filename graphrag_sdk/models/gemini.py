@@ -37,7 +37,7 @@ class GeminiGenerativeModel(GenerativeModel):
             system_instruction (Optional[str]): System-level instruction for the model.
         """
         self._model_name = model_name
-        self._generation_config = generation_config
+        self._generation_config = generation_config or GenerativeModelConfig()
         self._system_instruction = system_instruction
         configure(api_key=os.environ["GOOGLE_API_KEY"])
 
@@ -58,8 +58,8 @@ class GeminiGenerativeModel(GenerativeModel):
                         temperature=self._generation_config.temperature,
                         top_p=self._generation_config.top_p,
                         top_k=self._generation_config.top_k,
-                        max_output_tokens=self._generation_config.max_output_tokens,
-                        stop_sequences=self._generation_config.stop_sequences,
+                        max_output_tokens=self._generation_config.max_tokens,
+                        stop_sequences=self._generation_config.stop,
                     )
                     if self._generation_config is not None
                     else None
@@ -170,7 +170,12 @@ class GeminiChatSession(GenerativeModelChatSession):
                 "response_mime_type": "application/json",
                 "temperature": 0
             }
-        return self._model._generation_config
+            
+        config = self._model._generation_config.to_json()
+        config["max_output_tokens"] = config.pop("max_tokens")
+        config["response_mime_type"] = config.pop("response_format")
+        config["stop_sequences"] = config.pop("stop")
+        return config
     
     def delete_last_message(self):
         """

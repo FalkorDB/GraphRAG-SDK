@@ -75,11 +75,11 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
                 {"role": "system", "content": self.system_instruction},
                 {"role": "user", "content": message[:14385]},
             ],
-            max_tokens=self.generation_config.max_output_tokens,
+            max_tokens=self.generation_config.max_tokens,
             temperature=self.generation_config.temperature,
             top_p=self.generation_config.top_p,
             top_k=self.generation_config.top_k,
-            stop=self.generation_config.stop_sequences,
+            stop=self.generation_config.stop,
         )
         return self._parse_generate_content_response(response)
 
