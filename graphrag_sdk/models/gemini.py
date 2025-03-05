@@ -172,6 +172,8 @@ class GeminiChatSession(GenerativeModelChatSession):
             }
             
         config = self._model._generation_config.to_json()
+        
+        # Convert OpenAI-style config keys to GoogleAI-style keys
         config["max_output_tokens"] = config.pop("max_tokens")
         config["response_mime_type"] = config.pop("response_format")
         config["stop_sequences"] = config.pop("stop")
