@@ -53,7 +53,7 @@ class GenerativeModelConfig:
         self.response_format = response_format
 
     def __str__(self) -> str:
-        return f"GenerativeModelConfig(temperature={self.temperature}, top_p={self.top_p}, top_k={self.top_k}, max_output_tokens={self.max_tokens}, stop_sequences={self.stop})"
+        return f"GenerativeModelConfig(temperature={self.temperature}, top_p={self.top_p}, top_k={self.top_k}, max_tokens={self.max_tokens}, stop={self.stop})"
 
     def to_json(self) -> dict:
         return {
