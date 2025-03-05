@@ -9,7 +9,7 @@ from graphrag_sdk.relation import Relation
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.litellm import LiteModel
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig, GenerativeModelConfig
 
 load_dotenv()
 
@@ -68,7 +68,7 @@ class TestKGLiteLLM(unittest.TestCase):
             )
         )
         cls.graph_name = "IMDB_openai"
-        model = LiteModel(model_name="gpt-4o")
+        model = LiteModel(model_name="gpt-4o", generation_config=GenerativeModelConfig(temperature=0))
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,

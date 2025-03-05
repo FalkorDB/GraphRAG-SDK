@@ -9,7 +9,7 @@ from graphrag_sdk.relation import Relation
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.openai import OpenAiGenerativeModel
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig, GenerativeModelConfig
 
 load_dotenv()
 
@@ -68,7 +68,7 @@ class TestKGOpenAI(unittest.TestCase):
             )
         )
         cls.graph_name = "IMDB_openai"
-        model = OpenAiGenerativeModel(model_name="gpt-3.5-turbo-0125")
+        model = OpenAiGenerativeModel(model_name="gpt-3.5-turbo-0125", generation_config=GenerativeModelConfig(temperature=0))
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,

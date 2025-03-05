@@ -14,17 +14,26 @@ class OutputMethod(Enum):
 
 class GenerativeModelConfig:
     """
-    Configuration for a generative model
+    Configuration for a generative model.
+    
+    This configuration follows OpenAI-style parameter naming but is designed to be compatible with other generative models.
+    
     Args:
-        temperature (Optional[float]): The temperature to use for sampling.
-        top_p (Optional[float]): The top-p value to use for sampling.
-        top_k (Optional[int]): The top-k value to use for sampling.
-        max_output_tokens (Optional[int]): The maximum number of tokens to generate.
-        stop_sequences (Optional[list[str]]): The stop sequences to use for sampling.
-        response_format (Optional[dict]): The format of the response.
-    Examples:
-
-        >>> config = GenerativeModelConfig(temperature=0.5, top_p=0.9, top_k=50, max_output_tokens=100, stop_sequences=[".", "?", "!"])
+        temperature (Optional[float]): Controls the randomness of the output. Higher values (e.g., 1.0) make responses more random, 
+            while lower values (e.g., 0.1) make them more deterministic.
+        top_p (Optional[float]): Nucleus sampling parameter. A value of 0.9 considers only the top 90% of probability mass.
+        top_k (Optional[int]): Limits sampling to the top-k most probable tokens.
+        max_tokens (Optional[int]): The maximum number of tokens the model is allowed to generate in a response.
+        stop (Optional[list[str]]): A list of stop sequences that signal the model to stop generating further tokens.
+        response_format (Optional[dict]): Specifies the desired format of the response, if supported by the model.
+    Example:
+        >>> config = GenerativeModelConfig(
+        ...     temperature=0.5, 
+        ...     top_p=0.9, 
+        ...     top_k=50, 
+        ...     max_tokens=100, 
+        ...     stop=[".", "?", "!"]
+        ... )
     """
 
     def __init__(
@@ -32,26 +41,26 @@ class GenerativeModelConfig:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
-        max_output_tokens: Optional[int] = None,
-        stop_sequences: Optional[list[str]] = None,
+        max_tokens: Optional[int] = None,
+        stop: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
     ):
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
-        self.max_output_tokens = max_output_tokens
-        self.stop_sequences = stop_sequences
+        self.max_tokens = max_tokens
+        self.stop = stop
         self.response_format = response_format
 
     def __str__(self) -> str:
-        return f"GenerativeModelConfig(temperature={self.temperature}, top_p={self.top_p}, top_k={self.top_k}, max_output_tokens={self.max_output_tokens}, stop_sequences={self.stop_sequences})"
+        return f"GenerativeModelConfig(temperature={self.temperature}, top_p={self.top_p}, top_k={self.top_k}, max_tokens={self.max_tokens}, stop={self.stop})"
 
     def to_json(self) -> dict:
         return {
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "max_tokens": self.max_output_tokens,
-            "stop": self.stop_sequences,
+            "max_tokens": self.max_tokens,
+            "stop": self.stop,
             "response_format": self.response_format,
         }
 
@@ -61,8 +70,8 @@ class GenerativeModelConfig:
             temperature=json.get("temperature"),
             top_p=json.get("top_p"),
             top_k=json.get("top_k"),
-            max_output_tokens=json.get("max_tokens"),
-            stop_sequences=json.get("stop"),
+            max_tokens=json.get("max_tokens"),
+            stop=json.get("stop"),
         )
 
 

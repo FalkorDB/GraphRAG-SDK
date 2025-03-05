@@ -10,6 +10,7 @@ from graphrag_sdk.relation import Relation
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk.models.gemini import GeminiGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from google.generativeai import GenerationConfig as GoogleGenerationConfig
 
 
 load_dotenv()
@@ -71,7 +72,7 @@ class TestKGGemini(unittest.TestCase):
 
         cls.graph_name = "IMDB_gemini"
 
-        model = GeminiGenerativeModel(model_name="gemini-1.5-flash-001")
+        model = GeminiGenerativeModel(model_name="gemini-1.5-flash-001", generation_config=GoogleGenerationConfig(temperature=0))
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
