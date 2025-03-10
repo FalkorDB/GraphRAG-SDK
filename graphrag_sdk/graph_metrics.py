@@ -1,133 +1,41 @@
-from typing import Optional
-from deepeval.metrics import BaseMetric, AnswerRelevancyMetric, FaithfulnessMetric, ContextualRelevancyMetric
-from deepeval.test_case import LLMTestCase
-from typing import Optional, List, Union
+"""
+Metrics for evaluating Knowledge Graph performance.
 
-from deepeval.utils import get_or_create_event_loop, prettify_list
+This module provides two metrics:
+1. GraphContextualRelevancy - Measures how relevant the retrieved context is to the input query
+2. GraphContextualRecall - Measures how well the expected output is supported by the retrieved context
+"""
+
+from typing import Optional
+from deepeval.metrics import BaseMetric
+from typing import Optional, List, Union
+from deepeval.utils import prettify_list
+from deepeval.test_case import LLMTestCase
+from deepeval.models import DeepEvalBaseLLM
+from deepeval.metrics.indicator import metric_progress_indicator
+from deepeval.metrics.contextual_relevancy.schema import ContextualRelevancyVerdicts
+from deepeval.metrics.contextual_recall.schema import (
+    Reason,
+    Verdicts,
+    ContextualRecallVerdict,)
+from deepeval.test_case import (
+    LLMTestCase,
+    LLMTestCaseParams,
+    ConversationalTestCase,)
 from deepeval.metrics.utils import (
     construct_verbose_logs,
     trimAndLoadJson,
     check_llm_test_case_params,
-    initialize_model,
-)
-from deepeval.test_case import (
-    LLMTestCase,
-    LLMTestCaseParams,
-    ConversationalTestCase,
-)
-
-from deepeval.metrics.contextual_relevancy.schema import *
-from deepeval.metrics import BaseMetric
-from deepeval.models import DeepEvalBaseLLM
-from deepeval.metrics.contextual_recall.template import ContextualRecallTemplate
-from deepeval.metrics.indicator import metric_progress_indicator
-from deepeval.metrics.contextual_recall.schema import *
-
-required_params: List[LLMTestCaseParams] = [
+    initialize_model,)
+REQUIRED_PARAMS: List[LLMTestCaseParams] = [
     LLMTestCaseParams.INPUT,
     LLMTestCaseParams.ACTUAL_OUTPUT,
     LLMTestCaseParams.RETRIEVAL_CONTEXT,
     LLMTestCaseParams.EXPECTED_OUTPUT,
 ]
 
-class CombineMetrics(BaseMetric):
-    def __init__(
-        self,
-        threshold: float = 0.5,
-        evaluation_model: Optional[str] = "gpt-4o",
-        include_reason: bool = True,
-        async_mode: bool = True,
-        strict_mode: bool = False,
-    ):
-        self.threshold = 1 if strict_mode else threshold
-        self.evaluation_model = evaluation_model
-        self.include_reason = include_reason
-        self.async_mode = async_mode
-        self.strict_mode = strict_mode
-
-    def measure(self, test_case: LLMTestCase):
-        try:
-            graph_context_recall_metric, graph_context_relevancy_metric = self.initialize_metrics()
-            # Remember, deepeval's default metrics follow the same pattern as your custom metric!
-            # relevancy_metric.measure(test_case)
-            graph_context_relevancy_metric.measure(test_case)
-            graph_context_recall_metric.measure(test_case)
-            
-            # Custom logic to set score, reason, and success
-            self.set_score_reason_success(graph_context_recall_metric, graph_context_relevancy_metric)
-            return self.score
-        except Exception as e:
-            # Set and re-raise error
-            self.error = str(e)
-            raise
 
 
-    def is_successful(self) -> bool:
-        if self.error is not None:
-            self.success = False
-        else:
-            return self.success
-
-    @property
-    def __name__(self):
-        return "Composite Graph Context Metric"
-
-
-    ######################
-    ### Helper methods ###
-    ######################
-    def initialize_metrics(self):
-        graph_context_relevancy_metric = GraphContextualRelevancy(
-            threshold=self.threshold,
-            model=self.evaluation_model,
-            include_reason=self.include_reason,
-            strict_mode=self.strict_mode
-        )
-        
-        graph_context_recall_metric = GraphContextualRecall(
-            threshold=self.threshold,
-            model=self.evaluation_model,
-            include_reason=self.include_reason,
-            strict_mode=self.strict_mode
-        )
-        
-        # relevancy_metric = AnswerRelevancyMetric(
-        #     threshold=self.threshold,
-        #     model=self.evaluation_model,
-        #     include_reason=self.include_reason,
-        #     async_mode=self.async_mode,
-        #     strict_mode=self.strict_mode
-        # )
-        # faithfulness_metric = FaithfulnessMetric(
-        #     threshold=self.threshold,
-        #     model=self.evaluation_model,
-        #     include_reason=self.include_reason,
-        #     async_mode=self.async_mode,
-        #     strict_mode=self.strict_mode
-        # )
-        return graph_context_recall_metric, graph_context_relevancy_metric
-
-    def set_score_reason_success(
-        self,
-        graph_context_recall_metric: BaseMetric,
-        graph_context_relevancy_metric: BaseMetric,
-    ):
-        graph_context_recall_metric_score = graph_context_recall_metric.score
-        graph_context_recall_metric_reason = graph_context_recall_metric.reason
-        graph_context_relevancy_metric_score = graph_context_relevancy_metric.score
-        graph_context_relevancy_metric_reason = graph_context_relevancy_metric.reason
-
-        # Custom logic to set score
-        composite_score = min(graph_context_recall_metric_score, graph_context_relevancy_metric_score)
-        self.score = 0 if self.strict_mode and composite_score < self.threshold else composite_score
-
-        # Custom logic to set reason
-        if self.include_reason:
-            self.reason = graph_context_recall_metric_reason + "\n" + graph_context_relevancy_metric_reason
-
-        # Custom logic to set success
-        self.success = self.score >= self.threshold
-        
 class GraphContextualRecall(BaseMetric):
     def __init__(
         self,
@@ -135,21 +43,19 @@ class GraphContextualRecall(BaseMetric):
         model: Optional[Union[str, DeepEvalBaseLLM]] = None,
         include_reason: bool = True,
         strict_mode: bool = False,
-        verbose_mode: bool = False,
     ):
         self.threshold = 1 if strict_mode else threshold
         self.model, self.using_native_model = initialize_model(model)
         self.evaluation_model = self.model.get_model_name()
         self.include_reason = include_reason
         self.strict_mode = strict_mode
-        self.verbose_mode = verbose_mode
         
     def measure(
         self,
         test_case: LLMTestCase,
         _show_indicator: bool = True,
     ) -> float:
-        check_llm_test_case_params(test_case, required_params, self)
+        check_llm_test_case_params(test_case, REQUIRED_PARAMS, self)
 
         self.evaluation_cost = 0 if self.using_native_model else None
         with metric_progress_indicator(self, _show_indicator=_show_indicator):
@@ -338,14 +244,12 @@ class GraphContextualRelevancy(BaseMetric):
         model: Optional[Union[str, DeepEvalBaseLLM]] = None,
         include_reason: bool = True,
         strict_mode: bool = False,
-        verbose_mode: bool = False,
     ):
         self.threshold = 1 if strict_mode else threshold
         self.model, self.using_native_model = initialize_model(model)
         self.evaluation_model = self.model.get_model_name()
         self.include_reason = include_reason
         self.strict_mode = strict_mode
-        self.verbose_mode = verbose_mode
         
     def measure(
         self,
@@ -354,7 +258,7 @@ class GraphContextualRelevancy(BaseMetric):
     ) -> float:
         if isinstance(test_case, ConversationalTestCase):
             test_case = test_case.turns[0]
-        check_llm_test_case_params(test_case, required_params, self)
+        check_llm_test_case_params(test_case, REQUIRED_PARAMS, self)
 
         self.evaluation_cost = 0 if self.using_native_model else None
         with metric_progress_indicator(self, _show_indicator=_show_indicator):
