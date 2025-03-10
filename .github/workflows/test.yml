@@ -35,7 +35,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.x # Update with desired Python version
+          python-version: 3.9.15 # Update with desired Python version
 
       - name: Cache Poetry virtualenv
         id: cache

@@ -1,10 +1,10 @@
 import json
 import logging
 import graphrag_sdk
-from .entity import Entity
 from falkordb import Graph
-from typing import Optional
+from .entity import Entity
 from .relation import Relation
+from typing import Optional, Union
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
 from .attribute import Attribute, AttributeType
@@ -41,13 +41,13 @@ class Ontology(object):
         relations (list[Relation]): The list of relations in the ontology.
     """
 
-    def __init__(self, entities: list[Entity] = None, relations: list[Relation] = None):
+    def __init__(self, entities: Optional[list[Entity]] = None, relations: Optional[list[Relation]] = None):
         """
         Initialize the Ontology class.
 
         Args:
-            entities (list[Entity], optional): List of Entity objects. Defaults to None.
-            relations (list[Relation], optional): List of Relation objects. Defaults to None.
+            entities (Optional[list[Entity]]): List of Entity objects. Defaults to None.
+            relations (Optional[list[Relation]]): List of Relation objects. Defaults to None.
         """
         self.entities = entities or []
         self.relations = relations or []
@@ -81,12 +81,12 @@ class Ontology(object):
         return step.run(boundaries=boundaries)
 
     @staticmethod
-    def from_json(txt: dict | str):
+    def from_json(txt: Union[dict, str]) -> "Ontology":
         """
         Creates an Ontology object from a JSON representation.
 
         Args:
-            txt (dict | str): The JSON representation of the ontology. It can be either a dictionary or a string.
+            txt (Union[dict, str]): The JSON representation of the ontology. It can be either a dictionary or a string.
 
         Returns:
             The Ontology object created from the JSON representation.
@@ -101,7 +101,7 @@ class Ontology(object):
         )
 
     @staticmethod
-    def from_schema_graph(graph: Graph):
+    def from_schema_graph(graph: Graph) -> "Ontology":
         """
         Creates an Ontology object from a given schema graph.
 
@@ -125,7 +125,7 @@ class Ontology(object):
         return ontology
     
     @staticmethod
-    def from_kg_graph(graph: Graph, sample_size: int = 100,):
+    def from_kg_graph(graph: Graph, sample_size: Optional[int] = 100) -> "Ontology":
         """
         Constructs an Ontology object from a given Knowledge Graph.
 
@@ -135,7 +135,7 @@ class Ontology(object):
 
         Args:
             graph (Graph): The graph object representing the knowledge graph.
-            sample_size (int): The sample size for the attribute extraction.
+            sample_size (Optional[int]): The maximum number of attributes to sample for each entity and relationship. Defaults to 100.
 
         Returns:
             Ontology: The Ontology object constructed from the Knowledge Graph.
@@ -173,7 +173,7 @@ class Ontology(object):
         
         return ontology
     
-    def add_entity(self, entity: Entity):
+    def add_entity(self, entity: Entity) -> None:
         """
         Adds an entity to the ontology.
 
@@ -182,7 +182,7 @@ class Ontology(object):
         """
         self.entities.append(entity)
 
-    def add_relation(self, relation: Relation):
+    def add_relation(self, relation: Relation) -> None:
         """
         Adds a relation to the ontology.
 
@@ -298,7 +298,7 @@ class Ontology(object):
 
         return self
 
-    def validate_entities(self):
+    def validate_entities(self) -> bool:
         """
         Validates the entities in the ontology.
 
@@ -324,7 +324,7 @@ The following entities do not have unique attributes:
             return False
         return True
 
-    def get_entity_with_label(self, label: str):
+    def get_entity_with_label(self, label: str) -> Optional[Entity]:
         """
         Retrieves the entity with the specified label.
 
@@ -336,7 +336,7 @@ The following entities do not have unique attributes:
         """
         return next((n for n in self.entities if n.label == label), None)
 
-    def get_relations_with_label(self, label: str):
+    def get_relations_with_label(self, label: str) -> list[Relation]:
         """
         Returns a list of relations with the specified label.
 
@@ -348,7 +348,7 @@ The following entities do not have unique attributes:
         """
         return [e for e in self.relations if e.label == label]
 
-    def has_entity_with_label(self, label: str):
+    def has_entity_with_label(self, label: str) -> bool:
         """
         Checks if the ontology has an entity with the given label.
 
@@ -360,7 +360,7 @@ The following entities do not have unique attributes:
         """
         return any(n.label == label for n in self.entities)
 
-    def has_relation_with_label(self, label: str):
+    def has_relation_with_label(self, label: str) -> bool:
         """
         Checks if the ontology has a relation with the given label.
 
@@ -386,7 +386,7 @@ The following entities do not have unique attributes:
             relations="\n- ".join([str(relation) for relation in self.relations]),
         )
 
-    def save_to_graph(self, graph: Graph):
+    def save_to_graph(self, graph: Graph) -> None:
         """
         Saves the entities and relations to the specified graph.
 

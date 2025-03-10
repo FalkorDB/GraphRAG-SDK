@@ -56,17 +56,15 @@ class ChatSession:
         self.qa_prompt = qa_prompt
         self.cypher_prompt_with_history = cypher_gen_prompt_history
         
-        self.cypher_chat_session = (
-            model_config.cypher_generation.with_system_instruction(
+        self.cypher_chat_session = model_config.cypher_generation.start_chat(
                 cypher_system_instruction
-            ).start_chat()
-        )
-        self.qa_chat_session = model_config.qa.with_system_instruction(
+            )
+        self.qa_chat_session = model_config.qa.start_chat(
                 qa_system_instruction
-            ).start_chat()
+            )
         self.last_answer = None
 
-    def send_message(self, message: str):
+    def send_message(self, message: str) -> dict:
         """
         Sends a message to the chat session.
 

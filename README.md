@@ -35,9 +35,9 @@ pip install graphrag_sdk[litellm]
 ### Configure Credentials. See [.env](.env.template) for examples.
 
 * [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.  
-  To choose vendor use the prefix "specific_vendor/your_model", for example "gemini/gemini-2.0-flash-exp".
+  To choose vendor use the prefix "specific_vendor/your_model", for example "gemini/gemini-2.0-flash".
 * [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4o`
-* [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-2.0-flash-exp`
+* [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-2.0-flash`
 * [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4o`
 * [Ollama](https://ollama.com/) Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for the Q&A step only (after the knowledge graph (KG) created).
 
@@ -68,8 +68,8 @@ urls = ["https://www.rottentomatoes.com/m/side_by_side_2012",
 
 sources = [URL(url) for url in urls]
 
-# Model - vendor: gemini, model: gemini-2.0-flash-exp -> gemini/gemini-2.0-flash-exp
-model = LiteModel(model_name="gemini/gemini-2.0-flash-exp")
+# Model - vendor: gemini, model: gemini-2.0-flash -> gemini/gemini-2.0-flash
+model = LiteModel(model_name="gemini/gemini-2.0-flash")
 
 # Ontology Auto-Detection
 ontology = Ontology.from_sources(
@@ -143,7 +143,7 @@ See the [Step 1](#how-to-use) section to understand how to create Knowledge Grap
 
 ```python
 # Define the model
-model = LiteModel(model_name="gemini/gemini-2.0-flash-exp")
+model = LiteModel(model_name="gemini/gemini-2.0-flash")
 
 # Create the Knowledge Graph from the predefined ontology.
 # In this example, we will use the restaurants agent and the attractions agent.

@@ -1,4 +1,5 @@
 import os
+from typing import Any
 from typing import Optional
 from openai import AzureOpenAI
 from .model import (
@@ -10,18 +11,18 @@ from .model import (
     GenerativeModelChatSession,
 )
 
+
 class AzureOpenAiGenerativeModel(GenerativeModel):
     """
     A generative model that interfaces with Azure's OpenAI API for chat completions.
     """
-
-    client: AzureOpenAI = None
 
     def __init__(
         self,
         model_name: str,
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
+        **kwargs: Any,
     ):
         """
         Initialize the AzureOpenAiGenerativeModel with required parameters.
@@ -30,10 +31,12 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             model_name (str): Name of the Azure OpenAI model.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): System-level instruction for the model.
+            kwargs (Any): Additional arguments optional by Azure OpenAI API.
         """
         self.model_name = model_name
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
+        self.additional_params = kwargs
         
         # Credentials
         self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
@@ -44,43 +47,26 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
             raise ValueError(
                 "Missing credentials in the environment: AZURE_OPENAI_API_KEY, AZURE_ENDPOINT, or AZURE_API_VERSION."
             )
+            
+        self.client = AzureOpenAI(
+            azure_endpoint=self.azure_endpoint,
+            api_version=self.api_version,
+            api_key=self.api_key,
+            **self.additional_params,  # Azure additional parameters
+        )
 
 
-    def _connect_to_model(self) -> None:
-        """
-        Establish a connection to the Azure OpenAI model by initializing the AzureOpenAI client.
-        """
-        self.client = AzureOpenAI(azure_endpoint=self.azure_endpoint,
-                                api_version=self.api_version,
-                                api_key=self.api_key,
-                                )
-
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
-        """
-        Set or update the system instruction and connect to the Azure OpenAI model.
-
-        Args:
-            system_instruction (str): System instructions for the model.
-        
-        Returns:
-            GenerativeModel: The updated model instance.
-        """
-        self.system_instruction = system_instruction
-        self._connect_to_model()
-
-        return self
-
-    def start_chat(self, args: Optional[dict] = None) -> GenerativeModelChatSession:
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
         Start a new chat session.
-
+        
         Args:
-            args (Optional[dict]): Additional arguments for the chat session.
-
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
+            
         Returns:
             GenerativeModelChatSession: A new instance of the chat session.
         """
-        return AzureOpenAiChatSession(self, args)
+        return AzureOpenAiChatSession(self, system_instruction)
 
     def ask(self, message: str) -> GenerationResponse:
         """
@@ -98,11 +84,11 @@ class AzureOpenAiGenerativeModel(GenerativeModel):
                 {"role": "system", "content": self.system_instruction},
                 {"role": "user", "content": message[:14385]},
             ],
-            max_tokens=self.generation_config.max_output_tokens,
+            max_tokens=self.generation_config.max_tokens,
             temperature=self.generation_config.temperature,
             top_p=self.generation_config.top_p,
             top_k=self.generation_config.top_k,
-            stop=self.generation_config.stop_sequences,
+            stop=self.generation_config.stop,
         )
         return self._parse_generate_content_response(response)
 
@@ -170,19 +156,18 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
 
     _history = []
 
-    def __init__(self, model: AzureOpenAiGenerativeModel, args: Optional[dict] = None):
+    def __init__(self, model: AzureOpenAiGenerativeModel, system_instruction: Optional[str] = None):
         """
         Initialize the chat session and set up the conversation history.
-
+        
         Args:
             model (AzureOpenAiGenerativeModel): The model instance for the session.
-            args (Optional[dict]): Additional arguments for customization.
+            system_instruction (Optional[str]): Optional system instruction.
         """
         self._model = model
-        self._args = args
-        self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
+        self._chat_history = (
+            [{"role": "system", "content": system_instruction}]
+            if system_instruction is not None
             else []
         )
 
@@ -197,21 +182,27 @@ class AzureOpenAiChatSession(GenerativeModelChatSession):
         Returns:
             GenerationResponse: The generated response.
         """
-        generation_config = self._get_generation_config(output_method)
-        prompt = []
-        prompt.extend(self._history)
-        prompt.append({"role": "user", "content": message[:14385]})
+        generation_config = self._adjust_generation_config(output_method)
+        self._chat_history.append({"role": "user", "content": message[:14385]})
         response = self._model.client.chat.completions.create(
             model=self._model.model_name,
-            messages=prompt,
+            messages=self._chat_history,
             **generation_config
         )
-        content = self._model._parse_generate_content_response(response)
-        self._history.append({"role": "user", "content": message})
-        self._history.append({"role": "assistant", "content": content.text})
+        content = self._model.parse_generate_content_response(response)
+        self._chat_history.append({"role": "assistant", "content": content.text})
         return content
     
-    def _get_generation_config(self, output_method: OutputMethod):
+    def get_chat_history(self) -> list[dict]:
+        """
+        Retrieve the conversation history for the current chat session.
+        
+        Returns:
+            list[dict]: The chat session's conversation history.
+        """
+        return self._chat_history.copy()
+
+    def _adjust_generation_config(self, output_method: OutputMethod):
         """
         Adjust the generation configuration based on the output method.
 

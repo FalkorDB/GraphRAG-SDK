@@ -41,7 +41,6 @@ class LiteModel(GenerativeModel):
             system_instruction (Optional[str]): Instruction to guide the model.
         """
 
-        
         env_val = validate_environment(model_name)
         if not env_val['keys_in_environment']:
             raise ValueError(f"Missing {env_val['missing_keys']} in the environment.")
@@ -104,30 +103,17 @@ class LiteModel(GenerativeModel):
                 logger.error(f"Failed to pull the model '{self.model_name}': {e}")
                 raise ValueError(f"Failed to pull the model '{self.model_name}': {e}")
 
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
-        """
-        Set or update the system instruction for new model instance.
-
-        Args:
-            system_instruction (str): Instruction for guiding the model's behavior.
-        
-        Returns:
-            GenerativeModel: The updated model instance.
-        """
-        self.system_instruction = system_instruction
-        return self
-
-    def start_chat(self, args: Optional[dict] = None) -> GenerativeModelChatSession:
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
         Start a new chat session.
-
+        
         Args:
-            args (Optional[dict]): Additional arguments for the chat session.
-
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
+            
         Returns:
             GenerativeModelChatSession: A new instance of the chat session.
         """
-        return LiteModelChatSession(self, args)
+        return LiteModelChatSession(self, system_instruction)
 
     def parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
@@ -190,30 +176,20 @@ class LiteModelChatSession(GenerativeModelChatSession):
     A chat session for interacting with the LiteLLM model, maintaining conversation history.
     """
 
-    def __init__(self, model: LiteModel, args: Optional[dict] = None):
+    def __init__(self, model: LiteModel, system_instruction: Optional[str] = None):
         """
         Initialize the chat session and set up the conversation history.
 
         Args:
-            model (LiteLLMGenerativeModel): The model instance for the session.
-            args (Optional[dict]): Additional arguments for customization.
+            model (OllamaGenerativeModel): The model instance for the session.
+            system_instruction (Optional[str]): Optional system instruction
         """
         self._model = model
-        self._args = args
         self._chat_history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
+            [{"role": "system", "content": system_instruction}]
+            if system_instruction is not None
             else []
         )
-        
-    def get_chat_history(self) -> list[dict]:
-        """
-        Retrieve the conversation history for the current chat session.
-
-        Returns:
-            list[dict]: The chat session's conversation history.
-        """
-        return self._chat_history.copy()
 
     def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
         """
@@ -256,7 +232,16 @@ class LiteModelChatSession(GenerativeModelChatSession):
             config['response_format'] = { "type": "json_object" }
         
         return config
-    
+
+    def get_chat_history(self) -> list[dict]:
+        """
+        Retrieve the conversation history for the current chat session.
+
+        Returns:
+            list[dict]: The chat session's conversation history.
+        """
+        return self._chat_history.copy()
+
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.

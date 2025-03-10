@@ -1,12 +1,14 @@
 import re
 import json
 import logging
+from enum import Enum
+from typing import Union, Optional
 from graphrag_sdk.fixtures.regex import *
+
 
 logger = logging.getLogger(__name__)
 
-
-class AttributeType:
+class AttributeType(Enum):
     """
     Represents the types of attributes in the system.
     """
@@ -19,22 +21,8 @@ class AttributeType:
     MAP = "map"
     VECTOR = "vectorf32"
 
-    
-    # Synonyms for attribute types
-    _SYNONYMS = {
-        "string": STRING,
-        "integer": NUMBER,
-        "float": NUMBER,
-        "number": NUMBER,
-        "boolean": BOOLEAN,
-        "list": LIST,
-        "point": POINT,
-        "map": MAP,
-        "vectorf32": VECTOR,
-    }
-
     @staticmethod
-    def from_string(txt: str):
+    def from_string(txt: str) -> "AttributeType":
         """
         Converts a string representation of an attribute type to its corresponding AttributeType value.
 
@@ -51,10 +39,23 @@ class AttributeType:
         normalized_txt = txt.lower()
         
         # Find the matching attribute type
-        if normalized_txt in AttributeType._SYNONYMS:
-            return AttributeType._SYNONYMS[normalized_txt]
+        if normalized_txt in _SYNONYMS:
+            return _SYNONYMS[normalized_txt]
         
         raise ValueError(f"Invalid attribute type: {txt}")
+    
+# Mapping of string representations to AttributeType enum members.
+_SYNONYMS = {
+    "string": AttributeType.STRING,
+    "integer": AttributeType.NUMBER,
+    "float": AttributeType.NUMBER,
+    "number": AttributeType.NUMBER,
+    "boolean": AttributeType.BOOLEAN,
+    "list": AttributeType.LIST,
+    "point": AttributeType.POINT,
+    "map": AttributeType.MAP,
+    "vectorf32": AttributeType.VECTOR,
+}
 
 class Attribute:
     """ Represents an attribute of an entity or relation in the ontology.
@@ -72,7 +73,7 @@ class Attribute:
     """
 
     def __init__(
-        self, name: str, attr_type: AttributeType, unique: bool = False, required: bool = False
+        self, name: str, attr_type: AttributeType, unique: Optional[bool] = False, required: Optional[bool] = False
     ):
         """
         Initialize a new Attribute object.
@@ -80,8 +81,8 @@ class Attribute:
         Args:
             name (str): The name of the attribute.
             attr_type (AttributeType): The type of the attribute.
-            unique (bool, optional): Indicates whether the attribute should be unique. Defaults to False.
-            required (bool, optional): Indicates whether the attribute is required. Defaults to False.
+            unique (Optional[bool]): Indicates whether the attribute should be unique. Defaults to False.
+            required (Optional[bool]): Indicates whether the attribute is required. Defaults to False.
         """
         self.name = re.sub(r"([^a-zA-Z0-9_])", "_", name)
         self.type = attr_type
@@ -89,12 +90,12 @@ class Attribute:
         self.required = required
 
     @staticmethod
-    def from_json(txt: str | dict):
+    def from_json(txt: Union[str, dict]) -> "Attribute":
         """
         Creates an Attribute object from a JSON string or dictionary.
 
         Args:
-            txt (str | dict): The JSON string or dictionary representing the Attribute.
+            txt (Union[str, dict]): The JSON string or dictionary representing the Attribute.
 
         Returns:
             Attribute: The created Attribute object.
@@ -110,7 +111,7 @@ class Attribute:
         )
 
     @staticmethod
-    def from_string(txt: str):
+    def from_string(txt: str) -> "Attribute":
         """
         Parses an attribute from a string.
         The "!" symbol indicates that the attribute is unique.
@@ -137,7 +138,7 @@ class Attribute:
 
         return Attribute(name, AttributeType.from_string(attr_type), unique, required)
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Converts the attribute object to a JSON representation.
 
@@ -151,7 +152,7 @@ class Attribute:
         """
         json_data = {
             "name": self.name,
-            "type": self.type,
+            "type": self.type.value,
             "unique": self.unique,
             "required": self.required,
         }
