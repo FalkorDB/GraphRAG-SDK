@@ -46,5 +46,6 @@ class StreamingQAStep(Step):
             context=context, cypher=cypher, question=question
         )
         logger.debug(f"QA Prompt: {qa_prompt}")
+        # Send the message and stream the response
         for chunk in self.chat_session.send_message_stream(qa_prompt):
             yield chunk

@@ -155,9 +155,10 @@ class ChatSession:
             error_message = "I am sorry, I could not find the answer to your question"
             yield error_message
             
+            self.last_answer = error_message
             self.last_complete_response = {
                 "question": message,
-                "response": error_message,
+                "response": self.last_answer,
                 "context": None,
                 "cypher": None
             }
@@ -168,8 +169,7 @@ class ChatSession:
             qa_prompt=self.qa_prompt,
         )
 
-        # Only accumulate chunks if needed for post-processing
-        # Otherwise, simply yield them directly
+        # Yield chunks of the response as they're generated
         for chunk in qa_step.run(message, cypher, context):
             yield chunk
 

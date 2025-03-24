@@ -1,6 +1,6 @@
 from enum import Enum
-from typing import Optional
 from abc import ABC, abstractmethod
+from typing import Optional, Iterator
 
 
 class FinishReason:
@@ -99,6 +99,9 @@ class GenerativeModelChatSession(ABC):
     @abstractmethod
     def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
         pass
+
+    def send_message_stream(self, message: str) -> Iterator[str]:
+        raise NotImplementedError("Streaming not supported by this API implementation.")
 
 
 class GenerativeModel(ABC):
