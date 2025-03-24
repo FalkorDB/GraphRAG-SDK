@@ -1,7 +1,9 @@
 import json
 from falkordb import Graph
+from typing import Iterator
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.steps.qa_step import QAStep
+from graphrag_sdk.steps.stream_qa_step import StreamingQAStep
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
 
@@ -63,6 +65,12 @@ class ChatSession:
                 qa_system_instruction
             )
         self.last_answer = None
+        self.last_complete_response = {
+            "question": None, 
+            "response": None, 
+            "context": None, 
+            "cypher": None
+            }
 
     def send_message(self, message: str) -> dict:
         """
@@ -111,7 +119,70 @@ class ChatSession:
             "context": context, 
             "cypher": cypher
             }
+    
+    def send_message_stream(self, message: str) -> Iterator[str]:
+
+        """
+        Sends a message to the chat session and streams the response.
+
+        Args:
+            message (str): The message to send.
+
+        Yields:
+            str: Chunks of the response as they're generated.
+
+        Returns:
+            Generator that produces the response in chunks and implicitly builds a dictionary 
+            with the complete response data in the following format:
+                {"question": message, 
+                "response": answer, 
+                "context": context, 
+                "cypher": cypher}
+        """
+        cypher_step = GraphQueryGenerationStep(
+        graph=self.graph,
+        chat_session=self.cypher_chat_session,
+        ontology=self.ontology,
+        last_answer=self.last_answer,
+        cypher_prompt=self.cypher_prompt,
+        cypher_prompt_with_history=self.cypher_prompt_with_history
+        )
+
+        (context, cypher) = cypher_step.run(message)
+
+        if not cypher or len(cypher) == 0:
+            # Stream the error message for consistency with successful responses
+            error_message = "I am sorry, I could not find the answer to your question"
+            yield error_message
+            
+            self.last_complete_response = {
+                "question": message,
+                "response": error_message,
+                "context": None,
+                "cypher": None
+            }
+            return
+
+        qa_step = StreamingQAStep(
+            chat_session=self.qa_chat_session,
+            qa_prompt=self.qa_prompt,
+        )
+
+        # Only accumulate chunks if needed for post-processing
+        # Otherwise, simply yield them directly
+        for chunk in qa_step.run(message, cypher, context):
+            yield chunk
+
+        # Set the last answer using chat history to ensure we have the complete response
+        self.last_answer = qa_step.chat_session.get_chat_history()[-1]['content']
         
+        self.last_complete_response = {
+            "question": message, 
+            "response": self.last_answer, 
+            "context": context, 
+            "cypher": cypher
+        }
+
     def clean_ontology_for_prompt(self, ontology: dict) -> str:
         """
         Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
