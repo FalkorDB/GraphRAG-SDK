@@ -63,6 +63,8 @@ class ChatSession:
                 qa_system_instruction
             )
         self.last_answer = None
+        #Statistics
+        self.metadata = {"last_query_execution_time": None}
 
     def send_message(self, message: str) -> dict:
         """
@@ -87,8 +89,8 @@ class ChatSession:
             cypher_prompt_with_history=self.cypher_prompt_with_history
         )
 
-        (context, cypher) = cypher_step.run(message)
-
+        (context, cypher, query_execution_time) = cypher_step.run(message)
+        self.metadata["last_query_execution_time"] = query_execution_time
         if not cypher or len(cypher) == 0:
             return {
                 "question": message,
