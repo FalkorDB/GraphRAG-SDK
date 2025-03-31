@@ -20,7 +20,7 @@ TEST_FILE = "tests/data/madoff.txt"
 # Test case
 USECASE = {
         "query": "How many actors acted in a movie?\nPlease give me full details of the actors with a long output.",
-        "expected": "Over than 10 actors acted in a movie."
+        "expected": "More than 10 actors acted in a movie."
     }
 
 logging.basicConfig(level=logging.DEBUG)
@@ -147,20 +147,30 @@ class TestStreamingResponse:
         recall_metric = GraphContextualRecall(threshold=0.5)
 
         chat = kg.chat_session()
-        answer = chat.send_message(USECASE["query"])
-        # Stream the response evaluation
+        # Track that we received multiple chunks to verify streaming
+        received_chunks = []
         for chunk in chat.send_message_stream(USECASE["query"]):
             logger.info(chunk)
-        answer = chat.last_complete_response
+            received_chunks.append(chunk)
+
+        # Verify that streaming actually occurred (received multiple chunks)
+        assert len(received_chunks) > 1, "Expected multiple chunks in streaming response"
+
+        # Get the last complete response for the cypher and context
+        response_dict = chat.last_complete_response
+        answer = ' '.join(received_chunks)
+
+        assert answer.strip() == response_dict["response"].strip(), "Combined chunks (using join) should match last complete response"
+
         # Create a test case for evaluation
         test_case = LLMTestCase(
             input=USECASE["query"],
-            actual_output=answer["response"],
-            retrieval_context=[answer["context"]],
-            context=[answer["context"]],
-            name="knowledge_graph_test",
+            actual_output=answer,
+            retrieval_context=[response_dict["context"]],
+            context=[response_dict["context"]],
+            name="streaming_test",
             expected_output=USECASE["expected"],
-            additional_metadata=answer["cypher"],
+            additional_metadata=response_dict["cypher"],
         )
 
         # Measure metrics

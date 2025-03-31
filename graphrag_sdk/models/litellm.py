@@ -239,18 +239,20 @@ class LiteModelChatSession(GenerativeModelChatSession):
             
             chunks = []
             for chunk in response_stream:
-                if "choices" in chunk and chunk["choices"]:
-                    content = chunk["choices"][0].get("delta", {}).get("content", "")
-                    if content:
-                        chunks.append(content)
-                        yield content  # Yield streamed response chunks
-            
+                if not chunk or "choices" not in chunk or not chunk["choices"]:
+                    continue  # Skip empty or malformed chunks
+
+                content = chunk["choices"][0].get("delta", {}).get("content", "")
+                if content:
+                    chunks.append(content)
+                    yield content  # Yield streamed response chunks
+        
             # Save the final response to chat history
             full_response = "".join(chunks)  # Collect full response
             self._chat_history.append({"role": "assistant", "content": full_response})
 
         except Exception as e:
-            raise ValueError(f"Error during streaming request, check credentials - {e}")
+            raise ValueError(f"Error during streaming request, check credentials - {e}") from e
     
     def _adjust_generation_config(self, output_method: OutputMethod):
         """
