@@ -72,6 +72,9 @@ class ChatSession:
             "cypher": None
             }
         
+        # Metadata to store additional information about the chat session (currently only last query execution time)
+        self.metadata = {"last_query_execution_time": None}
+        
     def _generate_cypher_query(self, message: str) -> tuple:
         """
         Generate a Cypher query for the given message.
@@ -91,8 +94,11 @@ class ChatSession:
             cypher_prompt_with_history=self.cypher_prompt_with_history
         )
 
-        return cypher_step.run(message)
-    
+        (context, cypher, query_execution_time) = cypher_step.run(message)
+        self.metadata["last_query_execution_time"] = query_execution_time
+        
+        return (context, cypher)
+
     def send_message(self, message: str) -> dict:
         """
         Sends a message to the chat session.
@@ -109,6 +115,7 @@ class ChatSession:
         """
         (context, cypher) = self._generate_cypher_query(message)
 
+        # If the cypher is empty, return an error message
         if not cypher or len(cypher) == 0:
             self.last_complete_response = {
                 "question": message,
