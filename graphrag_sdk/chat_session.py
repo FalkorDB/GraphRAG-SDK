@@ -7,6 +7,7 @@ from graphrag_sdk.steps.stream_qa_step import StreamingQAStep
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
 
+CYPHER_ERROR_RES = "Sorry, I could not find the answer to your question"
 
 class ChatSession:
     """
@@ -70,7 +71,6 @@ class ChatSession:
             "context": None, 
             "cypher": None
             }
-        self.cypher_error_message = "I am sorry, I could not find the answer to your question"
         
     def _generate_cypher_query(self, message: str) -> tuple:
         """
@@ -112,7 +112,7 @@ class ChatSession:
         if not cypher or len(cypher) == 0:
             self.last_complete_response = {
                 "question": message,
-                "response": self.cypher_error_message,
+                "response": CYPHER_ERROR_RES,
                 "context": None,
                 "cypher": None
             }
@@ -149,11 +149,11 @@ class ChatSession:
 
         if not cypher or len(cypher) == 0:
             # Stream the error message for consistency with successful responses
-            yield self.cypher_error_message
+            yield CYPHER_ERROR_RES
             
             self.last_complete_response = {
                 "question": message,
-                "response": self.cypher_error_message,
+                "response": CYPHER_ERROR_RES,
                 "context": None,
                 "cypher": None
             }
