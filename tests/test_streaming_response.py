@@ -158,7 +158,7 @@ class TestStreamingResponse:
 
         # Get the last complete response for the cypher and context
         response_dict = chat.last_complete_response
-        answer = ' '.join(received_chunks)
+        answer = ''.join(received_chunks)
 
         assert answer.strip() == response_dict["response"].strip(), "Combined chunks (using join) should match last complete response"
 
@@ -182,7 +182,7 @@ class TestStreamingResponse:
         
         # Log results for debugging
         logger.info(f"Query: {USECASE['query']}")
-        logger.info(f"Response: {answer['response']}")
+        logger.info(f"Response: {answer}")
         logger.info(f"Combined Score: {combined_score}")
 
         # Clean up by deleting the graph
