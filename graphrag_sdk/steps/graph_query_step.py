@@ -51,7 +51,7 @@ class GraphQueryGenerationStep(Step):
         self.cypher_prompt = cypher_prompt
         self.cypher_prompt_with_history = cypher_prompt_with_history
 
-    def run(self, question: str, retries: Optional[int] = 10):
+    def run(self, question: str, retries: Optional[int] = 10) -> tuple[Optional[str], Optional[str], Optional[int]]:
         """
         Run the step to generate and validate a Cypher query.
         
@@ -60,7 +60,7 @@ class GraphQueryGenerationStep(Step):
             retries (Optional[int]): Number of retries allowed in case of errors.
             
         Returns:
-            tuple[Optional[str], Optional[str]]: The context and the generated Cypher query.
+            tuple[Optional[str], Optional[str], Optional[int]]: The context, the generated Cypher query and the query execution time.
         """
         cypher = ""
         for i in range(retries):
@@ -79,7 +79,7 @@ class GraphQueryGenerationStep(Step):
                 logger.debug(f"Cypher: {cypher}")
 
                 if not cypher or len(cypher) == 0:
-                    return (None, None)
+                    return (None, None, None)
 
                 validation_errors = validate_cypher(cypher, self.ontology)
                 if validation_errors is not None:
@@ -94,7 +94,7 @@ class GraphQueryGenerationStep(Step):
                     logger.debug(f"Context size: {len(result_set)}")
                     logger.debug(f"Context characters: {len(str(context))}")
 
-                return (context, cypher, execution_time)
+                    return (context, cypher, execution_time)
             except Exception as e:
                 logger.debug(f"Error: {e}")
                 error = e
