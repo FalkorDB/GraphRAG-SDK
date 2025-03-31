@@ -1,7 +1,6 @@
 import os
 import pytest
 import logging
-import numpy as np
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
 from deepeval.test_case import LLMTestCase

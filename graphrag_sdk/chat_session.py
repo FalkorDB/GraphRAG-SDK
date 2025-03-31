@@ -64,14 +64,35 @@ class ChatSession:
         self.qa_chat_session = model_config.qa.start_chat(
                 qa_system_instruction
             )
-        self.last_answer = None
         self.last_complete_response = {
             "question": None, 
             "response": None, 
             "context": None, 
             "cypher": None
             }
+        self.cypher_error_message = "I am sorry, I could not find the answer to your question"
+        
+    def _generate_cypher_query(self, message: str) -> tuple:
+        """
+        Generate a Cypher query for the given message.
+        
+        Args:
+            message (str): The message to generate a query for.
+            
+        Returns:
+            tuple: A tuple containing (context, cypher)
+        """
+        cypher_step = GraphQueryGenerationStep(
+            graph=self.graph,
+            chat_session=self.cypher_chat_session,
+            ontology=self.ontology,
+            last_answer=self.last_complete_response["response"],
+            cypher_prompt=self.cypher_prompt,
+            cypher_prompt_with_history=self.cypher_prompt_with_history
+        )
 
+        return cypher_step.run(message)
+    
     def send_message(self, message: str) -> dict:
         """
         Sends a message to the chat session.
@@ -86,39 +107,32 @@ class ChatSession:
                     "context": context, 
                     "cypher": cypher}
         """
-        cypher_step = GraphQueryGenerationStep(
-            graph=self.graph,
-            chat_session=self.cypher_chat_session,
-            ontology=self.ontology,
-            last_answer=self.last_answer,
-            cypher_prompt=self.cypher_prompt,
-            cypher_prompt_with_history=self.cypher_prompt_with_history
-        )
-
-        (context, cypher) = cypher_step.run(message)
+        (context, cypher) = self._generate_cypher_query(message)
 
         if not cypher or len(cypher) == 0:
-            return {
+            self.last_complete_response = {
                 "question": message,
-                "response": "I am sorry, I could not find the answer to your question",
+                "response": self.cypher_error_message,
                 "context": None,
                 "cypher": None
-                }
-
+            }
+            return self.last_complete_response
+        
         qa_step = QAStep(
             chat_session=self.qa_chat_session,
             qa_prompt=self.qa_prompt,
         )
 
         answer = qa_step.run(message, cypher, context)
-        self.last_answer = answer
-        
-        return {
+
+        self.last_complete_response = {
             "question": message, 
             "response": answer, 
             "context": context, 
             "cypher": cypher
-            }
+        }
+        
+        return self.last_complete_response
     
     def send_message_stream(self, message: str) -> Iterator[str]:
 
@@ -130,35 +144,16 @@ class ChatSession:
 
         Yields:
             str: Chunks of the response as they're generated.
-
-        Returns:
-            Generator that produces the response in chunks and implicitly builds a dictionary 
-            with the complete response data in the following format:
-                {"question": message, 
-                "response": answer, 
-                "context": context, 
-                "cypher": cypher}
         """
-        cypher_step = GraphQueryGenerationStep(
-        graph=self.graph,
-        chat_session=self.cypher_chat_session,
-        ontology=self.ontology,
-        last_answer=self.last_answer,
-        cypher_prompt=self.cypher_prompt,
-        cypher_prompt_with_history=self.cypher_prompt_with_history
-        )
-
-        (context, cypher) = cypher_step.run(message)
+        (context, cypher) = self._generate_cypher_query(message)
 
         if not cypher or len(cypher) == 0:
             # Stream the error message for consistency with successful responses
-            error_message = "I am sorry, I could not find the answer to your question"
-            yield error_message
+            yield self.cypher_error_message
             
-            self.last_answer = error_message
             self.last_complete_response = {
                 "question": message,
-                "response": self.last_answer,
+                "response": self.cypher_error_message,
                 "context": None,
                 "cypher": None
             }
@@ -174,15 +169,13 @@ class ChatSession:
             yield chunk
 
         # Set the last answer using chat history to ensure we have the complete response
-        self.last_answer = qa_step.chat_session.get_chat_history()[-1]['content']
-        
         self.last_complete_response = {
             "question": message, 
-            "response": self.last_answer, 
+            "response": qa_step.chat_session.get_chat_history()[-1]['content'], 
             "context": context, 
             "cypher": cypher
         }
-
+        
     def clean_ontology_for_prompt(self, ontology: dict) -> str:
         """
         Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
