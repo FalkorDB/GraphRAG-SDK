@@ -1,6 +1,6 @@
 import logging
 from ollama import Client
-from typing import Optional
+from typing import Optional, Iterator
 from litellm import completion, validate_environment, utils as litellm_utils
 from .model import (
     OutputMethod,
@@ -215,6 +215,44 @@ class LiteModelChatSession(GenerativeModelChatSession):
         content = self._model.parse_generate_content_response(response)
         self._chat_history.append({"role": "assistant", "content": content.text})
         return content
+    
+    def send_message_stream(self, message: str) -> Iterator[str]:
+        """
+        Send a message and receive the response in a streaming fashion.
+
+        Args:
+            message (str): The message to send.
+
+        Yields:
+            str: Streamed chunks of the model's response.
+        """
+        generation_config = self._adjust_generation_config(OutputMethod.DEFAULT)
+        self._chat_history.append({"role": "user", "content": message})
+
+        try:
+            response_stream = completion(
+                model=self._model.model,
+                messages=self._chat_history,
+                stream=True,  # Enable streaming mode
+                **generation_config
+            )
+            
+            chunks = []
+            for chunk in response_stream:
+                if not chunk or "choices" not in chunk or not chunk["choices"]:
+                    continue  # Skip empty or malformed chunks
+
+                content = chunk["choices"][0].get("delta", {}).get("content", "")
+                if content:
+                    chunks.append(content)
+                    yield content  # Yield streamed response chunks
+        
+            # Save the final response to chat history
+            full_response = "".join(chunks)  # Collect full response
+            self._chat_history.append({"role": "assistant", "content": full_response})
+
+        except Exception as e:
+            raise ValueError(f"Error during streaming request, check credentials - {e}") from e
     
     def _adjust_generation_config(self, output_method: OutputMethod):
         """
