@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graphrag_sdk"
-version = "0.7.0"
+version = "0.7.1"
 license = "MIT"
 description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
 authors = ["FalkorDB <info@falkordb.com>"]
@@ -23,7 +23,6 @@ python-dotenv = "^1.0.1"
 fix-busted-json = "^0.0.18"
 rich = "^13.9.4"
 ipykernel = "^6.29.5"
-deepeval = "^2.2.6"
 vertexai = { version = "^1.49.0", optional = true } 
 ollama = { version = "^0.2.1", optional = true }
 openai = { version = "^1.35.9", optional = true }
@@ -40,6 +39,7 @@ litellm = ["litellm", "ollama"]
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
+deepeval = "^2.2.6"
 
 [tool.poetry.group.dev.dependencies]
 sphinx = "^7.3.7"
