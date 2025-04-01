@@ -5667,4 +5667,4 @@ vertexai = ["vertexai"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10.0,<3.14"
-content-hash = "dc786bd1f0590e2e59d0b119fe356a5b6a291918a4ff922d76a27b81b9d90680"
+content-hash = "cec28acdc863c103f978f9cc03b45b5bb777e2cb9ee50e9a22c416bc3f7c109f"

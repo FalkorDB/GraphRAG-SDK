@@ -39,14 +39,13 @@ litellm = ["litellm", "ollama"]
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
+deepeval = "^2.2.6"
 
 [tool.poetry.group.dev.dependencies]
 sphinx = "^7.3.7"
 sphinx-rtd-theme = "^2.0.0"
 pandas = "^2.2.2"
 jupyter = "^1.0.0"
-deepeval = "^2.2.6"
-
 
 [build-system]
 requires = ["poetry-core"]
