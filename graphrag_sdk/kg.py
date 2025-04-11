@@ -117,6 +117,9 @@ class KnowledgeGraph:
         self.qa_prompt = qa_prompt
         self.cypher_gen_prompt_history = cypher_gen_prompt_history
 
+        # Initialize vector search capabilities
+        self.vector_index = {}
+
     # Attributes
 
     @property
@@ -336,3 +339,37 @@ class KnowledgeGraph:
             elif valid_attr.type == AttributeType.BOOLEAN:
                 if not isinstance(attr_dict[attr], bool):
                     raise Exception(f"Attribute {attr} should be a boolean")
+
+    def add_vector(self, entity: str, vector: list[float]) -> None:
+        """
+        Add a vector representation to an entity in the knowledge graph.
+
+        Args:
+            entity (str): The entity label.
+            vector (list[float]): The vector representation.
+        """
+        if entity not in self.vector_index:
+            self.vector_index[entity] = []
+        self.vector_index[entity].append(vector)
+
+    def search_vector(self, query_vector: list[float], top_k: int = 5) -> list[tuple[str, float]]:
+        """
+        Search for the top_k most similar vectors in the knowledge graph.
+
+        Args:
+            query_vector (list[float]): The query vector.
+            top_k (int): The number of top similar vectors to return.
+
+        Returns:
+            list[tuple[str, float]]: A list of tuples containing the entity label and similarity score.
+        """
+        from scipy.spatial.distance import cosine
+
+        results = []
+        for entity, vectors in self.vector_index.items():
+            for vector in vectors:
+                similarity = 1 - cosine(query_vector, vector)
+                results.append((entity, similarity))
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]

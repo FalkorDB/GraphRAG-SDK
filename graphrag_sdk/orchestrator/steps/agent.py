@@ -200,3 +200,32 @@ class AgentStep(PlanStep):
         response = agent.run(self.properties.payload)
         logger.debug(f"Agent response: {response}")
         return AgentStepResult(AgentResponseCode.AGENT_RESPONSE, {"output": response})
+
+    def handle_vector_search_tasks(self, vector_search_tasks: list[dict]) -> list[dict]:
+        """
+        Handle vector search tasks.
+
+        Args:
+            vector_search_tasks (list[dict]): List of vector search tasks to execute.
+
+        Returns:
+            list[dict]: The results of the vector search tasks.
+        """
+        results = []
+        for task in vector_search_tasks:
+            result = self._execute_vector_search_task(task)
+            results.append(result)
+        return results
+
+    def _execute_vector_search_task(self, task: dict) -> dict:
+        """
+        Execute a single vector search task.
+
+        Args:
+            task (dict): The vector search task to execute.
+
+        Returns:
+            dict: The result of the vector search task.
+        """
+        # Placeholder for actual vector search logic
+        return {"task": task, "result": "vector search result"}

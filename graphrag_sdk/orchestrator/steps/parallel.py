@@ -196,3 +196,38 @@ class ParallelStep(graphrag_sdk.orchestrator.step.PlanStep):
         wait(tasks)
 
         return ParallelStepResult([task.result() for task in tasks])
+    
+    def handle_vector_search_tasks(self, vector_search_tasks: list[dict]) -> list[dict]:
+        """
+        Handle vector search tasks in parallel.
+
+        Args:
+            vector_search_tasks (list[dict]): List of vector search tasks to execute.
+
+        Returns:
+            list[dict]: The results of the vector search tasks.
+        """
+        results = []
+        with ThreadPoolExecutor(max_workers=len(vector_search_tasks)) as executor:
+            future_to_task = {executor.submit(self._execute_vector_search_task, task): task for task in vector_search_tasks}
+            for future in wait(future_to_task).done:
+                task = future_to_task[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as exc:
+                    print(f"Task {task} generated an exception: {exc}")
+        return results
+
+    def _execute_vector_search_task(self, task: dict) -> dict:
+        """
+        Execute a single vector search task.
+
+        Args:
+            task (dict): The vector search task to execute.
+
+        Returns:
+            dict: The result of the vector search task.
+        """
+        # Placeholder for actual vector search logic
+        return {"task": task, "result": "vector search result"}

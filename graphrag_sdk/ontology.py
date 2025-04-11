@@ -39,6 +39,7 @@ class Ontology(object):
     Attributes:
         entities (list[Entity]): The list of entities in the ontology.
         relations (list[Relation]): The list of relations in the ontology.
+        vector_representations (dict): A dictionary to store vector representations of entities.
     """
 
     def __init__(self, entities: Optional[list[Entity]] = None, relations: Optional[list[Relation]] = None):
@@ -51,6 +52,7 @@ class Ontology(object):
         """
         self.entities = entities or []
         self.relations = relations or []
+        self.vector_representations = {}
 
     @staticmethod
     def from_sources(
@@ -95,10 +97,12 @@ class Ontology(object):
             ValueError: If the provided JSON representation is invalid.
         """
         txt = txt if isinstance(txt, dict) else json.loads(txt)
-        return Ontology(
+        ontology = Ontology(
             [Entity.from_json(entity) for entity in txt["entities"]],
             [Relation.from_json(relation) for relation in txt["relations"]],
         )
+        ontology.vector_representations = txt.get("vector_representations", {})
+        return ontology
 
     @staticmethod
     def from_schema_graph(graph: Graph) -> "Ontology":
@@ -201,6 +205,7 @@ class Ontology(object):
         return {
             "entities": [entity.to_json() for entity in self.entities],
             "relations": [relation.to_json() for relation in self.relations],
+            "vector_representations": self.vector_representations,
         }
 
     def merge_with(self, o: "Ontology"):
@@ -234,6 +239,13 @@ class Ontology(object):
                 # Relation exists in self, merge attributes
                 relation1 = next(e for e in self.relations if e.label == relation.label)
                 relation1.combine(relation)
+
+        # Merge vector representations
+        for entity, vectors in o.vector_representations.items():
+            if entity not in self.vector_representations:
+                self.vector_representations[entity] = vectors
+            else:
+                self.vector_representations[entity].extend(vectors)
 
         return self
 
@@ -371,6 +383,30 @@ The following entities do not have unique attributes:
             True if a relation with the given label exists, False otherwise.
         """
         return any(e.label == label for e in self.relations)
+
+    def add_vector_representation(self, entity: str, vector: list[float]) -> None:
+        """
+        Add a vector representation to an entity in the ontology.
+
+        Args:
+            entity (str): The entity label.
+            vector (list[float]): The vector representation.
+        """
+        if entity not in self.vector_representations:
+            self.vector_representations[entity] = []
+        self.vector_representations[entity].append(vector)
+
+    def get_vector_representations(self, entity: str) -> Optional[list[list[float]]]:
+        """
+        Retrieve the vector representations of an entity from the ontology.
+
+        Args:
+            entity (str): The entity label.
+
+        Returns:
+            Optional[list[list[float]]]: The list of vector representations, or None if not found.
+        """
+        return self.vector_representations.get(entity, None)
 
     def __str__(self) -> str:
         """

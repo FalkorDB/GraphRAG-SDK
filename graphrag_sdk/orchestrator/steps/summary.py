@@ -139,3 +139,38 @@ class SummaryStep(graphrag_sdk.orchestrator.step.PlanStep):
         )
 
         return SummaryResult(response.text)
+
+    def summarize_vector_search_results(self, vector_search_results: list[dict]) -> str:
+        """
+        Summarize the results of vector search tasks.
+
+        Args:
+            vector_search_results (list[dict]): The results of vector search tasks.
+
+        Returns:
+            str: The summary of vector search results.
+        """
+        summary = "Vector Search Results Summary:\n"
+        for result in vector_search_results:
+            summary += f"Task: {result['task']}, Result: {result['result']}\n"
+        return summary
+
+    def run_with_vector_search(
+        self,
+        runner: OrchestratorRunner,
+        vector_search_results: list[dict]
+    ) -> SummaryResult:
+        """
+        Run the summary step with vector search results, generating a summary based on execution logs and vector search results.
+
+        Args:
+            runner (OrchestratorRunner): The orchestrator runner instance.
+            vector_search_results (list[dict]): The results of vector search tasks.
+
+        Returns:
+            SummaryResult: The result of the summary step.
+        """
+        execution_summary = self.run(runner).output
+        vector_search_summary = self.summarize_vector_search_results(vector_search_results)
+        combined_summary = f"{execution_summary}\n\n{vector_search_summary}"
+        return SummaryResult(combined_summary)
