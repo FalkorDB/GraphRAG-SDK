@@ -1,5 +1,6 @@
 import logging
 import unittest
+import os
 from json import loads
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
@@ -7,8 +8,8 @@ from graphrag_sdk.relation import Relation
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.agents.kg_agent import KGAgent
 from graphrag_sdk.orchestrator import Orchestrator
+from graphrag_sdk.models.proxy import ProxyLLMModel
 from graphrag_sdk.attribute import Attribute, AttributeType
-from graphrag_sdk.models.gemini import GeminiGenerativeModel
 from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
 
 load_dotenv()
@@ -185,7 +186,12 @@ class TestMultiAgent(unittest.TestCase):
             )
         )
 
-        cls.model = GeminiGenerativeModel("gemini-1.5-flash-001")
+        cls.model = ProxyLLMModel(
+            base_url=os.getenv("AZURE_BASE_URL"),
+            model_name="gpt-4.1",
+            api_key=os.getenv("AZURE_API_KEY"),
+            auth_method="bearer"
+        )
         cls.restaurants_kg = KnowledgeGraph(
             name="restaurants",
             ontology=cls.restaurants_ontology,
@@ -222,6 +228,10 @@ class TestMultiAgent(unittest.TestCase):
 
         cls.orchestrator.register_agent(cls.restaurants_agent)
         cls.orchestrator.register_agent(cls.attractions_agent)
+
+        # Perform health check on the proxy model
+        if not cls.model.health_check():
+            raise unittest.SkipTest("Proxy LLM health check failed - skipping test")
 
     def import_data(
         self,

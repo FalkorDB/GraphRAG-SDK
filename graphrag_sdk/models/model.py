@@ -1,6 +1,9 @@
+import logging
 from enum import Enum
 from abc import ABC, abstractmethod
 from typing import Optional, Iterator
+
+logger = logging.getLogger(__name__)
 
 
 class FinishReason:
@@ -121,3 +124,33 @@ class GenerativeModel(ABC):
     @abstractmethod
     def to_json(self) -> dict:
         pass
+
+    def health_check(self) -> bool:
+        """
+        Perform a health check on the generative model by sending a simple test message.
+        This method uses the standard chat interface, making it compatible with all model types
+        including reasoning models.
+        
+        Returns:
+            bool: True if the model is healthy and responding correctly, False otherwise.
+        """
+        try:
+            logger.info("Performing health check on generative model...")
+            
+            # Use the standard chat interface for maximum compatibility
+            chat_session = self.start_chat()
+            response = chat_session.send_message("Hello")
+            
+            # Check if response is valid
+            if response and hasattr(response, 'text') and response.text:
+                content = response.text.strip()
+                if len(content) > 0:
+                    logger.info("Health check passed - model is responding correctly")
+                    return True
+            
+            logger.warning("Health check failed - invalid or empty response")
+            return False
+            
+        except Exception as e:
+            logger.error("Health check failed with error: %s", e)
+            return False
