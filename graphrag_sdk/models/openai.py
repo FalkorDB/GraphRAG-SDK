@@ -1,6 +1,6 @@
 import os
 from typing import Optional
-from .litellm import LiteModel, LiteModelChatSession
+from .litellm import LiteModel
 from .model import (
     GenerativeModel,
     GenerativeModelConfig,
