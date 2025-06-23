@@ -48,8 +48,15 @@ class KnowledgeGraphModelConfig:
         """        
         # Take user's existing config and modify for extract_data
         config_dict = model.generation_config.to_json()
-        # Override temperature to 0 unless it's None
-        if config_dict.get('temperature') is not None:
+        
+        # Check if temperature was explicitly set by the user
+        if model.generation_config._temperature_was_set:
+            # User explicitly set temperature (even if to None), only override if not None
+            if model.generation_config.temperature is not None:
+                config_dict['temperature'] = 0
+            # If user explicitly set temperature=None, respect that and don't override
+        else:
+            # User didn't set temperature (using default None), override to 0
             config_dict['temperature'] = 0
         # Add JSON output format
         config_dict['response_format'] = {"type": "json_object"}

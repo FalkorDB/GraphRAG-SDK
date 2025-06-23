@@ -9,7 +9,10 @@ from graphrag_sdk.agents.kg_agent import KGAgent
 from graphrag_sdk.models.litellm import LiteModel
 from graphrag_sdk.orchestrator import Orchestrator
 from graphrag_sdk.attribute import Attribute, AttributeType
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from graphrag_sdk import (KnowledgeGraph,
+                          KnowledgeGraphModelConfig,
+                          GenerativeModelConfig)
+
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
@@ -185,7 +188,7 @@ class TestMultiAgent(unittest.TestCase):
             )
         )
 
-        cls.model = LiteModel("azure/o3-mini")
+        cls.model = LiteModel("azure/o3-mini", generation_config=GenerativeModelConfig(temperature=None))
         cls.restaurants_kg = KnowledgeGraph(
             name="restaurants",
             ontology=cls.restaurants_ontology,

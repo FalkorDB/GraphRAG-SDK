@@ -31,18 +31,28 @@ class GenerativeModelConfig:
         >>> config.to_json()
         {'temperature': 0.5, 'max_tokens': 100}
     """
+    
+    # Sentinel value to detect when temperature was not explicitly set
+    _TEMP_NOT_SET = object()
 
     def __init__(
         self,
-        temperature: Optional[float] = None,
+        temperature = _TEMP_NOT_SET,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
         max_tokens: Optional[int] = None,
-        stop: Optional[list[str]] = None,
+        stop: Optional[list] = None,
         response_format: Optional[dict] = None,
         **kwargs,
     ):
-        self.temperature = temperature
+        # Set temperature and track if it was explicitly set
+        if temperature is self._TEMP_NOT_SET:
+            self.temperature = None
+            self._temperature_was_set = False
+        else:
+            self.temperature = temperature
+            self._temperature_was_set = True
+            
         self.top_p = top_p
         self.top_k = top_k
         self.max_tokens = max_tokens
@@ -52,6 +62,7 @@ class GenerativeModelConfig:
         # Store extra parameters
         for key, value in kwargs.items():
             setattr(self, key, value)
+
 
     def __str__(self) -> str:
         return f"GenerativeModelConfig({', '.join(f'{k}={v}' for k, v in self.to_json().items())})"
@@ -69,25 +80,31 @@ class GenerativeModelConfig:
             >>> config.to_json()
             {'temperature': 0.7, 'max_tokens': 100}
         """
-        return {k: v for k, v in self.__dict__.items() if v is not None}
+        return {k: v for k, v in self.__dict__.items() if v is not None and k != '_temperature_was_set'}
 
     @staticmethod
     def from_json(json: dict) -> "GenerativeModelConfig":
-        # Extract known parameters
-        known_params = {
-            'temperature': json.get("temperature"),
-            'top_p': json.get("top_p"),
-            'top_k': json.get("top_k"),
-            'max_tokens': json.get("max_tokens"),
-            'stop': json.get("stop"),
-            'response_format': json.get("response_format"),
-        }
+        # Extract known parameters, but only pass them if they exist in JSON
+        params = {}
+        if "temperature" in json:
+            params['temperature'] = json["temperature"]
+        # For other parameters, only pass if they exist in JSON to maintain default behavior
+        if "top_p" in json:
+            params['top_p'] = json["top_p"]
+        if "top_k" in json:
+            params['top_k'] = json["top_k"]
+        if "max_tokens" in json:
+            params['max_tokens'] = json["max_tokens"]
+        if "stop" in json:
+            params['stop'] = json["stop"]
+        if "response_format" in json:
+            params['response_format'] = json["response_format"]
         
         # Extract any additional parameters not in the known set
-        known_keys = set(known_params.keys())
+        known_keys = {'temperature', 'top_p', 'top_k', 'max_tokens', 'stop', 'response_format'}
         extra_params = {k: v for k, v in json.items() if k not in known_keys}
         
-        return GenerativeModelConfig(**known_params, **extra_params)
+        return GenerativeModelConfig(**params, **extra_params)
 
 
 class GenerationResponse:
