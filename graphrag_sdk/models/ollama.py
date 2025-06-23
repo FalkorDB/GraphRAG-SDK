@@ -1,12 +1,10 @@
 import logging
 from typing import Optional
-from ollama import Client, Options
+from .litellm import LiteModel
 from .model import (
-    OutputMethod,
     GenerativeModel,
     GenerativeModelConfig,
     GenerationResponse,
-    FinishReason,
     GenerativeModelChatSession,
 )
 
@@ -16,14 +14,13 @@ logger.setLevel(logging.INFO)
 class OllamaGenerativeModel(GenerativeModel):
     """
     A generative model that interfaces with the Ollama Client for chat completions.
+    This implementation uses LiteLLM as the backend while maintaining the original API.
     """
-
-    client: Client = None
 
     def __init__(
         self,
         model_name: str,
-        generation_config: Optional[GenerativeModelConfig] = None,
+        generation_config: Optional[GenerativeModelConfig] = GenerativeModelConfig(),
         system_instruction: Optional[str] = None,
         host: Optional[str] = None,
     ):
@@ -34,52 +31,50 @@ class OllamaGenerativeModel(GenerativeModel):
             model_name (str): The name of the Ollama model.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): Instruction to guide the model.
-            host (Optional[str]): Host for connecting to the Ollama API.
+            host (Optional[str]): Host for connecting to the Ollama API (ignored in LiteLLM implementation).
         """
-        self.model_name = model_name
-        self.generation_config = generation_config or GenerativeModelConfig()
-        self.system_instruction = system_instruction
+        # Convert to LiteLLM format
+        lite_model_name = f"ollama/{model_name}"
+        
+        # Handle host parameter for Ollama
+        additional_params = {}
+        if host is not None:
+            additional_params['api_base'] = host  # LiteLLM uses api_base for custom endpoints
+        
+        # Create internal LiteLLM model
+        self._lite_model = LiteModel(
+            model_name=lite_model_name,
+            generation_config=generation_config,
+            system_instruction=system_instruction,
+            additional_params=additional_params
+        )
+        
+        # Store original model name and host for compatibility
+        self._original_model_name = model_name
         self._host = host
-        try:
-            self.client = Client(host)
-        except Exception as e:
-            logger.error(f"Failed to initialize the Ollama client: {e}")
-            raise e
-        self.check_and_pull_model()
 
-    def check_and_pull_model(self) -> None:
-        """
-        Checks if the specified model is available locally, and pulls it if not.
-
-        Logs:
-            - Info: If the model is already available or after successfully pulling the model.
-            - Error: If there is a failure in pulling the model.
-
-        Raises:
-            Exception: If there is an error during the model pull process.
-        """
-        # Get the list of available models
-        response = self.client.list()  # This returns a dictionary
-        available_models = [model['name'] for model in response['models']]  # Extract model names
-
-        # Check if the model is already pulled
-        if self.model_name in available_models:
-            logger.info(f"The model '{self.model_name}' is already available.")
-        else:
-            logger.info(f"Pulling the model '{self.model_name}'...")
-            try:
-                self.client.pull(self.model_name)  # Pull the model
-                logger.info(f"Model '{self.model_name}' pulled successfully.")
-            except Exception as e:
-                logger.error(f"Failed to pull the model '{self.model_name}': {e}")
+    @property
+    def model_name(self) -> str:
+        """Get the original model name (without ollama/ prefix)."""
+        return self._original_model_name
     
+    @property
+    def system_instruction(self) -> Optional[str]:
+        """Get the system instruction from the internal LiteLLM model."""
+        return self._lite_model.system_instruction
+    
+    @property 
+    def generation_config(self) -> GenerativeModelConfig:
+        """Get the generation config from the internal LiteLLM model."""
+        return self._lite_model.generation_config
+
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
         Start a new chat session.
-
+        
         Args:
             system_instruction (Optional[str]): Optional system instruction to guide the chat session.
-
+            
         Returns:
             GenerativeModelChatSession: A new instance of the chat session.
         """
@@ -87,18 +82,9 @@ class OllamaGenerativeModel(GenerativeModel):
 
     def parse_generate_content_response(self, response: any) -> GenerationResponse:
         """
-        Parse the model's response and extract content for the user.
-
-        Args:
-            response (any): The raw response from the model.
-
-        Returns:
-            GenerationResponse: Parsed response containing the generated text.
+        Parse the model's response using the internal LiteLLM model.
         """
-        return GenerationResponse(
-            text=response["message"]["content"],
-            finish_reason=FinishReason.STOP
-            )
+        return self._lite_model.parse_generate_content_response(response)
 
     def to_json(self) -> dict:
         """
@@ -108,9 +94,9 @@ class OllamaGenerativeModel(GenerativeModel):
             dict: The serialized JSON data.
         """
         return {
-            "model_name": self._model_name,
-            "generation_config": self._generation_config.to_json(),
-            "system_instruction": self._system_instruction,
+            "model_name": self.model_name,
+            "generation_config": self.generation_config.to_json(),
+            "system_instruction": self.system_instruction,
         }
 
     @staticmethod
@@ -125,32 +111,55 @@ class OllamaGenerativeModel(GenerativeModel):
             GenerativeModel: A new instance of the model.
         """
         return OllamaGenerativeModel(
-            model_name=json["model_name"],
+            json["model_name"],
             generation_config=GenerativeModelConfig.from_json(
                 json["generation_config"]
             ),
             system_instruction=json["system_instruction"],
         )
 
+
 class OllamaChatSession(GenerativeModelChatSession):
     """
-    A chat session for interacting with the Ollama model, maintaining conversation history.
+    A chat session for interacting with the Ollama model.
+    This implementation delegates to LiteLLM for actual API calls.
     """
-    
+
     def __init__(self, model: OllamaGenerativeModel, system_instruction: Optional[str] = None):
         """
         Initialize the chat session and set up the conversation history.
 
         Args:
             model (OllamaGenerativeModel): The model instance for the session.
-            system_instruction (Optional[str]): Optional system instruction
+            system_instruction (Optional[str]): Optional system instruction.
         """
         self._model = model
-        self._chat_history = (
-            [{"role": "system", "content": system_instruction}]
-            if system_instruction is not None
-            else []
-        )
+        # Create internal LiteLLM chat session
+        self._lite_chat = model._lite_model.start_chat(system_instruction)
+
+    def send_message(self, message: str) -> GenerationResponse:
+        """
+        Send a message in the chat session and receive the model's response.
+
+        Args:
+            message (str): The message to send.
+
+        Returns:
+            GenerationResponse: The generated response.
+        """
+        # Delegate to LiteLLM chat session
+        return self._lite_chat.send_message(message)
+    
+    def send_message_stream(self, message: str):
+        """
+        Send a message and receive the response in a streaming fashion.
+        Args:
+            message (str): The message to send.
+        Yields:
+            str: Streamed chunks of the model's response.
+        """
+        # Delegate to LiteLLM chat session
+        return self._lite_chat.send_message_stream(message)
     
     def get_chat_history(self) -> list[dict]:
         """
@@ -159,75 +168,10 @@ class OllamaChatSession(GenerativeModelChatSession):
         Returns:
             list[dict]: The chat session's conversation history.
         """
-        return self._chat_history.copy()
-
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
-        """
-        Send a message in the chat session and receive the model's response.
-
-        Args:
-            message (str): The message to send.
-            output_method (OutputMethod): Format for the model's output.
-
-        Returns:
-            GenerationResponse: The generated response.
-        """
-        generation_config = self._adjust_generation_config(output_method)
-        self._chat_history.append({"role": "user", "content": message[:14385]})
-        response = self._model.client.chat(
-            model=self._model.model_name,
-            messages=self._chat_history,
-            options=Options(**generation_config)
-        )
-        content = self._model.parse_generate_content_response(response)
-        self._chat_history.append({"role": "assistant", "content": content.text})
-        return content
-    
-    def _adjust_generation_config(self, output_method: OutputMethod) -> dict:
-        """
-        Adjust the generation configuration based on the specified output method.
-
-        Args:
-            output_method (OutputMethod): The desired output method (e.g., default or JSON).
-
-        Returns:
-            dict: The adjusted configuration settings for generation.
-        """
-        config = self._model.generation_config.to_json()
-        if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['format'] = 'json'
-        
-        return config
+        return self._lite_chat.get_chat_history()
     
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
-        Preserves the system message if present.
-        
-        Example:
-            Before:
-            [
-                {"role": "system", "content": "System message"},
-                {"role": "user", "content": "User message"},
-                {"role": "assistant", "content": "Assistant response"},
-            ]
-            After:
-            [
-                {"role": "system", "content": "System message"},
-            ]
-
-        Note: Does nothing if the chat history is empty or contains only a system message.
         """
-        # Keep at least the system message if present
-        min_length = 1 if self._model.system_instruction else 0
-        if len(self._chat_history) - 2 >= min_length:
-            self._chat_history.pop()
-            self._chat_history.pop()
-        else:
-            # Reset to initial state with just system message if present
-            self._chat_history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+        self._lite_chat.delete_last_message()

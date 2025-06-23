@@ -1,8 +1,7 @@
 import os
-from openai import OpenAI
 from typing import Optional
+from .litellm import LiteModel, LiteModelChatSession
 from .model import (
-    OutputMethod,
     GenerativeModel,
     GenerativeModelConfig,
     GenerationResponse,
@@ -14,14 +13,13 @@ from .model import (
 class OpenAiGenerativeModel(GenerativeModel):
     """
     A generative model that interfaces with OpenAI's API for chat completions.
+    This implementation uses LiteLLM as the backend while maintaining the original API.
     """
-
-    client: OpenAI = None
 
     def __init__(
         self,
         model_name: str,
-        generation_config: Optional[GenerativeModelConfig] = None,
+        generation_config: Optional[GenerativeModelConfig] = GenerativeModelConfig(),
         system_instruction: Optional[str] = None,
     ):
         """
@@ -32,12 +30,33 @@ class OpenAiGenerativeModel(GenerativeModel):
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): System-level instruction for the model.
         """
-        self.model_name = model_name
-        self.generation_config = generation_config or GenerativeModelConfig()
-        self.system_instruction = system_instruction
-        if not os.getenv("OPENAI_API_KEY"):
-            raise ValueError("Missing OpenAI API key in the environment: OPENAI_API_KEY")
-        self.client = OpenAI()
+        # Convert to LiteLLM format
+        lite_model_name = f"openai/{model_name}"
+        
+        # Create internal LiteLLM model
+        self._lite_model = LiteModel(
+            model_name=lite_model_name,
+            generation_config=generation_config,
+            system_instruction=system_instruction
+        )
+        
+        # Store original model name for compatibility (without the openai/ prefix)
+        self._original_model_name = model_name
+
+    @property
+    def model_name(self) -> str:
+        """Get the original model name (without openai/ prefix)."""
+        return self._original_model_name
+    
+    @property
+    def system_instruction(self) -> Optional[str]:
+        """Get the system instruction from the internal LiteLLM model."""
+        return self._lite_model.system_instruction
+    
+    @property 
+    def generation_config(self) -> GenerativeModelConfig:
+        """Get the generation config from the internal LiteLLM model."""
+        return self._lite_model.generation_config
 
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
@@ -51,18 +70,10 @@ class OpenAiGenerativeModel(GenerativeModel):
         return OpenAiChatSession(self, system_instruction)
 
     def parse_generate_content_response(self, response: any) -> GenerationResponse:
-        return GenerationResponse(
-            text=response.choices[0].message.content,
-            finish_reason=(
-                FinishReason.STOP
-                if response.choices[0].finish_reason == "stop"
-                else (
-                    FinishReason.MAX_TOKENS
-                    if response.choices[0].finish_reason == "length"
-                    else FinishReason.OTHER
-                )
-            ),
-        )
+        """
+        Parse the model's response using the internal LiteLLM model.
+        """
+        return self._lite_model.parse_generate_content_response(response)
 
     def to_json(self) -> dict:
         """
@@ -71,7 +82,6 @@ class OpenAiGenerativeModel(GenerativeModel):
         Returns:
             dict: The serialized JSON data.
         """
-        
         return {
             "model_name": self.model_name,
             "generation_config": self.generation_config.to_json(),
@@ -100,7 +110,8 @@ class OpenAiGenerativeModel(GenerativeModel):
 
 class OpenAiChatSession(GenerativeModelChatSession):
     """
-    A chat session for interacting with the OpenAI model, maintaining conversation history.
+    A chat session for interacting with the OpenAI model.
+    This implementation delegates to LiteLLM for actual API calls.
     """
     
     def __init__(self, model: OpenAiGenerativeModel, system_instruction: Optional[str] = None) -> None:
@@ -111,31 +122,30 @@ class OpenAiChatSession(GenerativeModelChatSession):
             system_instruction (Optional[str]): Optional system instruction.
         """
         self._model = model
-        self._chat_history = (
-            [{"role": "system", "content": system_instruction}]
-            if system_instruction is not None
-            else []
-        )
+        # Create internal LiteLLM chat session
+        self._lite_chat = model._lite_model.start_chat(system_instruction)
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(self, message: str) -> GenerationResponse:
         """
         Send a message in the chat session and receive the model's response.
         Args:
             message (str): The message to send.
-            output_method (OutputMethod): Format for the model's output.
         Returns:
             GenerationResponse: The generated response.
         """
-        generation_config = self._adjust_generation_config(output_method)
-        self._chat_history.append({"role": "user", "content": message[:14385]})
-        response = self._model.client.chat.completions.create(
-            model=self._model.model_name,
-            messages=self._chat_history,
-            **generation_config
-        )
-        content = self._model.parse_generate_content_response(response)
-        self._chat_history.append({"role": "assistant", "content": content.text})
-        return content
+        # Delegate to LiteLLM chat session
+        return self._lite_chat.send_message(message)
+    
+    def send_message_stream(self, message: str):
+        """
+        Send a message and receive the response in a streaming fashion.
+        Args:
+            message (str): The message to send.
+        Yields:
+            str: Streamed chunks of the model's response.
+        """
+        # Delegate to LiteLLM chat session
+        return self._lite_chat.send_message_stream(message)
     
     def get_chat_history(self) -> list[dict]:
         """
@@ -144,53 +154,10 @@ class OpenAiChatSession(GenerativeModelChatSession):
         Returns:
             list[dict]: The chat session's conversation history.
         """
-        return self._chat_history.copy()
-    
-    def _adjust_generation_config(self, output_method: OutputMethod):
-        """
-        Adjust the generation configuration based on the output method.
-        
-        Args:
-            output_method (OutputMethod): The desired output method (e.g., default or JSON).
-            
-        Returns:
-            dict: The configuration settings for generation.
-        """
-        config = self._model.generation_config.to_json()
-        if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
-        return config
+        return self._lite_chat.get_chat_history()
     
     def delete_last_message(self):
         """
         Deletes the last message exchange (user message and assistant response) from the chat history.
-        Preserves the system message if present.
-        
-        Example:
-            Before:
-            [
-                {"role": "system", "content": "System message"},
-                {"role": "user", "content": "User message"},
-                {"role": "assistant", "content": "Assistant response"},
-            ]
-            After:
-            [
-                {"role": "system", "content": "System message"},
-            ]
-
-        Note: Does nothing if the chat history is empty or contains only a system message.
         """
-        # Keep at least the system message if present
-        min_length = 1 if self._model.system_instruction else 0
-        if len(self._history) - 2 >= min_length:
-            self._history.pop()
-            self._history.pop()
-        else:
-            # Reset to initial state with just system message if present
-            self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+        self._lite_chat.delete_last_message()

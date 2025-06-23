@@ -3,7 +3,6 @@ from ollama import Client
 from typing import Optional, Iterator
 from litellm import completion, validate_environment, utils as litellm_utils
 from .model import (
-    OutputMethod,
     GenerativeModel,
     GenerativeModelConfig,
     GenerationResponse,
@@ -24,6 +23,7 @@ class LiteModel(GenerativeModel):
         model_name: str,
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
+        additional_params: Optional[dict] = None,
     ):
         """
         Initialize the LiteModel with the required parameters.
@@ -39,6 +39,7 @@ class LiteModel(GenerativeModel):
             model_name (str): The name and the provider for the LiteLLM client.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): Instruction to guide the model.
+            additional_params (Optional[dict]): Additional provider-specific parameters.
         """
 
         env_val = validate_environment(model_name)
@@ -56,6 +57,7 @@ class LiteModel(GenerativeModel):
 
         self.generation_config = generation_config or GenerativeModelConfig()
         self.system_instruction = system_instruction
+        self.additional_params = additional_params or {}
         
     def check_valid_key(self, model: str):
         """
@@ -70,7 +72,7 @@ class LiteModel(GenerativeModel):
         messages = [{"role": "user", "content": "Hey, how's it going?"}]
         try:
             completion(
-                model=model, messages=messages, max_tokens=10
+                model=model, messages=messages, max_completion_tokens=10
             )
             return True
         except Exception as e:
@@ -191,24 +193,23 @@ class LiteModelChatSession(GenerativeModelChatSession):
             else []
         )
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(self, message: str) -> GenerationResponse:
         """
         Send a message in the chat session and receive the model's response.
 
         Args:
             message (str): The message to send.
-            output_method (OutputMethod): Format for the model's output.
 
         Returns:
             GenerationResponse: The generated response.
         """
-        generation_config = self._adjust_generation_config(output_method)
         self._chat_history.append({"role": "user", "content": message})
         try:
             response = completion(
                 model=self._model.model,
                 messages=self._chat_history,
-                **generation_config
+                **self._model.generation_config.to_json(),
+                **self._model.additional_params
             )
         except Exception as e:
             raise ValueError(f"Error during completion request, please check the credentials - {e}")
@@ -226,7 +227,6 @@ class LiteModelChatSession(GenerativeModelChatSession):
         Yields:
             str: Streamed chunks of the model's response.
         """
-        generation_config = self._adjust_generation_config(OutputMethod.DEFAULT)
         self._chat_history.append({"role": "user", "content": message})
 
         try:
@@ -234,7 +234,8 @@ class LiteModelChatSession(GenerativeModelChatSession):
                 model=self._model.model,
                 messages=self._chat_history,
                 stream=True,  # Enable streaming mode
-                **generation_config
+                **self._model.generation_config.to_json(),
+                **self._model.additional_params
             )
             
             chunks = []
@@ -254,22 +255,6 @@ class LiteModelChatSession(GenerativeModelChatSession):
         except Exception as e:
             raise ValueError(f"Error during streaming request, check credentials - {e}") from e
     
-    def _adjust_generation_config(self, output_method: OutputMethod):
-        """
-        Adjust the generation configuration based on the specified output method.
-
-        Args:
-            output_method (OutputMethod): The desired output method (e.g., default or JSON).
-
-        Returns:
-            dict: The adjusted configuration settings for generation.
-        """
-        config = self._model.generation_config.to_json()
-        if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
-        return config
 
     def get_chat_history(self) -> list[dict]:
         """

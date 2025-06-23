@@ -1,4 +1,5 @@
-from graphrag_sdk.models import GenerativeModel
+from graphrag_sdk.models import (GenerativeModel,
+                                 GenerativeModelConfig)
 
 
 class KnowledgeGraphModelConfig:
@@ -34,6 +35,9 @@ class KnowledgeGraphModelConfig:
     def with_model(model: GenerativeModel) -> "KnowledgeGraphModelConfig":
         """
         Creates a new KnowledgeGraphModelConfig instance with the given generative model.
+        
+        The extract_data model will be configured with temperature=0 and JSON response format
+        for structured data extraction.
 
         Args:
             model (GenerativeModel): The generative model to use.
@@ -41,9 +45,29 @@ class KnowledgeGraphModelConfig:
         Returns:
             KnowledgeGraphModelConfig: The new KnowledgeGraphModelConfig instance.
 
-        """
+        """        
+        # Take user's existing config and modify for extract_data
+        config_dict = model.generation_config.to_json()
+        # Override temperature to 0 unless it's None
+        if config_dict.get('temperature') is not None:
+            config_dict['temperature'] = 0
+        # Add JSON output format
+        config_dict['response_format'] = {"type": "json_object"}
+        extract_config = GenerativeModelConfig.from_json(config_dict)
+        
+        # Create extract_data model with specialized configuration
+        try:
+            extract_data_model = model.__class__(
+                model_name=model.model_name,
+                generation_config=extract_config,
+                system_instruction=model.system_instruction
+            )
+        except Exception:
+            # Fallback: use original model if creation fails
+            extract_data_model = model
+        
         return KnowledgeGraphModelConfig(
-            extract_data=model,
+            extract_data=extract_data_model,
             cypher_generation=model,
             qa=model,
         )

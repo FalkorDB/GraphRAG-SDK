@@ -68,7 +68,7 @@ class TestKG(unittest.TestCase):
 
         cls.graph_name = "test_kg"
 
-        model = GeminiGenerativeModel(model_name="gemini-1.5-flash-001")
+        model = GeminiGenerativeModel(model_name="gemini-1.5-flash")
         cls.kg = KnowledgeGraph(
             name=cls.graph_name,
             ontology=cls.ontology,
