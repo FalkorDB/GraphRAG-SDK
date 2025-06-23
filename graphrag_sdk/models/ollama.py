@@ -20,7 +20,7 @@ class OllamaGenerativeModel(GenerativeModel):
     def __init__(
         self,
         model_name: str,
-        generation_config: Optional[GenerativeModelConfig] = GenerativeModelConfig(),
+        generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
         host: Optional[str] = None,
     ):
@@ -35,6 +35,8 @@ class OllamaGenerativeModel(GenerativeModel):
         """
         # Convert to LiteLLM format
         lite_model_name = f"ollama/{model_name}"
+
+        generation_config = generation_config or GenerativeModelConfig()
         
         # Handle host parameter for Ollama
         additional_params = {}

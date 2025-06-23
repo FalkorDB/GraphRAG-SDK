@@ -19,7 +19,7 @@ class OpenAiGenerativeModel(GenerativeModel):
     def __init__(
         self,
         model_name: str,
-        generation_config: Optional[GenerativeModelConfig] = GenerativeModelConfig(),
+        generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
     ):
         """
@@ -32,6 +32,8 @@ class OpenAiGenerativeModel(GenerativeModel):
         """
         # Convert to LiteLLM format
         lite_model_name = f"openai/{model_name}"
+
+        generation_config = generation_config or GenerativeModelConfig()
         
         # Create internal LiteLLM model
         self._lite_model = LiteModel(
