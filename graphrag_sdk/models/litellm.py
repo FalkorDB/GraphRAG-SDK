@@ -20,7 +20,7 @@ class LiteModel(GenerativeModel):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "openai/gpt-4.1",
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
         additional_params: Optional[dict] = None,
@@ -30,13 +30,13 @@ class LiteModel(GenerativeModel):
         
         LiteLLM model_name format: <provider>/<model_name>
          Examples:
-         - openai/gpt-4o
-         - azure/gpt-4o
+         - openai/gpt-4.1
+         - azure/gpt-4.1
          - gemini/gemini-1.5-pro
          - ollama/llama3:8b
 
         Args:
-            model_name (str): The name and the provider for the LiteLLM client.
+            model_name (str): The name and the provider for the LiteLLM client. Defaults to "openai/gpt-4.1".
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): Instruction to guide the model.
             additional_params (Optional[dict]): Additional provider-specific parameters.
@@ -54,8 +54,12 @@ class LiteModel(GenerativeModel):
         if not self.check_valid_key(model_name):
             raise ValueError(f"Invalid keys for model {model_name}.")
         
-
+        if self.model_name == "gpt-4.1":
+            # Set default temperature to 0 for gpt-4.1
+            if generation_config is None:
+                generation_config = GenerativeModelConfig(temperature=0)
         self.generation_config = generation_config or GenerativeModelConfig()
+
         self.system_instruction = system_instruction
         self.additional_params = additional_params or {}
         

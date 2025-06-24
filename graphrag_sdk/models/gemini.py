@@ -32,8 +32,6 @@ class GeminiGenerativeModel(GenerativeModel):
         """
         # Convert to LiteLLM format
         lite_model_name = f"gemini/{model_name}"
-
-        generation_config = generation_config or GenerativeModelConfig()
         
         # Create internal LiteLLM model
         self._lite_model = LiteModel(

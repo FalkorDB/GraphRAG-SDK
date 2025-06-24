@@ -31,13 +31,10 @@ class GenerativeModelConfig:
         >>> config.to_json()
         {'temperature': 0.5, 'max_tokens': 100}
     """
-    
-    # Sentinel value to detect when temperature was not explicitly set
-    _TEMP_NOT_SET = object()
 
     def __init__(
         self,
-        temperature = _TEMP_NOT_SET,
+        temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
         max_tokens: Optional[int] = None,
@@ -45,14 +42,7 @@ class GenerativeModelConfig:
         response_format: Optional[dict] = None,
         **kwargs,
     ):
-        # Set temperature and track if it was explicitly set
-        if temperature is self._TEMP_NOT_SET:
-            self.temperature = None
-            self._temperature_was_set = False
-        else:
-            self.temperature = temperature
-            self._temperature_was_set = True
-            
+        self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
         self.max_tokens = max_tokens
@@ -80,7 +70,7 @@ class GenerativeModelConfig:
             >>> config.to_json()
             {'temperature': 0.7, 'max_tokens': 100}
         """
-        return {k: v for k, v in self.__dict__.items() if v is not None and k != '_temperature_was_set'}
+        return {k: v for k, v in self.__dict__.items() if v is not None}
 
     @staticmethod
     def from_json(json: dict) -> "GenerativeModelConfig":

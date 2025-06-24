@@ -1,5 +1,5 @@
-from graphrag_sdk.models import (GenerativeModel,
-                                 GenerativeModelConfig)
+import copy
+from graphrag_sdk.models import GenerativeModel
 
 
 class KnowledgeGraphModelConfig:
@@ -27,6 +27,9 @@ class KnowledgeGraphModelConfig:
             cypher_generation (GenerativeModel): The generative model for Cypher query generation.
             qa (GenerativeModel): The generative model for question answering.
         """
+        # Ensure the extract_data model is configured for structured data extraction
+        extract_data.generation_config.response_format = {"type": "json_object"}
+
         self.extract_data = extract_data
         self.cypher_generation = cypher_generation
         self.qa = qa
@@ -36,8 +39,7 @@ class KnowledgeGraphModelConfig:
         """
         Creates a new KnowledgeGraphModelConfig instance with the given generative model.
         
-        The extract_data model will be configured with temperature=0 and JSON response format
-        for structured data extraction.
+        The extract_data model will be configured with JSON response format for structured data extraction.
 
         Args:
             model (GenerativeModel): The generative model to use.
@@ -45,33 +47,11 @@ class KnowledgeGraphModelConfig:
         Returns:
             KnowledgeGraphModelConfig: The new KnowledgeGraphModelConfig instance.
 
-        """        
-        # Take user's existing config and modify for extract_data
-        config_dict = model.generation_config.to_json()
-        
-        # Check if temperature was explicitly set by the user
-        if model.generation_config._temperature_was_set:
-            # User explicitly set temperature (even if to None), only override if not None
-            if model.generation_config.temperature is not None:
-                config_dict['temperature'] = 0
-            # If user explicitly set temperature=None, respect that and don't override
-        else:
-            # User didn't set temperature (using default None), override to 0
-            config_dict['temperature'] = 0
-        # Add JSON output format
-        config_dict['response_format'] = {"type": "json_object"}
-        extract_config = GenerativeModelConfig.from_json(config_dict)
-        
-        # Create extract_data model with specialized configuration
-        try:
-            extract_data_model = model.__class__(
-                model_name=model.model_name,
-                generation_config=extract_config,
-                system_instruction=model.system_instruction
-            )
-        except Exception:
-            # Fallback: use original model if creation fails
-            extract_data_model = model
+        """
+        # Ensure the extract_data model is configured for structured data extraction
+        extract_data_model = copy.deepcopy(model)
+        extract_data_model.generation_config.response_format = {"type": "json_object"}
+
         
         return KnowledgeGraphModelConfig(
             extract_data=extract_data_model,

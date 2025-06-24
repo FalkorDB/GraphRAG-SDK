@@ -90,7 +90,7 @@ def knowledge_graph_setup(movie_actor_ontology):
     Sets up the knowledge graph using the provided ontology.
     """
     # Get the model name from the environment variable, with a default
-    model_name = os.getenv("TEST_MODEL", "gemini/gemini-2.0-flash")
+    model_name = os.getenv("TEST_MODEL", "openai/gpt-4.1")
     graph_name = model_name.split("/")[0]
     
     # Configure the model with zero temperature for deterministic outputs
