@@ -35,7 +35,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.9.15 # Update with desired Python version
+          python-version: 3.10 # Compatible with project requirements (>=3.10.0,<3.14)
 
       - name: Cache Poetry virtualenv
         id: cache
@@ -62,7 +62,9 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install dependencies
-        run: poetry install --with test
+        run: |
+          poetry lock --no-update
+          poetry install --with test
 
       - name: Wait for Ollama to be ready
         run: |
