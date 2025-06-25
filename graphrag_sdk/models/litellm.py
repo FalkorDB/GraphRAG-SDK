@@ -53,7 +53,7 @@ class LiteModel(GenerativeModel):
         env_val = validate_environment(model_name)
         if not env_val['keys_in_environment']:
             raise ValueError(f"Missing {env_val['missing_keys']} in the environment.")
-        self.model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
+        self._internal_model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
         self.model = model_name
         
         if provider == "ollama":
@@ -64,7 +64,7 @@ class LiteModel(GenerativeModel):
         if not self.check_valid_key(model_name):
             raise ValueError(f"Invalid keys for model {model_name}.")
         
-        if self.model_name == "gpt-4.1":
+        if self._internal_model_name == "gpt-4.1":
             # Set default temperature to 0 for gpt-4.1
             if generation_config is None:
                 generation_config = GenerativeModelConfig(temperature=0)
@@ -72,6 +72,11 @@ class LiteModel(GenerativeModel):
 
         self.system_instruction = system_instruction
         self.additional_params = additional_params or {}
+        
+    @property
+    def model_name(self) -> str:
+        """Get the model name."""
+        return self._internal_model_name
         
     def check_valid_key(self, model: str):
         """
@@ -108,16 +113,16 @@ class LiteModel(GenerativeModel):
         available_models = [model['name'] for model in response['models']]  # Extract model names
 
         # Check if the model is already pulled
-        if self.model_name in available_models:
-            logger.info(f"The model '{self.model_name}' is already available.")
+        if self._internal_model_name in available_models:
+            logger.info(f"The model '{self._internal_model_name}' is already available.")
         else:
-            logger.info(f"Pulling the model '{self.model_name}'...")
+            logger.info(f"Pulling the model '{self._internal_model_name}'...")
             try:
-                self.ollama_client.pull(self.model_name)  # Pull the model
-                logger.info(f"Model '{self.model_name}' pulled successfully.")
+                self.ollama_client.pull(self._internal_model_name)  # Pull the model
+                logger.info(f"Model '{self._internal_model_name}' pulled successfully.")
             except Exception as e:
-                logger.error(f"Failed to pull the model '{self.model_name}': {e}")
-                raise ValueError(f"Failed to pull the model '{self.model_name}': {e}")
+                logger.error(f"Failed to pull the model '{self._internal_model_name}': {e}")
+                raise ValueError(f"Failed to pull the model '{self._internal_model_name}': {e}")
 
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """

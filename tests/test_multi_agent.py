@@ -10,8 +10,7 @@ from graphrag_sdk.models.litellm import LiteModel
 from graphrag_sdk.orchestrator import Orchestrator
 from graphrag_sdk.attribute import Attribute, AttributeType
 from graphrag_sdk import (KnowledgeGraph,
-                          KnowledgeGraphModelConfig,
-                          GenerativeModelConfig)
+                          KnowledgeGraphModelConfig)
 
 
 load_dotenv()
