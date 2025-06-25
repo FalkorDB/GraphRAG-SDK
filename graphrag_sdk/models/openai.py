@@ -1,19 +1,19 @@
-import os
 from typing import Optional
-from .litellm import LiteModel
+from .litellm import LiteModel, LiteModelChatSession
 from .model import (
     GenerativeModel,
     GenerativeModelConfig,
-    GenerationResponse,
-    FinishReason,
     GenerativeModelChatSession,
 )
 
 
-class OpenAiGenerativeModel(GenerativeModel):
+class OpenAiGenerativeModel(LiteModel):
     """
     A generative model that interfaces with OpenAI's API for chat completions.
-    This implementation uses LiteLLM as the backend while maintaining the original API.
+    
+    Inherits from LiteModel and automatically converts OpenAI model names to 
+    LiteLLM format internally (e.g., "gpt-4o" -> "openai/gpt-4o") while 
+    exposing the original model name through the public API.
     """
 
     def __init__(
@@ -30,11 +30,9 @@ class OpenAiGenerativeModel(GenerativeModel):
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): System-level instruction for the model.
         """
-        # Convert to LiteLLM format
+        # Convert to LiteLLM format and call parent constructor
         lite_model_name = f"openai/{model_name}"
-        
-        # Create internal LiteLLM model
-        self._lite_model = LiteModel(
+        super().__init__(
             model_name=lite_model_name,
             generation_config=generation_config,
             system_instruction=system_instruction
@@ -47,16 +45,6 @@ class OpenAiGenerativeModel(GenerativeModel):
     def model_name(self) -> str:
         """Get the original model name (without openai/ prefix)."""
         return self._original_model_name
-    
-    @property
-    def system_instruction(self) -> Optional[str]:
-        """Get the system instruction from the internal LiteLLM model."""
-        return self._lite_model.system_instruction
-    
-    @property 
-    def generation_config(self) -> GenerativeModelConfig:
-        """Get the generation config from the internal LiteLLM model."""
-        return self._lite_model.generation_config
 
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
@@ -69,21 +57,15 @@ class OpenAiGenerativeModel(GenerativeModel):
         """
         return OpenAiChatSession(self, system_instruction)
 
-    def parse_generate_content_response(self, response: any) -> GenerationResponse:
-        """
-        Parse the model's response using the internal LiteLLM model.
-        """
-        return self._lite_model.parse_generate_content_response(response)
-
     def to_json(self) -> dict:
         """
         Serialize the model's configuration and state to JSON format.
         
         Returns:
-            dict: The serialized JSON data.
+            dict: The serialized JSON data with clean OpenAI model names.
         """
         return {
-            "model_name": self.model_name,
+            "model_name": self.model_name,  # Return original model name without openai/ prefix
             "generation_config": self.generation_config.to_json(),
             "system_instruction": self.system_instruction,
         }
@@ -97,7 +79,7 @@ class OpenAiGenerativeModel(GenerativeModel):
             json (dict): The serialized JSON data.
             
         Returns:
-            GenerativeModel: A new instance of the model.
+            GenerativeModel: A new instance of OpenAiGenerativeModel.
         """
         return OpenAiGenerativeModel(
             json["model_name"],
@@ -108,56 +90,21 @@ class OpenAiGenerativeModel(GenerativeModel):
         )
 
 
-class OpenAiChatSession(GenerativeModelChatSession):
+class OpenAiChatSession(LiteModelChatSession):
     """
     A chat session for interacting with the OpenAI model.
-    This implementation delegates to LiteLLM for actual API calls.
+    
+    This implementation inherits from LiteModelChatSession to leverage all chat functionality
+    without any code duplication. All methods (send_message, send_message_stream, 
+    get_chat_history, delete_last_message) are inherited from the parent class.
     """
     
     def __init__(self, model: OpenAiGenerativeModel, system_instruction: Optional[str] = None) -> None:
         """
         Initialize the chat session and set up the conversation history.
+        
         Args:
             model (OpenAiGenerativeModel): The model instance for the session.
             system_instruction (Optional[str]): Optional system instruction.
         """
-        self._model = model
-        # Create internal LiteLLM chat session
-        self._lite_chat = model._lite_model.start_chat(system_instruction)
-
-    def send_message(self, message: str) -> GenerationResponse:
-        """
-        Send a message in the chat session and receive the model's response.
-        Args:
-            message (str): The message to send.
-        Returns:
-            GenerationResponse: The generated response.
-        """
-        # Delegate to LiteLLM chat session
-        return self._lite_chat.send_message(message)
-    
-    def send_message_stream(self, message: str):
-        """
-        Send a message and receive the response in a streaming fashion.
-        Args:
-            message (str): The message to send.
-        Yields:
-            str: Streamed chunks of the model's response.
-        """
-        # Delegate to LiteLLM chat session
-        return self._lite_chat.send_message_stream(message)
-    
-    def get_chat_history(self) -> list[dict]:
-        """
-        Retrieve the conversation history for the current chat session.
-        
-        Returns:
-            list[dict]: The chat session's conversation history.
-        """
-        return self._lite_chat.get_chat_history()
-    
-    def delete_last_message(self):
-        """
-        Deletes the last message exchange (user message and assistant response) from the chat history.
-        """
-        self._lite_chat.delete_last_message()
+        super().__init__(model, system_instruction)

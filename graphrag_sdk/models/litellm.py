@@ -1,7 +1,15 @@
 import logging
-from ollama import Client
 from typing import Optional, Iterator
 from litellm import completion, validate_environment, utils as litellm_utils
+
+# Optional import for Ollama
+try:
+    from ollama import Client as OllamaClient
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OllamaClient = None
+    OLLAMA_AVAILABLE = False
+
 from .model import (
     GenerativeModel,
     GenerativeModelConfig,
@@ -49,7 +57,9 @@ class LiteModel(GenerativeModel):
         self.model = model_name
         
         if provider == "ollama":
-            self.ollama_client = Client()
+            if not OLLAMA_AVAILABLE:
+                raise ValueError("Ollama client not available. Install with: pip install ollama")
+            self.ollama_client = OllamaClient()
             self.check_and_pull_model()
         if not self.check_valid_key(model_name):
             raise ValueError(f"Invalid keys for model {model_name}.")

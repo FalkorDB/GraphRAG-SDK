@@ -188,7 +188,7 @@ class TestMultiAgent(unittest.TestCase):
             )
         )
 
-        cls.model = LiteModel("azure/o3-mini", generation_config=GenerativeModelConfig(temperature=None))
+        cls.model = LiteModel("azure/o3-mini")
         cls.restaurants_kg = KnowledgeGraph(
             name="restaurants",
             ontology=cls.restaurants_ontology,

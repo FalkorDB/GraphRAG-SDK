@@ -18,7 +18,7 @@ class GenerativeModelConfig:
         temperature (Optional[float]): Controls randomness of the output.
         top_p (Optional[float]): Nucleus sampling parameter.
         top_k (Optional[int]): Limits sampling to the top-k most probable tokens.
-        max_tokens (Optional[int]): Maximum number of tokens to generate.
+        max_completion_tokens (Optional[int]): Maximum number of tokens to generate.
         stop (Optional[list[str]]): Stop sequences.
         response_format (Optional[dict]): Desired response format.
         **kwargs: Any additional parameters not explicitly defined.
@@ -26,10 +26,11 @@ class GenerativeModelConfig:
     Example:
         >>> config = GenerativeModelConfig(
         ...     temperature=0.5, 
-        ...     max_tokens=100,
+        ...     max_completion_tokens=100,
+        ...     stop=["\n", "END"]
         ... )
         >>> config.to_json()
-        {'temperature': 0.5, 'max_tokens': 100}
+        {'temperature': 0.5, 'max_completion_tokens': 100, 'stop': ['\n', 'END']}
     """
 
     def __init__(
@@ -37,7 +38,7 @@ class GenerativeModelConfig:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         top_k: Optional[int] = None,
-        max_tokens: Optional[int] = None,
+        max_completion_tokens: Optional[int] = None,
         stop: Optional[list] = None,
         response_format: Optional[dict] = None,
         **kwargs,
@@ -45,7 +46,7 @@ class GenerativeModelConfig:
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
-        self.max_tokens = max_tokens
+        self.max_completion_tokens = max_completion_tokens
         self.stop = stop
         self.response_format = response_format
 
@@ -66,36 +67,16 @@ class GenerativeModelConfig:
                 (i.e., not None).
         
         Example:
-            >>> config = GenerativeModelConfig(temperature=0.7, max_tokens=100)
+            >>> config = GenerativeModelConfig(temperature=0.7, max_completion_tokens=100)
             >>> config.to_json()
-            {'temperature': 0.7, 'max_tokens': 100}
+            {'temperature': 0.7, 'max_completion_tokens': 100}
         """
-        return {k: v for k, v in self.__dict__.items() if v is not None}
+        return {k: v for k, v in vars(self).items() if v is not None}
 
     @staticmethod
     def from_json(json: dict) -> "GenerativeModelConfig":
-        # Extract known parameters, but only pass them if they exist in JSON
-        params = {}
-        if "temperature" in json:
-            params['temperature'] = json["temperature"]
-        # For other parameters, only pass if they exist in JSON to maintain default behavior
-        if "top_p" in json:
-            params['top_p'] = json["top_p"]
-        if "top_k" in json:
-            params['top_k'] = json["top_k"]
-        if "max_tokens" in json:
-            params['max_tokens'] = json["max_tokens"]
-        if "stop" in json:
-            params['stop'] = json["stop"]
-        if "response_format" in json:
-            params['response_format'] = json["response_format"]
-        
-        # Extract any additional parameters not in the known set
-        known_keys = {'temperature', 'top_p', 'top_k', 'max_tokens', 'stop', 'response_format'}
-        extra_params = {k: v for k, v in json.items() if k not in known_keys}
-        
-        return GenerativeModelConfig(**params, **extra_params)
-
+        # Simply pass all JSON data as kwargs - the constructor will handle it
+        return GenerativeModelConfig(**json)
 
 class GenerationResponse:
 
