@@ -23,14 +23,21 @@ python-dotenv = "^1.0.1"
 fix-busted-json = "^0.0.18"
 rich = "^13.9.4"
 ipykernel = "^6.29.5"
-# Core LLM integration (default dependencies)
-litellm = "^1.52.14"
-ollama = "^0.2.1"
+vertexai = { version = "^1.49.0", optional = true } 
+openai = { version = "^1.35.9", optional = true }
+google-generativeai = { version = "^0.8.1", optional = true }
+litellm = "^1.73.1"
+ollama = "^0.5.1"
+
+[tool.poetry.extras]
+all = ["vertexai", "openai", "google-generativeai"]
+openai = ["openai"]
+vertexai = ["vertexai"]
+google-generativeai = ["google-generativeai"]
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
 deepeval = "^2.2.6"
-google-generativeai = "^0.8.5"
 
 [tool.poetry.group.dev.dependencies]
 sphinx = "^7.3.7"
