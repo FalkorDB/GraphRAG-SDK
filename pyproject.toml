@@ -27,41 +27,6 @@ ipykernel = "^6.29.5"
 litellm = "^1.52.14"
 ollama = "^0.2.1"
 
-[tool.poetry.extras]
-# LiteLLM proxy and server functionality
-litellm-proxy = [
-    "litellm[proxy]"
-]
-
-# LiteLLM extended proxy features (enterprise, Azure, etc.)
-litellm-extra-proxy = [
-    "litellm[extra_proxy]"
-]
-
-# LiteLLM utility functions
-litellm-utils = [
-    "litellm[utils]"
-]
-
-# LiteLLM caching functionality
-litellm-caching = [
-    "litellm[caching]"
-]
-
-# Common combinations
-litellm-full-proxy = [
-    "litellm[proxy,extra_proxy]"
-]
-
-litellm-complete = [
-    "litellm[proxy,extra_proxy,utils,caching]"
-]
-
-# All litellm features
-all-litellm-features = [
-    "litellm[proxy,extra_proxy,utils,caching]"
-]
-
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
 deepeval = "^2.2.6"

@@ -25,11 +25,7 @@ docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb
 
 ### Dependencies:
 ```sh
-# For all LLM providers
-pip install graphrag_sdk[all]
-
-# For specific LLM provider (Example: LiteLLM)
-pip install graphrag_sdk[litellm]
+pip install graphrag_sdk
 ```
 
 ### Configure Credentials. See [.env](.env.template) for examples.
