@@ -1,3 +1,4 @@
+import copy
 from graphrag_sdk.models import GenerativeModel
 
 
@@ -26,6 +27,9 @@ class KnowledgeGraphModelConfig:
             cypher_generation (GenerativeModel): The generative model for Cypher query generation.
             qa (GenerativeModel): The generative model for question answering.
         """
+        # Ensure the extract_data model is configured for structured data extraction
+        extract_data.generation_config.response_format = {"type": "json_object"}
+
         self.extract_data = extract_data
         self.cypher_generation = cypher_generation
         self.qa = qa
@@ -34,6 +38,8 @@ class KnowledgeGraphModelConfig:
     def with_model(model: GenerativeModel) -> "KnowledgeGraphModelConfig":
         """
         Creates a new KnowledgeGraphModelConfig instance with the given generative model.
+        
+        The extract_data model will be configured with JSON response format for structured data extraction.
 
         Args:
             model (GenerativeModel): The generative model to use.
@@ -42,8 +48,13 @@ class KnowledgeGraphModelConfig:
             KnowledgeGraphModelConfig: The new KnowledgeGraphModelConfig instance.
 
         """
+        # Ensure the extract_data model is configured for structured data extraction
+        extract_data_model = copy.deepcopy(model)
+        extract_data_model.generation_config.response_format = {"type": "json_object"}
+
+        
         return KnowledgeGraphModelConfig(
-            extract_data=model,
+            extract_data=extract_data_model,
             cypher_generation=model,
             qa=model,
         )

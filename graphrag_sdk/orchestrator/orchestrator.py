@@ -4,7 +4,6 @@ from graphrag_sdk.agents import Agent
 from graphrag_sdk.helpers import extract_json
 from graphrag_sdk.models import GenerativeModel, GenerativeModelChatSession
 from .orchestrator_runner import OrchestratorRunner, OrchestratorResult
-from graphrag_sdk.models.model import OutputMethod
 from .execution_plan import (
     ExecutionPlan,
 )

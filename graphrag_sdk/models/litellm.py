@@ -1,9 +1,16 @@
 import logging
-from ollama import Client
 from typing import Optional, Iterator
 from litellm import completion, validate_environment, utils as litellm_utils
+
+# Optional import for Ollama
+try:
+    from ollama import Client as OllamaClient
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OllamaClient = None
+    OLLAMA_AVAILABLE = False
+
 from .model import (
-    OutputMethod,
     GenerativeModel,
     GenerativeModelConfig,
     GenerationResponse,
@@ -21,41 +28,55 @@ class LiteModel(GenerativeModel):
 
     def __init__(
         self,
-        model_name: str,
+        model_name: str = "openai/gpt-4.1",
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
+        additional_params: Optional[dict] = None,
     ):
         """
         Initialize the LiteModel with the required parameters.
         
         LiteLLM model_name format: <provider>/<model_name>
          Examples:
-         - openai/gpt-4o
-         - azure/gpt-4o
+         - openai/gpt-4.1
+         - azure/gpt-4.1
          - gemini/gemini-1.5-pro
          - ollama/llama3:8b
 
         Args:
-            model_name (str): The name and the provider for the LiteLLM client.
+            model_name (str): The name and the provider for the LiteLLM client. Defaults to "openai/gpt-4.1".
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): Instruction to guide the model.
+            additional_params (Optional[dict]): Additional provider-specific parameters.
         """
 
         env_val = validate_environment(model_name)
         if not env_val['keys_in_environment']:
             raise ValueError(f"Missing {env_val['missing_keys']} in the environment.")
-        self.model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
+        self._internal_model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
         self.model = model_name
         
         if provider == "ollama":
-            self.ollama_client = Client()
+            if not OLLAMA_AVAILABLE:
+                raise ValueError("Ollama client not available. Install with: pip install ollama")
+            self.ollama_client = OllamaClient()
             self.check_and_pull_model()
         if not self.check_valid_key(model_name):
             raise ValueError(f"Invalid keys for model {model_name}.")
         
-
+        if self._internal_model_name == "gpt-4.1":
+            # Set default temperature to 0 for gpt-4.1
+            if generation_config is None:
+                generation_config = GenerativeModelConfig(temperature=0)
         self.generation_config = generation_config or GenerativeModelConfig()
+
         self.system_instruction = system_instruction
+        self.additional_params = additional_params or {}
+        
+    @property
+    def model_name(self) -> str:
+        """Get the model name."""
+        return self._internal_model_name
         
     def check_valid_key(self, model: str):
         """
@@ -70,7 +91,7 @@ class LiteModel(GenerativeModel):
         messages = [{"role": "user", "content": "Hey, how's it going?"}]
         try:
             completion(
-                model=model, messages=messages, max_tokens=10
+                model=model, messages=messages, max_completion_tokens=10
             )
             return True
         except Exception as e:
@@ -92,16 +113,16 @@ class LiteModel(GenerativeModel):
         available_models = [model['name'] for model in response['models']]  # Extract model names
 
         # Check if the model is already pulled
-        if self.model_name in available_models:
-            logger.info(f"The model '{self.model_name}' is already available.")
+        if self._internal_model_name in available_models:
+            logger.info(f"The model '{self._internal_model_name}' is already available.")
         else:
-            logger.info(f"Pulling the model '{self.model_name}'...")
+            logger.info(f"Pulling the model '{self._internal_model_name}'...")
             try:
-                self.ollama_client.pull(self.model_name)  # Pull the model
-                logger.info(f"Model '{self.model_name}' pulled successfully.")
+                self.ollama_client.pull(self._internal_model_name)  # Pull the model
+                logger.info(f"Model '{self._internal_model_name}' pulled successfully.")
             except Exception as e:
-                logger.error(f"Failed to pull the model '{self.model_name}': {e}")
-                raise ValueError(f"Failed to pull the model '{self.model_name}': {e}")
+                logger.error(f"Failed to pull the model '{self._internal_model_name}': {e}")
+                raise ValueError(f"Failed to pull the model '{self._internal_model_name}': {e}")
 
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
@@ -191,24 +212,23 @@ class LiteModelChatSession(GenerativeModelChatSession):
             else []
         )
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(self, message: str) -> GenerationResponse:
         """
         Send a message in the chat session and receive the model's response.
 
         Args:
             message (str): The message to send.
-            output_method (OutputMethod): Format for the model's output.
 
         Returns:
             GenerationResponse: The generated response.
         """
-        generation_config = self._adjust_generation_config(output_method)
         self._chat_history.append({"role": "user", "content": message})
         try:
             response = completion(
                 model=self._model.model,
                 messages=self._chat_history,
-                **generation_config
+                **self._model.generation_config.to_json(),
+                **self._model.additional_params
             )
         except Exception as e:
             raise ValueError(f"Error during completion request, please check the credentials - {e}")
@@ -226,7 +246,6 @@ class LiteModelChatSession(GenerativeModelChatSession):
         Yields:
             str: Streamed chunks of the model's response.
         """
-        generation_config = self._adjust_generation_config(OutputMethod.DEFAULT)
         self._chat_history.append({"role": "user", "content": message})
 
         try:
@@ -234,7 +253,8 @@ class LiteModelChatSession(GenerativeModelChatSession):
                 model=self._model.model,
                 messages=self._chat_history,
                 stream=True,  # Enable streaming mode
-                **generation_config
+                **self._model.generation_config.to_json(),
+                **self._model.additional_params
             )
             
             chunks = []
@@ -254,22 +274,6 @@ class LiteModelChatSession(GenerativeModelChatSession):
         except Exception as e:
             raise ValueError(f"Error during streaming request, check credentials - {e}") from e
     
-    def _adjust_generation_config(self, output_method: OutputMethod):
-        """
-        Adjust the generation configuration based on the specified output method.
-
-        Args:
-            output_method (OutputMethod): The desired output method (e.g., default or JSON).
-
-        Returns:
-            dict: The adjusted configuration settings for generation.
-        """
-        config = self._model.generation_config.to_json()
-        if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
-        return config
 
     def get_chat_history(self) -> list[dict]:
         """

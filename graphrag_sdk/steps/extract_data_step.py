@@ -11,7 +11,6 @@ from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.document import Document
 from ratelimit import limits, sleep_and_retry
 from graphrag_sdk.source import AbstractSource
-from graphrag_sdk.models.model import OutputMethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from graphrag_sdk.helpers import extract_json, map_dict_to_cypher_properties
 from graphrag_sdk.ontology import Ontology
@@ -188,14 +187,14 @@ class ExtractDataStep(Step):
             responses: list[GenerationResponse] = []
             response_idx = 0
 
-            responses.append(self._call_model(chat_session, user_message, output_method=OutputMethod.JSON))
+            responses.append(self._call_model(chat_session, user_message))
 
             _task_logger.debug(f"Model response: {responses[response_idx].text}")
 
             while responses[response_idx].finish_reason == FinishReason.MAX_TOKENS and response_idx < retries:
                 _task_logger.debug("Asking model to continue")
                 response_idx += 1
-                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION, output_method=OutputMethod.JSON))
+                responses.append(self._call_model(chat_session, COMPLETE_DATA_EXTRACTION))
                 _task_logger.debug(
                     f"Model response after continue: {responses[response_idx].text}"
                 )
@@ -219,7 +218,6 @@ class ExtractDataStep(Step):
                 json_fix_response = self._call_model(
                     self._create_chat(),
                     FIX_JSON_PROMPT.format(json=last_respond, error=str(e)),
-                    output_method=OutputMethod.JSON,
                 )
                 data = json.loads(extract_json(json_fix_response.text))
                 _task_logger.debug(f"Fixed JSON: {data}")
@@ -351,7 +349,6 @@ class ExtractDataStep(Step):
         chat_session: GenerativeModelChatSession,
         prompt: str,
         retry: int = 6,
-        output_method: OutputMethod = OutputMethod.DEFAULT
     ) -> GenerationResponse:
         """
         Call the generative model with rate limiting and retries.
@@ -360,7 +357,6 @@ class ExtractDataStep(Step):
             chat_session (GenerativeModelChatSession): The chat session for interacting with the model.
             prompt (str): The prompt to send to the model.
             retry (Optional[int]): Number of retries in case of quota exceeded or errors.
-            output_method (Optional[OutputMethod]): The output method for the response.
         
         Returns:
             GenerationResponse: The model's response.
@@ -369,7 +365,7 @@ class ExtractDataStep(Step):
             Exception: If an error occurs after exhausting retries.
         """
         try:
-            return chat_session.send_message(prompt, output_method=output_method)
+            return chat_session.send_message(prompt)
         except Exception as e:
             # If exception is caused by quota exceeded, wait 10 seconds and try again for 6 times
             if "Quota exceeded" in str(e) and retry > 0:

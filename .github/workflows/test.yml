@@ -27,7 +27,7 @@ jobs:
     
     strategy:
       matrix:
-        model: [gemini/gemini-2.0-flash, openai/gpt-4o] # List of models
+        model: [openai/gpt-4.1] # List of models
 
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.9.15 # Update with desired Python version
+          python-version: 3.11.0 # Update with desired Python version
 
       - name: Cache Poetry virtualenv
         id: cache
@@ -78,5 +78,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
           TEST_MODEL: ${{ matrix.model }} # Pass the model as an environment variable
         run: poetry run pytest
