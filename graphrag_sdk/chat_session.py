@@ -51,7 +51,7 @@ class ChatSession:
         self.ontology = ontology
         
         # Filter the ontology to remove unique and required attributes that are not needed for Q&A. 
-        ontology_prompt = self.clean_ontology_for_prompt(ontology)
+        ontology_prompt = clean_ontology_for_prompt(ontology)
                 
         cypher_system_instruction = cypher_system_instruction.format(ontology=ontology_prompt)
         
@@ -182,30 +182,162 @@ class ChatSession:
             "context": context, 
             "cypher": cypher
         }
-        
-    def clean_ontology_for_prompt(self, ontology: dict) -> str:
+    
+class CypherSession:
+    """
+    Represents a Cypher-only session with a Knowledge Graph.
+    This class generates Cypher queries and extracts context without performing Q&A.
+
+    Args:
+        model_config (KnowledgeGraphModelConfig): The model configuration to use.
+        ontology (Ontology): The ontology to use.
+        graph (Graph): The graph to query.
+
+    Examples:
+        >>> from graphrag_sdk import KnowledgeGraph, Orchestrator
+        >>> from graphrag_sdk.ontology import Ontology
+        >>> from graphrag_sdk.model_config import KnowledgeGraphModelConfig
+        >>> model_config = KnowledgeGraphModelConfig.with_model(model)
+        >>> kg = KnowledgeGraph("test_kg", model_config, ontology)
+        >>> cypher_session = CypherSession(model_config, ontology, kg.graph, 
+        ...                               cypher_system_instruction, cypher_gen_prompt, cypher_gen_prompt_history)
+        >>> result = cypher_session.search("What is the capital of France?")
+    """
+
+    def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph,
+                cypher_system_instruction: str, cypher_gen_prompt: str, cypher_gen_prompt_history: str):
         """
-        Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
+        Initializes a new CypherSession object.
 
         Args:
-            ontology (dict): The ontology to clean and transform.
+            model_config (KnowledgeGraphModelConfig): The model configuration.
+            ontology (Ontology): The ontology object.
+            graph (Graph): The graph object.
+            cypher_system_instruction (str): System instruction for cypher generation.
+            cypher_gen_prompt (str): Prompt template for cypher generation.
+            cypher_gen_prompt_history (str): Prompt template for cypher generation with history.
+
+        Attributes:
+            model_config (KnowledgeGraphModelConfig): The model configuration.
+            ontology (Ontology): The ontology object.
+            graph (Graph): The graph object.
+            cypher_chat_session: The Cypher chat session object.
+        """
+        self.model_config = model_config
+        self.graph = graph
+        self.ontology = ontology
+        
+        # Filter the ontology to remove unique and required attributes that are not needed for Q&A. 
+        ontology_prompt = clean_ontology_for_prompt(ontology)
+                
+        cypher_system_instruction = cypher_system_instruction.format(ontology=ontology_prompt)
+        
+        self.cypher_prompt = cypher_gen_prompt
+        self.cypher_prompt_with_history = cypher_gen_prompt_history
+        
+        self.cypher_chat_session = model_config.cypher_generation.start_chat(
+                cypher_system_instruction
+            )
+        
+        self.last_complete_response = {
+            "question": None, 
+            "response": None, 
+            "context": None, 
+            "cypher": None
+            }
+        
+        # Metadata to store additional information about the chat session (currently only last query execution time)
+        self.metadata = {"last_query_execution_time": None}
+        
+    def _generate_cypher_query(self, message: str) -> tuple:
+        """
+        Generate a Cypher query for the given message.
+        
+        Args:
+            message (str): The message to generate a query for.
+            
+        Returns:
+            tuple: A tuple containing (context, cypher)
+        """
+        cypher_step = GraphQueryGenerationStep(
+            graph=self.graph,
+            chat_session=self.cypher_chat_session,
+            ontology=self.ontology,
+            last_answer=self.last_complete_response["response"],
+            cypher_prompt=self.cypher_prompt,
+            cypher_prompt_with_history=self.cypher_prompt_with_history
+        )
+
+        (context, cypher, query_execution_time) = cypher_step.run(message)
+        self.metadata["last_query_execution_time"] = query_execution_time
+        
+        return (context, cypher)
+
+    def search(self, message: str) -> dict:
+        """
+        Searches the knowledge graph by generating a Cypher query and extracting relevant context.
+
+        Args:
+            message (str): The search query or question.
 
         Returns:
-            str: The cleaned ontology as a JSON string.
+            dict: Search results containing:
+                - question: The original query
+                - context: Extracted context from the graph
+                - cypher: Generated Cypher query
+                - execution_time: Query execution time in seconds
+                - error: Error message if query generation failed (optional)
         """
-        # Convert the ontology object to a JSON.
-        ontology = ontology.to_json()
+        context, cypher = self._generate_cypher_query(message)
+        execution_time = self.metadata.get("last_query_execution_time")
         
-        # Remove unique and required attributes from the ontology.
-        for entity in ontology["entities"]:
-            for attribute in entity["attributes"]:
-                del attribute['unique']
-                del attribute['required']
+        # Prepare base response
+        response = {
+            "question": message,
+            "context": context,
+            "cypher": cypher,
+            "execution_time": execution_time
+        }
         
-        for relation in ontology["relations"]:
-            for attribute in relation["attributes"]:
-                del attribute['unique']
-                del attribute['required']
+        # Handle query generation failure
+        if not cypher:
+            response["error"] = "Could not generate valid cypher query"
+            context = cypher = None
         
-        # Return the transformed ontology as a JSON string
-        return json.dumps(ontology)
+        # Update session state
+        self.last_complete_response = {
+            "question": message,
+            "response": None,
+            "context": context,
+            "cypher": cypher
+        }
+        
+        return response
+    
+
+def clean_ontology_for_prompt(ontology: dict) -> str:
+    """
+    Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
+
+    Args:
+        ontology (dict): The ontology to clean and transform.
+
+    Returns:
+        str: The cleaned ontology as a JSON string.
+    """
+    # Convert the ontology object to a JSON.
+    ontology = ontology.to_json()
+    
+    # Remove unique and required attributes from the ontology.
+    for entity in ontology["entities"]:
+        for attribute in entity["attributes"]:
+            del attribute['unique']
+            del attribute['required']
+    
+    for relation in ontology["relations"]:
+        for attribute in relation["attributes"]:
+            del attribute['unique']
+            del attribute['required']
+    
+    # Return the transformed ontology as a JSON string
+    return json.dumps(ontology)

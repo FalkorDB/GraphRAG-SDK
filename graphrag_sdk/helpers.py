@@ -221,50 +221,60 @@ def validate_cypher_relation_directions(
         list[str]: A list of errors if relation directions are incorrect.
     """
     errors = []
-    relations = list(re.finditer(r"\[.*?\]", cypher))
-    i = 0
-    for relation in relations:
+    
+    # Pattern to match complete relationship patterns: (node)-[rel]->(node) or (node)<-[rel]-(node)
+    # This handles both directions and various node/relationship syntaxes
+    relationship_pattern = r'\(([^)]*)\)\s*(<?)--?\[\s*([^]]*)\s*\]\s*--?(>?)\s*\(([^)]*)\)'
+    
+    matches = re.finditer(relationship_pattern, cypher, re.IGNORECASE)
+    
+    for match in matches:
         try:
-            relation_label = (
-                re.search(r"(?:\[)(?:\w)*(?:\:)([^\d\{\]\*\.\:]+)", relation.group(0))
-                .group(1)
-                .strip()
-            )
-            prev_relation = relations[i - 1] if i > 0 else None
-            next_relation = relations[i + 1] if i < len(relations) - 1 else None
-            before = (
-                cypher[prev_relation.end() : relation.start()]
-                if prev_relation
-                else cypher[: relation.start()]
-            )
-            if "," in before:
-                before = before.split(",")[-1]
-            rel_before = re.search(r"([^\)\],]+)", before[::-1]).group(0)[::-1]
-            after = (
-                cypher[relation.end() : next_relation.start()]
-                if next_relation
-                else cypher[relation.end() :]
-            )
-            rel_after = re.search(r"([^\(\[,]+)", after).group(0)
-            entity_before = re.search(r"\(.+:(.*?)\)", before).group(0)
-            entity_after = re.search(r"\(([^\),]+)(\)?)", after).group(0)
-            if rel_before == "-" and rel_after == "->":
-                source = entity_before
-                target = entity_after
-            elif rel_before == "<-" and rel_after == "-":
-                source = entity_after
-                target = entity_before
-            else:
+            source_node = match.group(1).strip()
+            left_arrow = match.group(2)  # '<' if present
+            relation_content = match.group(3).strip()
+            right_arrow = match.group(4)  # '>' if present
+            target_node = match.group(5).strip()
+            
+            # Skip if no relationship label found
+            if not relation_content or relation_content == '':
                 continue
-
-            source_label = re.search(r"(?:\:)([^\)\{]+)", source).group(1).strip()
-            target_label = re.search(r"(?:\:)([^\)\{]+)", target).group(1).strip()
-
+                
+            # Extract relationship label from content like "r:RELATIONSHIP_TYPE" or ":RELATIONSHIP_TYPE"
+            relation_label_match = re.search(r':\s*([A-Za-z_][A-Za-z0-9_]*)', relation_content)
+            if not relation_label_match:
+                continue
+                
+            relation_label = relation_label_match.group(1).strip()
+            
+            # Determine direction: <- means reverse, -> means forward, -- means undirected
+            is_directed_left = bool(left_arrow)  # <-
+            is_directed_right = bool(right_arrow)  # ->
+            
+            # Skip undirected relationships (--) as they don't have direction constraints
+            if not is_directed_left and not is_directed_right:
+                continue
+            
+            # Extract node labels from source and target
+            source_label = _extract_node_label(source_node)
+            target_label = _extract_node_label(target_node)
+            
+            # Skip if we can't extract labels (e.g., variables without labels)
+            if not source_label or not target_label:
+                continue
+            
+            # If direction is left (<-), swap source and target
+            if is_directed_left and not is_directed_right:
+                source_label, target_label = target_label, source_label
+            
+            # Get ontology relations with this label
             ontology_relations = ontology.get_relations_with_label(relation_label)
-
+            
             if len(ontology_relations) == 0:
-                errors.append(f"Relation {relation_label} not found in ontology")
-
+                # This error is already handled by validate_cypher_relations_exist
+                continue
+            
+            # Check if any ontology relation matches the direction
             found_relation = False
             for ontology_relation in ontology_relations:
                 if (
@@ -273,23 +283,31 @@ def validate_cypher_relation_directions(
                 ):
                     found_relation = True
                     break
-
+            
             if not found_relation:
                 errors.append(
-                    """
-                    Relation {relation_label} does not connect {source_label} to {target_label}. Make sure the relation direction is correct. 
-                    Valid relations: 
-                    {valid_relations}
-""".format(
-                        relation_label=relation_label,
-                        source_label=source_label,
-                        target_label=target_label,
-                        valid_relations="\n".join([str(e) for e in ontology_relations]),
-                    )
+                    f"Relation '{relation_label}' does not connect {source_label} to {target_label}. "
+                    f"Make sure the relation direction is correct. "
+                    f"Valid relations: {', '.join([str(r) for r in ontology_relations])}"
                 )
-
-            i += 1
-        except Exception:
+                
+        except Exception as e:
+            # Skip problematic patterns rather than failing
             continue
-
+    
     return errors
+
+def _extract_node_label(node_content: str) -> str:
+    """
+    Extract node label from node content like 'n:Person' or ':Person' or 'person:Person'.
+    Returns the label or empty string if not found.
+    """
+    if not node_content:
+        return ""
+    
+    # Look for pattern like ":Label" in the node content
+    label_match = re.search(r':\s*([A-Za-z_][A-Za-z0-9_]*)', node_content)
+    if label_match:
+        return label_match.group(1).strip()
+    
+    return ""

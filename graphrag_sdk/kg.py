@@ -4,7 +4,7 @@ from falkordb import FalkorDB
 from typing import Optional, Union
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.source import AbstractSource
-from graphrag_sdk.chat_session import ChatSession
+from graphrag_sdk.chat_session import ChatSession, CypherSession
 from graphrag_sdk.attribute import AttributeType, Attribute
 from graphrag_sdk.helpers import map_dict_to_cypher_properties
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
@@ -210,6 +210,19 @@ class KnowledgeGraph:
         chat_session = ChatSession(self._model_config, self.ontology, self.graph, self.cypher_system_instruction,
                                    self.qa_system_instruction, self.cypher_gen_prompt, self.qa_prompt, self.cypher_gen_prompt_history)
         return chat_session
+    
+    def cypher_session(self) -> CypherSession:
+        """
+        Create a new Cypher session.
+        
+        Returns:
+            CypherSession: A new Cypher session instance.
+        """
+        cypher_session = CypherSession(self._model_config, self.ontology, self.graph, self.cypher_system_instruction,
+                                       self.cypher_gen_prompt, self.cypher_gen_prompt_history)
+        return cypher_session
+    
+    
     def add_node(self, entity: str, attributes: dict) -> None:
         """
         Add a node to the knowledge graph, checking if it matches the ontology
