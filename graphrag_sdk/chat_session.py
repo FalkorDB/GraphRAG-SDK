@@ -130,7 +130,7 @@ class ChatSession:
         
         try:
             (context, cypher, query_execution_time) = self.cypher_step.run(message)
-        except Exception as e:
+        except Exception:
             # If there's an error, return empty context and cypher with error message
             context = None
             cypher = CYPHER_ERROR_RES
@@ -211,29 +211,29 @@ class ChatSession:
         
         self._update_last_complete_response(final_response)
 
-def clean_ontology_for_prompt(ontology: dict) -> str:
+def clean_ontology_for_prompt(ontology: Ontology) -> str:
     """
     Cleans the ontology by removing 'unique' and 'required' keys and prepares it for use in a prompt.
 
     Args:
-        ontology (dict): The ontology to clean and transform.
+        ontology (Ontology): The ontology to clean and transform.
 
     Returns:
         str: The cleaned ontology as a JSON string.
     """
     # Convert the ontology object to a JSON.
-    ontology = ontology.to_json()
+    ontology_json = ontology.to_json()
     
     # Remove unique and required attributes from the ontology.
-    for entity in ontology["entities"]:
+    for entity in ontology_json.get("entities", []):
         for attribute in entity["attributes"]:
-            del attribute['unique']
-            del attribute['required']
+            attribute.pop('unique', None)
+            attribute.pop('required', None)
     
-    for relation in ontology["relations"]:
+    for relation in ontology_json.get("relations", []):
         for attribute in relation["attributes"]:
-            del attribute['unique']
-            del attribute['required']
+            attribute.pop('unique', None)
+            attribute.pop('required', None)
     
     # Return the transformed ontology as a JSON string
-    return json.dumps(ontology)
+    return json.dumps(ontology_json)
