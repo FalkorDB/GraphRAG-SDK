@@ -23,7 +23,7 @@ class ChatSession:
         >>> from graphrag_sdk.model_config import KnowledgeGraphModelConfig
         >>> model_config = KnowledgeGraphModelConfig.with_model(model)
         >>> kg = KnowledgeGraph("test_kg", model_config, ontology)
-        >>> session = kg.start_chat()
+        >>> session = kg.chat_session()
         >>> 
         >>> # Full QA pipeline
         >>> response = session.send_message("What is the capital of France?")
