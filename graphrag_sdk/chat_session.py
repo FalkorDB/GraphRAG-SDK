@@ -95,12 +95,17 @@ class ChatSession:
             cypher_prompt_with_history=self.cypher_prompt_with_history
         )
         
-        self.last_answer = None
+        self.last_complete_response = {
+            "question": None, 
+            "response": None, 
+            "context": None, 
+            "cypher": None
+            }
         
-    def _update_last_answer(self, answer: str):
-        """Update the last answer in both the session and cypher step."""
-        self.last_answer = answer
-        self.cypher_step.last_answer = answer
+    def _update_last_complete_response(self, response_dict: dict):
+        """Update the last complete response in both the session and cypher step."""
+        self.last_complete_response = response_dict
+        self.cypher_step.last_answer = response_dict.get("response")
         
     def generate_cypher_query(self, message: str) -> tuple:
         """
@@ -118,7 +123,7 @@ class ChatSession:
                 - cypher (str): The generated Cypher query
         """
         # Update the last_answer for this query
-        self.cypher_step.last_answer = self.last_answer
+        self.cypher_step.last_answer = self.last_complete_response.get("response")
 
         (context, cypher, _) = self.cypher_step.run(message)
         
@@ -150,14 +155,17 @@ class ChatSession:
             }
         
         answer = self.qa_step.run(message, cypher, context)
-        self._update_last_answer(answer)
-
-        return {
+        
+        response = {
             "question": message,
             "response": answer,
             "context": context,
             "cypher": cypher
         }
+        
+        self._update_last_complete_response(response)
+
+        return response
     
     def send_message_stream(self, message: str) -> Iterator[str]:
         """
@@ -180,9 +188,17 @@ class ChatSession:
         for chunk in self.qa_step.run_stream(message, cypher, context):
             yield chunk
 
-        # Set the last answer using chat history to ensure we have the complete response
+        # Set the last answer using chat history to ensure complete response
         final_answer = self.qa_step.chat_session.get_chat_history()[-1]['content']
-        self._update_last_answer(final_answer)
+        
+        final_response = {
+            "question": message,
+            "response": final_answer,
+            "context": context,
+            "cypher": cypher
+        }
+        
+        self._update_last_complete_response(final_response)
 
 def clean_ontology_for_prompt(ontology: dict) -> str:
     """
