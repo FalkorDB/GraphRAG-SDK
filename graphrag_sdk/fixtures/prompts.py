@@ -399,88 +399,52 @@ Please complete your answer. Ensure that each entity and relations is unique. Do
 """
 
 CYPHER_GEN_SYSTEM = """
-Task: Generate OpenCypher statements to query a graph database based on natural language questions.
+Task: Generate OpenCypher statement to query a graph database.
 
-Core Requirements:
-- Use ONLY the entities, relationship types, and properties defined in the provided ontology
-- Generate syntactically valid OpenCypher statements
-- Return comprehensive results including all relevant entities, relationships, and their attributes
-- Maintain correct relationship direction: arrows point from source to target as defined in ontology
+Instructions:
+Use only the provided entities, relationships types and properties in the ontology.
+The output must be only a valid OpenCypher statement.
+Respect the order of the relationships, the arrows should always point from the "start" to the "end".
+Respect the types of entities of every relationship, according to the ontology.
+The OpenCypher statement must return all the relevant entities, not just the attributes requested.
+The output of the OpenCypher statement will be passed to another model to answer the question, hence, make sure the OpenCypher statement returns all relevant entities, relationships, and attributes.
+If the answer required multiple entities, return all the entities, relations, relationships, and their attributes.
+If you cannot generate a OpenCypher statement based on the provided ontology, explain the reason to the user.
+For String comparison, use the `CONTAINS` operator.
+Do not use any other relationship types or properties that are not provided.
+Do not respond to any questions that might ask anything else than for you to construct a OpenCypher statement.
+Do not include any text except the generated OpenCypher statement, enclosed in triple backticks.
+Do not include any explanations or apologies in your responses.
+Do not return just the attributes requested in the question, but all related entities, relations, relationships, and attributes.
+Do not change the order of the relationships, the arrows should always point from the "start" to the "end".
 
-Query Construction Rules:
-1. Entity Matching: Use exact entity labels and property names from the ontology
-2. String Comparison: Use CONTAINS operator for partial string matches, = for exact matches
-3. Case Sensitivity: Properties are case-sensitive; use appropriate casing from ontology
-4. Name Normalization: All names (from user input and graph data) should be treated as lowercase when performing comparisons
-5. Comprehensive Results: Return complete entity objects and relationships, not just requested attributes
-6. Multiple Entities: When questions involve multiple entity types, include all relevant connections
-7. Simple Queries: For declarative statements or single entity names, extract the relevant entity and return it with its direct relationships (1-hop only)
+The following instructions describe extra functions that can be used in the OpenCypher statement:
 
-Relationship Handling:
-- Respect relationship direction as defined in ontology (source -> target)
-- Use appropriate relationship types exactly as specified
-- For bidirectional queries, specify direction explicitly or use undirected syntax when appropriate
-
-Advanced Features Available:
-- Variable length paths: -[:TYPE*minHops..maxHops]->
-- Bidirectional traversal: -[:TYPE]- (undirected) or -[:TYPE]<- (reverse)
-- Optional matching: OPTIONAL MATCH for non-required relationships
-- Named paths: path = (start)-[:REL]->(end)
-- Shortest paths: allShortestPaths((start)-[:REL*]->(end))
-- Weighted paths: algo.SPpaths() for single-pair, algo.SSpaths() for single-source
-
-Error Handling:
-- If the question cannot be answered with the provided ontology, return: "UNABLE_TO_GENERATE: [brief reason]"
-- If entities or relationships mentioned don't exist in ontology, return: "UNABLE_TO_GENERATE: Required entities/relationships not found in ontology"
-
-Output Format:
-- Return ONLY the OpenCypher statement enclosed in triple backticks
-- No explanations, apologies, or additional text
-- Ensure query is syntactically correct before returning
-
-Query Validation Checklist:
-- All entities exist in ontology ✓
-- All relationships exist and have correct direction ✓
-- All properties exist for their respective entities ✓
-- Syntax is valid OpenCypher ✓
-- Query returns comprehensive results ✓
+Match: Describes relationships between entities using ASCII art patterns. Entities are represented by parentheses and relationships by brackets. Both can have aliases and labels.
+Variable length relationships: Find entities a variable number of hops away using -[:TYPE*minHops..maxHops]->.
+Bidirectional path traversal: Specify relationship direction or omit it for either direction.
+Named paths: Assign a path in a MATCH clause to a single alias for future use.
+Shortest paths: Find all shortest paths between two entities using allShortestPaths().
+Single-Pair minimal-weight paths: Find minimal-weight paths between a pair of entities using algo.SPpaths().
+Single-Source minimal-weight paths: Find minimal-weight paths from a given source entity using algo.SSpaths().
 
 Ontology:
 {ontology}
 
-Example:
-Question: "Which managers own technology stocks?"
-Expected Output: "MATCH (m:Manager)-[:OWNS]->(s:Stock)
-WHERE toLower(s.sector) CONTAINS 'technology'
-RETURN m, s"
 
-
-Simple Entity Query Example:
-Question: "Apple" or "Show me Apple"
-Expected Output: "MATCH (c:Company)
-WHERE toLower(c.name) = 'apple'
-OPTIONAL MATCH (c)-[r]-(connected)
-RETURN c, r, connected"
-"""
+For example, given the question "Which managers own Neo4j stocks?", the OpenCypher statement should look like this:
+MATCH (m:Manager)-[:OWNS]->(s:Stock)
+WHERE s.name CONTAINS 'Neo4j'
+RETURN m, s"""
 
 CYPHER_GEN_PROMPT = """
-Generate an OpenCypher statement to answer the following question using the provided ontology.
-
-Requirements:
-- Use only entities, relationships, and properties from the ontology
-- Maintain correct relationship directions (source -> target)
-- Return all relevant entities and relationships, not just requested attributes
-- Ensure syntactically valid OpenCypher
+Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
+If you cannot generate a OpenCypher statement for any reason, return an empty response.
+Respect the order of the relationships, the arrows should always point from the "source" to the "target".
+Please think if your answer is a valid Cypher query, and correct it if it is not.
 
 Question: {question}
-
-Validation Steps:
-1. Identify required entities and relationships from the question
-2. Verify all components exist in the ontology
-3. Construct query with proper syntax and direction
-4. Ensure comprehensive result set
-
-Generated OpenCypher:"""
+Your generated Cypher: """
 
 
 CYPHER_GEN_PROMPT_WITH_ERROR = """
@@ -496,31 +460,17 @@ Question: {question}
 """
 
 CYPHER_GEN_PROMPT_WITH_HISTORY = """
-Generate an OpenCypher statement to answer the following question using the provided ontology.
+Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
 
-Context Analysis:
-- First, determine if the last answer provided is relevant to the current question
-- If relevant, consider incorporating information from it into the query (e.g., entity IDs, specific names, or context)
-- If not relevant, ignore the previous answer and generate the query based solely on the current question
+First, determine if the last answers provided to the user over the entire conversation is relevant to the current question. If it is relevant, you may consider incorporating information from it into the query. If it is not relevant, ignore it and generate the query based solely on the question.
 
-Requirements:
-- Use only entities, relationships, and properties from the ontology
-- Maintain correct relationship directions (source -> target)  
-- Return all relevant entities and relationships, not just requested attributes
-- Ensure syntactically valid OpenCypher
-- Apply name normalization (use toLower() for name comparisons)
+If you cannot generate an OpenCypher statement for any reason, return an empty string.
+
+Respect the order of the relationships; the arrows should always point from the "source" to the "target".
 
 Last Answer: {last_answer}
 Question: {question}
-
-Validation Steps:
-1. Assess relevance of last answer to current question
-2. Identify required entities and relationships from the question
-3. Verify all components exist in the ontology
-4. Construct query with proper syntax and direction
-5. Ensure comprehensive result set
-
-Generated OpenCypher:"""
+Your generated Cypher: """
 
 GRAPH_QA_SYSTEM = """
 You are an assistant that helps to form nice and human understandable answers.
