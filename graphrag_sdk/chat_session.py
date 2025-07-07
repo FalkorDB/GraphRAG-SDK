@@ -3,109 +3,10 @@ from falkordb import Graph
 from typing import Iterator
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.steps.qa_step import QAStep
-from graphrag_sdk.steps.stream_qa_step import StreamingQAStep
 from graphrag_sdk.model_config import KnowledgeGraphModelConfig
 from graphrag_sdk.steps.graph_query_step import GraphQueryGenerationStep
 
 CYPHER_ERROR_RES = "Sorry, I could not find the answer to your question"
-
-class ResponseDict(dict):
-    """
-    A dictionary that also provides property access to response components.
-    Maintains backward compatibility while adding new property-based access.
-    """
-    
-    def __init__(self, response: 'ChatResponse'):
-        self._response = response
-        super().__init__({
-            "question": response.query,
-            "response": response.answer,
-            "context": response.context,
-            "cypher": response.cypher
-        })
-    
-    @property
-    def query(self) -> str:
-        """The original question/query."""
-        return self._response.query
-    
-    @property
-    def cypher(self) -> str:
-        """The generated Cypher query."""
-        return self._response.cypher
-    
-    @property
-    def context(self) -> str:
-        """The extracted context from the graph."""
-        return self._response.context
-    
-    @property
-    def answer(self) -> str:
-        """The final QA answer."""
-        return self._response.answer
-    
-    @property
-    def execution_time(self) -> float:
-        """Query execution time in seconds."""
-        return self._response.execution_time
-    
-    @property
-    def error(self) -> str:
-        """Error message if any step failed."""
-        return self._response.error
-
-class ChatResponse:
-    """
-    Represents a response from a chat session with access to different pipeline stages.
-    """
-    
-    def __init__(self, question: str, context: str = None, cypher: str = None, 
-                 answer: str = None, execution_time: float = None, error: str = None):
-        self._question = question
-        self._context = context
-        self._cypher = cypher
-        self._answer = answer
-        self._execution_time = execution_time
-        self._error = error
-    
-    @property
-    def query(self) -> str:
-        """The original question/query."""
-        return self._question
-    
-    @property
-    def cypher(self) -> str:
-        """The generated Cypher query."""
-        return self._cypher
-    
-    @property
-    def context(self) -> str:
-        """The extracted context from the graph."""
-        return self._context
-    
-    @property
-    def answer(self) -> str:
-        """The final QA answer."""
-        return self._answer
-    
-    @property
-    def execution_time(self) -> float:
-        """Query execution time in seconds."""
-        return self._execution_time
-    
-    @property
-    def error(self) -> str:
-        """Error message if any step failed."""
-        return self._error
-    
-    def to_dict(self) -> dict:
-        """Convert response to dictionary format for backward compatibility."""
-        return {
-            "question": self._question,
-            "response": self._answer,
-            "context": self._context,
-            "cypher": self._cypher
-        }
 
 class ChatSession:
     """
@@ -123,15 +24,18 @@ class ChatSession:
         >>> model_config = KnowledgeGraphModelConfig.with_model(model)
         >>> kg = KnowledgeGraph("test_kg", model_config, ontology)
         >>> session = kg.start_chat()
+        >>> 
+        >>> # Full QA pipeline
         >>> response = session.send_message("What is the capital of France?")
-        >>> # Backward compatible dict access:
         >>> print(response["question"])  # "What is the capital of France?"
         >>> print(response["response"])  # "Paris"
-        >>> # New property access:
-        >>> print(response.query)        # "What is the capital of France?"
-        >>> print(response.cypher)       # "MATCH (c:City)..."
-        >>> print(response.context)      # Retrieved context
-        >>> print(response.answer)       # "Paris"
+        >>> print(response["context"])   # Retrieved context
+        >>> print(response["cypher"])    # "MATCH (c:City)..."
+        >>> 
+        >>> # Just generate Cypher query without QA
+        >>> context, cypher = session.generate_cypher_query("Who are the actors in The Matrix?")
+        >>> print(context)  # Retrieved context
+        >>> print(cypher)   # "MATCH (a:Actor)-[:ACTED_IN]->(m:Movie {title: 'The Matrix'}) RETURN a.name"
     """
 
     def __init__(self, model_config: KnowledgeGraphModelConfig, ontology: Ontology, graph: Graph,
@@ -177,38 +81,50 @@ class ChatSession:
                 qa_system_instruction
             )
         
-        self.last_complete_response = None
+        # Initialize steps once during construction
+        self.qa_step = QAStep(
+            chat_session=self.qa_chat_session,
+            qa_prompt=self.qa_prompt,
+        )
+        self.cypher_step = GraphQueryGenerationStep(
+            graph=self.graph,
+            chat_session=self.cypher_chat_session,
+            ontology=self.ontology,
+            last_answer=None,  # Will be updated dynamically
+            cypher_prompt=self.cypher_prompt,
+            cypher_prompt_with_history=self.cypher_prompt_with_history
+        )
         
-        # Metadata to store additional information about the chat session (currently only last query execution time)
-        self.metadata = {"last_query_execution_time": None}
+        self.last_answer = None
         
-    def _generate_cypher_query(self, message: str) -> tuple:
+    def _update_last_answer(self, answer: str):
+        """Update the last answer in both the session and cypher step."""
+        self.last_answer = answer
+        self.cypher_step.last_answer = answer
+        
+    def generate_cypher_query(self, message: str) -> tuple:
         """
-        Generate a Cypher query for the given message.
+        Generate a Cypher query for the given message without running QA.
+        
+        This method allows users to get just the Cypher query and context 
+        without executing the full question-answering pipeline.
         
         Args:
             message (str): The message to generate a query for.
             
         Returns:
-            tuple: A tuple containing (context, cypher)
+            tuple: A tuple containing (context, cypher) where:
+                - context (str): The extracted context from the graph
+                - cypher (str): The generated Cypher query
         """
-        last_answer = self.last_complete_response.answer if self.last_complete_response else None
-        
-        cypher_step = GraphQueryGenerationStep(
-            graph=self.graph,
-            chat_session=self.cypher_chat_session,
-            ontology=self.ontology,
-            last_answer=last_answer,
-            cypher_prompt=self.cypher_prompt,
-            cypher_prompt_with_history=self.cypher_prompt_with_history
-        )
+        # Update the last_answer for this query
+        self.cypher_step.last_answer = self.last_answer
 
-        (context, cypher, query_execution_time) = cypher_step.run(message)
-        self.metadata["last_query_execution_time"] = query_execution_time
+        (context, cypher, _) = self.cypher_step.run(message)
         
         return (context, cypher)
 
-    def send_message(self, message: str) -> ResponseDict:
+    def send_message(self, message: str) -> dict:
         """
         Sends a message to the chat session.
 
@@ -216,50 +132,32 @@ class ChatSession:
             message (str): The message to send.
 
         Returns:
-            ResponseDict: A dict-like object with backward compatibility that also provides property access:
-                - dict access: result["question"], result["response"], result["context"], result["cypher"]
-                - property access: result.query, result.answer, result.context, result.cypher, result.execution_time
+            dict: A dictionary containing the response with keys:
+                - "question": The original question
+                - "response": The answer
+                - "context": The extracted context from the graph
+                - "cypher": The generated Cypher query
         """
-        response = self._send_message_internal(message)
-        return ResponseDict(response)
-    
-    def _send_message_internal(self, message: str) -> ChatResponse:
-        """
-        Internal method that returns the full ChatResponse object.
-        """
-        (context, cypher) = self._generate_cypher_query(message)
-        execution_time = self.metadata.get("last_query_execution_time")
+        (context, cypher) = self.generate_cypher_query(message)
 
         # If the cypher is empty, return an error response
         if not cypher or len(cypher) == 0:
-            response = ChatResponse(
-                question=message,
-                context=None,
-                cypher=None,
-                answer=CYPHER_ERROR_RES,
-                execution_time=execution_time,
-                error="Could not generate valid cypher query"
-            )
-            self.last_complete_response = response
-            return response
+            return {
+                "question": message,
+                "response": CYPHER_ERROR_RES,
+                "context": None,
+                "cypher": None
+            }
         
-        qa_step = QAStep(
-            chat_session=self.qa_chat_session,
-            qa_prompt=self.qa_prompt,
-        )
+        answer = self.qa_step.run(message, cypher, context)
+        self._update_last_answer(answer)
 
-        answer = qa_step.run(message, cypher, context)
-
-        response = ChatResponse(
-            question=message,
-            context=context,
-            cypher=cypher,
-            answer=answer,
-            execution_time=execution_time
-        )
-        
-        self.last_complete_response = response
-        return response
+        return {
+            "question": message,
+            "response": answer,
+            "context": context,
+            "cypher": cypher
+        }
     
     def send_message_stream(self, message: str) -> Iterator[str]:
         """
@@ -271,79 +169,20 @@ class ChatSession:
         Yields:
             str: Chunks of the response as they're generated.
         """
-        (context, cypher) = self._generate_cypher_query(message)
-        execution_time = self.metadata.get("last_query_execution_time")
+        (context, cypher) = self.generate_cypher_query(message)
 
         if not cypher or len(cypher) == 0:
             # Stream the error message for consistency with successful responses
             yield CYPHER_ERROR_RES
-            
-            self.last_complete_response = ChatResponse(
-                question=message,
-                context=None,
-                cypher=None,
-                answer=CYPHER_ERROR_RES,
-                execution_time=execution_time,
-                error="Could not generate valid cypher query"
-            )
             return
 
-        qa_step = StreamingQAStep(
-            chat_session=self.qa_chat_session,
-            qa_prompt=self.qa_prompt,
-        )
-
         # Yield chunks of the response as they're generated
-        for chunk in qa_step.run(message, cypher, context):
+        for chunk in self.qa_step.run_stream(message, cypher, context):
             yield chunk
 
         # Set the last answer using chat history to ensure we have the complete response
-        final_answer = qa_step.chat_session.get_chat_history()[-1]['content']
-        
-        self.last_complete_response = ChatResponse(
-            question=message,
-            context=context,
-            cypher=cypher,
-            answer=final_answer,
-            execution_time=execution_time
-        )
-
-    def search(self, message: str) -> ChatResponse:
-        """
-        Searches the knowledge graph by generating a Cypher query and extracting relevant context.
-        This method only performs cypher generation and context extraction without Q&A.
-
-        Args:
-            message (str): The search query or question.
-
-        Returns:
-            ChatResponse: Search results with cypher and context, but no answer.
-        """
-        context, cypher = self._generate_cypher_query(message)
-        execution_time = self.metadata.get("last_query_execution_time")
-        
-        # Handle query generation failure
-        if not cypher:
-            response = ChatResponse(
-                question=message,
-                context=None,
-                cypher=None,
-                answer=None,
-                execution_time=execution_time,
-                error="Could not generate valid cypher query"
-            )
-        else:
-            response = ChatResponse(
-                question=message,
-                context=context,
-                cypher=cypher,
-                answer=None,  # No QA step for search
-                execution_time=execution_time
-            )
-        
-        # Update session state
-        self.last_complete_response = response
-        return response
+        final_answer = self.qa_step.chat_session.get_chat_history()[-1]['content']
+        self._update_last_answer(final_answer)
 
 def clean_ontology_for_prompt(ontology: dict) -> str:
     """
