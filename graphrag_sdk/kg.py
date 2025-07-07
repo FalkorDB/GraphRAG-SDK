@@ -210,7 +210,6 @@ class KnowledgeGraph:
         chat_session = ChatSession(self._model_config, self.ontology, self.graph, self.cypher_system_instruction,
                                    self.qa_system_instruction, self.cypher_gen_prompt, self.qa_prompt, self.cypher_gen_prompt_history)
         return chat_session
-    
     def add_node(self, entity: str, attributes: dict) -> None:
         """
         Add a node to the knowledge graph, checking if it matches the ontology

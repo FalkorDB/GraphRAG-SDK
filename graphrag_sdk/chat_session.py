@@ -102,6 +102,9 @@ class ChatSession:
             "cypher": None
             }
         
+        # Metadata to store additional information about the chat session (currently only last query execution time)
+        self.metadata = {"last_query_execution_time": None}
+        
     def _update_last_complete_response(self, response_dict: dict):
         """Update the last complete response in both the session and cypher step."""
         self.last_complete_response = response_dict
@@ -124,8 +127,16 @@ class ChatSession:
         """
         # Update the last_answer for this query
         self.cypher_step.last_answer = self.last_complete_response.get("response")
-
-        (context, cypher, _) = self.cypher_step.run(message)
+        
+        try:
+            (context, cypher, query_execution_time) = self.cypher_step.run(message)
+        except Exception as e:
+            # If there's an error, return empty context and cypher with error message
+            context = None
+            cypher = CYPHER_ERROR_RES
+            query_execution_time = None
+            
+        self.metadata["last_query_execution_time"] = query_execution_time
         
         return (context, cypher)
 

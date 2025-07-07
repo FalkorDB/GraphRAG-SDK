@@ -161,6 +161,7 @@ class TestStreamingResponse:
         answer = ''.join(received_chunks)
 
         assert answer.strip() == response_dict["response"].strip(), "Combined chunks (using join) should match last complete response"
+        assert chat.metadata.get("last_query_execution_time") is not None, "Expected last query execution time to be set"
 
         # Create a test case for evaluation
         test_case = LLMTestCase(
