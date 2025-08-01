@@ -14,7 +14,6 @@ python = ">=3.10.0,<3.14"
 falkordb = "^1.0.9"
 typing-extensions = "^4.12.1"
 bs4 = "^0.0.2"
-pypdf = "^4.2.0"
 backoff = "^2.2.1"
 requests = "^2.32.3"
 python-abc = "^0.2.0"
@@ -28,6 +27,7 @@ openai = { version = "^1.35.9", optional = true }
 google-generativeai = { version = "^0.8.1", optional = true }
 litellm = "^1.73.1"
 ollama = "^0.5.1"
+pypdf = "^5.9.0"
 
 [tool.poetry.extras]
 all = ["vertexai", "openai", "google-generativeai"]
