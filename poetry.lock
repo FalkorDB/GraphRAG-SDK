@@ -3962,17 +3962,6 @@ setproctitle = ["setproctitle"]
 testing = ["filelock"]
 
 [[package]]
-name = "python-abc"
-version = "0.2.0"
-description = "A python implementation of the ABC Software metric"
-optional = false
-python-versions = "*"
-groups = ["main"]
-files = [
-    {file = "python-abc-0.2.0.tar.gz", hash = "sha256:90017d09fbac7bde4b64b2c7e1b5d22da9055b64b821d1a2b4dc805b450b251a"},
-]
-
-[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
@@ -5715,4 +5704,4 @@ vertexai = ["vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10.0,<3.14"
-content-hash = "a36dfccb03c9a6389a546f920f43f93909e9f310b1ca8c33b3ed383285861a80"
+content-hash = "27a805b5df66fb53014401380823306ed7019efb68bd449964f72ddd9bccd1c2"
