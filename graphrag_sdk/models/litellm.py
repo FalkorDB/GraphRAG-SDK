@@ -40,7 +40,7 @@ class LiteModel(GenerativeModel):
          Examples:
          - openai/gpt-4.1
          - azure/gpt-4.1
-         - gemini/gemini-2.0-flash-exp
+         - gemini/gemini-2.0-flash
          - ollama/llama3:8b
 
         Args:
