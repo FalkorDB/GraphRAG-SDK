@@ -24,7 +24,7 @@ class TestAutoDetectOntology(unittest.TestCase):
 
         sources = [Source(file_path)]
 
-        model = GeminiGenerativeModel(model_name="gemini-1.5-flash")
+        model = GeminiGenerativeModel(model_name="gemini-2.0-flash")
 
         boundaries = """
           Extract entities and relationships from each page
