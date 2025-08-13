@@ -1,0 +1,81 @@
+name: Sync Dependencies
+
+on:
+  push:
+    paths: ['pyproject.toml']
+    branches: [main]
+  pull_request:
+    paths: ['pyproject.toml']
+    branches: [main]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      
+      - name: Sync requirements
+        run: |
+          # Generate simple requirements.txt with only the 11 main dependencies
+          python3 -c "
+import re
+
+# Read pyproject.toml
+with open('pyproject.toml', 'r') as f:
+    content = f.read()
+
+# Find the dependencies section
+start = content.find('[tool.poetry.dependencies]')
+end = content.find('[', start + 1)
+if end == -1:
+    deps_section = content[start:]
+else:
+    deps_section = content[start:end]
+
+# Extract dependencies
+lines = deps_section.split('\n')[1:]  # Skip the section header
+deps = []
+
+for line in lines:
+    line = line.strip()
+    if '=' in line and not line.startswith('python ') and not line.startswith('#') and line:
+        # Extract package name and version
+        name = line.split('=')[0].strip()
+        version = line.split('\"')[1] if '\"' in line else line.split('=')[1].strip()
+        
+        # Convert ^1.0.9 to >=1.0.9,<2.0.0
+        if version.startswith('^'):
+            base = version[1:]
+            major = base.split('.')[0]
+            next_major = str(int(major) + 1)
+            pip_version = f'>={base},<{next_major}.0.0'
+        else:
+            pip_version = f'>={version}'
+        
+        deps.append(f'{name}{pip_version}')
+
+# Write requirements.txt
+with open('requirements.txt', 'w') as f:
+    f.write('# Auto-generated from pyproject.toml [tool.poetry.dependencies]\n')
+    f.write('# This file contains only DIRECT dependencies, not transitive ones\n') 
+    f.write('# Source of truth: pyproject.toml\n\n')
+    for dep in sorted(deps):
+        f.write(dep + '\n')
+
+print(f'✅ Generated requirements.txt with {len(deps)} direct dependencies')
+"
+          
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add requirements.txt
+          git commit -m "🤖 Auto-sync requirements.txt from pyproject.toml [11 direct deps]" || exit 0
+          git push
