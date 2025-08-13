@@ -3,7 +3,6 @@ import json
 import logging
 from enum import Enum
 from typing import Union, Optional
-from graphrag_sdk.fixtures.regex import *
 
 
 logger = logging.getLogger(__name__)
