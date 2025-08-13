@@ -11,14 +11,3 @@ python-dotenv>=1.0.1,<2.0.0
 fix-busted-json>=0.0.18,<0.1.0
 rich>=13.9.4,<14.0.0
 litellm>=1.73.1,<2.0.0
-ollama>=0.5.1,<1.0.0
-
-# Core model providers (always installed):
-# - litellm: LLM router/abstraction layer
-# - ollama: Local model support
-
-# Optional AI Model Dependencies (install with extras):
-# pip install graphrag-sdk[openai]                 # OpenAI models
-# pip install graphrag-sdk[vertexai]               # Google Vertex AI
-# pip install graphrag-sdk[google-generativeai]    # Google AI Studio
-# pip install graphrag-sdk[all]                    # All optional providers
