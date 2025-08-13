@@ -3,7 +3,7 @@ name: Sync Dependencies
 on:
   push:
     paths: ['pyproject.toml']
-    branches: [main]
+    branches: [main, fix-poetry-adn-pip-file]  # Test on current branch
   pull_request:
     paths: ['pyproject.toml']
     branches: [main]
@@ -31,73 +31,73 @@ jobs:
         run: |
           # Generate simple requirements.txt with only the main (direct) dependencies
           python3 - <<'PY'
-import sys
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:
-    import tomli as tomllib
+          import sys
+          try:
+              import tomllib  # Python 3.11+
+          except ModuleNotFoundError:
+              import tomli as tomllib
 
-def caret_to_range(v: str) -> str:
-    base = v[1:]
-    major = base.split('.')[0]
-    return f'>={base},<{int(major)+1}.0.0'
+          def caret_to_range(v: str) -> str:
+              base = v[1:]
+              major = base.split('.')[0]
+              return f'>={base},<{int(major)+1}.0.0'
 
-with open('pyproject.toml', 'rb') as f:
-    data = tomllib.load(f)
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
 
-deps_table = data.get('tool', {}).get('poetry', {}).get('dependencies', {})
-deps = []
+          deps_table = data.get('tool', {}).get('poetry', {}).get('dependencies', {})
+          deps = []
 
-for name, spec in deps_table.items():
-    if name.lower() == 'python':
-        continue
+          for name, spec in deps_table.items():
+              if name.lower() == 'python':
+                  continue
 
-    extras = []
-    req_line = None
-    version = None
+              extras = []
+              req_line = None
+              version = None
 
-    if isinstance(spec, str):
-        version = spec.strip()
-    elif isinstance(spec, dict):
-        extras = spec.get('extras') or []
-        if 'version' in spec:
-            version = str(spec['version']).strip()
-        elif 'git' in spec:
-            ref = spec.get('rev') or spec.get('tag') or spec.get('branch') or ''
-            frag = f'@{ref}' if ref else ''
-            extras_part = f"[{','.join(extras)}]" if extras else ''
-            req_line = f"{name}{extras_part} @ git+{spec['git']}{frag}"
-        elif 'url' in spec:
-            extras_part = f"[{','.join(extras)}]" if extras else ''
-            req_line = f"{name}{extras_part} @ {spec['url']}"
-        else:
-            # Unsupported for requirements (e.g., local path). Skip.
-            continue
-    else:
-        continue
+              if isinstance(spec, str):
+                  version = spec.strip()
+              elif isinstance(spec, dict):
+                  extras = spec.get('extras') or []
+                  if 'version' in spec:
+                      version = str(spec['version']).strip()
+                  elif 'git' in spec:
+                      ref = spec.get('rev') or spec.get('tag') or spec.get('branch') or ''
+                      frag = f'@{ref}' if ref else ''
+                      extras_part = f"[{','.join(extras)}]" if extras else ''
+                      req_line = f"{name}{extras_part} @ git+{spec['git']}{frag}"
+                  elif 'url' in spec:
+                      extras_part = f"[{','.join(extras)}]" if extras else ''
+                      req_line = f"{name}{extras_part} @ {spec['url']}"
+                  else:
+                      # Unsupported for requirements (e.g., local path). Skip.
+                      continue
+              else:
+                  continue
 
-    if req_line is None:
-        def normalize(ver: str) -> str:
-            if ver.startswith('^'):
-                return caret_to_range(ver)
-            if any(op in ver for op in ('<', '>', '!=', '==', '~=')):
-                return ver
-            return f'>={ver}'
-        extras_part = f"[{','.join(extras)}]" if extras else ''
-        req_line = f"{name}{extras_part}{normalize(version)}"
+              if req_line is None:
+                  def normalize(ver: str) -> str:
+                      if ver.startswith('^'):
+                          return caret_to_range(ver)
+                      if any(op in ver for op in ('<', '>', '!=', '==', '~=')):
+                          return ver
+                      return f'>={ver}'
+                  extras_part = f"[{','.join(extras)}]" if extras else ''
+                  req_line = f"{name}{extras_part}{normalize(version)}"
 
-    deps.append(req_line)
+              deps.append(req_line)
 
-deps = sorted(set(deps))
-with open('requirements.txt', 'w', encoding='utf-8') as f:
-    f.write('# Auto-generated from pyproject.toml [tool.poetry.dependencies]\n')
-    f.write('# This file contains only DIRECT dependencies, not transitive ones\n')
-    f.write('# Source of truth: pyproject.toml\n\n')
-    for dep in deps:
-        f.write(dep + '\n')
+          deps = sorted(set(deps))
+          with open('requirements.txt', 'w', encoding='utf-8') as f:
+              f.write('# Auto-generated from pyproject.toml [tool.poetry.dependencies]\n')
+              f.write('# This file contains only DIRECT dependencies, not transitive ones\n')
+              f.write('# Source of truth: pyproject.toml\n\n')
+              for dep in deps:
+                  f.write(dep + '\n')
 
-print(f'✅ Generated requirements.txt with {len(deps)} direct dependencies')
-PY
+          print(f'✅ Generated requirements.txt with {len(deps)} direct dependencies')
+          PY
           
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
