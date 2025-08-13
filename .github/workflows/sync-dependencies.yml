@@ -23,59 +23,92 @@ jobs:
         with:
           python-version: '3.x'
       
+      - name: Install tomli for Python <3.11
+        run: |
+          python3 -c "import sys; exit(0 if sys.version_info >= (3, 11) else 1)" || pip install tomli
+      
       - name: Sync requirements
         run: |
-          # Generate simple requirements.txt with only the 11 main dependencies
-          python3 -c "
-import re
+          # Generate simple requirements.txt with only the main (direct) dependencies
+          python3 - <<'PY'
+import sys
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:
+    import tomli as tomllib
 
-# Read pyproject.toml
-with open('pyproject.toml', 'r') as f:
-    content = f.read()
+def caret_to_range(v: str) -> str:
+    base = v[1:]
+    major = base.split('.')[0]
+    return f'>={base},<{int(major)+1}.0.0'
 
-# Find the dependencies section
-start = content.find('[tool.poetry.dependencies]')
-end = content.find('[', start + 1)
-if end == -1:
-    deps_section = content[start:]
-else:
-    deps_section = content[start:end]
+with open('pyproject.toml', 'rb') as f:
+    data = tomllib.load(f)
 
-# Extract dependencies
-lines = deps_section.split('\n')[1:]  # Skip the section header
+deps_table = data.get('tool', {}).get('poetry', {}).get('dependencies', {})
 deps = []
 
-for line in lines:
-    line = line.strip()
-    if '=' in line and not line.startswith('python ') and not line.startswith('#') and line:
-        # Extract package name and version
-        name = line.split('=')[0].strip()
-        version = line.split('\"')[1] if '\"' in line else line.split('=')[1].strip()
-        
-        # Convert ^1.0.9 to >=1.0.9,<2.0.0
-        if version.startswith('^'):
-            base = version[1:]
-            major = base.split('.')[0]
-            next_major = str(int(major) + 1)
-            pip_version = f'>={base},<{next_major}.0.0'
-        else:
-            pip_version = f'>={version}'
-        
-        deps.append(f'{name}{pip_version}')
+for name, spec in deps_table.items():
+    if name.lower() == 'python':
+        continue
 
-# Write requirements.txt
-with open('requirements.txt', 'w') as f:
+    extras = []
+    req_line = None
+    version = None
+
+    if isinstance(spec, str):
+        version = spec.strip()
+    elif isinstance(spec, dict):
+        extras = spec.get('extras') or []
+        if 'version' in spec:
+            version = str(spec['version']).strip()
+        elif 'git' in spec:
+            ref = spec.get('rev') or spec.get('tag') or spec.get('branch') or ''
+            frag = f'@{ref}' if ref else ''
+            extras_part = f"[{','.join(extras)}]" if extras else ''
+            req_line = f"{name}{extras_part} @ git+{spec['git']}{frag}"
+        elif 'url' in spec:
+            extras_part = f"[{','.join(extras)}]" if extras else ''
+            req_line = f"{name}{extras_part} @ {spec['url']}"
+        else:
+            # Unsupported for requirements (e.g., local path). Skip.
+            continue
+    else:
+        continue
+
+    if req_line is None:
+        def normalize(ver: str) -> str:
+            if ver.startswith('^'):
+                return caret_to_range(ver)
+            if any(op in ver for op in ('<', '>', '!=', '==', '~=')):
+                return ver
+            return f'>={ver}'
+        extras_part = f"[{','.join(extras)}]" if extras else ''
+        req_line = f"{name}{extras_part}{normalize(version)}"
+
+    deps.append(req_line)
+
+deps = sorted(set(deps))
+with open('requirements.txt', 'w', encoding='utf-8') as f:
     f.write('# Auto-generated from pyproject.toml [tool.poetry.dependencies]\n')
-    f.write('# This file contains only DIRECT dependencies, not transitive ones\n') 
+    f.write('# This file contains only DIRECT dependencies, not transitive ones\n')
     f.write('# Source of truth: pyproject.toml\n\n')
-    for dep in sorted(deps):
+    for dep in deps:
         f.write(dep + '\n')
 
 print(f'✅ Generated requirements.txt with {len(deps)} direct dependencies')
-"
+PY
           
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add requirements.txt
-          git commit -m "🤖 Auto-sync requirements.txt from pyproject.toml [11 direct deps]" || exit 0
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🤖 Auto-sync requirements.txt from pyproject.toml"
+            if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+              git push
+            else
+              echo "Skipping push on event: ${GITHUB_EVENT_NAME}"
+            fi
+          fi
