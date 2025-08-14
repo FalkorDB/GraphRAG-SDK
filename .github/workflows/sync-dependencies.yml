@@ -5,7 +5,6 @@ on:
     paths: ['pyproject.toml']
     branches: [main]
   pull_request:
-    # For testing - remove "paths" to run on any PR change
     branches: [main]
 
 jobs:
@@ -13,34 +12,49 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.head_ref || github.ref }}
 
-      - name: Export requirements.txt
-        uses: divideprojects/poetry-export-requirements-action@v1
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          without-hashes: true
-          outfile-name: requirements.txt
+          python-version: '3.11'
+
+      - name: Install pip-tools
+        run: pip install pip-tools
+
+      - name: Generate requirements.txt from pyproject.toml (main deps only)
+        run: pip-compile pyproject.toml --output-file requirements.txt
 
       - name: Configure Git
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
-      - name: Commit changes
+      - name: Commit changes (TESTING - always commit)
         run: |
           git add requirements.txt
           if git diff --staged --quiet; then
-            echo "No changes to commit"
+            echo "No changes to stage, but forcing commit for testing"
+            git commit --allow-empty -m "🤖 [TESTING] Auto-sync requirements.txt from pyproject.toml
+
+          No actual changes but testing pip-tools workflow - commit: ${{ github.sha }}
+          Event: ${{ github.event_name }}
+          "
           else
-            git commit -m "🤖 Auto-sync requirements.txt from pyproject.toml"
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              git push origin HEAD:${{ github.head_ref }}
-            else
-              git push
-            fi
+            git commit -m "🤖 [TESTING] Auto-sync requirements.txt from pyproject.toml
+
+          Generated using pip-tools from commit: ${{ github.sha }}
+          Event: ${{ github.event_name }}
+          "
+          fi
+          
+          # Push to the correct branch
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git push origin HEAD:${{ github.head_ref }}
+          else
+            git push
           fi
