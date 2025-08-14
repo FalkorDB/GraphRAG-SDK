@@ -5,7 +5,7 @@ on:
     paths: ['pyproject.toml']
     branches: [main]
   pull_request:
-    paths: ['pyproject.toml']
+    # For testing - remove "paths" to run on any PR change
     branches: [main]
 
 jobs:
@@ -17,84 +17,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
           ref: ${{ github.head_ref || github.ref }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Export requirements.txt
+        uses: divideprojects/poetry-export-requirements-action@v1
         with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: latest
-          virtualenvs-create: true
-          virtualenvs-in-project: false
-
-      - name: Generate requirements.txt
-        run: |
-          poetry export -f requirements.txt --output requirements.txt --without-hashes --only main
-          echo "✅ Generated requirements.txt using Poetry export"
+          without-hashes: true
+          outfile-name: requirements.txt
 
       - name: Configure Git
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
-      - name: Commit changes (TESTING - always commit)
+      - name: Commit changes
         run: |
           git add requirements.txt
           if git diff --staged --quiet; then
-            echo "No changes to stage, but forcing commit for testing"
-            git commit --allow-empty -m "🤖 [TESTING] Auto-sync requirements.txt from pyproject.toml
-
-          No actual changes but testing workflow - commit: ${{ github.sha }}
-          Event: ${{ github.event_name }}
-          "
+            echo "No changes to commit"
           else
-            git commit -m "🤖 [TESTING] Auto-sync requirements.txt from pyproject.toml
-
-          Generated from commit: ${{ github.sha }}
-          Event: ${{ github.event_name }}
-          "
+            git commit -m "🤖 Auto-sync requirements.txt from pyproject.toml"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              git push origin HEAD:${{ github.head_ref }}
+            else
+              git push
+            fi
           fi
-          
-          # Push to the correct branch
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git push origin HEAD:${{ github.head_ref }}
-          else
-            git push
-          fi
-
-      - name: Add PR comment (TESTING - always comment)
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const commentBody = `🤖 **[TESTING] requirements.txt sync completed**
-            
-            The workflow ran and processed \`pyproject.toml\`:
-            - ✅ Used Poetry export command
-            - ✅ Generated clean requirements.txt 
-            - ✅ Changes committed to PR branch
-            
-            **This is a test run** - checking if the sync workflow works properly.
-            
-            Event: ${{ github.event_name }}
-            Commit: \`${{ github.sha }}\``;
-            
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: commentBody
-            });
-
-      - name: Summary
-        run: |
-          echo "✅ [TESTING MODE] Workflow completed"
-          echo "📁 requirements.txt has been generated using Poetry export"
-          echo "🔍 Check your PR to see the clean requirements.txt file"
