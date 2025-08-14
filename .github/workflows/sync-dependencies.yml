@@ -19,6 +19,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -218,7 +219,13 @@ jobs:
           Event: ${{ github.event_name }}
           "
           fi
-          git push
+          
+          # Push to the correct branch
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git push origin HEAD:${{ github.head_ref }}
+          else
+            git push
+          fi
 
       - name: Add PR comment (TESTING - always comment)
         if: github.event_name == 'pull_request'
