@@ -13,7 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -140,7 +139,7 @@ jobs:
 
                   if req_line:
                       deps.append(req_line)
-                      print(f"✓ Added dependency: {req_line}")
+                      print(f"Added dependency: {req_line}")
 
               except Exception as e:
                   print(f"Error processing dependency {name}: {e}")
@@ -190,50 +189,26 @@ jobs:
           else
             echo "changed=true" >> $GITHUB_OUTPUT
             echo "Changes detected in requirements.txt"
-            echo "=== Changes ==="
-            git diff HEAD -- requirements.txt
-            echo "==============="
           fi
 
       - name: Commit changes
-        if: steps.changes.outputs.changed == 'true'
+        env:
+          PR_REF: ${{ github.head_ref }}
         run: |
           git add requirements.txt
-          git commit -m "Auto-sync requirements.txt from pyproject.toml
-
-          Generated from commit: ${{ github.sha }}
-          Event: ${{ github.event_name }}
-          "
-          
-          # Push to the correct branch
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git push origin HEAD:${{ github.head_ref }}
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
           else
-            git push
+            git commit -m "🤖 Auto-sync requirements.txt from pyproject.toml"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              case "${PR_REF}" in
+                *[!A-Za-z0-9._/-]*|'') echo "Unsafe PR ref; skipping push"; exit 0;;
+              esac
+              git push origin "HEAD:${PR_REF}"
+            else
+              git push
+            fi
           fi
-
-      - name: Add PR comment
-        if: steps.changes.outputs.changed == 'true' && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const commentBody = `**requirements.txt updated automatically**
-            
-            The \`requirements.txt\` file has been updated based on changes to \`pyproject.toml\`.
-            
-            **Changes made:**
-            - Synchronized direct dependencies from Poetry configuration
-            - Maintained proper version constraints and markers
-            - Updated package count and dependency specifications
-            
-            This is an automated update to keep requirements.txt in sync with pyproject.toml.`;
-            
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: commentBody
-            });
 
       - name: Summary
         run: |
@@ -242,4 +217,3 @@ jobs:
           else
             echo "requirements.txt is already up to date"
           fi
-          echo "Workflow completed successfully"
