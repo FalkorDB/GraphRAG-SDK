@@ -5,6 +5,7 @@ on:
     paths: ['pyproject.toml']
     branches: [main]
   pull_request:
+    paths: ['pyproject.toml']
     branches: [main]
 
 jobs:
@@ -12,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,35 +24,186 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      - name: Install pip-tools
-        run: pip install pip-tools
+      - name: Install tomli for Python <3.11
+        run: |
+          python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" || python3 -m pip install -q tomli
 
-      - name: Generate requirements.txt from pyproject.toml (main deps only)
-        run: pip-compile pyproject.toml --output-file requirements.txt
+      - name: Sync requirements
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          import re
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib
+
+          def caret_to_range(v: str) -> str:
+              """Convert Poetry caret constraint to pip-compatible range with proper pre-1.0 semantics."""
+              base = v[1:]
+              parts = base.split('.')
+              
+              def num(seg):
+                  m = re.match(r'(\d+)', str(seg))
+                  return int(m.group(1)) if m else 0
+              
+              major = num(parts[0]) if len(parts) > 0 else 0
+              minor = num(parts[1]) if len(parts) > 1 else 0
+              patch = num(parts[2]) if len(parts) > 2 else 0
+              
+              # Proper caret semantics: ^0.x.y -> <0.(x+1).0, ^x.y.z -> <(x+1).0.0
+              if major > 0:
+                  upper = f'{major+1}.0.0'
+              elif minor > 0:
+                  upper = f'0.{minor+1}.0'
+              else:
+                  upper = f'0.0.{patch+1}'
+              
+              return f'>={base},<{upper}'
+
+          try:
+              with open('pyproject.toml', 'rb') as f:
+                  data = tomllib.load(f)
+          except Exception as e:
+              print(f"Error reading pyproject.toml: {e}")
+              sys.exit(1)
+
+          deps_table = data.get('tool', {}).get('poetry', {}).get('dependencies', {})
+          if not deps_table:
+              print("No dependencies found in pyproject.toml")
+              sys.exit(1)
+
+          deps = []
+
+          for name, spec in deps_table.items():
+              if name.lower() == 'python':
+                  continue
+
+              extras = []
+              req_line = None
+              version = None
+              markers = None
+
+              try:
+                  if isinstance(spec, str):
+                      version = spec.strip()
+                  elif isinstance(spec, dict):
+                      extras = sorted(spec.get('extras') or [])
+                      markers = (spec.get('markers') or '').strip() or None
+                      
+                      if 'version' in spec:
+                          version = str(spec['version']).strip()
+                      elif 'git' in spec:
+                          ref = spec.get('rev') or spec.get('tag') or spec.get('branch') or ''
+                          frag = f'@{ref}' if ref else ''
+                          extras_part = f"[{','.join(extras)}]" if extras else ''
+                          req_line = f"{name}{extras_part} @ git+{spec['git']}{frag}"
+                          if markers:
+                              req_line += f"; {markers}"
+                      elif 'url' in spec:
+                          extras_part = f"[{','.join(extras)}]" if extras else ''
+                          req_line = f"{name}{extras_part} @ {spec['url']}"
+                          if markers:
+                              req_line += f"; {markers}"
+                      elif 'path' in spec:
+                          # Skip local path dependencies as they can't be in requirements.txt
+                          print(f"Skipping local path dependency: {name}")
+                          continue
+                      else:
+                          print(f"Skipping unsupported dependency spec for {name}: {spec}")
+                          continue
+                  else:
+                      print(f"Skipping unsupported dependency type for {name}: {type(spec)}")
+                      continue
+
+                  if req_line is None and version is not None:
+                      def normalize(ver: str) -> str:
+                          ver = ver.strip()
+                          if not ver:
+                              return ''
+                          if ver.startswith('^'):
+                              return caret_to_range(ver)
+                          # Check for existing constraints/operators
+                          has_constraint = any(op in ver for op in ['<', '>', '!=', '==', '===', '~=', '~', '*'])
+                          has_space = ' ' in ver  # Combined constraints like ">=1.0 <2.0"
+                          return ver if (has_constraint or has_space) else f'>={ver}'
+                      
+                      normalized_version = normalize(version)
+                      if normalized_version:
+                          extras_part = f"[{','.join(extras)}]" if extras else ''
+                          req_line = f"{name}{extras_part}{normalized_version}"
+                          if markers:
+                              req_line += f"; {markers}"
+
+                  if req_line:
+                      deps.append(req_line)
+                      print(f"✓ Added dependency: {req_line}")
+
+              except Exception as e:
+                  print(f"Error processing dependency {name}: {e}")
+                  continue
+
+          if not deps:
+              print("No valid dependencies found to write to requirements.txt")
+              sys.exit(1)
+
+          deps = sorted(set(deps))
+          
+          try:
+              with open('requirements.txt', 'w', encoding='utf-8') as f:
+                  f.write('# Auto-generated from pyproject.toml [tool.poetry.dependencies]\n')
+                  f.write('# This file contains only DIRECT dependencies, not transitive ones\n')
+                  f.write('# Source of truth: pyproject.toml\n')
+                  f.write('#\n')
+                  f.write('# To install:\n')
+                  f.write('#   pip install -r requirements.txt\n')
+                  f.write('\n')
+                  for dep in deps:
+                      f.write(dep + '\n')
+              
+              print(f'Successfully generated requirements.txt with {len(deps)} direct dependencies')
+              
+              # Print summary
+              print('\nGenerated dependencies:')
+              for dep in deps:
+                  print(f'  - {dep}')
+                  
+          except Exception as e:
+              print(f"Error writing requirements.txt: {e}")
+              sys.exit(1)
+          PY
 
       - name: Configure Git
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
-      - name: Commit changes (TESTING - always commit)
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet HEAD -- requirements.txt; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes to requirements.txt"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Changes detected in requirements.txt"
+            echo "=== Changes ==="
+            git diff HEAD -- requirements.txt
+            echo "==============="
+          fi
+
+      - name: Commit changes
+        if: steps.changes.outputs.changed == 'true'
         run: |
           git add requirements.txt
-          if git diff --staged --quiet; then
-            echo "No changes to stage, but forcing commit for testing"
-            git commit --allow-empty -m "🤖 [TESTING] Auto-sync requirements.txt from pyproject.toml
+          git commit -m "Auto-sync requirements.txt from pyproject.toml
 
-          No actual changes but testing pip-tools workflow - commit: ${{ github.sha }}
+          Generated from commit: ${{ github.sha }}
           Event: ${{ github.event_name }}
           "
-          else
-            git commit -m "🤖 [TESTING] Auto-sync requirements.txt from pyproject.toml
-
-          Generated using pip-tools from commit: ${{ github.sha }}
-          Event: ${{ github.event_name }}
-          "
-          fi
           
           # Push to the correct branch
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -58,3 +211,35 @@ jobs:
           else
             git push
           fi
+
+      - name: Add PR comment
+        if: steps.changes.outputs.changed == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentBody = `**requirements.txt updated automatically**
+            
+            The \`requirements.txt\` file has been updated based on changes to \`pyproject.toml\`.
+            
+            **Changes made:**
+            - Synchronized direct dependencies from Poetry configuration
+            - Maintained proper version constraints and markers
+            - Updated package count and dependency specifications
+            
+            This is an automated update to keep requirements.txt in sync with pyproject.toml.`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+      - name: Summary
+        run: |
+          if [[ "${{ steps.changes.outputs.changed }}" == "true" ]]; then
+            echo "requirements.txt has been updated and committed"
+          else
+            echo "requirements.txt is already up to date"
+          fi
+          echo "Workflow completed successfully"
