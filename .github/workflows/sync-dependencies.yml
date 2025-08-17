@@ -40,26 +40,31 @@ jobs:
               import tomli as tomllib
 
           def caret_to_range(v: str) -> str:
-              """Convert Poetry caret constraint to pip-compatible range with proper pre-1.0 semantics."""
+              """Convert Poetry caret constraint to pip-compatible range with proper pre-1.0 semantics, incl. ^0 and ^0.0."""
               base = v[1:]
               parts = base.split('.')
-              
               def num(seg):
                   m = re.match(r'(\d+)', str(seg))
                   return int(m.group(1)) if m else 0
-              
               major = num(parts[0]) if len(parts) > 0 else 0
               minor = num(parts[1]) if len(parts) > 1 else 0
               patch = num(parts[2]) if len(parts) > 2 else 0
-              
-              # Proper caret semantics: ^0.x.y -> <0.(x+1).0, ^x.y.z -> <(x+1).0.0
+              # Proper caret semantics:
+              #  - ^X[.Y[.Z]] with X>0 -> <(X+1).0.0
+              #  - ^0.Y[.Z] with Y>0    -> <0.(Y+1).0
+              #  - ^0.0.Z               -> <0.0.(Z+1)
+              #  - ^0                    -> <1.0.0
+              #  - ^0.0                  -> <0.1.0
               if major > 0:
                   upper = f'{major+1}.0.0'
+              elif len(parts) == 1:  # ^0
+                  upper = '1.0.0'
+              elif len(parts) == 2 and minor == 0:  # ^0.0
+                  upper = '0.1.0'
               elif minor > 0:
                   upper = f'0.{minor+1}.0'
               else:
                   upper = f'0.0.{patch+1}'
-              
               return f'>={base},<{upper}'
 
           try:
@@ -198,7 +203,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "🤖 Auto-sync requirements.txt from pyproject.toml"
+            git commit -m "Auto-sync requirements.txt from pyproject.toml"
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               case "${PR_REF}" in
                 *[!A-Za-z0-9._/-]*|'') echo "Unsafe PR ref; skipping push"; exit 0;;
