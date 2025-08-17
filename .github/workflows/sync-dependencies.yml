@@ -127,6 +127,8 @@ jobs:
                           ver = ver.strip()
                           if not ver:
                               return ''
+                          if ver == '*' or ver.lower() == 'any':
+                              return ''
                           if ver.startswith('^'):
                               return caret_to_range(ver)
                           # Check for existing constraints/operators
@@ -135,11 +137,14 @@ jobs:
                           return ver if (has_constraint or has_space) else f'>={ver}'
                       
                       normalized_version = normalize(version)
+                      extras_part = f"[{','.join(extras)}]" if extras else ''
                       if normalized_version:
-                          extras_part = f"[{','.join(extras)}]" if extras else ''
                           req_line = f"{name}{extras_part}{normalized_version}"
-                          if markers:
-                              req_line += f"; {markers}"
+                      else:
+                          # Unpinned dependency (e.g., "*"): emit just the name (+ extras)
+                          req_line = f"{name}{extras_part}"
+                      if markers:
+                          req_line += f"; {markers}"
 
                   if req_line:
                       deps.append(req_line)
@@ -181,8 +186,9 @@ jobs:
 
       - name: Configure Git
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          set -e
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
 
       - name: Check for changes
         id: changes
@@ -199,6 +205,7 @@ jobs:
         env:
           PR_REF: ${{ github.head_ref }}
         run: |
+          set -e
           git add requirements.txt
           if git diff --staged --quiet; then
             echo "No changes to commit"
@@ -206,7 +213,7 @@ jobs:
             git commit -m "Auto-sync requirements.txt from pyproject.toml"
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               case "${PR_REF}" in
-                *[!A-Za-z0-9._/-]*|'') echo "Unsafe PR ref; skipping push"; exit 0;;
+                *[!A-Za-z0-9_-]*|'') echo "Unsafe PR ref; skipping push"; exit 0;;
               esac
               git push origin "HEAD:${PR_REF}"
             else
