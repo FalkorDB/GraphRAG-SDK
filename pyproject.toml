@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graphrag_sdk"
-version = "0.8.0"
+version = "0.8.1"
 license = "MIT"
 description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
 authors = ["FalkorDB <info@falkordb.com>"]
@@ -10,30 +10,21 @@ homepage = "http://RAG-SDK.readthedocs.io"
 keywords = ['RAG', 'Graph-RAG', 'KnowledgeGraph']
 
 [tool.poetry.dependencies]
-python = ">=3.10.0,<3.14"
+python = "^3.10.0, <3.14"
 falkordb = "^1.0.9"
 typing-extensions = "^4.12.1"
-bs4 = "^0.0.2"
+beautifulsoup4 = "^4.12.3"
 pypdf = "^4.2.0"
 backoff = "^2.2.1"
 requests = "^2.32.3"
-python-abc = "^0.2.0"
 ratelimit = "^2.2.1"
 python-dotenv = "^1.0.1"
 fix-busted-json = "^0.0.18"
 rich = "^13.9.4"
-ipykernel = "^6.29.5"
-vertexai = { version = "^1.49.0", optional = true } 
-openai = { version = "^1.35.9", optional = true }
-google-generativeai = { version = "^0.8.1", optional = true }
 litellm = "^1.73.1"
-ollama = "^0.5.1"
 
 [tool.poetry.extras]
-all = ["vertexai", "openai", "google-generativeai"]
-openai = ["openai"]
-vertexai = ["vertexai"]
-google-generativeai = ["google-generativeai"]
+# All optional extras removed - litellm handles all providers
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.2.1"
@@ -44,6 +35,7 @@ sphinx = "^7.3.7"
 sphinx-rtd-theme = "^2.0.0"
 pandas = "^2.2.2"
 jupyter = "^1.0.0"
+ipykernel = "^6.29.5"
 
 [build-system]
 requires = ["poetry-core"]
