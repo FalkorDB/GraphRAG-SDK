@@ -74,7 +74,7 @@ graph_name = "my_existing_graph"
 # Connect to FalkorDB using environment variables
 db = FalkorDB(
     host=os.getenv("FALKORDB_HOST", "localhost"),
-    port=os.getenv("FALKORDB_PORT", 6379),
+    port=int(os.getenv("FALKORDB_PORT", 6379)),
     username=os.getenv("FALKORDB_USERNAME"),  # optional for on-premises
     password=os.getenv("FALKORDB_PASSWORD")   # optional for on-premises
 )
@@ -95,7 +95,7 @@ kg = KnowledgeGraph(
     model_config=model_config,
     ontology=ontology,
     host=os.getenv("FALKORDB_HOST", "localhost"),
-    port=os.getenv("FALKORDB_PORT", 6379),
+    port=int(os.getenv("FALKORDB_PORT", 6379)),
     username=os.getenv("FALKORDB_USERNAME"),
     password=os.getenv("FALKORDB_PASSWORD")
 )
