@@ -12,7 +12,7 @@ class GeminiGenerativeModel(LiteModel):
     A generative model that interfaces with GoogleAI API for chat completions.
     
     Inherits from LiteModel and automatically converts Gemini model names to 
-    LiteLLM format internally (e.g., "gemini-1.5-pro" -> "gemini/gemini-1.5-pro") while 
+    LiteLLM format internally (e.g., "gemini-2.0-flash" -> "gemini/gemini-2.0-flash") while 
     exposing the original model name through the public API.
     """
 

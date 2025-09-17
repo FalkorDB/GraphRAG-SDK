@@ -62,7 +62,7 @@ jobs:
           curl -sSL https://install.python-poetry.org | python3 -
 
       - name: Install dependencies
-        run: poetry install --with test --extras "all"
+        run: poetry install --with test
 
       - name: Wait for Ollama to be ready
         run: |
