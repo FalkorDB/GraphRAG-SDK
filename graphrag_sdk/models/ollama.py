@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional
 from .litellm import LiteModel, LiteModelChatSession
 from .model import (
@@ -24,6 +25,7 @@ class OllamaGenerativeModel(LiteModel):
         model_name: str,
         generation_config: Optional[GenerativeModelConfig] = None,
         system_instruction: Optional[str] = None,
+        api_base: Optional[str] = None,
         host: Optional[str] = None,
     ):
         """
@@ -33,15 +35,28 @@ class OllamaGenerativeModel(LiteModel):
             model_name (str): The name of the Ollama model.
             generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
             system_instruction (Optional[str]): System-level instruction for the model.
-            host (Optional[str]): Host for connecting to the Ollama API.
+            api_base (Optional[str]): Base URL for the Ollama API (e.g., "http://localhost:11434").
+                                    If not provided, will use OLLAMA_API_BASE environment variable.
+            host (Optional[str]): DEPRECATED: Use api_base instead. Base URL for the Ollama API.
         """
         # Convert to LiteLLM format
         lite_model_name = f"ollama/{model_name}"
         
-        # Handle host parameter for Ollama
+        # Handle backward compatibility for host parameter
+        if host is not None and api_base is not None:
+            logger.warning("Both 'host' and 'api_base' parameters provided. Using 'api_base' and ignoring 'host'.")
+        elif host is not None and api_base is None:
+            logger.warning("Parameter 'host' is deprecated. Please use 'api_base' instead.")
+            api_base = host
+        
+        # Use environment variable if no api_base is provided
+        if api_base is None:
+            api_base = os.getenv('OLLAMA_API_BASE')
+        
+        # Handle api_base parameter for Ollama
         additional_params = {}
-        if host is not None:
-            additional_params['api_base'] = host  # LiteLLM uses api_base for custom endpoints
+        if api_base is not None:
+            additional_params['api_base'] = api_base
         
         # Call parent constructor
         super().__init__(

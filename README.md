@@ -195,6 +195,27 @@ With these 3 steps now completed, you're ready to interact and query your knowle
 
 <br />
 
+# Using Ollama
+
+Ollama models are suitable for the Q&A step only (after the knowledge graph has been created).
+
+## Setup
+
+```python
+from graphrag_sdk.models.ollama import OllamaGenerativeModel
+
+# Local Ollama (default: http://localhost:11434)
+qa_model = OllamaGenerativeModel(model_name="llama3:8b")
+
+# Remote Ollama
+qa_model = OllamaGenerativeModel(
+    model_name="llama3:8b",
+    api_base="http://remote-host:11434"
+)
+```
+
+<br />
+
 # AI Agents with GraphRAG
 
 ### Orchestrator

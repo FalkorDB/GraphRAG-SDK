@@ -41,8 +41,9 @@ class LiteModel(GenerativeModel):
             system_instruction (Optional[str]): Instruction to guide the model.
             additional_params (Optional[dict]): Additional provider-specific parameters.
         """
-
-        env_val = validate_environment(model_name)
+        api_base = additional_params.get('api_base') if additional_params else None
+        env_val = validate_environment(model_name, api_base=api_base)
+        
         if not env_val['keys_in_environment']:
             raise ValueError(f"Missing {env_val['missing_keys']} in the environment.")
         self._internal_model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
