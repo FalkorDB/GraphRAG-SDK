@@ -42,6 +42,78 @@ pip install graphrag_sdk
 [![Get started](https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg)](https://lightning.ai/muhammadqadora/studios/build-fast-accurate-genai-apps-advanced-rag-with-falkordb)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
 
+### Environment Configuration
+
+Before using the SDK, configure your environment variables:
+
+```bash
+# FalkorDB Connection (defaults are for on-premises)
+export FALKORDB_HOST="localhost" 
+export FALKORDB_PORT=6379 
+export FALKORDB_USERNAME="your-username"  # optional for on-premises
+export FALKORDB_PASSWORD="your-password"  # optional for on-premises
+
+# LLM Provider (choose one)
+export OPENAI_API_KEY="your-key"  # or GOOGLE_API_KEY, GROQ_API_KEY, etc.
+```
+
+## Quick Start with Existing Knowledge Graph
+
+If you already have a knowledge graph in FalkorDB, you can quickly set up GraphRAG by extracting the ontology from your existing graph:
+
+```python
+import os
+from falkordb import FalkorDB
+from graphrag_sdk import KnowledgeGraph
+from graphrag_sdk.ontology import Ontology
+from graphrag_sdk.models.litellm import LiteModel
+from graphrag_sdk.model_config import KnowledgeGraphModelConfig
+
+graph_name = "my_existing_graph"
+
+# Connect to FalkorDB using environment variables
+db = FalkorDB(
+    host=os.getenv("FALKORDB_HOST", "localhost"),
+    port=int(os.getenv("FALKORDB_PORT", 6379)),
+    username=os.getenv("FALKORDB_USERNAME"),  # optional for on-premises
+    password=os.getenv("FALKORDB_PASSWORD")   # optional for on-premises
+)
+
+# Select graph
+graph = db.select_graph(graph_name)
+
+# Extract ontology from existing knowledge graph
+ontology = Ontology.from_kg_graph(graph)
+
+# Configure model and create GraphRAG instance
+model = LiteModel()  # Default is OpenAI GPT-4.1, can specify different model
+model_config = KnowledgeGraphModelConfig.with_model(model)
+
+# Create KnowledgeGraph instance
+kg = KnowledgeGraph(
+    name=graph_name,
+    model_config=model_config,
+    ontology=ontology,
+    host=os.getenv("FALKORDB_HOST", "localhost"),
+    port=int(os.getenv("FALKORDB_PORT", 6379)),
+    username=os.getenv("FALKORDB_USERNAME"),
+    password=os.getenv("FALKORDB_PASSWORD")
+)
+
+# Start chat session
+chat = kg.chat_session()
+
+# Ask questions
+response = chat.send_message("What products are available?")
+print(response["response"])
+
+# Ask follow-up questions
+response = chat.send_message("Tell me which one of them is the most expensive")
+print(response["response"])
+```
+
+## Creating Knowledge Graphs from Scratch
+
 ### Step 1: Creating Ontologies
 Automate ontology creation from unstructured data or define it manually - See [example](https://github.com/falkordb/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
 
