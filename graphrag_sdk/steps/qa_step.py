@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Optional, Iterator
 from graphrag_sdk.steps.Step import Step
 from graphrag_sdk.models import GenerativeModelChatSession
 
@@ -50,3 +50,25 @@ class QAStep(Step):
         qa_response = self.chat_session.send_message(qa_prompt)
 
         return qa_response.text
+
+    def run_stream(self, question: str, cypher: str, context: str) -> Iterator[str]:
+        """
+        Run the QA step and stream the response chunks.
+        
+        Args:
+            question (str): The question being asked.
+            cypher (str): The Cypher query to run.
+            context (str): Context for the QA.
+            
+        Returns:
+            Iterator[str]: A generator that yields response chunks.
+        """
+        qa_prompt = self.qa_prompt.format(
+            context=context, cypher=cypher, question=question
+        )
+
+        logger.debug(f"QA Prompt (Stream): {qa_prompt}")
+        
+        # Send the message and stream the response
+        for chunk in self.chat_session.send_message_stream(qa_prompt):
+            yield chunk
