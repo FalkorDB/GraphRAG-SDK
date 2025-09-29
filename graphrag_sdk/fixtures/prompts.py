@@ -171,7 +171,7 @@ Do not use the example Movie context to assume the ontology. The ontology should
 CREATE_ONTOLOGY_PROMPT = """
 Given the following text, create the ontology that represents the entities and relationships in the data.
 Extract as many entities and relations as possible to fully describe the data.
-Extract as attributes as possible to fully describe the entities and relationships in the text.
+Extract as many attributes as possible to fully describe the entities and relationships in the text.
 Attributes should be extracted as entities or relations whenever possible. For example, when describing a Movie entity, the "director" attribute can be extracted as a entity "Person" and connected to the "Movie" entity with an relation labeled "DIRECTED".
 For example, when describing a Movie entity, you can extract attributes like title, release year, genre, and more.
 Make sure to connect all related entities in the ontology. For example, if a Person PLAYED a Character in a Movie, make sure to connect the Character back to the Movie, otherwise we won't be able to say which Movie the Character is from.
