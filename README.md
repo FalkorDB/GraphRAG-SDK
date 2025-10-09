@@ -216,6 +216,70 @@ qa_model = OllamaGenerativeModel(
 
 <br />
 
+# Using LangChain LiteLLM Integration
+
+The GraphRAG-SDK now supports LiteLLM through LangChain's ChatLiteLLM wrapper, providing an alternative way to access LiteLLM's multi-provider capabilities with LangChain's ecosystem benefits.
+
+## When to Use LangChain LiteLLM vs Direct LiteLLM
+
+- **Use `LangChainLiteModel`**: When you want to leverage LangChain's ecosystem, use LiteLLM proxy configurations, or integrate with other LangChain components.
+- **Use `LiteModel`**: For direct, lightweight LiteLLM access without LangChain dependencies.
+
+## Setup
+
+```python
+from graphrag_sdk.models.langchain_litellm import LangChainLiteModel
+
+# Basic usage with model name
+model = LangChainLiteModel(model_name="gpt-4o-mini")
+
+# With LiteLLM proxy (recommended for budget control and observability)
+model = LangChainLiteModel(
+    model_name="litellm_proxy/gemma3",  # or your custom model name
+    api_key="your-api-key",
+    api_base="https://your-litellm-proxy-url",
+)
+
+# With generation configuration
+from graphrag_sdk.model_config import KnowledgeGraphModelConfig
+from graphrag_sdk.models.model import GenerativeModelConfig
+
+model = LangChainLiteModel(
+    model_name="gpt-4o-mini",
+    generation_config=GenerativeModelConfig(
+        temperature=0.7,
+        max_completion_tokens=1000
+    )
+)
+
+# Use with KnowledgeGraph
+model_config = KnowledgeGraphModelConfig.with_model(model)
+```
+
+### Example: Using with LiteLLM Proxy via OpenRouter
+
+```python
+from graphrag_sdk import KnowledgeGraph
+from graphrag_sdk.models.langchain_litellm import LangChainLiteModel
+from graphrag_sdk.model_config import KnowledgeGraphModelConfig
+
+# Configure model with LiteLLM proxy
+model = LangChainLiteModel(
+    model_name="litellm_proxy/anthropic/claude-3-sonnet",
+    api_key="your-openrouter-key",
+    api_base="https://openrouter.ai/api/v1",
+)
+
+# Create knowledge graph with the model
+kg = KnowledgeGraph(
+    name="my_graph",
+    ontology=ontology,
+    model_config=KnowledgeGraphModelConfig.with_model(model),
+)
+```
+
+<br />
+
 # AI Agents with GraphRAG
 
 ### Orchestrator
