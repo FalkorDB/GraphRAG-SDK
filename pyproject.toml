@@ -22,6 +22,8 @@ python-dotenv = "^1.0.1"
 fix-busted-json = "^0.0.18"
 rich = "^13.9.4"
 litellm = "^1.73.1"
+langchain-litellm = "^0.2.2"
+langchain-core = "^0.3.29"
 
 [tool.poetry.extras]
 # All optional extras removed - litellm handles all providers
