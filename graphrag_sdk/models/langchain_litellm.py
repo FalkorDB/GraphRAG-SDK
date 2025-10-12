@@ -125,6 +125,8 @@ class LangChainLiteModel(GenerativeModel):
     def to_json(self) -> dict:
         """
         Serialize the model's configuration and state to JSON format.
+        
+        Note: Excludes sensitive fields like api_key for security.
 
         Returns:
             dict: The serialized JSON data.
@@ -133,7 +135,6 @@ class LangChainLiteModel(GenerativeModel):
             "model_name": self.model_name,
             "generation_config": self.generation_config.to_json(),
             "system_instruction": self.system_instruction,
-            "api_key": self.api_key,
             "api_base": self.api_base,
             "additional_params": self.additional_params,
         }
