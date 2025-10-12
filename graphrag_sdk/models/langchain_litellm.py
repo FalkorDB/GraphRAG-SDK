@@ -204,6 +204,8 @@ class LangChainLiteModelChatSession(GenerativeModelChatSession):
         try:
             response = self._model._chat_model.invoke(self._chat_history)
         except Exception as e:
+            # Remove the user message to keep history consistent
+            self._chat_history.pop()
             raise ValueError(
                 f"Error during LangChain LiteLLM completion request: {e}"
             ) from e
@@ -237,6 +239,8 @@ class LangChainLiteModelChatSession(GenerativeModelChatSession):
             self._chat_history.append(self._AIMessage(content=full_response))
 
         except Exception as e:
+            # Remove the user message to keep history consistent
+            self._chat_history.pop()
             raise ValueError(
                 f"Error during LangChain LiteLLM streaming request: {e}"
             ) from e
@@ -265,14 +269,17 @@ class LangChainLiteModelChatSession(GenerativeModelChatSession):
 
         Note: Does nothing if the chat history is empty or contains only a system message.
         """
-        # Check if we have at least a user message and assistant response
+        # Determine if the first message is a system message
         has_system = (
             len(self._chat_history) > 0
             and isinstance(self._chat_history[0], self._SystemMessage)
         )
-        min_length = 1 if has_system else 0
+        # The index where user/assistant messages start
+        start_idx = 1 if has_system else 0
+        # Number of user/assistant messages in history
+        num_user_assistant_msgs = len(self._chat_history) - start_idx
 
-        if len(self._chat_history) - 2 >= min_length:
+        if num_user_assistant_msgs >= 2:
             # Remove last assistant message and user message
             self._chat_history.pop()
             self._chat_history.pop()
