@@ -40,3 +40,6 @@ NLP
 graphrag
 gemini
 gpt
+LangChain
+ChatLiteLLM
+OpenRouter
