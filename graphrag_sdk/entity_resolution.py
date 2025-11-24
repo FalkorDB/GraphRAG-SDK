@@ -7,7 +7,7 @@ and resolution to improve knowledge graph quality and reduce redundancy.
 
 import re
 import logging
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
@@ -69,21 +69,23 @@ class EntityResolver:
         if not date_str or not isinstance(date_str, str):
             return None
         
-        # Common date patterns
+        # Each pattern is a tuple: (regex pattern, (year_group, month_group, day_group))
         patterns = [
-            (r'(\d{4})-(\d{1,2})-(\d{1,2})', r'\1-\2-\3'),  # YYYY-M-D or YYYY-MM-DD
-            (r'(\d{1,2})/(\d{1,2})/(\d{4})', r'\3-\1-\2'),  # M/D/YYYY or MM/DD/YYYY
-            (r'(\d{1,2})-(\d{1,2})-(\d{4})', r'\3-\1-\2'),  # D-M-YYYY or DD-MM-YYYY
+            (r'(\d{4})-(\d{1,2})-(\d{1,2})', (1, 2, 3)),  # YYYY-MM-DD or YYYY-M-D
+            (r'(\d{1,2})/(\d{1,2})/(\d{4})', (3, 1, 2)),  # MM/DD/YYYY or M/D/YYYY
+            (r'(\d{1,2})-(\d{1,2})-(\d{4})', (3, 2, 1)),  # DD-MM-YYYY or D-M-YYYY
         ]
         
-        for pattern, replacement in patterns:
+        for pattern, group_order in patterns:
             match = re.match(pattern, date_str)
             if match:
                 try:
-                    year, month, day = match.groups() if 'YYYY' in pattern else (match.group(3), match.group(1), match.group(2))
+                    year = match.group(group_order[0])
+                    month = match.group(group_order[1])
+                    day = match.group(group_order[2])
                     # Ensure proper formatting with leading zeros
                     return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
-                except (ValueError, AttributeError):
+                except (ValueError, AttributeError, IndexError):
                     continue
         
         return None
@@ -109,8 +111,8 @@ class EntityResolver:
     
     def are_entities_similar(
         self, 
-        entity1: Dict[str, any], 
-        entity2: Dict[str, any],
+        entity1: Dict[str, Any], 
+        entity2: Dict[str, Any],
         unique_attributes: List[str]
     ) -> bool:
         """
@@ -152,9 +154,9 @@ class EntityResolver:
     
     def merge_entity_attributes(
         self, 
-        entity1: Dict[str, any], 
-        entity2: Dict[str, any]
-    ) -> Dict[str, any]:
+        entity1: Dict[str, Any], 
+        entity2: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Merge attributes from two similar entities, preferring non-empty values
         and the most complete information.
@@ -194,9 +196,9 @@ class EntityResolver:
     
     def deduplicate_entities(
         self, 
-        entities: List[Dict[str, any]], 
+        entities: List[Dict[str, Any]], 
         unique_attributes: List[str]
-    ) -> Tuple[List[Dict[str, any]], int]:
+    ) -> Tuple[List[Dict[str, Any]], int]:
         """
         Deduplicate a list of entities based on similarity of unique attributes.
         
@@ -232,7 +234,7 @@ class EntityResolver:
         logger.info(f"Deduplicated {duplicate_count} entities from {len(entities)} total")
         return deduplicated, duplicate_count
     
-    def normalize_entity_attributes(self, entity: Dict[str, any]) -> Dict[str, any]:
+    def normalize_entity_attributes(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize attributes of an entity for consistency.
         
@@ -270,7 +272,7 @@ class EntityResolver:
         entity["attributes"] = normalized_attrs
         return entity
     
-    def resolve_coreferences(self, text: str, entities: List[Dict[str, any]]) -> List[Dict[str, any]]:
+    def resolve_coreferences(self, text: str, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Resolve coreferences in entity names using simple heuristics.
         This is a basic implementation that can be enhanced with NLP models.

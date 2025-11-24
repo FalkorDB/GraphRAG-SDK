@@ -6,7 +6,7 @@ to improve the accuracy and reliability of the knowledge graph.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from graphrag_sdk.ontology import Ontology
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class ExtractionValidator:
         self.ontology = ontology
         self.strict_mode = strict_mode
         
-    def validate_entity(self, entity: Dict[str, any]) -> Tuple[bool, List[str], float]:
+    def validate_entity(self, entity: Dict[str, Any]) -> Tuple[bool, List[str], float]:
         """
         Validate an extracted entity against the ontology.
         
@@ -76,7 +76,7 @@ class ExtractionValidator:
     
     def _validate_entity_attributes(
         self, 
-        attributes: Dict[str, any], 
+        attributes: Dict[str, Any], 
         ontology_attributes: List
     ) -> Tuple[List[str], float]:
         """
@@ -166,7 +166,7 @@ class ExtractionValidator:
         
         return True, None
     
-    def validate_relation(self, relation: Dict[str, any]) -> Tuple[bool, List[str], float]:
+    def validate_relation(self, relation: Dict[str, Any]) -> Tuple[bool, List[str], float]:
         """
         Validate an extracted relation against the ontology.
         
@@ -227,8 +227,8 @@ class ExtractionValidator:
     
     def validate_extraction(
         self, 
-        data: Dict[str, any]
-    ) -> Tuple[Dict[str, any], Dict[str, any]]:
+        data: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Validate a complete extraction (entities and relations).
         
