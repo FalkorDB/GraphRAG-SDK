@@ -13,6 +13,8 @@ from .models.model import (
 from .entity import Entity
 from .relation import Relation
 from .attribute import Attribute, AttributeType
+from .entity_resolution import EntityResolver
+from .extraction_validator import ExtractionValidator
 
 # Setup Null handler
 import logging
@@ -37,4 +39,6 @@ __all__ = [
     "Relation",
     "Attribute",
     "AttributeType",
+    "EntityResolver",
+    "ExtractionValidator",
 ]

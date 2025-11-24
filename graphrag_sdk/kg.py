@@ -146,7 +146,12 @@ class KnowledgeGraph:
         return [s.source for s in self.sources]
 
     def process_sources(
-        self, sources: list[AbstractSource], instructions: Optional[str] = None, hide_progress: Optional[bool] = False
+        self, 
+        sources: list[AbstractSource], 
+        instructions: Optional[str] = None, 
+        hide_progress: Optional[bool] = False,
+        enable_deduplication: Optional[bool] = True,
+        enable_validation: Optional[bool] = True,
     ) -> None:
         """
         Add entities and relations found in sources into the knowledge-graph
@@ -155,17 +160,24 @@ class KnowledgeGraph:
             sources (list[AbstractSource]): list of sources to extract knowledge from
             instructions (Optional[str]): Instructions for processing.
             hide_progress (Optional[bool]): hide progress bar
+            enable_deduplication (Optional[bool]): Enable entity deduplication to reduce redundancy. Defaults to True.
+            enable_validation (Optional[bool]): Enable extraction validation for improved accuracy. Defaults to True.
         """
 
         if self.ontology is None:
             raise Exception("Ontology is not defined")
 
         # Create graph with sources
-        self._create_graph_with_sources(sources, instructions, hide_progress)
+        self._create_graph_with_sources(sources, instructions, hide_progress, enable_deduplication, enable_validation)
 
 
     def _create_graph_with_sources(
-        self, sources: Optional[list[AbstractSource]] = None, instructions: Optional[str] = None, hide_progress: Optional[bool] = False
+        self, 
+        sources: Optional[list[AbstractSource]] = None, 
+        instructions: Optional[str] = None, 
+        hide_progress: Optional[bool] = False,
+        enable_deduplication: Optional[bool] = True,
+        enable_validation: Optional[bool] = True,
     ) -> None:
         """
         Create a graph using the provided sources.
@@ -173,6 +185,8 @@ class KnowledgeGraph:
         Args:
             sources (Optional[list[AbstractSource]]): List of sources.
             instructions (Optional[str]): Instructions for the graph creation.
+            enable_deduplication (Optional[bool]): Enable entity deduplication.
+            enable_validation (Optional[bool]): Enable extraction validation.
         """
         step = ExtractDataStep(
             sources=list(sources),
@@ -180,6 +194,8 @@ class KnowledgeGraph:
             model=self._model_config.extract_data,
             graph=self.graph,
             hide_progress=hide_progress,
+            enable_deduplication=enable_deduplication,
+            enable_validation=enable_validation,
         )
 
         self.failed_documents = step.run(instructions)
