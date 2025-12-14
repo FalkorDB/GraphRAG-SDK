@@ -1,0 +1,147 @@
+@prefix : <http://www.semanticweb.org/ontologies/2024/6/SPORTSOnto#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xml: <http://www.w3.org/XML/1998/namespace> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+# ========================================
+# ONTOLOGY DECLARATION
+# ========================================
+
+<http://www.semanticweb.org/ontologies/2024/6/SPORTSOnto> 
+    rdf:type owl:Ontology .
+
+
+# ========================================
+# OBJECT PROPERTIES
+# ========================================
+
+:associatedTo rdf:type owl:ObjectProperty ;
+    rdfs:domain :SportsPerson ;
+    rdfs:range :Sport ;
+    rdfs:comment "Links a sports person to the sport they play" .
+
+:partOf rdf:type owl:ObjectProperty ;
+    rdfs:domain :Workouts ;
+    rdfs:range :FocusedAreas ;
+    rdfs:comment "Relates workouts to their focused training areas" .
+
+
+# ========================================
+# DATATYPE PROPERTIES (Person Attributes)
+# ========================================
+
+:personDatatypes rdf:type owl:DatatypeProperty ;
+    rdfs:comment "Parent property for all person-related datatype properties" .
+
+:Age rdf:type owl:DatatypeProperty ;
+    rdfs:subPropertyOf :personDatatypes ;
+    rdfs:comment "Age of the sports person" .
+
+:Gender rdf:type owl:DatatypeProperty ;
+    rdfs:subPropertyOf :personDatatypes ;
+    rdfs:comment "Gender of the sports person" .
+
+:Height rdf:type owl:DatatypeProperty ;
+    rdfs:subPropertyOf :personDatatypes ;
+    rdfs:comment "Height of the sports person" .
+
+:Weight rdf:type owl:DatatypeProperty ;
+    rdfs:subPropertyOf :personDatatypes ;
+    rdfs:comment "Weight of the sports person" .
+
+
+# ========================================
+# MAIN CLASSES
+# ========================================
+
+:SportsPerson rdf:type owl:Class ;
+    rdfs:comment "An individual who participates in sports" .
+
+:Sport rdf:type owl:Class ;
+    rdfs:comment "A physical activity or game with competitive elements" .
+
+:Equipments rdf:type owl:Class ;
+    rdfs:comment "Tools and gear used in sports activities" .
+
+:Workouts rdf:type owl:Class ;
+    rdfs:comment "Training exercises and routines for athletic development" .
+
+:FocusedAreas rdf:type owl:Class ;
+    rdfs:subClassOf [ rdf:type owl:Restriction ;
+                      owl:onProperty :personDatatypes ;
+                      owl:someValuesFrom xsd:string
+                    ] ;
+    rdfs:comment "Specific physical attributes targeted by training" .
+
+
+# ========================================
+# SPORT TYPES (Subclasses of Sport)
+# ========================================
+
+:Cricket rdf:type owl:Class ;
+    rdfs:subClassOf :Sport ;
+    rdfs:comment "Bat-and-ball game played between two teams" .
+
+:Football rdf:type owl:Class ;
+    rdfs:subClassOf :Sport ;
+    rdfs:comment "Team sport played with a spherical ball" .
+
+:Tennis rdf:type owl:Class ;
+    rdfs:subClassOf :Sport ;
+    rdfs:comment "Racket sport played individually or in pairs" .
+
+:Badmintion rdf:type owl:Class ;
+    rdfs:subClassOf :Sport ;
+    rdfs:comment "Racket sport using a shuttlecock" .
+
+
+# ========================================
+# WORKOUT TYPES (Subclasses of Workouts)
+# ========================================
+
+:UpperBody rdf:type owl:Class ;
+    rdfs:subClassOf :Workouts ;
+    rdfs:comment "Exercises targeting chest, shoulders, arms, and back" .
+
+:LowerBody rdf:type owl:Class ;
+    rdfs:subClassOf :Workouts ;
+    rdfs:comment "Exercises targeting legs, glutes, and hips" .
+
+:Core rdf:type owl:Class ;
+    rdfs:subClassOf :Workouts ;
+    rdfs:comment "Exercises targeting abdominal and back muscles" .
+
+:Functional rdf:type owl:Class ;
+    rdfs:subClassOf :Workouts ;
+    rdfs:comment "Multi-joint exercises that mimic everyday movements" .
+
+
+# ========================================
+# FOCUSED AREAS (Subclasses of FocusedAreas)
+# ========================================
+
+:Agility rdf:type owl:Class ;
+    rdfs:subClassOf :FocusedAreas ;
+    rdfs:comment "Ability to move quickly and change direction effectively" .
+
+:Balance rdf:type owl:Class ;
+    rdfs:subClassOf :FocusedAreas ;
+    rdfs:comment "Ability to maintain body equilibrium" .
+
+:Endurance rdf:type owl:Class ;
+    rdfs:subClassOf :FocusedAreas ;
+    rdfs:comment "Ability to sustain prolonged physical effort" .
+
+:Flexibility rdf:type owl:Class ;
+    rdfs:subClassOf :FocusedAreas ;
+    rdfs:comment "Range of motion in joints and muscles" .
+
+:MusclePower rdf:type owl:Class ;
+    rdfs:subClassOf :FocusedAreas ;
+    rdfs:comment "Combination of strength and speed in muscle contraction" .
+
+:Speed rdf:type owl:Class ;
+    rdfs:subClassOf :FocusedAreas ;
+    rdfs:comment "Rate of movement or action" .

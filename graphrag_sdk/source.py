@@ -9,6 +9,7 @@ from graphrag_sdk.document_loaders import (
     CSVLoader,
     JSONLLoader,
     StringLoader,
+    TTLLoader,
 )
 
 
@@ -36,6 +37,8 @@ def Source(path: str, instruction: Optional[str] = None) -> "AbstractSource":
         s = CSV(path)
     elif ".jsonl" in path.lower():
         s = JSONL(path)
+    elif ".ttl" in path.lower():
+        s = TTL(path)
     elif ".txt" in path.lower():
         s = TEXT(path)
     else:
@@ -188,3 +191,13 @@ class STRING(AbstractSource):
     def __init__(self, data_source: str):
         super().__init__(data_source)
         self.loader = StringLoader(self.data_source)
+
+
+class TTL(AbstractSource):
+    """
+    TTL (Terse RDF Triple Language) resource
+    """
+
+    def __init__(self, data_source: str):
+        super().__init__(data_source)
+        self.loader = TTLLoader(self.data_source)

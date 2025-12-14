@@ -1,8 +1,10 @@
 import re
 import logging
-from graphrag_sdk import Ontology
-from typing import Union, Optional
+from typing import Union, Optional, TYPE_CHECKING
 from fix_busted_json import repair_json
+
+if TYPE_CHECKING:
+    from graphrag_sdk import Ontology
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,24 @@ def extract_json(text: Union[str, dict], skip_repair: Optional[bool] = False) ->
         logger.error(f"Failed to repair JSON: {e} - {text}")
         return "".join(matches)
 
+def extract_name_from_uri(uri: str) -> str:
+    """
+    Extract local name from URI, stripping namespace.
+    
+    Args:
+        uri (str): Full URI or literal value.
+        
+    Returns:
+        str: Local name without namespace prefix.
+    """
+    # Handle common URI patterns
+    if "#" in uri:
+        return uri.split("#")[-1]
+    elif "/" in uri:
+        return uri.split("/")[-1]
+    else:
+        # Already a local name or literal
+        return uri
 
 def map_dict_to_cypher_properties(d: dict) -> str:
     """
@@ -48,6 +68,7 @@ def map_dict_to_cypher_properties(d: dict) -> str:
             cypher += f"{i}: {item}, "
         cypher = (cypher[:-2] if len(cypher) > 1 else cypher) + "}"
         return cypher
+ 
     for key, value in d.items():
         # Check value type
         if isinstance(value, str):
@@ -116,7 +137,7 @@ def extract_cypher(text: str) -> str:
 
 
 def validate_cypher(
-    cypher: str, ontology: Ontology
+    cypher: str, ontology: "Ontology"
 ) -> Optional[list[str]]:
     """
     Validates a Cypher query against the ontology.
@@ -152,7 +173,7 @@ def validate_cypher(
         return None
 
 
-def validate_cypher_entities_exist(cypher: str, ontology: Ontology) -> list[str]:
+def validate_cypher_entities_exist(cypher: str, ontology: "Ontology") -> list[str]:
     """
     Validates whether entities in the Cypher query exist in the ontology.
     
@@ -177,7 +198,7 @@ def validate_cypher_entities_exist(cypher: str, ontology: Ontology) -> list[str]
     ]
 
 
-def validate_cypher_relations_exist(cypher: str, ontology: Ontology) -> list[str]:
+def validate_cypher_relations_exist(cypher: str, ontology: "Ontology") -> list[str]:
     """
     Validates whether relations in the Cypher query exist in the ontology.
     
@@ -208,7 +229,7 @@ def validate_cypher_relations_exist(cypher: str, ontology: Ontology) -> list[str
 
 
 def validate_cypher_relation_directions(
-    cypher: str, ontology: Ontology
+    cypher: str, ontology: "Ontology"
 ) -> list[str]:
     """
     Validates relation directions in a Cypher query.
