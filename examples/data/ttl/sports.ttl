@@ -92,7 +92,7 @@
     rdfs:subClassOf :Sport ;
     rdfs:comment "Racket sport played individually or in pairs" .
 
-:Badmintion rdf:type owl:Class ;
+:Badminton rdf:type owl:Class ;
     rdfs:subClassOf :Sport ;
     rdfs:comment "Racket sport using a shuttlecock" .
 

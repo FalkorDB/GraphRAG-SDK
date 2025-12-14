@@ -196,7 +196,7 @@ class Ontology(object):
             
         """
         try:
-            from graphrag_sdk.document_loaders.ttl import TTLLoader
+            from rdflib import Graph as RDFGraph
             from graphrag_sdk.rdf_extractor import RDFOntologyExtractor
         except ImportError as e:
             raise ImportError(
@@ -204,9 +204,15 @@ class Ontology(object):
                 "Please ensure rdflib is installed with `pip install rdflib`"
             )
         
-        # Load the RDF graph from TTL file
-        loader = TTLLoader(path)
-        graph = loader.get_rdf_graph()
+        # Parse the RDF graph from TTL file
+        try:
+            graph = RDFGraph()
+            graph.parse(path, format="turtle")
+        except Exception as e:
+            raise Exception(
+                f"Failed to parse TTL file: {e}. "
+                "Please ensure the file is valid TTL format."
+            )
         
         # Extract ontology using RDFOntologyExtractor
         extractor = RDFOntologyExtractor(graph)

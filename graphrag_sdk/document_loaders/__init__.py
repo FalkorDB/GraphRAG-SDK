@@ -5,7 +5,6 @@ from .csv import CSVLoader
 from .url import URLLoader
 from .jsonl import JSONLLoader
 from .string import StringLoader
-from .ttl import TTLLoader
 
 __all__ = [
     "PDFLoader",
@@ -15,5 +14,4 @@ __all__ = [
     "URLLoader",
     "JSONLLoader",
     "StringLoader",
-    "TTLLoader",
 ]
