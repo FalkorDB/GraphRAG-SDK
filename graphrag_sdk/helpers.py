@@ -68,7 +68,6 @@ def map_dict_to_cypher_properties(d: dict) -> str:
             cypher += f"{i}: {item}, "
         cypher = (cypher[:-2] if len(cypher) > 1 else cypher) + "}"
         return cypher
- 
     for key, value in d.items():
         # Check value type
         if isinstance(value, str):
