@@ -208,10 +208,10 @@ class Ontology(object):
         try:
             graph = RDFGraph()
             graph.parse(path, format="turtle")
-        except Exception as e:
-            raise Exception(
-                f"Failed to parse TTL file: {e}. "
-                "Please ensure the file is valid TTL format."
+        except (FileNotFoundError, OSError, SyntaxError) as e:
+                raise ValueError(
+                 f"Failed to parse TTL file: {e}. "
+                 "Please ensure the file is valid TTL format."
             )
         
         # Extract ontology using RDFOntologyExtractor
