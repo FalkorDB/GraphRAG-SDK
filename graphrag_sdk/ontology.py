@@ -173,6 +173,54 @@ class Ontology(object):
         
         return ontology
     
+    @staticmethod
+    def from_ttl(path: str) -> "Ontology":
+        """
+        Creates an Ontology object from a TTL/Turtle RDF schema file.
+        
+        This method parses an RDF schema file (RDFS or OWL) and extracts:
+        1. Classes as entities with their datatype properties as attributes
+        2. Object properties as relations between entities
+        3. Labels (rdfs:label) and descriptions (rdfs:comment)
+        
+        Args:
+            path (str): Path to the TTL file containing the RDF schema
+            
+        Returns:
+            Ontology: The Ontology object extracted from the RDF schema
+            
+        Raises:
+            ValueError: If the file contains individual instances (only schema definitions allowed)
+            ImportError: If rdflib is not installed
+            Exception: If the TTL file cannot be parsed
+            
+        """
+        try:
+            from rdflib import Graph as RDFGraph
+            from graphrag_sdk.rdf_extractor import RDFOntologyExtractor
+        except ImportError as e:
+            raise ImportError(
+                f"Required packages not found: {e}. "
+                "Please ensure rdflib is installed with `pip install rdflib`"
+            )
+        
+        # Parse the RDF graph from TTL file
+        try:
+            graph = RDFGraph()
+            graph.parse(path, format="turtle")
+        except (FileNotFoundError, OSError, SyntaxError) as e:
+                raise ValueError(
+                 f"Failed to parse TTL file: {e}. "
+                 "Please ensure the file is valid TTL format."
+            )
+        
+        # Extract ontology using RDFOntologyExtractor
+        extractor = RDFOntologyExtractor(graph)
+        ontology = extractor.extract()
+        
+        logger.info(f"Extracted ontology from TTL file: {len(ontology.entities)} entities, {len(ontology.relations)} relations")
+        return ontology
+    
     def add_entity(self, entity: Entity) -> None:
         """
         Adds an entity to the ontology.
