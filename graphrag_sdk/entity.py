@@ -144,7 +144,9 @@ class Entity:
             [str(attr) for attr in self.attributes if not attr.unique]
         )
         if self.description:
-            non_unique_attributes += f"{', ' if len(non_unique_attributes) > 0 else ''} {descriptionKey}: '{self.description}'"
+            # Escape special characters to prevent Cypher syntax errors
+            escaped_description = self.description.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+            non_unique_attributes += f"{', ' if len(non_unique_attributes) > 0 else ''} {descriptionKey}: '{escaped_description}'"
         return f"MERGE (n:{self.label} {{{unique_attributes}}}) SET n += {{{non_unique_attributes}}} RETURN n"
 
     def __str__(self) -> str:
