@@ -12,6 +12,17 @@
 
 Simplify the development of your next GenAI application with GraphRAG-SDK, a specialized toolkit for building Graph Retrieval-Augmented Generation (GraphRAG) systems. It integrates knowledge graphs, ontology management, and state-of-the-art LLMs to deliver accurate, efficient, and customizable RAG workflows.
 
+## ✨ New: Enhanced Entity Resolution & Validation
+
+GraphRAG-SDK now includes advanced features for improved knowledge graph quality:
+
+- **Entity Deduplication**: Automatically identifies and merges duplicate entities using fuzzy matching
+- **Extraction Validation**: Validates entities and relations against ontology with quality scoring
+- **Attribute Normalization**: Standardizes dates, names, and text formats for consistency
+- **Quality Reporting**: Comprehensive metrics on extraction accuracy and data quality
+
+See [IMPROVEMENTS.md](IMPROVEMENTS.md) for detailed documentation and examples.
+
 # GraphRAG Setup
 ### Database Setup
 
@@ -169,8 +180,15 @@ kg = KnowledgeGraph(
     # password=falkor_password  # optional
 )
 
-kg.process_sources(sources)
+# Process sources with entity deduplication and validation (enabled by default)
+kg.process_sources(
+    sources=sources,
+    enable_deduplication=True,  # Reduce duplicate entities
+    enable_validation=True,      # Improve extraction accuracy
+)
 ```
+
+**💡 Pro Tip**: The new `enable_deduplication` and `enable_validation` parameters are enabled by default and help improve knowledge graph quality with minimal performance overhead (<5%). You can disable them if needed by setting them to `False`.
 
 ### Step 3: Query your Graph RAG
 
@@ -184,6 +202,52 @@ print(response)
 response = chat.send_message("How this director connected to Keanu Reeves?")
 print(response)
 ```
+
+## Advanced Features: Entity Resolution & Quality Improvements
+
+GraphRAG-SDK includes advanced features to improve knowledge graph quality:
+
+### Entity Deduplication
+
+Automatically identify and merge duplicate entities:
+
+```python
+from graphrag_sdk import EntityResolver
+
+resolver = EntityResolver(similarity_threshold=0.85)
+
+# Deduplicate entities
+entities = [
+    {"label": "Person", "attributes": {"name": "John Doe"}},
+    {"label": "Person", "attributes": {"name": "John  Doe"}},  # duplicate
+]
+deduplicated, count = resolver.deduplicate_entities(entities, ["name"])
+print(f"Removed {count} duplicates")
+```
+
+### Extraction Validation
+
+Validate extractions against your ontology:
+
+```python
+from graphrag_sdk import ExtractionValidator
+
+validator = ExtractionValidator(ontology)
+validated_data, report = validator.validate_extraction(extraction_data)
+
+print(f"Valid entities: {report['valid_entities']}/{report['total_entities']}")
+print(f"Average quality: {report['entity_quality_avg']:.2f}")
+```
+
+### Standalone Demo
+
+Try the improvements with a simple demo:
+
+```bash
+python examples/simple_deduplication_demo.py
+```
+
+For comprehensive documentation, examples, and best practices, see [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
 ## Next Steps
 With these 3 steps now completed, you're ready to interact and query your knowledge graph.  Here are suggestions for use cases:
