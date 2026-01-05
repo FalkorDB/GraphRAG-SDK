@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build and publish to pypi
-        uses: JRubics/poetry-publish@v2.0
+        uses: JRubics/poetry-publish@v2.1
         with:
           pypi_token: ${{ secrets.PYPI_API_TOKEN }}
           build_format: "sdist"
