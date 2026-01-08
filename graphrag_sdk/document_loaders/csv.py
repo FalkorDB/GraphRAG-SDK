@@ -14,7 +14,7 @@ class CSVLoader:
         self.rows_per_document = rows_per_document
 
     def load(self) -> Iterator[Document]:
-        with open(self.path, "r") as f:
+        with open(self.path, "r", encoding='utf-8') as f:
             reader = csv.reader(f)
             rows = [row for row in reader]
             num_rows = len(rows)
