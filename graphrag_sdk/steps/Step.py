@@ -1,4 +1,4 @@
 class Step:
 
-    def run(self):
+    def run(self) -> None:
         pass

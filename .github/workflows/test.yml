@@ -24,18 +24,22 @@ jobs:
           - 11434:11434
         volumes:
           - ollama:/root/.ollama
+    
+    strategy:
+      matrix:
+        model: [openai/gpt-4.1] # List of models
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.x # Update with desired Python version
+          python-version: 3.11.0 # Update with desired Python version
 
       - name: Cache Poetry virtualenv
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.poetry/virtualenvs
           key: ${{ runner.os }}-poetry-${{ hashFiles('poetry.lock') }}
@@ -43,12 +47,12 @@ jobs:
             ${{ runner.os }}-poetry-
 
       - id: "auth"
-        uses: "google-github-actions/auth@v2"
+        uses: "google-github-actions/auth@v3"
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: "Set up Cloud SDK"
-        uses: "google-github-actions/setup-gcloud@v2"
+        uses: "google-github-actions/setup-gcloud@v3"
         with:
           version: ">= 363.0.0"
 
@@ -58,7 +62,7 @@ jobs:
           curl -sSL https://install.python-poetry.org | python3 -
 
       - name: Install dependencies
-        run: poetry install --extras "all"
+        run: poetry install --with test
 
       - name: Wait for Ollama to be ready
         run: |
@@ -73,4 +77,9 @@ jobs:
           REGION: ${{ vars.REGION }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          TEST_MODEL: ${{ matrix.model }} # Pass the model as an environment variable
         run: poetry run pytest

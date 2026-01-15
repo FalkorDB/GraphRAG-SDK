@@ -1,17 +1,37 @@
 import json
+import logging
+import graphrag_sdk
 from falkordb import Graph
+from .entity import Entity
+from .relation import Relation
+from typing import Optional, Union
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
-import graphrag_sdk
-import logging
-from .relation import Relation
-from .entity import Entity
-from typing import Optional
-
+from .attribute import Attribute, AttributeType
 
 logger = logging.getLogger(__name__)
 
+def _process_attributes_from_graph(attributes: list[list[list[str]]]) -> list[Attribute]:
+    """
+    Processes the attributes extracted from the graph and converts them into the SDK convention.
 
+    Args:
+        attributes (list[list[list[str]]]): The attributes extracted from the graph.
+
+    Returns:
+        processed_attributes (list[Attribute]): The processed attributes.
+    """
+    processed_attributes = []
+    for attr in attributes:
+        attr_name, attr_type = attr[0]
+        try:
+            attr_type = AttributeType.from_string(attr_type)
+        except:
+            continue
+        
+        processed_attributes.append(Attribute(attr_name, attr_type))
+
+    return processed_attributes
 class Ontology(object):
     """
     Represents an ontology, which is a collection of entities and relations.
@@ -21,13 +41,13 @@ class Ontology(object):
         relations (list[Relation]): The list of relations in the ontology.
     """
 
-    def __init__(self, entities: list[Entity] = None, relations: list[Relation] = None):
+    def __init__(self, entities: Optional[list[Entity]] = None, relations: Optional[list[Relation]] = None):
         """
         Initialize the Ontology class.
 
         Args:
-            entities (list[Entity], optional): List of Entity objects. Defaults to None.
-            relations (list[Relation], optional): List of Relation objects. Defaults to None.
+            entities (Optional[list[Entity]]): List of Entity objects. Defaults to None.
+            relations (Optional[list[Relation]]): List of Relation objects. Defaults to None.
         """
         self.entities = entities or []
         self.relations = relations or []
@@ -37,14 +57,16 @@ class Ontology(object):
         sources: list[AbstractSource],
         model: GenerativeModel,
         boundaries: Optional[str] = None,
+        hide_progress: bool = False,
     ) -> "Ontology":
         """
         Create an Ontology object from a list of sources.
 
         Args:
             sources (list[AbstractSource]): A list of AbstractSource objects representing the sources.
-            boundaries (Optinal[str]): The boundaries for the ontology.
+            boundaries (Optional[str]): The boundaries for the ontology.
             model (GenerativeModel): The generative model to use.
+            hide_progress (bool): Whether to hide the progress bar.
 
         Returns:
             The created Ontology object.
@@ -53,17 +75,18 @@ class Ontology(object):
             sources=sources,
             ontology=Ontology(),
             model=model,
+            hide_progress=hide_progress,
         )
 
         return step.run(boundaries=boundaries)
 
     @staticmethod
-    def from_json(txt: dict | str):
+    def from_json(txt: Union[dict, str]) -> "Ontology":
         """
         Creates an Ontology object from a JSON representation.
 
         Args:
-            txt (dict | str): The JSON representation of the ontology. It can be either a dictionary or a string.
+            txt (Union[dict, str]): The JSON representation of the ontology. It can be either a dictionary or a string.
 
         Returns:
             The Ontology object created from the JSON representation.
@@ -78,9 +101,9 @@ class Ontology(object):
         )
 
     @staticmethod
-    def from_graph(graph: Graph):
+    def from_schema_graph(graph: Graph) -> "Ontology":
         """
-        Creates an Ontology object from a given graph.
+        Creates an Ontology object from a given schema graph.
 
         Args:
             graph (Graph): The graph object representing the ontology.
@@ -100,17 +123,114 @@ class Ontology(object):
             )
 
         return ontology
+    
+    @staticmethod
+    def from_kg_graph(graph: Graph, sample_size: Optional[int] = 100) -> "Ontology":
+        """
+        Constructs an Ontology object from a given Knowledge Graph.
 
-    def add_entity(self, entity: Entity):
+        This function queries the provided knowledge graph to extract:
+        1. Entities and their attributes.
+        2. Relationships between entities and their attributes.
+
+        Args:
+            graph (Graph): The graph object representing the knowledge graph.
+            sample_size (Optional[int]): The maximum number of attributes to sample for each entity and relationship. Defaults to 100.
+
+        Returns:
+            Ontology: The Ontology object constructed from the Knowledge Graph.
+        """
+        ontology = Ontology()
+
+        # Retrieve all node labels and edge types from the graph.
+        n_labels = graph.call_procedure("db.labels").result_set
+        e_types = graph.call_procedure("db.relationshipTypes").result_set
+        
+        # Extract attributes for each node label, limited by the specified sample size.
+        for lbls in n_labels:
+            l = lbls[0]
+            attributes = graph.query(
+                f"""MATCH (a:{l}) call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
+                WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
+            attributes = _process_attributes_from_graph(attributes)
+            ontology.add_entity(Entity(l, attributes))
+
+        # Extract attributes for each edge type, limited by the specified sample size.
+        for e_type in e_types:
+            e_t = e_type[0]
+            attributes = graph.query(
+                            f"""MATCH ()-[a:{e_t}]->() call {{ with a return [k in keys(a) | [k, typeof(a[k])]] as types }}
+                            WITH types limit {sample_size} unwind types as kt RETURN kt, count(1) ORDER BY kt[0]""").result_set
+            attributes = _process_attributes_from_graph(attributes)
+            for s_lbls in n_labels:
+                for t_lbls in n_labels:
+                    s_l = s_lbls[0]
+                    t_l = t_lbls[0]
+                    # Check if a relationship exists between the source and target entity labels
+                    result_set = graph.query(f"MATCH (s:{s_l})-[a:{e_t}]->(t:{t_l}) return a limit 1").result_set
+                    if len(result_set) > 0:
+                        ontology.add_relation(Relation(e_t, s_l, t_l, attributes))
+        
+        return ontology
+    
+    @staticmethod
+    def from_ttl(path: str) -> "Ontology":
+        """
+        Creates an Ontology object from a TTL/Turtle RDF schema file.
+        
+        This method parses an RDF schema file (RDFS or OWL) and extracts:
+        1. Classes as entities with their datatype properties as attributes
+        2. Object properties as relations between entities
+        3. Labels (rdfs:label) and descriptions (rdfs:comment)
+        
+        Args:
+            path (str): Path to the TTL file containing the RDF schema
+            
+        Returns:
+            Ontology: The Ontology object extracted from the RDF schema
+            
+        Raises:
+            ValueError: If the file contains individual instances (only schema definitions allowed)
+            ImportError: If rdflib is not installed
+            Exception: If the TTL file cannot be parsed
+            
+        """
+        try:
+            from rdflib import Graph as RDFGraph
+            from graphrag_sdk.rdf_extractor import RDFOntologyExtractor
+        except ImportError as e:
+            raise ImportError(
+                f"Required packages not found: {e}. "
+                "Please ensure rdflib is installed with `pip install rdflib`"
+            )
+        
+        # Parse the RDF graph from TTL file
+        try:
+            graph = RDFGraph()
+            graph.parse(path, format="turtle")
+        except (FileNotFoundError, OSError, SyntaxError) as e:
+                raise ValueError(
+                 f"Failed to parse TTL file: {e}. "
+                 "Please ensure the file is valid TTL format."
+            )
+        
+        # Extract ontology using RDFOntologyExtractor
+        extractor = RDFOntologyExtractor(graph)
+        ontology = extractor.extract()
+        
+        logger.info(f"Extracted ontology from TTL file: {len(ontology.entities)} entities, {len(ontology.relations)} relations")
+        return ontology
+    
+    def add_entity(self, entity: Entity) -> None:
         """
         Adds an entity to the ontology.
 
-        Parameters:
+        Args:
             entity: The entity object to be added.
         """
         self.entities.append(entity)
 
-    def add_relation(self, relation: Relation):
+    def add_relation(self, relation: Relation) -> None:
         """
         Adds a relation to the ontology.
 
@@ -119,7 +239,7 @@ class Ontology(object):
         """
         self.relations.append(relation)
 
-    def to_json(self):
+    def to_json(self) -> dict:
         """
         Converts the ontology object to a JSON representation.
 
@@ -226,7 +346,7 @@ class Ontology(object):
 
         return self
 
-    def validate_entities(self):
+    def validate_entities(self) -> bool:
         """
         Validates the entities in the ontology.
 
@@ -252,7 +372,7 @@ The following entities do not have unique attributes:
             return False
         return True
 
-    def get_entity_with_label(self, label: str):
+    def get_entity_with_label(self, label: str) -> Optional[Entity]:
         """
         Retrieves the entity with the specified label.
 
@@ -264,11 +384,11 @@ The following entities do not have unique attributes:
         """
         return next((n for n in self.entities if n.label == label), None)
 
-    def get_relations_with_label(self, label: str):
+    def get_relations_with_label(self, label: str) -> list[Relation]:
         """
         Returns a list of relations with the specified label.
 
-        Parameters:
+        Args:
             label (str): The label to search for.
 
         Returns:
@@ -276,11 +396,11 @@ The following entities do not have unique attributes:
         """
         return [e for e in self.relations if e.label == label]
 
-    def has_entity_with_label(self, label: str):
+    def has_entity_with_label(self, label: str) -> bool:
         """
         Checks if the ontology has an entity with the given label.
 
-        Parameters:
+        Args:
             label (str): The label to search for.
 
         Returns:
@@ -288,11 +408,11 @@ The following entities do not have unique attributes:
         """
         return any(n.label == label for n in self.entities)
 
-    def has_relation_with_label(self, label: str):
+    def has_relation_with_label(self, label: str) -> bool:
         """
         Checks if the ontology has a relation with the given label.
 
-        Parameters:
+        Args:
             label (str): The label of the relation to check.
 
         Returns:
@@ -314,7 +434,7 @@ The following entities do not have unique attributes:
             relations="\n- ".join([str(relation) for relation in self.relations]),
         )
 
-    def save_to_graph(self, graph: Graph):
+    def save_to_graph(self, graph: Graph) -> None:
         """
         Saves the entities and relations to the specified graph.
 

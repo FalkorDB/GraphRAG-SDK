@@ -171,7 +171,7 @@ Do not use the example Movie context to assume the ontology. The ontology should
 CREATE_ONTOLOGY_PROMPT = """
 Given the following text, create the ontology that represents the entities and relationships in the data.
 Extract as many entities and relations as possible to fully describe the data.
-Extract as attributes as possible to fully describe the entities and relationships in the text.
+Extract as many attributes as possible to fully describe the entities and relationships in the text.
 Attributes should be extracted as entities or relations whenever possible. For example, when describing a Movie entity, the "director" attribute can be extracted as a entity "Person" and connected to the "Movie" entity with an relation labeled "DIRECTED".
 For example, when describing a Movie entity, you can extract attributes like title, release year, genre, and more.
 Make sure to connect all related entities in the ontology. For example, if a Person PLAYED a Character in a Movie, make sure to connect the Character back to the Movie, otherwise we won't be able to say which Movie the Character is from.
@@ -433,12 +433,9 @@ Ontology:
 
 
 For example, given the question "Which managers own Neo4j stocks?", the OpenCypher statement should look like this:
-```
 MATCH (m:Manager)-[:OWNS]->(s:Stock)
 WHERE s.name CONTAINS 'Neo4j'
-RETURN m, s
-```
-"""
+RETURN m, s"""
 
 CYPHER_GEN_PROMPT = """
 Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
@@ -447,7 +444,7 @@ Respect the order of the relationships, the arrows should always point from the 
 Please think if your answer is a valid Cypher query, and correct it if it is not.
 
 Question: {question}
-"""
+Your generated Cypher: """
 
 
 CYPHER_GEN_PROMPT_WITH_ERROR = """
@@ -472,9 +469,8 @@ If you cannot generate an OpenCypher statement for any reason, return an empty s
 Respect the order of the relationships; the arrows should always point from the "source" to the "target".
 
 Last Answer: {last_answer}
-
 Question: {question}
-"""
+Your generated Cypher: """
 
 GRAPH_QA_SYSTEM = """
 You are an assistant that helps to form nice and human understandable answers.

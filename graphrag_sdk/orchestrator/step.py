@@ -1,8 +1,13 @@
-from abc import ABC, abstractmethod
-from .step_result import StepResult
 from json import loads
+from typing import Union
+from .step_result import StepResult
+from abc import ABC, abstractmethod
+
 
 class StepBlockType:
+    """
+    Enum representing different types of step blocks in a plan.
+    """
     PARALLEL = "parallel"
     AGENT = "agent"
     SUMMARY = "summary"
@@ -10,6 +15,18 @@ class StepBlockType:
 
     @staticmethod
     def from_str(text: str) -> "StepBlockType":
+        """
+        Convert a string to a corresponding StepBlockType enum value.
+        
+        Args:
+            text (str): The string representation of the step block type.
+            
+        Returns:
+            StepBlockType: The corresponding block type.
+            
+        Raises:
+            ValueError: If the input string does not match any known step block type.
+        """
         if text == StepBlockType.PARALLEL:
             return StepBlockType.PARALLEL
         elif text == StepBlockType.AGENT:
@@ -23,6 +40,10 @@ class StepBlockType:
 
 
 class PlanStep(ABC):
+    """
+    Abstract base class for a PlanStep, which defines a step in the execution plan.
+    Each subclass must implement the following properties and methods.
+    """
 
     @property
     @abstractmethod
@@ -40,7 +61,19 @@ class PlanStep(ABC):
         pass
 
     @staticmethod
-    def from_json(json: dict| str) -> "PlanStep":
+    def from_json(json: Union[dict, str]) -> "PlanStep":
+        """
+        Factory method to create a PlanStep instance from a JSON object or string.
+        
+        Args:
+            json (Union[dict, str]): The JSON representation of the step.
+            
+        Returns:
+            PlanStep: The corresponding step instance.
+            
+        Raises:
+            ValueError: If the block type is unknown or if step_type is None.
+        """
         json =  json if isinstance(json, dict) else loads(json)
         from graphrag_sdk.orchestrator.steps import PLAN_STEP_TYPE_MAP
         block = StepBlockType.from_str(json["block"])

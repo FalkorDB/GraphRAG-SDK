@@ -4,7 +4,7 @@
       "label": "Event",
       "attributes": [
         {
-          "name": "title",
+          "name": "name",
           "type": "string",
           "unique": true,
           "required": true
@@ -28,10 +28,22 @@
       "label": "Fight",
       "attributes": [
         {
-          "name": "title",
+          "name": "fight_id",
           "type": "string",
           "unique": true,
           "required": true
+        },
+        {
+          "name": "title_bout",
+          "type": "boolean",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "weight_class",
+          "type": "string",
+          "unique": false,
+          "required": false
         },
         {
           "name": "method",
@@ -40,28 +52,34 @@
           "required": true
         },
         {
-          "name": "rounds",
+          "name": "round",
           "type": "number",
           "unique": false,
           "required": true
         },
         {
-          "name": "referee",
+          "name": "time",
           "type": "string",
           "unique": false,
           "required": true
         },
         {
-          "name": "result_details",
+          "name": "time_format",
           "type": "string",
           "unique": false,
-          "required": true
+          "required": false
+        },
+        {
+          "name": "details",
+          "type": "string",
+          "unique": false,
+          "required": false
         }
       ],
       "description": ""
     },
     {
-      "label": "Fighter",
+      "label": "Person",
       "attributes": [
         {
           "name": "name",
@@ -74,11 +92,17 @@
           "type": "string",
           "unique": false,
           "required": false
-        },
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "Referee",
+      "attributes": [
         {
-          "name": "outcome",
+          "name": "name",
           "type": "string",
-          "unique": false,
+          "unique": true,
           "required": true
         }
       ],
@@ -88,7 +112,7 @@
       "label": "FightStatistics",
       "attributes": [
         {
-          "name": "fighter_name",
+          "name": "statistics_id",
           "type": "string",
           "unique": true,
           "required": true
@@ -167,48 +191,252 @@
         }
       ],
       "description": ""
+    },
+    {
+      "label": "RoundStatistics",
+      "attributes": [
+        {
+          "name": "round_statistics_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "round_number",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "knockdowns",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "significant_strikes",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "significant_strikes_attempted",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "significant_strikes_percentage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "takedown_percentage",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "submissions_attempted",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "reversals",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
+    },
+    {
+      "label": "SignificantStrikeBreakdown",
+      "attributes": [
+        {
+          "name": "breakdown_id",
+          "type": "string",
+          "unique": true,
+          "required": true
+        },
+        {
+          "name": "head",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "leg",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "distance",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "clinch",
+          "type": "number",
+          "unique": false,
+          "required": true
+        },
+        {
+          "name": "ground",
+          "type": "number",
+          "unique": false,
+          "required": true
+        }
+      ],
+      "description": ""
     }
   ],
   "relations": [
     {
-      "label": "PART_OF",
+      "label": "HOSTED",
+      "source": {
+        "label": "Event"
+      },
+      "target": {
+        "label": "Fight"
+      },
+      "attributes": [
+        {
+          "name": "main_event",
+          "type": "boolean",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "PARTICIPATED",
+      "source": {
+        "label": "Person"
+      },
+      "target": {
+        "label": "Fight"
+      },
+      "attributes": [
+        {
+          "name": "result",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "OFFICIATED",
+      "source": {
+        "label": "Referee"
+      },
+      "target": {
+        "label": "Fight"
+      },
+      "attributes": [
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_STATISTICS",
       "source": {
         "label": "Fight"
+      },
+      "target": {
+        "label": "FightStatistics"
+      },
+      "attributes": [
+        {
+          "name": "fighter_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_ROUND_STATISTICS",
+      "source": {
+        "label": "Fight"
+      },
+      "target": {
+        "label": "RoundStatistics"
+      },
+      "attributes": [
+        {
+          "name": "fighter_name",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "HAS_BREAKDOWN",
+      "source": {
+        "label": "FightStatistics"
+      },
+      "target": {
+        "label": "SignificantStrikeBreakdown"
+      },
+      "attributes": [
+        {
+          "name": "round_number",
+          "type": "number",
+          "unique": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "label": "HAS_ROUND_BREAKDOWN",
+      "source": {
+        "label": "RoundStatistics"
+      },
+      "target": {
+        "label": "SignificantStrikeBreakdown"
+      },
+      "attributes": [
+        {
+          "name": "breakdown_id",
+          "type": "string",
+          "unique": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "label": "PARTICIPATED_AS_REFEREE",
+      "source": {
+        "label": "Referee"
       },
       "target": {
         "label": "Event"
       },
-      "attributes": []
-    },
-    {
-      "label": "PARTICIPATED_IN",
-      "source": {
-        "label": "Fighter"
-      },
-      "target": {
-        "label": "Fight"
-      },
-      "attributes": []
-    },
-    {
-      "label": "RELATED_STATS",
-      "source": {
-        "label": "FightStatistics"
-      },
-      "target": {
-        "label": "Fighter"
-      },
-      "attributes": []
-    },
-    {
-      "label": "HAS_STATS",
-      "source": {
-        "label": "Fight"
-      },
-      "target": {
-        "label": "FightStatistics"
-      },
-      "attributes": []
+      "attributes": [
+        {
+          "name": "role",
+          "type": "string",
+          "unique": false,
+          "required": false
+        }
+      ]
     }
   ]
 }

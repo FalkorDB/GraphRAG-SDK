@@ -6,10 +6,12 @@ from graphrag_sdk.entity import Entity
 from graphrag_sdk.relation import Relation
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.agents.kg_agent import KGAgent
+from graphrag_sdk.models.litellm import LiteModel
 from graphrag_sdk.orchestrator import Orchestrator
 from graphrag_sdk.attribute import Attribute, AttributeType
-from graphrag_sdk.models.gemini import GeminiGenerativeModel
-from graphrag_sdk import KnowledgeGraph, KnowledgeGraphModelConfig
+from graphrag_sdk import (KnowledgeGraph,
+                          KnowledgeGraphModelConfig)
+
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
@@ -185,7 +187,7 @@ class TestMultiAgent(unittest.TestCase):
             )
         )
 
-        cls.model = GeminiGenerativeModel("gemini-1.5-flash-001")
+        cls.model = LiteModel("azure/o3-mini")
         cls.restaurants_kg = KnowledgeGraph(
             name="restaurants",
             ontology=cls.restaurants_ontology,
