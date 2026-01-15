@@ -36,7 +36,7 @@ sphinx = "^7.3.7"
 sphinx-rtd-theme = "^2.0.0"
 pandas = "^2.2.2"
 jupyter = "^1.0.0"
-ipykernel = "^6.29.5"
+ipykernel = ">=6.29.5,<8.0.0"
 
 [build-system]
 requires = ["poetry-core"]
