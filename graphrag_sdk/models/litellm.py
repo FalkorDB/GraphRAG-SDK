@@ -2,14 +2,6 @@ import logging
 from typing import Optional, Iterator
 from litellm import completion, validate_environment, utils as litellm_utils
 
-# Optional import for Ollama
-try:
-    from ollama import Client as OllamaClient
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OllamaClient = None
-    OLLAMA_AVAILABLE = False
-
 from .model import (
     GenerativeModel,
     GenerativeModelConfig,
@@ -40,7 +32,7 @@ class LiteModel(GenerativeModel):
          Examples:
          - openai/gpt-4.1
          - azure/gpt-4.1
-         - gemini/gemini-1.5-pro
+         - gemini/gemini-2.0-flash
          - ollama/llama3:8b
 
         Args:
@@ -49,18 +41,14 @@ class LiteModel(GenerativeModel):
             system_instruction (Optional[str]): Instruction to guide the model.
             additional_params (Optional[dict]): Additional provider-specific parameters.
         """
-
-        env_val = validate_environment(model_name)
+        api_base = additional_params.get('api_base') if additional_params else None
+        env_val = validate_environment(model_name, api_base=api_base)
+        
         if not env_val['keys_in_environment']:
             raise ValueError(f"Missing {env_val['missing_keys']} in the environment.")
         self._internal_model_name, provider, _, _ = litellm_utils.get_llm_provider(model_name)
         self.model = model_name
         
-        if provider == "ollama":
-            if not OLLAMA_AVAILABLE:
-                raise ValueError("Ollama client not available. Install with: pip install ollama")
-            self.ollama_client = OllamaClient()
-            self.check_and_pull_model()
         if not self.check_valid_key(model_name):
             raise ValueError(f"Invalid keys for model {model_name}.")
         
@@ -97,33 +85,6 @@ class LiteModel(GenerativeModel):
         except Exception as e:
             return False
             
-    def check_and_pull_model(self) -> None:
-        """
-        Checks if the specified model is available locally, and pulls it if not.
-
-        Logs:
-            - Info: If the model is already available or after successfully pulling the model.
-            - Error: If there is a failure in pulling the model.
-
-        Raises:
-            Exception: If there is an error during the model pull process.
-        """
-        # Get the list of available models
-        response = self.ollama_client.list()  # This returns a dictionary
-        available_models = [model['name'] for model in response['models']]  # Extract model names
-
-        # Check if the model is already pulled
-        if self._internal_model_name in available_models:
-            logger.info(f"The model '{self._internal_model_name}' is already available.")
-        else:
-            logger.info(f"Pulling the model '{self._internal_model_name}'...")
-            try:
-                self.ollama_client.pull(self._internal_model_name)  # Pull the model
-                logger.info(f"Model '{self._internal_model_name}' pulled successfully.")
-            except Exception as e:
-                logger.error(f"Failed to pull the model '{self._internal_model_name}': {e}")
-                raise ValueError(f"Failed to pull the model '{self._internal_model_name}': {e}")
-
     def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         """
         Start a new chat session.

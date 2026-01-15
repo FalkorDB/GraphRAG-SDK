@@ -3,7 +3,6 @@ import json
 import logging
 from enum import Enum
 from typing import Union, Optional
-from graphrag_sdk.fixtures.regex import *
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +35,7 @@ class AttributeType(Enum):
             ValueError: If the provided attribute type is invalid.
         """
         # Graph representation of the attribute type
-        normalized_txt = txt.lower()
+        normalized_txt = txt.lstrip('AttributeType.').lower()
         
         # Find the matching attribute type
         if normalized_txt in _SYNONYMS:

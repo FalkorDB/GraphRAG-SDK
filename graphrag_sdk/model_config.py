@@ -49,7 +49,16 @@ class KnowledgeGraphModelConfig:
 
         """
         # Ensure the extract_data model is configured for structured data extraction
-        extract_data_model = copy.deepcopy(model)
+        try:
+            extract_data_model = copy.deepcopy(model)
+        except TypeError as te:
+            # Handle models that cannot be deep-copied (e.g., Ollama models with threading locks)
+            # Check if this is an Ollama model by checking its type
+            from .models.ollama import OllamaGenerativeModel
+            if isinstance(model, OllamaGenerativeModel):
+                extract_data_model = OllamaGenerativeModel.from_json(model.to_json())
+            else:
+                raise te
         extract_data_model.generation_config.response_format = {"type": "json_object"}
 
         

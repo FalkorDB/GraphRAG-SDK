@@ -3,14 +3,11 @@ load_dotenv()
 from graphrag_sdk.ontology import Ontology
 import unittest
 from graphrag_sdk.source import Source
-from graphrag_sdk.models.gemini import GeminiGenerativeModel
-import vertexai
+from graphrag_sdk.models.litellm import LiteModel
 import os
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
-
-vertexai.init(project=os.getenv("PROJECT_ID"), location=os.getenv("REGION"))
 
 
 class TestAutoDetectOntology(unittest.TestCase):
@@ -24,7 +21,7 @@ class TestAutoDetectOntology(unittest.TestCase):
 
         sources = [Source(file_path)]
 
-        model = GeminiGenerativeModel(model_name="gemini-1.5-flash")
+        model = LiteModel(model_name="gemini/gemini-2.0-flash")
 
         boundaries = """
           Extract entities and relationships from each page

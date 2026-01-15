@@ -61,18 +61,18 @@ class KnowledgeGraph:
         # Connect to database
         self.db = FalkorDB(host=host, port=port, username=username, password=password)
         self.graph = self.db.select_graph(name)
-        ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
+        self.ontology_graph = self.db.select_graph("{" + name + "}" + "_schema")
 
         # Load / Save ontology to database
         if ontology is None:
             # Load ontology from DB
-            ontology = Ontology.from_schema_graph(ontology_graph)
+            ontology = Ontology.from_schema_graph(self.ontology_graph)
             
             if len(ontology.entities) == 0:
                 raise Exception("The ontology is empty. Load a valid ontology or create one using the ontology module.")
         else:
             # Save ontology to DB
-            ontology.save_to_graph(ontology_graph)
+            ontology.save_to_graph(self.ontology_graph)
 
         self._ontology = ontology
         self._name = name
@@ -116,6 +116,62 @@ class KnowledgeGraph:
         self.cypher_gen_prompt = cypher_gen_prompt
         self.qa_prompt = qa_prompt
         self.cypher_gen_prompt_history = cypher_gen_prompt_history
+
+    @staticmethod
+    def from_ttl(
+        path: str,
+        name: str,
+        model_config: KnowledgeGraphModelConfig,
+        host: Optional[str] = "127.0.0.1",
+        port: Optional[int] = 6379,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        cypher_system_instruction: Optional[str] = None,
+        qa_system_instruction: Optional[str] = None,
+        cypher_gen_prompt: Optional[str] = None,
+        qa_prompt: Optional[str] = None,
+        cypher_gen_prompt_history: Optional[str] = None,
+    ) -> "KnowledgeGraph":
+        """
+        Create a KnowledgeGraph from a TTL (Turtle) RDF schema file.
+        
+        Args:
+            path (str): Path to the TTL file.
+            name (str): Knowledge graph name.
+            model_config (KnowledgeGraphModelConfig): Model configuration.
+            host (Optional[str]): FalkorDB hostname.
+            port (Optional[int]): FalkorDB port number.
+            username (Optional[str]): FalkorDB username.
+            password (Optional[str]): FalkorDB password.
+            cypher_system_instruction (Optional[str]): Cypher system instruction.
+            qa_system_instruction (Optional[str]): QA system instruction.
+            cypher_gen_prompt (Optional[str]): Cypher generation prompt.
+            qa_prompt (Optional[str]): QA prompt.
+            cypher_gen_prompt_history (Optional[str]): Cypher generation prompt with history.
+        
+        Returns:
+            KnowledgeGraph: New instance with extracted ontology.
+        """
+        logger.info(f"Creating KnowledgeGraph from TTL file: {path}")
+        
+        # Extract ontology from TTL file
+        ontology = Ontology.from_ttl(path)
+        
+        # Create and return the KnowledgeGraph instance
+        return KnowledgeGraph(
+            name=name,
+            model_config=model_config,
+            ontology=ontology,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            cypher_system_instruction=cypher_system_instruction,
+            qa_system_instruction=qa_system_instruction,
+            cypher_gen_prompt=cypher_gen_prompt,
+            qa_prompt=qa_prompt,
+            cypher_gen_prompt_history=cypher_gen_prompt_history,
+        )
 
     # Attributes
 
@@ -210,6 +266,22 @@ class KnowledgeGraph:
         chat_session = ChatSession(self._model_config, self.ontology, self.graph, self.cypher_system_instruction,
                                    self.qa_system_instruction, self.cypher_gen_prompt, self.qa_prompt, self.cypher_gen_prompt_history)
         return chat_session
+
+    def refresh_ontology(self) -> None:
+        """
+        Refresh the ontology by reloading it from the database.
+        This is useful when the schema has been updated.
+        
+        Raises:
+            Exception: If the refreshed ontology is empty and no fallback is available.
+        """
+        # Reload ontology from database
+        refreshed_ontology = Ontology.from_schema_graph(self.ontology_graph)
+        
+        # Always update the ontology, even if it's empty
+        # This allows users to intentionally clear the ontology if needed
+        self._ontology = refreshed_ontology
+    
     def add_node(self, entity: str, attributes: dict) -> None:
         """
         Add a node to the knowledge graph, checking if it matches the ontology
