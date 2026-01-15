@@ -9,3 +9,5 @@ logs
 falkordb-data
 weaviate-data
 .deepeval_telemtry.txt
+
+.claude
