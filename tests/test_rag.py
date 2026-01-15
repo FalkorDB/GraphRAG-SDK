@@ -1,7 +1,6 @@
 import os
 import pytest
 import logging
-import numpy as np
 from dotenv import load_dotenv
 from graphrag_sdk.entity import Entity
 from deepeval.test_case import LLMTestCase
@@ -202,6 +201,7 @@ class TestGraphRAGPipeline:
         delete_kg(kg)
         
         # Verify that the average score meets the threshold
-        average_score = np.mean(scores)
+        assert len(scores) > 0, "No scores were collected"
+        average_score = sum(scores) / len(scores)
         logger.info(f"Average Score: {average_score}")
         assert average_score >= 0.5, f"Average score {average_score} is below threshold of 0.5"
