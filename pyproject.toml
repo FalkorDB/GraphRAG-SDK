@@ -1,6 +1,6 @@
 [project]
-name = "graphrag_sdk"
-version = "0.8.1"
+name = "graphrag-sdk"
+version = "0.8.2"
 description = "Enables graph-based RAG and integration with LLMs for advanced querying and knowledge graph creation."
 authors = [
     { name = "FalkorDB", email = "info@falkordb.com" }

@@ -10,6 +10,8 @@ falkordb-data
 weaviate-data
 .deepeval_telemtry.txt
 
-.claude# Build artifacts
+.claude
+
+# Build artifacts
 dist/
 build/
