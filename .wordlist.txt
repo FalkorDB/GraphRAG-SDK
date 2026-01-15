@@ -42,3 +42,5 @@ NLP
 graphrag
 gemini
 gpt
+uv
+hatchling
