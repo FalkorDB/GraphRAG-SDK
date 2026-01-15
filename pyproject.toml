@@ -45,7 +45,7 @@ dev = [
     "sphinx-rtd-theme>=2.0.0,<3.0.0",
     "pandas>=2.2.2,<3.0.0",
     "jupyter>=1.0.0,<2.0.0",
-    "ipykernel>=6.29.5,<7.0.0",
+    "ipykernel>=6.29.5,<8.0.0",
 ]
 
 [project.urls]

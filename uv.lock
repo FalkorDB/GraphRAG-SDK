@@ -912,7 +912,7 @@ requires-dist = [
     { name = "deepeval", marker = "extra == 'test'", specifier = ">=2.2.6,<3.0.0" },
     { name = "falkordb", specifier = ">=1.0.9,<2.0.0" },
     { name = "fix-busted-json", specifier = ">=0.0.18,<0.0.19" },
-    { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.29.5,<7.0.0" },
+    { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.29.5,<8.0.0" },
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.0.0,<2.0.0" },
     { name = "litellm", specifier = ">=1.73.1,<2.0.0" },
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.2.2,<3.0.0" },
