@@ -117,6 +117,62 @@ class KnowledgeGraph:
         self.qa_prompt = qa_prompt
         self.cypher_gen_prompt_history = cypher_gen_prompt_history
 
+    @staticmethod
+    def from_ttl(
+        path: str,
+        name: str,
+        model_config: KnowledgeGraphModelConfig,
+        host: Optional[str] = "127.0.0.1",
+        port: Optional[int] = 6379,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        cypher_system_instruction: Optional[str] = None,
+        qa_system_instruction: Optional[str] = None,
+        cypher_gen_prompt: Optional[str] = None,
+        qa_prompt: Optional[str] = None,
+        cypher_gen_prompt_history: Optional[str] = None,
+    ) -> "KnowledgeGraph":
+        """
+        Create a KnowledgeGraph from a TTL (Turtle) RDF schema file.
+        
+        Args:
+            path (str): Path to the TTL file.
+            name (str): Knowledge graph name.
+            model_config (KnowledgeGraphModelConfig): Model configuration.
+            host (Optional[str]): FalkorDB hostname.
+            port (Optional[int]): FalkorDB port number.
+            username (Optional[str]): FalkorDB username.
+            password (Optional[str]): FalkorDB password.
+            cypher_system_instruction (Optional[str]): Cypher system instruction.
+            qa_system_instruction (Optional[str]): QA system instruction.
+            cypher_gen_prompt (Optional[str]): Cypher generation prompt.
+            qa_prompt (Optional[str]): QA prompt.
+            cypher_gen_prompt_history (Optional[str]): Cypher generation prompt with history.
+        
+        Returns:
+            KnowledgeGraph: New instance with extracted ontology.
+        """
+        logger.info(f"Creating KnowledgeGraph from TTL file: {path}")
+        
+        # Extract ontology from TTL file
+        ontology = Ontology.from_ttl(path)
+        
+        # Create and return the KnowledgeGraph instance
+        return KnowledgeGraph(
+            name=name,
+            model_config=model_config,
+            ontology=ontology,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            cypher_system_instruction=cypher_system_instruction,
+            qa_system_instruction=qa_system_instruction,
+            cypher_gen_prompt=cypher_gen_prompt,
+            qa_prompt=qa_prompt,
+            cypher_gen_prompt_history=cypher_gen_prompt_history,
+        )
+
     # Attributes
 
     @property
