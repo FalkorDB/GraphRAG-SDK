@@ -11,3 +11,4 @@ weaviate-data
 .deepeval_telemtry.txt
 
 .claude
+dist/
