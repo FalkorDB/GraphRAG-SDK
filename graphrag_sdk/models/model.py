@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from enum import Enum
+from typing import Optional, Iterator
 
 
 class FinishReason:
@@ -7,65 +7,76 @@ class FinishReason:
     STOP = "STOP"
     OTHER = "OTHER"
 
-class OutputMethod(Enum):
-    JSON = 'json'
-    DEFAULT = 'default'
-
 class GenerativeModelConfig:
     """
-    Configuration for a generative model
+    Configuration for a generative model.
+
+    This configuration follows OpenAI-style parameter naming but is designed to be 
+    compatible with other generative models. Supports both predefined and arbitrary parameters.
 
     Args:
-        temperature (float): The temperature to use for sampling.
-        top_p (float): The top-p value to use for sampling.
-        top_k (int): The top-k value to use for sampling.
-        max_output_tokens (int): The maximum number of tokens to generate.
-        stop_sequences (list[str]): The stop sequences to use for sampling.
-        response_format (dict): The format of the response.
+        temperature (Optional[float]): Controls randomness of the output.
+        top_p (Optional[float]): Nucleus sampling parameter.
+        top_k (Optional[int]): Limits sampling to the top-k most probable tokens.
+        max_completion_tokens (Optional[int]): Maximum number of tokens to generate.
+        stop (Optional[list[str]]): Stop sequences.
+        response_format (Optional[dict]): Desired response format.
+        **kwargs: Any additional parameters not explicitly defined.
 
-    Examples:
-
-        >>> config = GenerativeModelConfig(temperature=0.5, top_p=0.9, top_k=50, max_output_tokens=100, stop_sequences=[".", "?", "!"])
+    Example:
+        >>> config = GenerativeModelConfig(
+        ...     temperature=0.5, 
+        ...     max_completion_tokens=100,
+        ...     stop=["\n", "END"]
+        ... )
+        >>> config.to_json()
+        {'temperature': 0.5, 'max_completion_tokens': 100, 'stop': ['\n', 'END']}
     """
 
     def __init__(
         self,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        top_k: int | None = None,
-        max_output_tokens: int | None = None,
-        stop_sequences: list[str] | None = None,
-        response_format: dict | None = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        max_completion_tokens: Optional[int] = None,
+        stop: Optional[list] = None,
+        response_format: Optional[dict] = None,
+        **kwargs,
     ):
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
-        self.max_output_tokens = max_output_tokens
-        self.stop_sequences = stop_sequences
+        self.max_completion_tokens = max_completion_tokens
+        self.stop = stop
         self.response_format = response_format
 
-    def __str__(self) -> str:
-        return f"GenerativeModelConfig(temperature={self.temperature}, top_p={self.top_p}, top_k={self.top_k}, max_output_tokens={self.max_output_tokens}, stop_sequences={self.stop_sequences})"
+        # Store extra parameters
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
+
+    def __str__(self) -> str:
+        return f"GenerativeModelConfig({', '.join(f'{k}={v}' for k, v in self.to_json().items())})"
+    
     def to_json(self) -> dict:
-        return {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_output_tokens,
-            "stop": self.stop_sequences,
-            "response_format": self.response_format,
-        }
+        """
+        Serialize the configuration to a dictionary, excluding any fields with None values.
+
+        Returns:
+            dict: A dictionary containing only the parameters that are explicitly set 
+                (i.e., not None).
+        
+        Example:
+            >>> config = GenerativeModelConfig(temperature=0.7, max_completion_tokens=100)
+            >>> config.to_json()
+            {'temperature': 0.7, 'max_completion_tokens': 100}
+        """
+        return {k: v for k, v in vars(self).items() if v is not None}
 
     @staticmethod
     def from_json(json: dict) -> "GenerativeModelConfig":
-        return GenerativeModelConfig(
-            temperature=json.get("temperature"),
-            top_p=json.get("top_p"),
-            top_k=json.get("top_k"),
-            max_output_tokens=json.get("max_tokens"),
-            stop_sequences=json.get("stop"),
-        )
-
+        # Simply pass all JSON data as kwargs - the constructor will handle it
+        return GenerativeModelConfig(**json)
 
 class GenerationResponse:
 
@@ -89,8 +100,11 @@ class GenerativeModelChatSession(ABC):
         self.model = model
 
     @abstractmethod
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
+    def send_message(self, message: str) -> GenerationResponse:
         pass
+
+    def send_message_stream(self, message: str) -> Iterator[str]:
+        raise NotImplementedError("Streaming not supported by this API implementation.")
 
 
 class GenerativeModel(ABC):
@@ -99,17 +113,9 @@ class GenerativeModel(ABC):
     """
 
     @abstractmethod
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
         pass
-
-    @abstractmethod
-    def start_chat(self, args: dict | None) -> GenerativeModelChatSession:
-        pass
-
-    @abstractmethod
-    def ask(self, message: str) -> GenerationResponse:
-        pass
-
+    
     @staticmethod
     @abstractmethod
     def from_json(json: dict) -> "GenerativeModel":

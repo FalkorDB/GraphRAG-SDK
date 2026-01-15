@@ -1,6 +1,5 @@
-from graphrag_sdk.kg import KnowledgeGraph
 from .agent import Agent
-from graphrag_sdk.models import GenerativeModelChatSession
+from graphrag_sdk.kg import KnowledgeGraph
 
 
 class KGAgent(Agent):
@@ -43,6 +42,7 @@ class KGAgent(Agent):
         self.agent_id = agent_id
         self.introduction = introduction
         self.kg = kg
+        self.chat_session = self._kg.chat_session()
 
     @property
     def agent_id(self) -> str:
@@ -55,15 +55,12 @@ class KGAgent(Agent):
         return self._agent_id
 
     @agent_id.setter
-    def agent_id(self, value):
+    def agent_id(self, value) -> None:
         """
         Sets the agent ID.
 
-        Parameters:
-        value (str): The ID of the agent.
-
-        Returns:
-        None
+        Args:
+            value (str): The ID of the agent.
         """
         self._agent_id = value
 
@@ -72,21 +69,18 @@ class KGAgent(Agent):
         """
         Returns the introduction of the agent.
 
-        :return: The introduction of the agent.
-        :rtype: str
+        Returns:
+            str: The introduction of the agent.
         """
         return self._introduction
 
     @introduction.setter
-    def introduction(self, value):
+    def introduction(self, value) -> None:
         """
         Sets the introduction of the agent.
 
-        Parameters:
-        value (str): The introduction of the agent.
-
-        Returns:
-        None
+        Args:
+            value (str): The introduction of the agent.
         """
         self._introduction = value
 
@@ -111,36 +105,30 @@ class KGAgent(Agent):
         return self._kg
 
     @kg.setter
-    def kg(self, value: KnowledgeGraph):
+    def kg(self, value: KnowledgeGraph) -> None:
         """
         Sets the knowledge graph for the agent.
 
-        Parameters:
+        Args:
             value (KnowledgeGraph): The knowledge graph to be set.
-
-        Returns:
-            None
         """
         self._kg = value
 
-    def run(
-        self, params: dict, session: GenerativeModelChatSession | None = None
-    ) -> tuple[str, GenerativeModelChatSession]:
+    def run(self, params: dict) -> str:
         """
         Ask the agent a question.
 
         Args:
             params (dict): The parameters for the agent.
-            session (GenerativeModelChatSession | None): The chat session to use for the agent. Defaults to None.
 
         Returns:
-            tuple[str, GenerativeModelChatSession]: The agent's response and the updated chat session.
+            str: The agent's response.
 
         """
-        (output, chat_session) = self._kg.ask(params["prompt"], session)
-        return (output, chat_session)
+        output = self.chat_session.send_message(params["prompt"])
+        return output['response']
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """
         Returns a string representation of the KGAgent object.
 

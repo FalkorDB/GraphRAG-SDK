@@ -1,4 +1,5 @@
 import csv
+from math import ceil
 from typing import Iterator
 from graphrag_sdk.document import Document
 
@@ -17,7 +18,7 @@ class CSVLoader:
             reader = csv.reader(f)
             rows = [row for row in reader]
             num_rows = len(rows)
-            num_documents = num_rows // self.rows_per_document
+            num_documents = ceil(num_rows / self.rows_per_document)
             for i in range(num_documents):
                 content = "\n".join(
                     [
@@ -29,4 +30,4 @@ class CSVLoader:
                         ]
                     ]
                 )
-                yield Document(content)
+                yield Document(content, f"{self.path}#{i}")

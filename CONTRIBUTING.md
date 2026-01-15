@@ -54,7 +54,7 @@ To set up **GraphRAG-SDK** for local development:
    
 2. Install the required dependencies:
    ```bash
-   poetry install
+   poetry install --extras "all"
    ```
    
 ## Pull Request Guidelines

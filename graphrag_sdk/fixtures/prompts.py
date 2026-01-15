@@ -171,7 +171,7 @@ Do not use the example Movie context to assume the ontology. The ontology should
 CREATE_ONTOLOGY_PROMPT = """
 Given the following text, create the ontology that represents the entities and relationships in the data.
 Extract as many entities and relations as possible to fully describe the data.
-Extract as attributes as possible to fully describe the entities and relationships in the text.
+Extract as many attributes as possible to fully describe the entities and relationships in the text.
 Attributes should be extracted as entities or relations whenever possible. For example, when describing a Movie entity, the "director" attribute can be extracted as a entity "Person" and connected to the "Movie" entity with an relation labeled "DIRECTED".
 For example, when describing a Movie entity, you can extract attributes like title, release year, genre, and more.
 Make sure to connect all related entities in the ontology. For example, if a Person PLAYED a Character in a Movie, make sure to connect the Character back to the Movie, otherwise we won't be able to say which Movie the Character is from.
@@ -188,7 +188,7 @@ Raw text:
 """
 
 BOUNDARIES_PREFIX = """
-Use the following instructions as boundaries for the ontology extraction process.
+Use the following instructions as boundaries for the ontology extraction process:
 {user_boundaries}
 """
 
@@ -429,24 +429,22 @@ Single-Pair minimal-weight paths: Find minimal-weight paths between a pair of en
 Single-Source minimal-weight paths: Find minimal-weight paths from a given source entity using algo.SSpaths().
 
 Ontology:
-#ONTOLOGY
+{ontology}
 
 
 For example, given the question "Which managers own Neo4j stocks?", the OpenCypher statement should look like this:
-```
 MATCH (m:Manager)-[:OWNS]->(s:Stock)
 WHERE s.name CONTAINS 'Neo4j'
-RETURN m, s
-```
-"""
+RETURN m, s"""
 
 CYPHER_GEN_PROMPT = """
-Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below:
-If you cannot generate a OpenCypher statement for any reason, return an empty string.
+Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
+If you cannot generate a OpenCypher statement for any reason, return an empty response.
 Respect the order of the relationships, the arrows should always point from the "source" to the "target".
+Please think if your answer is a valid Cypher query, and correct it if it is not.
 
 Question: {question}
-"""
+Your generated Cypher: """
 
 
 CYPHER_GEN_PROMPT_WITH_ERROR = """
@@ -461,6 +459,18 @@ Do not include any apologies or other texts, except the generated OpenCypher sta
 Question: {question}
 """
 
+CYPHER_GEN_PROMPT_WITH_HISTORY = """
+Using the ontology provided, generate an OpenCypher statement to query the graph database returning all relevant entities, relationships, and attributes to answer the question below.
+
+First, determine if the last answers provided to the user over the entire conversation is relevant to the current question. If it is relevant, you may consider incorporating information from it into the query. If it is not relevant, ignore it and generate the query based solely on the question.
+
+If you cannot generate an OpenCypher statement for any reason, return an empty string.
+
+Respect the order of the relationships; the arrows should always point from the "source" to the "target".
+
+Last Answer: {last_answer}
+Question: {question}
+Your generated Cypher: """
 
 GRAPH_QA_SYSTEM = """
 You are an assistant that helps to form nice and human understandable answers.
@@ -468,8 +478,8 @@ The information part contains the provided information that you must use to cons
 The provided information is authoritative, you must never doubt it or try to use your internal knowledge to correct it.
 Make the answer sound as a response to the question. Do not mention that you based the result on the given information.
 Do not answer more than the question asks for.
-Here is an example:
 
+Here is an example:
 Question: Which managers own Neo4j stocks?
 Context:[manager:CTL LLC, manager:JANE STREET GROUP LLC]
 Helpful Answer: CTL LLC, JANE STREET GROUP LLC owns Neo4j stocks.
@@ -575,7 +585,7 @@ Choose between the following steps to create the execution plan:
 
 
 ORCHESTRATOR_SUMMARY_PROMPT = """
-Given the following execution log, generate the final answer to the user's question.
+Given the following execution log and the history of this chat, generate the final answer to the user's question.
 Be very polite and detailed in your response, always providing the reasoning behind the answer.
 
 User question:

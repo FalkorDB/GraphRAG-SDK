@@ -1,119 +1,139 @@
-from .model import *
-from ollama import Client, Options
+import logging
+import os
+from typing import Optional
+from .litellm import LiteModel, LiteModelChatSession
+from .model import (
+    GenerativeModel,
+    GenerativeModelConfig,
+    GenerativeModelChatSession,
+)
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) 
 
-class OllamaGenerativeModel(GenerativeModel):
-
-    client: Client = None
+class OllamaGenerativeModel(LiteModel):
+    """
+    A generative model that interfaces with the Ollama Client for chat completions.
+    
+    Inherits from LiteModel and automatically converts Ollama model names to 
+    LiteLLM format internally (e.g., "llama3:8b" -> "ollama/llama3:8b") while 
+    exposing the original model name through the public API.
+    """
 
     def __init__(
         self,
         model_name: str,
-        generation_config: GenerativeModelConfig | None = None,
-        system_instruction: str | None = None,
-        host: str = None,
+        generation_config: Optional[GenerativeModelConfig] = None,
+        system_instruction: Optional[str] = None,
+        api_base: Optional[str] = None,
+        host: Optional[str] = None,
     ):
-        self.model_name = model_name
-        self.generation_config = generation_config
-        self.system_instruction = system_instruction
-        self._host = host
+        """
+        Initialize the OllamaGenerativeModel with the required parameters.
 
-    def _get_model(self) -> Client:
-        if self.client is None:
-            self.client = Client(host=self._host)
-
-        return self.client
-
-    def with_system_instruction(self, system_instruction: str) -> "GenerativeModel":
-        self.system_instruction = system_instruction
-        self.client = None
-        self._get_model()
-        self.client.pull(self.model_name)
-
-        return self
-
-    def start_chat(self, args: dict | None = None) -> GenerativeModelChatSession:
-        return OllamaChatSession(self, args)
-
-    def ask(self, message: str) -> GenerationResponse:
-        response = self.client.chat(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": self.system_instruction},
-                {"role": "user", "content": message[:14385]},
-            ],
-            options=Options(
-                temperature=self.generation_config.temperature,
-                top_p=self.generation_config.top_p,
-                top_k=self.generation_config.top_k,
-                stop=self.generation_config.stop_sequences,
-            ),
+        Args:
+            model_name (str): The name of the Ollama model.
+            generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
+            system_instruction (Optional[str]): System-level instruction for the model.
+            api_base (Optional[str]): Base URL for the Ollama API (e.g., "http://localhost:11434").
+                                    If not provided, will use OLLAMA_API_BASE environment variable.
+            host (Optional[str]): DEPRECATED: Use api_base instead. Base URL for the Ollama API.
+        """
+        # Convert to LiteLLM format
+        lite_model_name = f"ollama/{model_name}"
+        
+        # Handle backward compatibility for host parameter
+        if host is not None and api_base is not None:
+            logger.warning("Both 'host' and 'api_base' parameters provided. Using 'api_base' and ignoring 'host'.")
+        elif host is not None and api_base is None:
+            logger.warning("Parameter 'host' is deprecated. Please use 'api_base' instead.")
+            api_base = host
+        
+        # Use environment variable if no api_base is provided
+        if api_base is None:
+            api_base = os.getenv('OLLAMA_API_BASE')
+        
+        # Handle api_base parameter for Ollama
+        additional_params = {}
+        if api_base is not None:
+            additional_params['api_base'] = api_base
+        
+        # Call parent constructor
+        super().__init__(
+            model_name=lite_model_name,
+            generation_config=generation_config,
+            system_instruction=system_instruction,
+            additional_params=additional_params
         )
-        return self.parse_generate_content_response(response)
+        
+        # Store original model name for compatibility (without the ollama/ prefix)
+        self._original_model_name = model_name
 
-    def parse_generate_content_response(self, response: any) -> GenerationResponse:
-        print(response)
-        return GenerationResponse(
-            text=response["message"]["content"], finish_reason=FinishReason.STOP
-        )
+    @property
+    def model_name(self) -> str:
+        """Get the original model name (without ollama/ prefix)."""
+        return self._original_model_name
+
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
+        """
+        Start a new chat session.
+        
+        Args:
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
+            
+        Returns:
+            GenerativeModelChatSession: A new instance of the chat session.
+        """
+        return OllamaChatSession(self, system_instruction)
 
     def to_json(self) -> dict:
+        """
+        Serialize the model's configuration and state to JSON format.
+
+        Returns:
+            dict: The serialized JSON data with clean Ollama model names.
+        """
         return {
-            "model_name": self._model_name,
-            "generation_config": self._generation_config.to_json(),
-            "system_instruction": self._system_instruction,
+            "model_name": self.model_name,  # Return original model name without ollama/ prefix
+            "generation_config": self.generation_config.to_json(),
+            "system_instruction": self.system_instruction,
         }
 
     @staticmethod
     def from_json(json: dict) -> "GenerativeModel":
+        """
+        Deserialize a JSON object to create an instance of OllamaGenerativeModel.
+
+        Args:
+            json (dict): The serialized JSON data.
+
+        Returns:
+            GenerativeModel: A new instance of OllamaGenerativeModel.
+        """
         return OllamaGenerativeModel(
-            model_name=json["model_name"],
+            json["model_name"],
             generation_config=GenerativeModelConfig.from_json(
                 json["generation_config"]
             ),
             system_instruction=json["system_instruction"],
         )
 
-class OllamaChatSession(GenerativeModelChatSession):
 
-    _history = []
+class OllamaChatSession(LiteModelChatSession):
+    """
+    A chat session for interacting with the Ollama model.
+    
+    This implementation inherits from LiteModelChatSession to leverage all chat functionality
+    without any code duplication. All methods (send_message, send_message_stream, 
+    get_chat_history, delete_last_message) are inherited from the parent class.
+    """
 
-    def __init__(self, model: OllamaGenerativeModel, args: dict | None = None):
-        self._model = model
-        self._args = args
-        self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+    def __init__(self, model: OllamaGenerativeModel, system_instruction: Optional[str] = None) -> None:
+        """
+        Initialize the chat session and set up the conversation history.
 
-    def send_message(self, message: str, output_method: OutputMethod = OutputMethod.DEFAULT) -> GenerationResponse:
-        prompt = []
-        prompt.extend(self._history)
-        prompt.append({"role": "user", "content": message[:14385]})
-        print("OLLAMA chat prompt: " + str(prompt))
-        response = self._model.client.chat(
-            model=self._model.model_name,
-            messages=prompt,
-            options=Options(
-                temperature=(
-                    self._model.generation_config.temperature
-                    if self._model.generation_config is not None
-                    else None
-                ),
-                top_p=(
-                    self._model.generation_config.top_p
-                    if self._model.generation_config is not None
-                    else None
-                ),
-                stop=(
-                    self._model.generation_config.stop_sequences
-                    if self._model.generation_config is not None
-                    else None
-                ),
-            ),
-        )
-        content = self._model.parse_generate_content_response(response)
-        self._history.append({"role": "user", "content": message})
-        self._history.append({"role": "assistant", "content": content.text})
-        return content
+        Args:
+            model (OllamaGenerativeModel): The model instance for the session.
+            system_instruction (Optional[str]): Optional system instruction.
+        """
+        super().__init__(model, system_instruction)

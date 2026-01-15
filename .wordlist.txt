@@ -4,6 +4,7 @@ FalkorDB
 GraphRAG
 KnowledgeGraph
 OpenAI
+openai
 SDK
 github
 schemas
@@ -24,3 +25,18 @@ html
 https
 www
 faq
+Ollama
+ollama
+Cypher
+LiteLLM
+README
+GenAI
+customizable
+backends
+scalable
+APIs
+Embeddings
+NLP
+graphrag
+gemini
+gpt

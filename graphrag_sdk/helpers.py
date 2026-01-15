@@ -1,12 +1,25 @@
 import re
-import graphrag_sdk
 import logging
+from typing import Union, Optional, TYPE_CHECKING
 from fix_busted_json import repair_json
+
+if TYPE_CHECKING:
+    from graphrag_sdk import Ontology
+
 
 logger = logging.getLogger(__name__)
 
-
-def extract_json(text: str | dict, skip_repair=False) -> str:
+def extract_json(text: Union[str, dict], skip_repair: Optional[bool] = False) -> str:
+    """
+    Extracts JSON from a string or dictionary, optionally skipping JSON repair.
+    
+    Args:
+        text (Union[str, dict]): The input text or dictionary.
+        skip_repair (Optional[bool]): Flag to skip JSON repair. Defaults to False.
+        
+    Returns:
+        str: The extracted JSON as a string.
+    """
     if not isinstance(text, str):
         text = str(text)
     regex = r"(?:```)?(?:json)?([^`]*)(?:\\n)?(?:```)?"
@@ -18,8 +31,35 @@ def extract_json(text: str | dict, skip_repair=False) -> str:
         logger.error(f"Failed to repair JSON: {e} - {text}")
         return "".join(matches)
 
+def extract_name_from_uri(uri: str) -> str:
+    """
+    Extract local name from URI, stripping namespace.
+    
+    Args:
+        uri (str): Full URI or literal value.
+        
+    Returns:
+        str: Local name without namespace prefix.
+    """
+    # Handle common URI patterns
+    if "#" in uri:
+        return uri.split("#")[-1]
+    elif "/" in uri:
+        return uri.split("/")[-1]
+    else:
+        # Already a local name or literal
+        return uri
 
-def map_dict_to_cypher_properties(d: dict):
+def map_dict_to_cypher_properties(d: dict) -> str:
+    """
+    Maps a dictionary to Cypher query properties.
+    
+    Args:
+        d (dict): The dictionary to map.
+        
+    Returns:
+        str: A Cypher-formatted string of properties.
+    """
     cypher = "{"
     if isinstance(d, list):
         if len(d) == 0:
@@ -49,7 +89,16 @@ def map_dict_to_cypher_properties(d: dict):
     return cypher
 
 
-def stringify_falkordb_response(response):
+def stringify_falkordb_response(response: Union[list, str]) -> str:
+    """
+    Converts FalkorDB response to a string.
+    
+    Args:
+        response (Union[list, str]): The response to stringify.
+        
+    Returns:
+        str: The stringified response.
+    """
     if not isinstance(response, list) or len(response) == 0:
         data = str(response).strip()
     elif not isinstance(response[0], list):
@@ -66,7 +115,16 @@ def stringify_falkordb_response(response):
     return data
 
 
-def extract_cypher(text: str):
+def extract_cypher(text: str) -> str:
+    """
+    Extracts Cypher query from a text block.
+    
+    Args:
+        text (str): The text containing a Cypher query.
+        
+    Returns:
+        str: The extracted Cypher query.
+    """
 
     if not text.startswith("```"):
         return text
@@ -78,8 +136,18 @@ def extract_cypher(text: str):
 
 
 def validate_cypher(
-    cypher: str, ontology: graphrag_sdk.Ontology
-) -> list[str] | None:
+    cypher: str, ontology: "Ontology"
+) -> Optional[list[str]]:
+    """
+    Validates a Cypher query against the ontology.
+    
+    Args:
+        cypher (str): The Cypher query.
+        ontology (Ontology): The ontology to validate against.
+        
+    Returns:
+        Optional[list[str]]: A list of validation errors, or None if valid.
+    """
     try:
         if not cypher or len(cypher) == 0:
             return ["Cypher statement is empty"]
@@ -104,7 +172,17 @@ def validate_cypher(
         return None
 
 
-def validate_cypher_entities_exist(cypher: str, ontology: graphrag_sdk.Ontology):
+def validate_cypher_entities_exist(cypher: str, ontology: "Ontology") -> list[str]:
+    """
+    Validates whether entities in the Cypher query exist in the ontology.
+    
+    Args:
+        cypher (str): The Cypher query.
+        ontology (Ontology): The ontology to validate against.
+        
+    Returns:
+        list[str]: A list of errors if entities are not found.
+    """
     # Check if entities exist in ontology
     not_found_entity_labels = []
     entity_labels = re.findall(r"\(:(.*?)\)", cypher)
@@ -119,15 +197,30 @@ def validate_cypher_entities_exist(cypher: str, ontology: graphrag_sdk.Ontology)
     ]
 
 
-def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology):
+def validate_cypher_relations_exist(cypher: str, ontology: "Ontology") -> list[str]:
+    """
+    Validates whether relations in the Cypher query exist in the ontology.
+    
+    Args:
+        cypher (str): The Cypher query.
+        ontology (Ontology): The ontology to validate against.
+        
+    Returns:
+        list[str]: A list of errors if relations are not found.
+    """
     # Check if relations exist in ontology
     not_found_relation_labels = []
     relation_labels = re.findall(r"\[:(.*?)\]", cypher)
-    for label in relation_labels:
-        label = label.split(":")[1] if ":" in label else label
-        label = label.split("{")[0].strip() if "{" in label else label
-        if label not in [relation.label for relation in ontology.relations]:
-            not_found_relation_labels.append(label)
+    for relation in relation_labels:
+        for label in relation.split("|"):
+            max_idx = min(
+                    label.index("*") if "*" in label else len(label),
+                    label.index("{") if "{" in label else len(label),
+                    label.index("]") if "]" in label else len(label),
+                    )
+            label = label[:max_idx]
+            if label not in [relation.label for relation in ontology.relations]:
+                not_found_relation_labels.append(label)
 
     return [
         f"Relation {label} not found in ontology" for label in not_found_relation_labels
@@ -135,16 +228,25 @@ def validate_cypher_relations_exist(cypher: str, ontology: graphrag_sdk.Ontology
 
 
 def validate_cypher_relation_directions(
-    cypher: str, ontology: graphrag_sdk.Ontology
-):
-
+    cypher: str, ontology: "Ontology"
+) -> list[str]:
+    """
+    Validates relation directions in a Cypher query.
+    
+    Args:
+        cypher (str): The Cypher query.
+        ontology (Ontology): The ontology to validate against.
+        
+    Returns:
+        list[str]: A list of errors if relation directions are incorrect.
+    """
     errors = []
     relations = list(re.finditer(r"\[.*?\]", cypher))
     i = 0
     for relation in relations:
         try:
             relation_label = (
-                re.search(r"(?:\[)(?:\w)*(?:\:)([^{\]]+)", relation.group(0))
+                re.search(r"(?:\[)(?:\w)*(?:\:)([^\d\{\]\*\.\:]+)", relation.group(0))
                 .group(1)
                 .strip()
             )
