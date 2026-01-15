@@ -52,9 +52,16 @@ To set up **GraphRAG-SDK** for local development:
    cd GraphRAG-SDK
    ```
    
-2. Install the required dependencies:
+2. Install uv (if not already installed):
    ```bash
-   poetry install --extras "all"
+   pip install uv
+   # Or on macOS/Linux:
+   # curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+3. Install the required dependencies:
+   ```bash
+   uv sync --all-extras
    ```
    
 ## Pull Request Guidelines
@@ -99,7 +106,7 @@ Testing is essential for ensuring code quality in **GraphRAG-SDK**. Before submi
    export REGION=${REGION}
    export OPENAI_API_KEY=${OPENAI_API_KEY}
    export GOOGLE_API_KEY=${GOOGLE_API_KEY}
-   poetry run pytest
+   uv run pytest
    ```
 
 ## Thank You!

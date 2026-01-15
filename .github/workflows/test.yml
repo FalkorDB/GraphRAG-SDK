@@ -37,14 +37,11 @@ jobs:
         with:
           python-version: 3.11.0 # Update with desired Python version
 
-      - name: Cache Poetry virtualenv
-        id: cache
-        uses: actions/cache@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
-          path: ~/.poetry/virtualenvs
-          key: ${{ runner.os }}-poetry-${{ hashFiles('poetry.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-poetry-
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - id: "auth"
         uses: "google-github-actions/auth@v3"
@@ -56,13 +53,8 @@ jobs:
         with:
           version: ">= 363.0.0"
 
-      - name: Install Poetry
-        if: steps.cache.outputs.cache-hit != true
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-
       - name: Install dependencies
-        run: poetry install --with test
+        run: uv sync --extra test
 
       - name: Wait for Ollama to be ready
         run: |
@@ -82,4 +74,4 @@ jobs:
           AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
           AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
           TEST_MODEL: ${{ matrix.model }} # Pass the model as an environment variable
-        run: poetry run pytest
+        run: uv run pytest
