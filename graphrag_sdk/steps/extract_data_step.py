@@ -26,6 +26,8 @@ from graphrag_sdk.fixtures.prompts import (
     FIX_JSON_PROMPT,
     COMPLETE_DATA_EXTRACTION,
 )
+from graphrag_sdk.entity_resolution import EntityResolver
+from graphrag_sdk.extraction_validator import ExtractionValidator
 
 RENDER_STEP_SIZE = 0.5
 
@@ -46,6 +48,8 @@ class ExtractDataStep(Step):
         graph: Graph,
         config: Optional[dict] = None,
         hide_progress: Optional[bool] = False,
+        enable_deduplication: Optional[bool] = True,
+        enable_validation: Optional[bool] = True,
     ) -> None:
         """
         Initialize the ExtractDataStep.
@@ -57,6 +61,8 @@ class ExtractDataStep(Step):
             graph (Graph): The FalkorDB graph instance.
             config (Optional[dict]): Configuration options for the step.
             hide_progress (Optional[bool]): Flag to hide progress bar. Defaults to False.
+            enable_deduplication (Optional[bool]): Enable entity deduplication. Defaults to True.
+            enable_validation (Optional[bool]): Enable extraction validation. Defaults to True.
         """
         self.sources = sources
         self.ontology = ontology
@@ -66,6 +72,7 @@ class ExtractDataStep(Step):
                 "max_workers": 16,
                 "max_input_tokens": 500000,
                 "max_output_tokens": 8192,
+                "similarity_threshold": 0.85,
             }
         else:
             self.config = config
@@ -74,6 +81,17 @@ class ExtractDataStep(Step):
         self.hide_progress = hide_progress
         self.process_files = 0
         self.counter_lock = Lock()
+        self.enable_deduplication = enable_deduplication
+        self.enable_validation = enable_validation
+        
+        # Initialize entity resolver and validator
+        if self.enable_deduplication:
+            self.entity_resolver = EntityResolver(
+                similarity_threshold=self.config.get("similarity_threshold", 0.85)
+            )
+        if self.enable_validation:
+            self.validator = ExtractionValidator(ontology, strict_mode=False)
+        
         if not os.path.exists("logs"):
             os.makedirs("logs")
 
@@ -229,6 +247,38 @@ class ExtractDataStep(Step):
                 raise Exception(
                     f"Invalid data format. Missing 'entities' or 'relations' in JSON."
                 )
+            
+            # Apply validation if enabled
+            if self.enable_validation:
+                data, validation_report = self.validator.validate_extraction(data)
+                _task_logger.debug(f"Validation report: {validation_report}")
+                if validation_report.get("valid_entities", 0) == 0:
+                    _task_logger.warning("No valid entities after validation")
+            
+            # Apply entity normalization and deduplication if enabled
+            if self.enable_deduplication and "entities" in data:
+                # Normalize entity attributes
+                data["entities"] = [
+                    self.entity_resolver.normalize_entity_attributes(entity)
+                    for entity in data["entities"]
+                ]
+                
+                # Get unique attributes for deduplication
+                unique_attr_names = []
+                for entity in data["entities"]:
+                    ontology_entity = ontology.get_entity_with_label(entity.get("label"))
+                    if ontology_entity:
+                        unique_attrs = [attr.name for attr in ontology_entity.attributes if attr.unique]
+                        unique_attr_names.extend(unique_attrs)
+                
+                # Deduplicate entities
+                unique_attr_names = list(set(unique_attr_names))
+                if unique_attr_names:
+                    data["entities"], dup_count = self.entity_resolver.deduplicate_entities(
+                        data["entities"], unique_attr_names
+                    )
+                    _task_logger.debug(f"Removed {dup_count} duplicate entities")
+            
             for entity in data["entities"]:
                 try:
                     self._create_entity(graph, entity, ontology)
