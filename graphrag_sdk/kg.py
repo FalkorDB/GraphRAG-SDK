@@ -1,5 +1,6 @@
 import logging
 import warnings
+import time
 from falkordb import FalkorDB
 from typing import Optional, Union
 from graphrag_sdk.ontology import Ontology
@@ -202,15 +203,16 @@ class KnowledgeGraph:
         return [s.source for s in self.sources]
 
     def process_sources(
-        self, sources: list[AbstractSource], instructions: Optional[str] = None, hide_progress: Optional[bool] = False
+        self, sources: list[AbstractSource], instructions: Optional[str] = None, hide_progress: Optional[bool] = False,  delay: Optional[float] = 0
     ) -> None:
         """
         Add entities and relations found in sources into the knowledge-graph
 
         Args:
-            sources (list[AbstractSource]): list of sources to extract knowledge from
+            sources (list[AbstractSource]): list of sources to extract knowledge from            
             instructions (Optional[str]): Instructions for processing.
             hide_progress (Optional[bool]): hide progress bar
+            delay (float): seconds to delay each iteration through sources to avoid rate limits
         """
 
         if self.ontology is None:
@@ -218,6 +220,11 @@ class KnowledgeGraph:
 
         # Create graph with sources
         self._create_graph_with_sources(sources, instructions, hide_progress)
+
+        # Add processed sources
+        for src in sources:
+            self.sources.add(src)
+            time.sleep(delay)
 
 
     def _create_graph_with_sources(
