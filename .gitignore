@@ -15,3 +15,8 @@ weaviate-data
 # Build artifacts
 dist/
 build/
+
+# Coverage artifacts
+.coverage
+coverage.xml
+htmlcov/
