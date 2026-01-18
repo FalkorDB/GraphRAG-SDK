@@ -1,5 +1,9 @@
 from abc import ABC
+<<<<<<< HEAD
 from typing import Optional, Iterator
+=======
+from typing import Iterator, Optional
+>>>>>>> b2aa07fc70e298ca25ae07c67c1e8af35dd2953b
 from graphrag_sdk.document import Document
 from graphrag_sdk.document_loaders import (
     PDFLoader,
@@ -18,12 +22,11 @@ def Source(path: str, instruction: Optional[str] = None) -> "AbstractSource":
 
     Args:
         path (str): path to source
-        instruction (str): source specific instruction for the LLM
-
+        instruction (Optional[str]): source specific instruction for the LLM
+        
     Returns:
         AbstractSource: A source object corresponding to the input path format.
     """
-
     if not isinstance(path, str) or path == "":
         raise Exception("Invalid argument, path should be a none empty string.")
 

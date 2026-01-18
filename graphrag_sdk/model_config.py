@@ -1,3 +1,4 @@
+import copy
 from graphrag_sdk.models import GenerativeModel
 
 
@@ -26,14 +27,19 @@ class KnowledgeGraphModelConfig:
             cypher_generation (GenerativeModel): The generative model for Cypher query generation.
             qa (GenerativeModel): The generative model for question answering.
         """
+        # Ensure the extract_data model is configured for structured data extraction
+        extract_data.generation_config.response_format = {"type": "json_object"}
+
         self.extract_data = extract_data
         self.cypher_generation = cypher_generation
         self.qa = qa
 
     @staticmethod
-    def with_model(model: GenerativeModel):
+    def with_model(model: GenerativeModel) -> "KnowledgeGraphModelConfig":
         """
         Creates a new KnowledgeGraphModelConfig instance with the given generative model.
+        
+        The extract_data model will be configured with JSON response format for structured data extraction.
 
         Args:
             model (GenerativeModel): The generative model to use.
@@ -42,8 +48,22 @@ class KnowledgeGraphModelConfig:
             KnowledgeGraphModelConfig: The new KnowledgeGraphModelConfig instance.
 
         """
+        # Ensure the extract_data model is configured for structured data extraction
+        try:
+            extract_data_model = copy.deepcopy(model)
+        except TypeError as te:
+            # Handle models that cannot be deep-copied (e.g., Ollama models with threading locks)
+            # Check if this is an Ollama model by checking its type
+            from .models.ollama import OllamaGenerativeModel
+            if isinstance(model, OllamaGenerativeModel):
+                extract_data_model = OllamaGenerativeModel.from_json(model.to_json())
+            else:
+                raise te
+        extract_data_model.generation_config.response_format = {"type": "json_object"}
+
+        
         return KnowledgeGraphModelConfig(
-            extract_data=model,
+            extract_data=extract_data_model,
             cypher_generation=model,
             qa=model,
         )

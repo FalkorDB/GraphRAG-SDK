@@ -10,7 +10,7 @@ class StringLoader():
         """
         Initialize loader
 
-        Parameters:
+        Args:
             string (str): string from memory.
         """
         self.string = string

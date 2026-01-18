@@ -55,7 +55,7 @@ def ontology_kg_setup():
     ontology.add_relation(Relation(label="IN_CITY", source="Restaurant", target="City"))
 
     # Create a model and a knowledge graph.
-    model = GeminiGenerativeModel("gemini-1.5-flash-001")
+    model = GeminiGenerativeModel("gemini-2.0-flash")
     kg = KnowledgeGraph(
         name="test_ontology",
         ontology=ontology,
