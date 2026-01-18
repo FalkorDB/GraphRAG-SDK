@@ -10,7 +10,7 @@ class PDFLoader():
         """
         Initialize loader
 
-        Parameters:
+        Args:
             path (str): path to PDF.
         """
 

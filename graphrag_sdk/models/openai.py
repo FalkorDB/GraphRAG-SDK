@@ -1,21 +1,29 @@
+from typing import Optional
+from .litellm import LiteModel, LiteModelChatSession
 from .model import (
-    OutputMethod,
     GenerativeModel,
     GenerativeModelConfig,
-    GenerationResponse,
-    FinishReason,
     GenerativeModelChatSession,
 )
+<<<<<<< HEAD
 from typing import Union
 from openai import OpenAI
+=======
+>>>>>>> b2aa07fc70e298ca25ae07c67c1e8af35dd2953b
 
 
-class OpenAiGenerativeModel(GenerativeModel):
-
-    client: OpenAI = None
+class OpenAiGenerativeModel(LiteModel):
+    """
+    A generative model that interfaces with OpenAI's API for chat completions.
+    
+    Inherits from LiteModel and automatically converts OpenAI model names to 
+    LiteLLM format internally (e.g., "gpt-4o" -> "openai/gpt-4o") while 
+    exposing the original model name through the public API.
+    """
 
     def __init__(
         self,
+<<<<<<< HEAD
         model_name: str,
         generation_config: Union[GenerativeModelConfig, None] = None,
         system_instruction: Union[str, None] = None,
@@ -52,17 +60,71 @@ class OpenAiGenerativeModel(GenerativeModel):
                     else FinishReason.OTHER
                 )
             ),
+=======
+        model_name: str = "gpt-4.1",
+        generation_config: Optional[GenerativeModelConfig] = None,
+        system_instruction: Optional[str] = None,
+    ):
+        """
+        Initialize the OpenAiGenerativeModel with required parameters.
+        
+        Args:
+            model_name (str): Name of the OpenAI model.
+            generation_config (Optional[GenerativeModelConfig]): Configuration settings for generation.
+            system_instruction (Optional[str]): System-level instruction for the model.
+        """
+        # Convert to LiteLLM format and call parent constructor
+        lite_model_name = f"openai/{model_name}"
+        super().__init__(
+            model_name=lite_model_name,
+            generation_config=generation_config,
+            system_instruction=system_instruction
+>>>>>>> b2aa07fc70e298ca25ae07c67c1e8af35dd2953b
         )
+        
+        # Store original model name for compatibility (without the openai/ prefix)
+        self._original_model_name = model_name
+
+    @property
+    def model_name(self) -> str:
+        """Get the original model name (without openai/ prefix)."""
+        return self._original_model_name
+
+    def start_chat(self, system_instruction: Optional[str] = None) -> GenerativeModelChatSession:
+        """
+        Start a new chat session.
+            
+        Args:
+            system_instruction (Optional[str]): Optional system instruction to guide the chat session.
+        Returns:
+            GenerativeModelChatSession: A new instance of the chat session.
+        """
+        return OpenAiChatSession(self, system_instruction)
 
     def to_json(self) -> dict:
+        """
+        Serialize the model's configuration and state to JSON format.
+        
+        Returns:
+            dict: The serialized JSON data with clean OpenAI model names.
+        """
         return {
-            "model_name": self.model_name,
+            "model_name": self.model_name,  # Return original model name without openai/ prefix
             "generation_config": self.generation_config.to_json(),
             "system_instruction": self.system_instruction,
         }
 
     @staticmethod
     def from_json(json: dict) -> "GenerativeModel":
+        """
+        Deserialize a JSON object to create an instance of OpenAiGenerativeModel.
+        
+        Args:
+            json (dict): The serialized JSON data.
+            
+        Returns:
+            GenerativeModel: A new instance of OpenAiGenerativeModel.
+        """
         return OpenAiGenerativeModel(
             json["model_name"],
             generation_config=GenerativeModelConfig.from_json(
@@ -72,6 +134,7 @@ class OpenAiGenerativeModel(GenerativeModel):
         )
 
 
+<<<<<<< HEAD
 class OpenAiChatSession(GenerativeModelChatSession):
 
     _history = []
@@ -99,43 +162,23 @@ class OpenAiChatSession(GenerativeModelChatSession):
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": content.text})
         return content
+=======
+class OpenAiChatSession(LiteModelChatSession):
+    """
+    A chat session for interacting with the OpenAI model.
+>>>>>>> b2aa07fc70e298ca25ae07c67c1e8af35dd2953b
     
-    def _get_generation_config(self, output_method: OutputMethod):
-        config = self._model.generation_config.to_json()
-        if output_method == OutputMethod.JSON:
-            config['temperature'] = 0
-            config['response_format'] = { "type": "json_object" }
-        
-        return config
+    This implementation inherits from LiteModelChatSession to leverage all chat functionality
+    without any code duplication. All methods (send_message, send_message_stream, 
+    get_chat_history, delete_last_message) are inherited from the parent class.
+    """
     
-    def delete_last_message(self):
+    def __init__(self, model: OpenAiGenerativeModel, system_instruction: Optional[str] = None) -> None:
         """
-        Deletes the last message exchange (user message and assistant response) from the chat history.
-        Preserves the system message if present.
+        Initialize the chat session and set up the conversation history.
         
-        Example:
-            Before:
-            [
-                {"role": "system", "content": "System message"},
-                {"role": "user", "content": "User message"},
-                {"role": "assistant", "content": "Assistant response"},
-            ]
-            After:
-            [
-                {"role": "system", "content": "System message"},
-            ]
-
-        Note: Does nothing if the chat history is empty or contains only a system message.
+        Args:
+            model (OpenAiGenerativeModel): The model instance for the session.
+            system_instruction (Optional[str]): Optional system instruction.
         """
-        # Keep at least the system message if present
-        min_length = 1 if self._model.system_instruction else 0
-        if len(self._history) - 2 >= min_length:
-            self._history.pop()
-            self._history.pop()
-        else:
-            # Reset to initial state with just system message if present
-            self._history = (
-            [{"role": "system", "content": self._model.system_instruction}]
-            if self._model.system_instruction is not None
-            else []
-        )
+        super().__init__(model, system_instruction)

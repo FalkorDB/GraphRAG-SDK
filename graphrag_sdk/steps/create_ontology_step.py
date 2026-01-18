@@ -24,12 +24,11 @@ from graphrag_sdk.fixtures.prompts import (
     FIX_JSON_PROMPT,
     BOUNDARIES_PREFIX,
 )
+
+
 RENDER_STEP_SIZE = 0.5
-
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
 
 class CreateOntologyStep(Step):
     """
@@ -41,25 +40,56 @@ class CreateOntologyStep(Step):
         sources: list[AbstractSource],
         ontology: Ontology,
         model: GenerativeModel,
-        config: dict = {
-            "max_workers": 16,
-            "max_input_tokens": 500000,
-            "max_output_tokens": 8192,
-        },
-        hide_progress: bool = False,
+        config: Optional[dict] = None,
+        hide_progress: Optional[bool] = False,
     ) -> None:
+        """
+        Initialize the CreateOntologyStep.
+        
+        Args:
+            sources (List[AbstractSource]): List of sources from which ontology is created.
+            ontology (Ontology): The initial ontology to be merged with new extracted data.
+            model (GenerativeModel): The generative model used for processing and creating the ontology.
+            config (Optional[dict]): Configuration for the step, including thread workers and token limits. Defaults to standard config.
+            hide_progress (bool): Flag to hide the progress bar. Defaults to False.
+        """
         self.sources = sources
         self.ontology = ontology
-        self.model = model.with_system_instruction(CREATE_ONTOLOGY_SYSTEM)
-        self.config = config
+        self.model = model
+        if config is None:
+            self.config = {
+                "max_workers": 16,
+                "max_input_tokens": 500000,
+                "max_output_tokens": 8192,
+            }
+        else:
+            self.config = config
         self.hide_progress = hide_progress
         self.process_files = 0
         self.counter_lock = Lock()
 
-    def _create_chat(self):
-        return self.model.start_chat({"response_validation": False})
+    def _create_chat(self) -> GenerativeModelChatSession:
+        """
+        Create a new chat session with the generative model.
+        
+        Returns:
+            GenerativeModelChatSession: A session for interacting with the generative model.
+        """
+        return self.model.start_chat(CREATE_ONTOLOGY_SYSTEM)
 
     def run(self, boundaries: Optional[str] = None):
+        """
+        Execute the ontology creation process by extracting data from all sources.
+        
+        Args:
+            boundaries (Optional[str]): Additional boundaries or constraints for the ontology creation.
+            
+        Returns:
+            Ontology: The final ontology after merging with extracted data.
+        
+        Raises:
+            Exception: If ontology creation fails and no entities are found.
+        """
         tasks: list[Future[Ontology]] = []
 
         with tqdm(total=len(self.sources) + 1, desc="Process Documents", disable=self.hide_progress) as pbar:
@@ -104,8 +134,21 @@ class CreateOntologyStep(Step):
         source: AbstractSource,
         o: Ontology,
         boundaries: Optional[str] = None,
-        retries: int = 1,
+        retries: Optional[int] = 1,
     ):
+        """
+        Process a single document and extract ontology data.
+        
+        Args:
+            chat_session (GenerativeModelChatSession): The chat session for interacting with the generative model.
+            document (Document): The document to extract data from.
+            o (Ontology): The current ontology to be merged with extracted data.
+            boundaries (Optional[str]): Constraints for data extraction.
+            retries (Optional[int]) Number of retries for processing the document.
+            
+        Returns:
+            Ontology: The updated ontology after processing the document.
+        """
         try:
             document = next(source.load())
             
@@ -170,6 +213,16 @@ class CreateOntologyStep(Step):
             return o
 
     def _fix_ontology(self, chat_session: GenerativeModelChatSession, o: Ontology):
+        """
+        Fix and validate the ontology using the generative model.
+        
+        Args:
+            chat_session (GenerativeModelChatSession): The chat session for interacting with the model.
+            o (Ontology): The ontology to fix and validate.
+            
+        Returns:
+            Ontology: The fixed and validated ontology.
+        """
         logger.debug(f"Fixing ontology...")
 
         user_message = FIX_ONTOLOGY_PROMPT.format(ontology=o)
@@ -230,8 +283,22 @@ class CreateOntologyStep(Step):
         self,
         chat_session: GenerativeModelChatSession,
         prompt: str,
-        retry=6,
+        retry: Optional[int] = 6,
     ):
+        """
+        Call the generative model with retries and rate limiting.
+        
+        Args:
+            chat_session (GenerativeModelChatSession): The chat session for interacting with the model.
+            prompt (str): The prompt to send to the model.
+            retry (Optional[int]): Number of retries if quota is exceeded or errors occur.
+            
+        Returns:
+            GenerationResponse: The model's response.
+            
+        Raises:
+            Exception: If the model fails after exhausting retries.
+        """
         try:
             return chat_session.send_message(prompt)
         except Exception as e:
