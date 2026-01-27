@@ -1,13 +1,11 @@
 import json
 import logging
-import graphrag_sdk
 from falkordb import Graph
 from .entity import Entity
 from .relation import Relation
 from typing import Optional, Union
 from graphrag_sdk.source import AbstractSource
 from graphrag_sdk.models import GenerativeModel
-from graphrag_sdk.steps.create_ontology_step import CreateOntologyStep
 from .attribute import Attribute, AttributeType
 
 logger = logging.getLogger(__name__)
@@ -72,7 +70,10 @@ class Ontology(object):
         Returns:
             The created Ontology object.
         """
-        step = graphrag_sdk.CreateOntologyStep(
+        # Import here to avoid circular import
+        from graphrag_sdk.steps.create_ontology_step import CreateOntologyStep
+        
+        step = CreateOntologyStep(
             sources=sources,
             ontology=Ontology(),
             model=model,
