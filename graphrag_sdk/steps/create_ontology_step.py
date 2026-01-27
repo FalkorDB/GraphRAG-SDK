@@ -5,7 +5,6 @@ from tqdm import tqdm
 from threading import Lock
 from typing import Optional
 from graphrag_sdk.steps.Step import Step
-from graphrag_sdk.document import Document
 from graphrag_sdk.ontology import Ontology
 from graphrag_sdk.helpers import extract_json
 from ratelimit import limits, sleep_and_retry
