@@ -146,6 +146,9 @@ class IngestionPipeline:
             ctx.log("Step 4/8: Extracting entities & relationships")
             graph_data = await self.extractor.extract(chunks, self.schema, ctx)
 
+            # Step 4b: Quality filter — remove empty-ID and invalid nodes
+            graph_data = self._filter_quality(graph_data)
+
             # Step 5: Prune against schema
             ctx.log("Step 5/8: Pruning against schema")
             graph_data = self._prune(graph_data, self.schema)
@@ -261,6 +264,30 @@ class IngestionPipeline:
             f"Lexical graph: 1 Document, {len(chunk_nodes)} Chunks, "
             f"{len(part_of_rels)} PART_OF, {len(next_chunk_rels)} NEXT_CHUNK"
         )
+
+    def _filter_quality(self, graph_data: GraphData) -> GraphData:
+        """Remove nodes with empty IDs or labels, and dangling relationships.
+
+        This is a defensive quality gate that catches anything the extraction
+        strategy missed.
+        """
+        valid_nodes = [n for n in graph_data.nodes if n.id and n.label]
+        removed = len(graph_data.nodes) - len(valid_nodes)
+
+        if removed:
+            logger.info(f"Quality filter removed {removed} invalid nodes")
+
+        valid_ids = {n.id for n in valid_nodes}
+        valid_rels = [
+            r for r in graph_data.relationships
+            if r.start_node_id in valid_ids and r.end_node_id in valid_ids
+        ]
+
+        removed_rels = len(graph_data.relationships) - len(valid_rels)
+        if removed_rels:
+            logger.info(f"Quality filter removed {removed_rels} dangling relationships")
+
+        return GraphData(nodes=valid_nodes, relationships=valid_rels)
 
     def _prune(self, graph_data: GraphData, schema: GraphSchema) -> GraphData:
         """Filter graph data to only include schema-conforming nodes and relationships.

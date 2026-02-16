@@ -226,14 +226,25 @@ class MergedExtraction(ExtractionStrategy):
                 )
                 return [], []
 
+    # Quality thresholds for entity name validation
+    _MIN_ENTITY_NAME_LEN = 2  # single-char names are noise
+    _MAX_ENTITY_NAME_LEN = 80  # descriptions masquerading as names
+
     def _parse_delimiter_response(
         self,
         content: str,
         source_chunk_id: str,
     ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
-        """Parse LightRAG-style delimiter format into entities and relations."""
+        """Parse LightRAG-style delimiter format into entities and relations.
+
+        Applies quality filtering:
+        - Entities with empty/whitespace-only names or types are skipped.
+        - Entity names shorter than 2 chars or longer than 80 chars are skipped.
+        - Relations with empty source/target are skipped.
+        """
         entities: list[ExtractedEntity] = []
         relations: list[ExtractedRelation] = []
+        skipped = 0
 
         records = content.split(RECORD_DELIMITER)
 
@@ -251,15 +262,38 @@ class MergedExtraction(ExtractionStrategy):
             parts = [p.strip().strip('"').strip("'") for p in inner.split(TUPLE_DELIMITER)]
 
             if len(parts) >= 4 and parts[0].lower() == "entity":
+                name = parts[1].strip()
+                etype = parts[2].strip()
+
+                # Quality gate: reject empty, too-short, or too-long names
+                if not name or not etype:
+                    skipped += 1
+                    continue
+                if len(name) < self._MIN_ENTITY_NAME_LEN:
+                    skipped += 1
+                    continue
+                if len(name) > self._MAX_ENTITY_NAME_LEN:
+                    skipped += 1
+                    continue
+
                 entities.append(
                     ExtractedEntity(
-                        name=parts[1],
-                        type=parts[2],
-                        description=parts[3],
+                        name=name,
+                        type=etype,
+                        description=parts[3].strip(),
                         source_chunk_ids=[source_chunk_id],
                     )
                 )
             elif len(parts) >= 6 and parts[0].lower() == "relationship":
+                source = parts[1].strip()
+                target = parts[2].strip()
+                rel_type = parts[3].strip()
+
+                # Quality gate: reject relations with empty endpoints or type
+                if not source or not target or not rel_type:
+                    skipped += 1
+                    continue
+
                 weight = 1.0
                 if len(parts) >= 7:
                     try:
@@ -268,15 +302,18 @@ class MergedExtraction(ExtractionStrategy):
                         weight = 1.0
                 relations.append(
                     ExtractedRelation(
-                        source=parts[1],
-                        target=parts[2],
-                        type=parts[3],
-                        keywords=parts[4],
-                        description=parts[5],
+                        source=source,
+                        target=target,
+                        type=rel_type,
+                        keywords=parts[4].strip(),
+                        description=parts[5].strip(),
                         weight=weight,
                         source_chunk_ids=[source_chunk_id],
                     )
                 )
+
+        if skipped:
+            logger.debug(f"Skipped {skipped} low-quality records from chunk {source_chunk_id}")
 
         return entities, relations
 
@@ -288,6 +325,8 @@ class MergedExtraction(ExtractionStrategy):
         seen: dict[str, ExtractedEntity] = {}
         for ent in entities:
             key = ent.name.strip().lower()
+            if not key:
+                continue  # skip empty names that slipped through
             if key in seen:
                 existing = seen[key]
                 # Keep longer description
@@ -337,10 +376,15 @@ class MergedExtraction(ExtractionStrategy):
         self,
         entities: list[ExtractedEntity],
     ) -> list[GraphNode]:
-        """Convert ExtractedEntity list to GraphNode list."""
+        """Convert ExtractedEntity list to GraphNode list.
+
+        Skips entities whose computed ID is empty (defensive check).
+        """
         nodes: list[GraphNode] = []
         for ent in entities:
             node_id = compute_entity_id(ent.name)
+            if not node_id:
+                continue
             nodes.append(
                 GraphNode(
                     id=node_id,

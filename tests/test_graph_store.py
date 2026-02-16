@@ -56,6 +56,22 @@ class TestGraphStoreUpsertNodes:
         params = mock_connection.query.call_args[0][1]
         assert params["batch"][0]["id"] == "test-id"
 
+    async def test_chunk_nodes_no_entity_label(self, graph_store, mock_connection):
+        """Chunk nodes should NOT get the __Entity__ label."""
+        nodes = [GraphNode(id="chunk-1", label="Chunk", properties={"text": "hello"})]
+        await graph_store.upsert_nodes(nodes)
+        cypher = mock_connection.query.call_args[0][0]
+        assert "Chunk" in cypher
+        assert "__Entity__" not in cypher
+
+    async def test_document_nodes_no_entity_label(self, graph_store, mock_connection):
+        """Document nodes should NOT get the __Entity__ label."""
+        nodes = [GraphNode(id="doc-1", label="Document", properties={"path": "/a.txt"})]
+        await graph_store.upsert_nodes(nodes)
+        cypher = mock_connection.query.call_args[0][0]
+        assert "Document" in cypher
+        assert "__Entity__" not in cypher
+
 
 class TestGraphStoreUpsertRelationships:
     async def test_upsert_relationship(self, graph_store, mock_connection):

@@ -44,11 +44,15 @@ class GraphStore:
 
     _BATCH_SIZE = 500
 
+    # Structural labels that should NOT get the __Entity__ tag
+    _STRUCTURAL_LABELS = frozenset({"Chunk", "Document"})
+
     async def upsert_nodes(self, nodes: list[GraphNode]) -> int:
         """Batch upsert nodes using UNWIND, grouped by label.
 
-        Each node gets ``__Entity__`` as an additional label for
-        easy identification of extracted entities.
+        Extracted entity nodes get ``__Entity__`` as an additional label.
+        Structural nodes (Chunk, Document) do NOT — they are part of the
+        lexical provenance graph, not extracted entities.
 
         Args:
             nodes: List of nodes to upsert.
@@ -66,6 +70,9 @@ class GraphStore:
 
         count = 0
         for label, group in by_label.items():
+            # Only tag extracted entities, not structural nodes
+            entity_tag = "" if label in self._STRUCTURAL_LABELS else " SET n:__Entity__"
+
             # Process in batches
             for start in range(0, len(group), self._BATCH_SIZE):
                 batch = group[start : start + self._BATCH_SIZE]
@@ -76,8 +83,8 @@ class GraphStore:
                 query = (
                     f"UNWIND $batch AS item "
                     f"MERGE (n:`{label}` {{id: item.id}}) "
-                    f"SET n += item.properties "
-                    f"SET n:__Entity__"
+                    f"SET n += item.properties"
+                    f"{entity_tag}"
                 )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
@@ -91,8 +98,8 @@ class GraphStore:
                     for node in batch:
                         q = (
                             f"MERGE (n:`{node.label}` {{id: $id}}) "
-                            f"SET n += $properties "
-                            f"SET n:__Entity__"
+                            f"SET n += $properties"
+                            f"{entity_tag}"
                         )
                         params = {
                             "id": node.id,
