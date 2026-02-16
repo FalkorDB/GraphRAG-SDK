@@ -1,379 +1,576 @@
-# GraphRAG 
+# GraphRAG SDK v2
+
 [![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
 [![pypi](https://badge.fury.io/py/graphrag_sdk.svg)](https://pypi.org/project/graphrag_sdk/)
 [![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-<p align="center">
-  <img alt="FalkorDB GraphRAG-SDK README Banner" src="images/FalkorDB GraphRAG-SDK README Banner.png" width="1500">
-</p>
+A modular, async-first Graph RAG framework for [FalkorDB](https://www.falkordb.com/).
 
-### Build fast and accurate GenAI apps with GraphRAG SDK at scale
+GraphRAG SDK v2 builds knowledge graphs from unstructured text and queries them using LLM-powered retrieval-augmented generation. It combines entity extraction, graph storage, vector search, and LLM generation into a single pipeline with pluggable strategies at every step.
 
-Simplify the development of your next GenAI application with GraphRAG-SDK, a specialized toolkit for building Graph Retrieval-Augmented Generation (GraphRAG) systems. It integrates knowledge graphs, ontology management, and state-of-the-art LLMs to deliver accurate, efficient, and customizable RAG workflows.
+## Key Features
 
-# GraphRAG Setup
-### Database Setup
-
-[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
-
-Or use on premise with Docker:
-
-```sh
-docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb:latest
-```
-
-### Dependencies:
-```sh
-pip install graphrag_sdk
-```
-
-### Configure Credentials. See [.env](.env.template) for examples.
-
-* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.  
-  To choose vendor use the prefix "specific_vendor/your_model", for example "openai/gpt-4.1".
-* [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4.1`
-* [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-2.0-flash`
-* [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4.1`
-* [Ollama](https://ollama.com/) Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for the Q&A step only (after the knowledge graph (KG) created).
-
-
-# How to use
-[![Get started](https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg)](https://lightning.ai/muhammadqadora/studios/build-fast-accurate-genai-apps-advanced-rag-with-falkordb)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
-
-### Environment Configuration
-
-Before using the SDK, configure your environment variables:
-
-```bash
-# FalkorDB Connection (defaults are for on-premises)
-export FALKORDB_HOST="localhost" 
-export FALKORDB_PORT=6379 
-export FALKORDB_USERNAME="your-username"  # optional for on-premises
-export FALKORDB_PASSWORD="your-password"  # optional for on-premises
-
-# LLM Provider (choose one)
-export OPENAI_API_KEY="your-key"  # or GOOGLE_API_KEY, GROQ_API_KEY, etc.
-```
-
-## Quick Start with Existing Knowledge Graph
-
-If you already have a knowledge graph in FalkorDB, you can quickly set up GraphRAG by extracting the ontology from your existing graph:
-
-```python
-import os
-from falkordb import FalkorDB
-from graphrag_sdk import KnowledgeGraph
-from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.models.litellm import LiteModel
-from graphrag_sdk.model_config import KnowledgeGraphModelConfig
-
-graph_name = "my_existing_graph"
-
-# Connect to FalkorDB using environment variables
-db = FalkorDB(
-    host=os.getenv("FALKORDB_HOST", "localhost"),
-    port=int(os.getenv("FALKORDB_PORT", 6379)),
-    username=os.getenv("FALKORDB_USERNAME"),  # optional for on-premises
-    password=os.getenv("FALKORDB_PASSWORD")   # optional for on-premises
-)
-
-# Select graph
-graph = db.select_graph(graph_name)
-
-# Extract ontology from existing knowledge graph
-ontology = Ontology.from_kg_graph(graph)
-
-# Configure model and create GraphRAG instance
-model = LiteModel()  # Default is OpenAI GPT-4.1, can specify different model
-model_config = KnowledgeGraphModelConfig.with_model(model)
-
-# Create KnowledgeGraph instance
-kg = KnowledgeGraph(
-    name=graph_name,
-    model_config=model_config,
-    ontology=ontology,
-    host=os.getenv("FALKORDB_HOST", "localhost"),
-    port=int(os.getenv("FALKORDB_PORT", 6379)),
-    username=os.getenv("FALKORDB_USERNAME"),
-    password=os.getenv("FALKORDB_PASSWORD")
-)
-
-# Start chat session
-chat = kg.chat_session()
-
-# Ask questions
-response = chat.send_message("What products are available?")
-print(response["response"])
-
-# Ask follow-up questions
-response = chat.send_message("Tell me which one of them is the most expensive")
-print(response["response"])
-```
-
-## Creating Knowledge Graphs from Scratch
-
-### Step 1: Creating Ontologies
-Automate ontology creation from unstructured data or define it manually - See [example](https://github.com/falkordb/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
-
-```python
-from dotenv import load_dotenv
-import json
-from graphrag_sdk.source import URL
-from graphrag_sdk import KnowledgeGraph, Ontology
-from graphrag_sdk.models.litellm import LiteModel
-from graphrag_sdk.model_config import KnowledgeGraphModelConfig
-load_dotenv()
-
-# Import Data
-urls = ["https://www.rottentomatoes.com/m/side_by_side_2012",
-"https://www.rottentomatoes.com/m/matrix",
-"https://www.rottentomatoes.com/m/matrix_revolutions",
-"https://www.rottentomatoes.com/m/matrix_reloaded",
-"https://www.rottentomatoes.com/m/speed_1994",
-"https://www.rottentomatoes.com/m/john_wick_chapter_4"]
-
-sources = [URL(url) for url in urls]
-
-# Model - vendor: openai, model: gpt-4.1 -> openai/gpt-4.1
-model = LiteModel(model_name="openai/gpt-4.1")
-
-# Ontology Auto-Detection
-ontology = Ontology.from_sources(
-    sources=sources,
-    model=model,
-)
-# Save the ontology to the disk as a json file.
-with open("ontology.json", "w", encoding="utf-8") as file:
-    file.write(json.dumps(ontology.to_json(), indent=2))
-```
-
-### Step 2: Creating a knowledge graph agent
-Build, query, and manage knowledge graphs optimized for retrieval and augmentation tasks. 
-Leverages FalkorDB for high-performance graph querying and multi-tenancy.
-
-```python
-# After approving the ontology, load it from disk.
-ontology_file = "ontology.json"
-with open(ontology_file, "r", encoding="utf-8") as file:
-    ontology = Ontology.from_json(json.loads(file.read()))
-
-kg = KnowledgeGraph(
-    name="kg_name",
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    ontology=ontology,
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
-)
-
-kg.process_sources(sources)
-```
-
-### Step 3: Query your Graph RAG
-
-At this point, you have a Knowledge Graph that can be queried using this SDK. Use the method `chat_session` for start a conversation.
-
-```python
-# Conversation
-chat = kg.chat_session()
-response = chat.send_message("Who is the director of the movie The Matrix?")
-print(response)
-response = chat.send_message("How this director connected to Keanu Reeves?")
-print(response)
-```
-
-## Next Steps
-With these 3 steps now completed, you're ready to interact and query your knowledge graph.  Here are suggestions for use cases:
-<p align="left">
-  <img alt="GraphRAG-SDK Use Cases Banner from FalkorDB" src="images/use-cases.png" width="800">
-</p>
-
-**Need help with your use case? let's [talk](https://www.falkordb.com/get-demo/)**
-
-<br />
-
-# Using Ollama
-
-Ollama models are suitable for the Q&A step only (after the knowledge graph has been created).
+- **Two-line usage** — `ingest()` to build, `query()` to ask
+- **Async-first** — all I/O is non-blocking with sync convenience methods
+- **Pluggable strategies** — swap loaders, chunkers, extractors, resolvers, retrievers, and rerankers
+- **Zero-loss provenance** — every chunk traces back to its source document
+- **Production-grade** — batched writes, connection pooling, retry with backoff, latency budgets
+- **Schema-guided extraction** — constrain LLM output to your domain ontology
 
 ## Setup
 
+### 1. Start FalkorDB
+
+[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
+
+Or run locally with Docker:
+
+```sh
+docker run -p 6379:6379 -p 3000:3000 -it --rm -v ./data:/data falkordb/falkordb:latest
+```
+
+### 2. Install the SDK
+
+```sh
+pip install graphrag-sdk
+```
+
+With optional providers:
+
+```sh
+pip install graphrag-sdk[openai]       # OpenAI LLM + embeddings
+pip install graphrag-sdk[pdf]          # PDF document loading
+pip install graphrag-sdk[all]          # Everything
+```
+
+### 3. Implement Your Providers
+
+The SDK defines two abstract base classes that you need to implement for your LLM and embedding provider:
+
 ```python
-from graphrag_sdk.models.ollama import OllamaGenerativeModel
+from graphrag_sdk import LLMInterface, Embedder, LLMResponse
 
-# Local Ollama (default: http://localhost:11434)
-qa_model = OllamaGenerativeModel(model_name="llama3:8b")
 
-# Remote Ollama
-qa_model = OllamaGenerativeModel(
-    model_name="llama3:8b",
-    api_base="http://remote-host:11434"
+class MyLLM(LLMInterface):
+    def __init__(self):
+        super().__init__(model_name="gpt-4o")
+        # Initialize your client here
+
+    def invoke(self, prompt: str, **kwargs) -> LLMResponse:
+        # Call your LLM provider
+        response = your_llm_client.chat(prompt)
+        return LLMResponse(content=response.text)
+
+
+class MyEmbedder(Embedder):
+    def embed_query(self, text: str, **kwargs) -> list[float]:
+        # Return embedding vector
+        return your_embedding_client.embed(text)
+
+    # Optional: override for true batch embedding (much faster)
+    def embed_documents(self, texts: list[str], **kwargs) -> list[list[float]]:
+        return your_embedding_client.embed_batch(texts)
+```
+
+> The SDK provides `ainvoke()` and `aembed_query()` async methods automatically by wrapping your sync implementations in a thread. Override them directly if your provider has native async support.
+
+## Quick Start
+
+### Ingest a Document
+
+```python
+import asyncio
+from graphrag_sdk import GraphRAG, ConnectionConfig
+
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", port=6379, graph_name="my_graph"),
+    llm=MyLLM(),
+    embedder=MyEmbedder(),
+)
+
+result = asyncio.run(rag.ingest("report.pdf"))
+print(f"Created {result.nodes_created} nodes, {result.relationships_created} relationships")
+```
+
+### Query the Knowledge Graph
+
+```python
+answer = asyncio.run(rag.query("What were the key findings?"))
+print(answer.answer)
+```
+
+### Ingest Raw Text
+
+```python
+result = asyncio.run(rag.ingest("source", text="Alice works at Acme Corp as a senior engineer."))
+```
+
+### Sync Convenience Methods
+
+```python
+# No need for asyncio.run() — sync wrappers are built in
+result = rag.ingest_sync("document.pdf")
+answer = rag.query_sync("What is this about?")
+```
+
+## Architecture
+
+The SDK is organized into four layers:
+
+```
+API          GraphRAG (facade)
+Ingestion    Load → Chunk → Extract → Quality Filter → Prune → Resolve → Write → Index
+Retrieval    Search → Rerank → Generate
+Storage      GraphStore (FalkorDB) + VectorStore (FalkorDB vector indices)
+```
+
+### Ingestion Pipeline
+
+The pipeline processes documents through 8 sequential steps:
+
+| Step | What it does |
+|------|-------------|
+| **Load** | Read text from file (PDF, text, or raw string) |
+| **Chunk** | Split text into overlapping segments |
+| **Lexical Graph** | Create Document and Chunk nodes with provenance edges |
+| **Extract** | LLM extracts entities and relationships from each chunk |
+| **Quality Filter** | Remove empty IDs, invalid nodes, dangling relationships |
+| **Prune** | Filter against schema constraints |
+| **Resolve** | Deduplicate entities by normalized name |
+| **Write + Index** | Batch upsert to graph, embed and index chunks |
+
+### Query Flow
+
+1. **Retrieve** — vector search + graph traversal to find relevant chunks and entities
+2. **Rerank** (optional) — reorder results by relevance
+3. **Generate** — LLM produces an answer from the retrieved context
+
+## Schema-Guided Extraction
+
+Define a schema to constrain what the LLM extracts:
+
+```python
+from graphrag_sdk import GraphRAG, GraphSchema, EntityType, RelationType, SchemaPattern
+
+schema = GraphSchema(
+    entities=[
+        EntityType(label="Person", description="A human being"),
+        EntityType(label="Company", description="A business organization"),
+        EntityType(label="Product", description="A commercial product"),
+    ],
+    relations=[
+        RelationType(label="WORKS_AT", description="Employment relationship"),
+        RelationType(label="PRODUCES", description="Company produces a product"),
+    ],
+    patterns=[
+        SchemaPattern(source="Person", relationship="WORKS_AT", target="Company"),
+        SchemaPattern(source="Company", relationship="PRODUCES", target="Product"),
+    ],
+)
+
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=MyLLM(),
+    embedder=MyEmbedder(),
+    schema=schema,
 )
 ```
 
-<br />
+Without a schema, the extractor operates in open mode and extracts all entities and relationships it finds.
 
-# AI Agents with GraphRAG
+## Custom Strategies
 
-### Orchestrator
-The GraphRAG-SDK supports Knowledge Graph-based agents. Each agent is an expert in his domain, and the orchestrator orchestrates the agents.
+Every algorithmic step is replaceable via strategy interfaces.
 
-Check out the example:
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
-
-
-### Agents
-
-See the [Step 1](#how-to-use) section to understand how to create Knowledge Graph objects for the agents.
+### Custom Loader
 
 ```python
-# Define the model
-model = LiteModel(model_name="openai/gpt-4.1")
-
-# Create the Knowledge Graph from the predefined ontology.
-# In this example, we will use the restaurants agent and the attractions agent.
-restaurants_kg = KnowledgeGraph(
-    name="restaurants",
-    ontology=restaurants_ontology,
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
-)
-attractions_kg = KnowledgeGraph(
-    name="attractions",
-    ontology=attractions_ontology,
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
-)
+from graphrag_sdk import LoaderStrategy
+from graphrag_sdk.core.models import DocumentOutput, DocumentInfo
+from graphrag_sdk.core.context import Context
 
 
-# The following agent is specialized in finding restaurants.
-restaurants_agent = KGAgent(
-    agent_id="restaurants_agent",
-    kg=restaurants_kg,
-    introduction="I'm a restaurant agent, specialized in finding the best restaurants for you.",
-)
+class DatabaseLoader(LoaderStrategy):
+    async def load(self, source: str, ctx: Context) -> DocumentOutput:
+        text = await my_database.fetch_document(source)
+        return DocumentOutput(
+            text=text,
+            document_info=DocumentInfo(path=source),
+        )
 
-# The following agent is specialized in finding tourist attractions.
-attractions_agent = KGAgent(
-    agent_id="attractions_agent",
-    kg=attractions_kg,
-    introduction="I'm an attractions agent, specialized in finding the best tourist attractions for you.",
+result = await rag.ingest("doc-id-123", loader=DatabaseLoader())
+```
+
+### Custom Chunking
+
+```python
+from graphrag_sdk import ChunkingStrategy
+from graphrag_sdk.core.models import TextChunks, TextChunk
+from graphrag_sdk.core.context import Context
+
+
+class SentenceChunking(ChunkingStrategy):
+    async def chunk(self, text: str, ctx: Context) -> TextChunks:
+        sentences = text.split(". ")
+        return TextChunks(
+            chunks=[TextChunk(text=s, index=i) for i, s in enumerate(sentences)]
+        )
+
+result = await rag.ingest("doc.txt", chunker=SentenceChunking())
+```
+
+### Custom Extraction
+
+```python
+from graphrag_sdk import ExtractionStrategy
+from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, TextChunks, GraphSchema
+from graphrag_sdk.core.context import Context
+
+
+class MyExtractor(ExtractionStrategy):
+    async def extract(self, chunks: TextChunks, schema: GraphSchema, ctx: Context) -> GraphData:
+        nodes, relationships = [], []
+        for chunk in chunks.chunks:
+            # Your extraction logic here — call an LLM, use NER, etc.
+            ...
+        return GraphData(nodes=nodes, relationships=relationships)
+
+result = await rag.ingest("doc.txt", extractor=MyExtractor())
+```
+
+### Custom Resolution
+
+```python
+from graphrag_sdk import ResolutionStrategy
+from graphrag_sdk.core.models import GraphData, ResolutionResult
+from graphrag_sdk.core.context import Context
+
+
+class FuzzyResolution(ResolutionStrategy):
+    async def resolve(self, graph_data: GraphData, ctx: Context) -> ResolutionResult:
+        # Your deduplication logic — fuzzy matching, embedding similarity, etc.
+        return ResolutionResult(
+            nodes=deduplicated_nodes,
+            relationships=remapped_rels,
+            merged_count=num_merged,
+        )
+
+result = await rag.ingest("doc.txt", resolver=FuzzyResolution())
+```
+
+### Custom Retrieval
+
+```python
+from graphrag_sdk import RetrievalStrategy
+from graphrag_sdk.core.models import RawSearchResult
+from graphrag_sdk.core.context import Context
+
+
+class MultiHopRetrieval(RetrievalStrategy):
+    def __init__(self, graph_store, vector_store, embedder, hops=2):
+        super().__init__(graph_store, vector_store)
+        self.embedder = embedder
+        self.hops = hops
+
+    async def _execute(self, query: str, ctx: Context, **kwargs) -> RawSearchResult:
+        # 1. Vector search for seed chunks
+        vec = await self.embedder.aembed_query(query)
+        chunks = await self._vector.search(vec, top_k=10)
+
+        # 2. Multi-hop graph traversal from seed chunks
+        for chunk in chunks:
+            entities = await self._graph.get_connected_entities(chunk["id"], max_hops=self.hops)
+            # ... build expanded context
+
+        return RawSearchResult(records=expanded_results)
+
+answer = await rag.query("Complex question?", strategy=MultiHopRetrieval(...))
+```
+
+### Custom Reranking
+
+```python
+from graphrag_sdk import RerankingStrategy
+from graphrag_sdk.core.models import RetrieverResult
+from graphrag_sdk.core.context import Context
+
+
+class CrossEncoderReranker(RerankingStrategy):
+    async def rerank(self, query: str, result: RetrieverResult, ctx: Context) -> RetrieverResult:
+        # Score and reorder items
+        scored = [(item, cross_encoder.score(query, item.content)) for item in result.items]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        result.items = [item for item, _ in scored]
+        return result
+
+answer = await rag.query("Question?", reranker=CrossEncoderReranker())
+```
+
+### Custom Prompt Template
+
+```python
+answer = await rag.query(
+    "What happened in chapter 3?",
+    prompt_template=(
+        "You are an expert analyst. Use ONLY the provided context to answer.\n\n"
+        "Context:\n{context}\n\n"
+        "Question: {question}\n\n"
+        "Provide a detailed answer with citations:"
+    ),
 )
 ```
 
-### Orchestrator - Multi-Agent System
+## Built-in Strategies
 
-The orchestrator manages the usage of agents and handles questioning.
+### Extraction Strategies
 
-```python
-# Initialize the orchestrator while giving it the backstory.
-orchestrator = Orchestrator(
-    model,
-    backstory="You are a trip planner, and you want to provide the best possible itinerary for your clients.",
-)
-
-# Register the agents that we created above.
-orchestrator.register_agent(restaurants_agent)
-orchestrator.register_agent(attractions_agent)
-
-# Query the orchestrator.
-runner = orchestrator.ask("Create a two-day itinerary for a trip to Rome. Please don't ask me any questions; just provide the best itinerary you can.")
-print(runner.output)
-
-```
-## Community
-
-Have questions or feedback? Reach out via:
-- [GitHub Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues)
-- Join our [Discord](https://discord.com/invite/6M4QwDXn2w)
-
-⭐️ If you find this repository helpful, please consider giving it a star!
-
-## Additional Enhancement: Configuring your prompts
-When creating your Knowledge Graph (KG) agent, you can customize the prompts to tailor its behavior.
-
-💡 This step is optional but can enhance functionality.
-
-There are five types of prompts:
-
-1. **`cypher_system_instruction`**  
-   - System instructions for the Cypher generation step.  
-   - **Note:** Ensure your prompt includes `{ontology}`.
-
-2. **`qa_system_instruction`**  
-   - System instructions for the Q&A step.
-
-3. **`cypher_gen_prompt`**  
-   - The prompt used during the Cypher generation step.  
-   - **Note:** Include `{question}` in your prompt.
-
-4. **`cypher_gen_prompt_history`**  
-   - The prompt for Cypher generation when history needs to be considered.  
-   - **Note:** Include `{question}` and `{last_answer}` in your prompt.
-
-5. **`qa_prompt`**  
-   - The prompt used during the Q&A step.  
-   - **Note:** Include `{question}`, `{context}`, and `{cypher}` in your prompt.
-
-Here’s an example configuration:
+| Strategy | Description |
+|----------|-------------|
+| `SchemaGuidedExtraction` | LLM extracts entities/relationships as JSON, constrained by schema. Default. |
+| `MergedExtraction` | Combines LightRAG-style typed extraction with HippoRAG-style fact triples and entity mentions. Supports optional gleaning (second LLM pass). |
 
 ```python
-kg = KnowledgeGraph(
-    name="kg_name",
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    ontology=ontology,
-    cypher_system_instruction=cypher_system_instruction,
-    qa_system_instruction=qa_system_instruction,
-    cypher_gen_prompt=cypher_gen_prompt,
-    cypher_gen_prompt_history=cypher_gen_prompt_history,
-    qa_prompt=qa_prompt
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
+from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+
+extractor = MergedExtraction(
+    llm=my_llm,
+    enable_gleaning=True,   # Second LLM pass to catch missed entities
+    max_concurrency=12,     # Parallel chunk processing
+)
+
+result = await rag.ingest("novel.txt", extractor=extractor)
+```
+
+### Resolution Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `ExactMatchResolution` | Groups nodes by `(label, id)`, merges properties. Default. |
+| `DescriptionMergeResolution` | Groups by normalized name, merges descriptions. Uses LLM summarization when many descriptions accumulate. |
+
+```python
+from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
+
+resolver = DescriptionMergeResolution(
+    llm=my_llm,
+    force_summary_threshold=3,   # Use LLM summary when 3+ descriptions exist
+)
+
+result = await rag.ingest("doc.txt", resolver=resolver)
+```
+
+### Chunking Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `FixedSizeChunking` | Sliding window with configurable size and overlap. Default: 1000 chars, 100 overlap. |
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+
+chunker = FixedSizeChunking(chunk_size=1500, chunk_overlap=200)
+result = await rag.ingest("doc.txt", chunker=chunker)
+```
+
+### Loaders
+
+| Strategy | Description |
+|----------|-------------|
+| `TextLoader` | Plain text and markdown files. Default for non-PDF. |
+| `PdfLoader` | PDF files via `pypdf`. Requires `pip install graphrag-sdk[pdf]`. |
+
+## Execution Context
+
+The `Context` object threads through every strategy call for tracing, budgeting, and multi-tenancy:
+
+```python
+from graphrag_sdk import Context
+
+ctx = Context(
+    tenant_id="customer-123",          # Multi-tenant isolation
+    latency_budget_ms=5000.0,          # Stop extraction if budget exceeded
+)
+
+result = await rag.ingest("doc.pdf", ctx=ctx)
+answer = await rag.query("Question?", ctx=ctx)
+
+print(f"Elapsed: {ctx.elapsed_ms:.0f}ms")
+print(f"Budget remaining: {ctx.remaining_budget_ms:.0f}ms")
+```
+
+## Direct Pipeline Usage
+
+For advanced control, use `IngestionPipeline` directly instead of the `GraphRAG` facade:
+
+```python
+from graphrag_sdk import (
+    IngestionPipeline, GraphStore, VectorStore,
+    ConnectionConfig, FalkorDBConnection, GraphSchema, Context,
+)
+from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
+
+conn = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
+graph_store = GraphStore(conn)
+vector_store = VectorStore(conn, embedder=my_embedder)
+
+pipeline = IngestionPipeline(
+    loader=TextLoader(),
+    chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
+    extractor=MergedExtraction(llm=my_llm, max_concurrency=12),
+    resolver=DescriptionMergeResolution(llm=my_llm),
+    graph_store=graph_store,
+    vector_store=vector_store,
+    schema=GraphSchema(entities=[...], relations=[...]),
+)
+
+result = await pipeline.run("document.txt", Context())
+```
+
+## Direct Storage Access
+
+Query the graph and vector stores directly for custom retrieval logic:
+
+```python
+# Vector search
+vector = await my_embedder.aembed_query("search query")
+chunks = await vector_store.search(vector, top_k=10, label="Chunk")
+
+# Entity vector search
+entities = await vector_store.search_entities(vector, top_k=5)
+
+# Graph traversal — get entities connected to a chunk
+connected = await graph_store.get_connected_entities("chunk-uuid", max_hops=2)
+
+# Raw Cypher
+result = await graph_store.query_raw(
+    "MATCH (p:Person)-[:WORKS_AT]->(c:Company) RETURN p.name, c.name LIMIT 10"
 )
 ```
 
+## Graph Inspection
+
+Use `GraphVisualizer` to inspect your knowledge graph:
+
+```python
+from graphrag_sdk.utils.graph_viz import GraphVisualizer
+
+viz = GraphVisualizer(conn)
+stats = await viz.get_stats()
+print(f"Nodes: {stats['node_count']}, Edges: {stats['relationship_count']}")
+print(f"Labels: {stats['labels']}")
+
+# Human-readable summary
+print(await viz.describe())
+
+# Sample nodes of a specific type
+people = await viz.sample_nodes(label="Person", limit=5)
+```
+
+## Telemetry
+
+Built-in span-based tracing for performance profiling:
+
+```python
+from graphrag_sdk.telemetry.tracer import Tracer
+
+tracer = Tracer(service_name="my-app")
+
+with tracer.span("ingestion") as span:
+    result = await rag.ingest("doc.pdf")
+    span.metadata["nodes"] = result.nodes_created
+
+with tracer.span("query") as span:
+    answer = await rag.query("Question?")
+    span.metadata["answer_length"] = len(answer.answer)
+
+print(tracer.summary())
+```
+
+## Project Structure
+
+```
+graphrag_sdk/
+├── api/
+│   └── main.py                          # GraphRAG facade
+├── core/
+│   ├── connection.py                    # FalkorDB connection + pooling
+│   ├── context.py                       # Execution context (tracing, budgets)
+│   ├── exceptions.py                    # Exception hierarchy
+│   ├── models.py                        # All Pydantic data models
+│   └── providers.py                     # Embedder + LLMInterface ABCs
+├── ingestion/
+│   ├── pipeline.py                      # 8-step sequential orchestrator
+│   ├── loaders/                         # TextLoader, PdfLoader
+│   ├── chunking_strategies/             # FixedSizeChunking
+│   ├── extraction_strategies/           # SchemaGuided, MergedExtraction
+│   └── resolution_strategies/           # ExactMatch, DescriptionMerge
+├── retrieval/
+│   ├── strategies/                      # LocalRetrieval (vector + graph)
+│   └── reranking_strategies/            # RerankingStrategy ABC
+├── storage/
+│   ├── graph_store.py                   # Batched Cypher upserts (UNWIND)
+│   └── vector_store.py                  # Vector + fulltext indexing
+├── telemetry/
+│   └── tracer.py                        # Span-based performance tracing
+└── utils/
+    └── graph_viz.py                     # Graph inspection utilities
+```
+
+## Configuration Reference
+
+### ConnectionConfig
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `host` | `"localhost"` | FalkorDB host |
+| `port` | `6379` | FalkorDB port |
+| `username` | `None` | Auth username (optional for local) |
+| `password` | `None` | Auth password (optional for local) |
+| `graph_name` | `"knowledge_graph"` | Name of the graph in FalkorDB |
+| `max_connections` | `16` | Connection pool size |
+| `retry_count` | `3` | Number of query retries |
+| `retry_delay` | `1.0` | Base retry delay in seconds (exponential backoff) |
+
+### GraphRAG Constructor
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `connection` | Yes | `FalkorDBConnection` or `ConnectionConfig` |
+| `llm` | Yes | LLM provider implementing `LLMInterface` |
+| `embedder` | Yes | Embedding provider implementing `Embedder` |
+| `schema` | No | `GraphSchema` for extraction constraints |
+| `retrieval_strategy` | No | Default retrieval strategy (uses `LocalRetrieval` if None) |
 
 ## FAQ
+
 **Which databases are supported?**
+GraphRAG SDK v2 is built for FalkorDB. The storage layer is abstracted behind `GraphStore` and `VectorStore`, but currently only FalkorDB is implemented.
 
-GraphRAG-SDK is optimized for FalkorDB. Other backends may require adapters.
+**What LLM providers work?**
+Any provider that implements the `LLMInterface` and `Embedder` ABCs. The SDK has optional dependencies for OpenAI, Anthropic, Cohere, and sentence-transformers.
 
-**How scalable is the SDK?**
+**How does the SDK handle failures?**
+LLM calls retry automatically with exponential backoff (1s, 2s, 4s). Batch graph writes fall back to per-item upserts on failure. Content filter errors (Azure) are retried and gracefully skipped if persistent.
 
-GraphRAG-SDK is designed for multi-tenancy and large-scale applications. Performance depends on FalkorDB deployment configuration.
+**What about PDF files with special characters?**
+The SDK strips null bytes from all property values and IDs before writing to FalkorDB, preventing parse errors from PDF-extracted text.
 
-**How does this SDK improve retrieval-augmented generation?**
+**Can I use this without a schema?**
+Yes. Without a schema, the extractor operates in open mode and extracts all entities and relationships it finds. Schema is recommended for domain-specific use cases.
 
-By leveraging knowledge graphs, GraphRAG-SDK enables semantic relationships and ontology-driven queries that go beyond standard vector similarity.
+**How does deduplication work?**
+The resolution step groups entities by normalized name and merges their properties and descriptions. With `DescriptionMergeResolution`, an LLM can summarize accumulated descriptions.
 
-**Which file formats does the SDK support?**
+## Community
 
-Supported formats include PDF, JSONL, CSV, HTML, TEXT, and URLs.
+- [GitHub Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues) — bug reports and feature requests
+- [Discord](https://discord.com/invite/6M4QwDXn2w) — questions and discussion
+- [FalkorDB Cloud](https://app.falkordb.cloud) — managed FalkorDB hosting
 
-**How does the SDK handle latency?**
+## License
 
-The SDK is optimized for low-latency operations through FalkorDB, using techniques like query optimization and in-memory processing.
-
-**Does the SDK support multi-graph querying?**
-
-Yes. Multi-graph querying is supported with APIs designed for cross-domain and hierarchical graph exploration.
-
-<br />
-
-# License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-Keywords: RAG, graphrag, Retrieval-Augmented Generation, NLP, AI, Information Retrieval, Natural Language Processing, LLM, Embeddings, Semantic Search
+Apache 2.0. See [LICENSE](LICENSE) for details.
