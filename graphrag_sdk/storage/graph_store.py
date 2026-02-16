@@ -77,7 +77,10 @@ class GraphStore:
             for start in range(0, len(group), self._BATCH_SIZE):
                 batch = group[start : start + self._BATCH_SIZE]
                 batch_data = [
-                    {"id": n.id, "properties": self._clean_properties(n.properties)}
+                    {
+                        "id": self._sanitize_str(n.id),
+                        "properties": self._clean_properties(n.properties),
+                    }
                     for n in batch
                 ]
                 query = (
@@ -102,7 +105,7 @@ class GraphStore:
                             f"{entity_tag}"
                         )
                         params = {
-                            "id": node.id,
+                            "id": self._sanitize_str(node.id),
                             "properties": self._clean_properties(node.properties),
                         }
                         try:
@@ -138,8 +141,8 @@ class GraphStore:
                 batch = group[start : start + self._BATCH_SIZE]
                 batch_data = [
                     {
-                        "start_id": r.start_node_id,
-                        "end_id": r.end_node_id,
+                        "start_id": self._sanitize_str(r.start_node_id),
+                        "end_id": self._sanitize_str(r.end_node_id),
                         "properties": self._clean_properties(r.properties),
                     }
                     for r in batch
@@ -166,8 +169,8 @@ class GraphStore:
                             f"SET r += $properties"
                         )
                         params = {
-                            "start_id": rel.start_node_id,
-                            "end_id": rel.end_node_id,
+                            "start_id": self._sanitize_str(rel.start_node_id),
+                            "end_id": self._sanitize_str(rel.end_node_id),
                             "properties": self._clean_properties(rel.properties),
                         }
                         try:
@@ -237,17 +240,31 @@ class GraphStore:
     # ── Helpers ──────────────────────────────────────────────────
 
     @staticmethod
+    def _sanitize_str(value: str) -> str:
+        """Strip null bytes that crash FalkorDB's C-based Cypher parser."""
+        return value.replace("\x00", "")
+
+    @staticmethod
     def _clean_properties(props: dict[str, Any]) -> dict[str, Any]:
-        """Remove None values and non-serialisable types from properties."""
+        """Remove None values, non-serialisable types, and null bytes from properties.
+
+        FalkorDB serializes parameters into a CYPHER header that is parsed as
+        a C string. Null bytes (\\x00) — common in PDF-extracted text — truncate
+        the query and cause parse errors.
+        """
         cleaned: dict[str, Any] = {}
         for key, value in props.items():
             if value is None:
                 continue
-            if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, str):
+                cleaned[key] = value.replace("\x00", "")
+            elif isinstance(value, (int, float, bool)):
                 cleaned[key] = value
             elif isinstance(value, list):
-                # FalkorDB supports lists of primitives
-                cleaned[key] = value
+                cleaned[key] = [
+                    v.replace("\x00", "") if isinstance(v, str) else v
+                    for v in value
+                ]
             else:
-                cleaned[key] = str(value)
+                cleaned[key] = str(value).replace("\x00", "")
         return cleaned

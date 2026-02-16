@@ -184,3 +184,49 @@ class TestCleanProperties:
 
     def test_empty_dict(self):
         assert GraphStore._clean_properties({}) == {}
+
+    def test_strips_null_bytes_from_strings(self):
+        result = GraphStore._clean_properties({"name": "hello\x00world"})
+        assert result["name"] == "helloworld"
+
+    def test_strips_null_bytes_from_lists(self):
+        result = GraphStore._clean_properties({"tags": ["a\x00b", "clean", 42]})
+        assert result["tags"] == ["ab", "clean", 42]
+
+    def test_strips_null_bytes_from_converted_objects(self):
+        result = GraphStore._clean_properties({"obj": "has\x00null"})
+        assert "\x00" not in result["obj"]
+
+
+class TestSanitizeStr:
+    def test_strips_null_bytes(self):
+        assert GraphStore._sanitize_str("hello\x00world") == "helloworld"
+
+    def test_clean_string_unchanged(self):
+        assert GraphStore._sanitize_str("hello") == "hello"
+
+    def test_empty_string(self):
+        assert GraphStore._sanitize_str("") == ""
+
+
+class TestNullByteInUpsert:
+    async def test_node_id_null_bytes_stripped(self, graph_store, mock_connection):
+        """Null bytes in node IDs should be stripped before query."""
+        nodes = [GraphNode(id="test\x00id", label="Person", properties={"name": "Alice"})]
+        await graph_store.upsert_nodes(nodes)
+        params = mock_connection.query.call_args[0][1]
+        assert "\x00" not in params["batch"][0]["id"]
+        assert params["batch"][0]["id"] == "testid"
+
+    async def test_relationship_ids_null_bytes_stripped(self, graph_store, mock_connection):
+        """Null bytes in relationship endpoint IDs should be stripped."""
+        rels = [
+            GraphRelationship(
+                start_node_id="a\x00b", end_node_id="c\x00d",
+                type="KNOWS", properties={}
+            )
+        ]
+        await graph_store.upsert_relationships(rels)
+        params = mock_connection.query.call_args[0][1]
+        assert params["batch"][0]["start_id"] == "ab"
+        assert params["batch"][0]["end_id"] == "cd"
