@@ -1,379 +1,262 @@
-# GraphRAG 
-[![Dockerhub](https://img.shields.io/docker/pulls/falkordb/falkordb?label=Docker)](https://hub.docker.com/r/falkordb/falkordb/)
-[![pypi](https://badge.fury.io/py/graphrag_sdk.svg)](https://pypi.org/project/graphrag_sdk/)
-[![Discord](https://img.shields.io/discord/1146782921294884966?style=flat-square)](https://discord.gg/6M4QwDXn2w)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
+# GraphRAG SDK v2.0
 
-<p align="center">
-  <img alt="FalkorDB GraphRAG-SDK README Banner" src="images/FalkorDB GraphRAG-SDK README Banner.png" width="1500">
-</p>
+**A modular, async-first Graph RAG framework for FalkorDB.**
 
-### Build fast and accurate GenAI apps with GraphRAG SDK at scale
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![Version: 2.0.0a1](https://img.shields.io/badge/version-2.0.0a1-orange.svg)](pyproject.toml)
+[![Tests: 341 passing](https://img.shields.io/badge/tests-341%20passing-brightgreen.svg)](tests/)
 
-Simplify the development of your next GenAI application with GraphRAG-SDK, a specialized toolkit for building Graph Retrieval-Augmented Generation (GraphRAG) systems. It integrates knowledge graphs, ontology management, and state-of-the-art LLMs to deliver accurate, efficient, and customizable RAG workflows.
+GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **88.2% accuracy** on a 20-document novel benchmark using GPT-4.1.
 
-# GraphRAG Setup
-### Database Setup
-
-[![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&style=for-the-badge&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
-
-Or use on premise with Docker:
-
-```sh
-docker run -p 6379:6379 -p 3000:3000 -it --rm  -v ./data:/data falkordb/falkordb:latest
+```
+Document --> [Load] --> [Chunk] --> [Extract] --> [Resolve] --> [Write] --> Knowledge Graph
+                                                                                |
+Question --> [Retrieve (5-path)] --> [Rerank] --> [Generate] ---------> Answer
 ```
 
-### Dependencies:
-```sh
-pip install graphrag_sdk
+## Quick Start
+
+```python
+import asyncio
+from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
+
+async def main():
+    rag = GraphRAG(
+        connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+        llm=LiteLLM(model="azure/gpt-4.1", api_key="..."),
+        embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002", api_key="..."),
+    )
+
+    # Ingest a document
+    result = await rag.ingest("my_document.txt")
+    print(f"Created {result.nodes_created} nodes, {result.relationships_created} edges")
+
+    # Query the knowledge graph
+    answer = await rag.query("What is the main theme?")
+    print(answer.answer)
+
+asyncio.run(main())
 ```
 
-### Configure Credentials. See [.env](.env.template) for examples.
-
-* [LiteLLM](https://docs.litellm.ai): A framework supporting inference of large language models, allowing flexibility in deployment and use cases.  
-  To choose vendor use the prefix "specific_vendor/your_model", for example "openai/gpt-4.1".
-* [OpenAI](https://openai.com/index/openai-api) Recommended model:`gpt-4.1`
-* [Google](https://makersuite.google.com/app/apikey) Recommended model:`gemini-2.0-flash`
-* [Azure-OpenAI](https://ai.azure.com) Recommended model:`gpt-4.1`
-* [Ollama](https://ollama.com/) Available only to the Q&A step. Recommended models: `llama3`. Ollama models are suitable for the Q&A step only (after the knowledge graph (KG) created).
-
-
-# How to use
-[![Get started](https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/app-2/get-started-badge.svg)](https://lightning.ai/muhammadqadora/studios/build-fast-accurate-genai-apps-advanced-rag-with-falkordb)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/movies/demo-movies.ipynb)
-
-### Environment Configuration
-
-Before using the SDK, configure your environment variables:
+## Installation
 
 ```bash
-# FalkorDB Connection (defaults are for on-premises)
-export FALKORDB_HOST="localhost" 
-export FALKORDB_PORT=6379 
-export FALKORDB_USERNAME="your-username"  # optional for on-premises
-export FALKORDB_PASSWORD="your-password"  # optional for on-premises
+# Core + LiteLLM provider (Azure OpenAI, OpenAI, Anthropic, Cohere, 100+ models)
+pip install graphrag-sdk[litellm]
 
-# LLM Provider (choose one)
-export OPENAI_API_KEY="your-key"  # or GOOGLE_API_KEY, GROQ_API_KEY, etc.
+# Core + OpenRouter provider
+pip install graphrag-sdk[openrouter]
+
+# PDF support
+pip install graphrag-sdk[pdf]
+
+# Everything
+pip install graphrag-sdk[all]
 ```
 
-## Quick Start with Existing Knowledge Graph
+### Prerequisites
 
-If you already have a knowledge graph in FalkorDB, you can quickly set up GraphRAG by extracting the ontology from your existing graph:
+- **Python** >= 3.10
+- **FalkorDB** running locally or remotely:
+  ```bash
+  docker run -p 6379:6379 falkordb/falkordb
+  ```
+- An **LLM API key** (Azure OpenAI, OpenAI, OpenRouter, etc.)
+
+## Usage
+
+### Basic: Ingest & Query
 
 ```python
-import os
-from falkordb import FalkorDB
-from graphrag_sdk import KnowledgeGraph
-from graphrag_sdk.ontology import Ontology
-from graphrag_sdk.models.litellm import LiteModel
-from graphrag_sdk.model_config import KnowledgeGraphModelConfig
+from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 
-graph_name = "my_existing_graph"
-
-# Connect to FalkorDB using environment variables
-db = FalkorDB(
-    host=os.getenv("FALKORDB_HOST", "localhost"),
-    port=int(os.getenv("FALKORDB_PORT", 6379)),
-    username=os.getenv("FALKORDB_USERNAME"),  # optional for on-premises
-    password=os.getenv("FALKORDB_PASSWORD")   # optional for on-premises
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=LiteLLM(model="azure/gpt-4.1", api_key="YOUR_KEY", api_base="YOUR_ENDPOINT"),
+    embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002", api_key="YOUR_KEY", api_base="YOUR_ENDPOINT"),
 )
 
-# Select graph
-graph = db.select_graph(graph_name)
+# Ingest from file (auto-detects PDF vs text)
+await rag.ingest("report.pdf")
 
-# Extract ontology from existing knowledge graph
-ontology = Ontology.from_kg_graph(graph)
+# Ingest from raw text
+await rag.ingest("source_id", text="Alice works at Acme Corp in London.")
 
-# Configure model and create GraphRAG instance
-model = LiteModel()  # Default is OpenAI GPT-4.1, can specify different model
-model_config = KnowledgeGraphModelConfig.with_model(model)
+# Query
+result = await rag.query("Where does Alice work?")
+print(result.answer)  # "Alice works at Acme Corp in London."
 
-# Create KnowledgeGraph instance
-kg = KnowledgeGraph(
-    name=graph_name,
-    model_config=model_config,
-    ontology=ontology,
-    host=os.getenv("FALKORDB_HOST", "localhost"),
-    port=int(os.getenv("FALKORDB_PORT", 6379)),
-    username=os.getenv("FALKORDB_USERNAME"),
-    password=os.getenv("FALKORDB_PASSWORD")
-)
-
-# Start chat session
-chat = kg.chat_session()
-
-# Ask questions
-response = chat.send_message("What products are available?")
-print(response["response"])
-
-# Ask follow-up questions
-response = chat.send_message("Tell me which one of them is the most expensive")
-print(response["response"])
+# Query with context inspection
+result = await rag.query("Where does Alice work?", return_context=True)
+print(result.retriever_result.items)  # See what was retrieved
 ```
 
-## Creating Knowledge Graphs from Scratch
+### Schema Definition
 
-### Step 1: Creating Ontologies
-Automate ontology creation from unstructured data or define it manually - See [example](https://github.com/falkordb/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
+Define a schema to constrain what entities and relationships the LLM extracts:
 
 ```python
-from dotenv import load_dotenv
-import json
-from graphrag_sdk.source import URL
-from graphrag_sdk import KnowledgeGraph, Ontology
-from graphrag_sdk.models.litellm import LiteModel
-from graphrag_sdk.model_config import KnowledgeGraphModelConfig
-load_dotenv()
+from graphrag_sdk import GraphSchema, EntityType, RelationType, SchemaPattern
 
-# Import Data
-urls = ["https://www.rottentomatoes.com/m/side_by_side_2012",
-"https://www.rottentomatoes.com/m/matrix",
-"https://www.rottentomatoes.com/m/matrix_revolutions",
-"https://www.rottentomatoes.com/m/matrix_reloaded",
-"https://www.rottentomatoes.com/m/speed_1994",
-"https://www.rottentomatoes.com/m/john_wick_chapter_4"]
-
-sources = [URL(url) for url in urls]
-
-# Model - vendor: openai, model: gpt-4.1 -> openai/gpt-4.1
-model = LiteModel(model_name="openai/gpt-4.1")
-
-# Ontology Auto-Detection
-ontology = Ontology.from_sources(
-    sources=sources,
-    model=model,
+schema = GraphSchema(
+    entities=[
+        EntityType(label="Person", description="A human being"),
+        EntityType(label="Organization", description="A company or institution"),
+        EntityType(label="Place", description="A geographic location"),
+    ],
+    relations=[
+        RelationType(label="WORKS_AT", description="Is employed by"),
+        RelationType(label="LOCATED_IN", description="Is located in"),
+    ],
+    patterns=[
+        SchemaPattern(source="Person", relationship="WORKS_AT", target="Organization"),
+        SchemaPattern(source="Organization", relationship="LOCATED_IN", target="Place"),
+    ],
 )
-# Save the ontology to the disk as a json file.
-with open("ontology.json", "w", encoding="utf-8") as file:
-    file.write(json.dumps(ontology.to_json(), indent=2))
+
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
 ```
 
-### Step 2: Creating a knowledge graph agent
-Build, query, and manage knowledge graphs optimized for retrieval and augmentation tasks. 
-Leverages FalkorDB for high-performance graph querying and multi-tenancy.
+### Strategy Customization
+
+Override any pipeline step by passing a strategy:
 
 ```python
-# After approving the ontology, load it from disk.
-ontology_file = "ontology.json"
-with open(ontology_file, "r", encoding="utf-8") as file:
-    ontology = Ontology.from_json(json.loads(file.read()))
+from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
 
-kg = KnowledgeGraph(
-    name="kg_name",
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    ontology=ontology,
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
+# Ingest with custom strategies
+await rag.ingest(
+    "document.txt",
+    chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
+    extractor=MergedExtraction(llm=llm, embedder=embedder),
+    resolver=DescriptionMergeResolution(llm=llm),
 )
-
-kg.process_sources(sources)
 ```
 
-### Step 3: Query your Graph RAG
+### Post-Ingestion Operations
 
-At this point, you have a Knowledge Graph that can be queried using this SDK. Use the method `chat_session` for start a conversation.
+After ingesting all documents, run synonym detection and backfill embeddings:
 
 ```python
-# Conversation
-chat = kg.chat_session()
-response = chat.send_message("Who is the director of the movie The Matrix?")
-print(response)
-response = chat.send_message("How this director connected to Keanu Reeves?")
-print(response)
+# Detect synonym entities across the entire graph
+synonyms = await rag.detect_synonymy(similarity_threshold=0.9)
+print(f"Created {synonyms} SYNONYM edges")
+
+# Backfill entity embeddings (for entity vector search)
+backfilled = await rag.vector_store.backfill_entity_embeddings()
+
+# Inspect graph statistics
+stats = await rag.graph_store.get_statistics()
+print(f"Nodes: {stats['node_count']}, Edges: {stats['edge_count']}")
 ```
 
-## Next Steps
-With these 3 steps now completed, you're ready to interact and query your knowledge graph.  Here are suggestions for use cases:
-<p align="left">
-  <img alt="GraphRAG-SDK Use Cases Banner from FalkorDB" src="images/use-cases.png" width="800">
-</p>
+## Strategy Reference
 
-**Need help with your use case? let's [talk](https://www.falkordb.com/get-demo/)**
+Every algorithmic concern is a swappable strategy behind an abstract base class:
 
-<br />
+| Concern | ABC | Built-in Options | Default |
+|---------|-----|-----------------|---------|
+| **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by file extension |
+| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking(size, overlap)` | 1000 chars, 100 overlap |
+| **Extraction** | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction` | SchemaGuided |
+| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
+| **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
+| **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
 
-# Using Ollama
+### LLM & Embedding Providers
 
-Ollama models are suitable for the Q&A step only (after the knowledge graph has been created).
+| Provider | LLM Class | Embedder Class | Supports |
+|----------|-----------|---------------|----------|
+| **LiteLLM** | `LiteLLM` | `LiteLLMEmbedder` | Azure OpenAI, OpenAI, Anthropic, Cohere, 100+ models |
+| **OpenRouter** | `OpenRouterLLM` | `OpenRouterEmbedder` | All OpenRouter models |
+| **Custom** | Subclass `LLMInterface` | Subclass `Embedder` | Anything |
 
-## Setup
+## Benchmark
 
-```python
-from graphrag_sdk.models.ollama import OllamaGenerativeModel
+The default pipeline achieves **88.2% accuracy** (8.82/10) on a 100-question benchmark over 20 Project Gutenberg novels.
 
-# Local Ollama (default: http://localhost:11434)
-qa_model = OllamaGenerativeModel(model_name="llama3:8b")
+| Metric | Value |
+|--------|-------|
+| **Accuracy** | 8.82/10 (88.2%) |
+| **Questions tested** | 100 (fact retrieval, complex reasoning, summarization) |
+| **Documents** | 20 novels (Project Gutenberg) |
+| **Graph size** | 114K nodes, 155K edges, 71K facts |
+| **Indexing time** | ~47 min (20 docs) |
+| **Query latency P50** | 5.4s |
+| **Query latency P95** | 9.2s |
 
-# Remote Ollama
-qa_model = OllamaGenerativeModel(
-    model_name="llama3:8b",
-    api_base="http://remote-host:11434"
-)
-```
+### Accuracy by Question Type
 
-<br />
+| Question Type | Count | Mean Score |
+|---------------|-------|-----------|
+| Complex Reasoning | 37 | 8.95/10 |
+| Fact Retrieval | 42 | 8.83/10 |
+| Contextual Summarization | 18 | 8.61/10 |
+| Creative Generation | 3 | 8.33/10 |
 
-# AI Agents with GraphRAG
+### Winning Pipeline Configuration
 
-### Orchestrator
-The GraphRAG-SDK supports Knowledge Graph-based agents. Each agent is an expert in his domain, and the orchestrator orchestrates the agents.
+The benchmark-winning pipeline uses:
+- **Extraction**: `MergedExtraction` -- combines LightRAG-style typed extraction with HippoRAG fact triples and entity mentions
+- **Resolution**: `DescriptionMergeResolution` -- LLM-assisted entity deduplication with description merging
+- **Retrieval**: `MultiPathRetrieval` -- 5-path entity discovery, 2-hop relationship expansion, 5-path chunk retrieval, cosine reranking, fact retrieval
+- **Chunking**: 1500 chars / 200 overlap
+- **LLM**: GPT-4.1 (Azure OpenAI), **Embeddings**: text-embedding-ada-002 (1536 dim)
 
-Check out the example:
+See [docs/benchmark.md](docs/benchmark.md) for full reproduction instructions.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/FalkorDB/GraphRAG-SDK/blob/main/examples/trip/demo_orchestrator_trip.ipynb)
-
-
-### Agents
-
-See the [Step 1](#how-to-use) section to understand how to create Knowledge Graph objects for the agents.
-
-```python
-# Define the model
-model = LiteModel(model_name="openai/gpt-4.1")
-
-# Create the Knowledge Graph from the predefined ontology.
-# In this example, we will use the restaurants agent and the attractions agent.
-restaurants_kg = KnowledgeGraph(
-    name="restaurants",
-    ontology=restaurants_ontology,
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
-)
-attractions_kg = KnowledgeGraph(
-    name="attractions",
-    ontology=attractions_ontology,
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
-)
-
-
-# The following agent is specialized in finding restaurants.
-restaurants_agent = KGAgent(
-    agent_id="restaurants_agent",
-    kg=restaurants_kg,
-    introduction="I'm a restaurant agent, specialized in finding the best restaurants for you.",
-)
-
-# The following agent is specialized in finding tourist attractions.
-attractions_agent = KGAgent(
-    agent_id="attractions_agent",
-    kg=attractions_kg,
-    introduction="I'm an attractions agent, specialized in finding the best tourist attractions for you.",
-)
-```
-
-### Orchestrator - Multi-Agent System
-
-The orchestrator manages the usage of agents and handles questioning.
-
-```python
-# Initialize the orchestrator while giving it the backstory.
-orchestrator = Orchestrator(
-    model,
-    backstory="You are a trip planner, and you want to provide the best possible itinerary for your clients.",
-)
-
-# Register the agents that we created above.
-orchestrator.register_agent(restaurants_agent)
-orchestrator.register_agent(attractions_agent)
-
-# Query the orchestrator.
-runner = orchestrator.ask("Create a two-day itinerary for a trip to Rome. Please don't ask me any questions; just provide the best itinerary you can.")
-print(runner.output)
+## Project Structure
 
 ```
-## Community
-
-Have questions or feedback? Reach out via:
-- [GitHub Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues)
-- Join our [Discord](https://discord.com/invite/6M4QwDXn2w)
-
-⭐️ If you find this repository helpful, please consider giving it a star!
-
-## Additional Enhancement: Configuring your prompts
-When creating your Knowledge Graph (KG) agent, you can customize the prompts to tailor its behavior.
-
-💡 This step is optional but can enhance functionality.
-
-There are five types of prompts:
-
-1. **`cypher_system_instruction`**  
-   - System instructions for the Cypher generation step.  
-   - **Note:** Ensure your prompt includes `{ontology}`.
-
-2. **`qa_system_instruction`**  
-   - System instructions for the Q&A step.
-
-3. **`cypher_gen_prompt`**  
-   - The prompt used during the Cypher generation step.  
-   - **Note:** Include `{question}` in your prompt.
-
-4. **`cypher_gen_prompt_history`**  
-   - The prompt for Cypher generation when history needs to be considered.  
-   - **Note:** Include `{question}` and `{last_answer}` in your prompt.
-
-5. **`qa_prompt`**  
-   - The prompt used during the Q&A step.  
-   - **Note:** Include `{question}`, `{context}`, and `{cypher}` in your prompt.
-
-Here’s an example configuration:
-
-```python
-kg = KnowledgeGraph(
-    name="kg_name",
-    model_config=KnowledgeGraphModelConfig.with_model(model),
-    ontology=ontology,
-    cypher_system_instruction=cypher_system_instruction,
-    qa_system_instruction=qa_system_instruction,
-    cypher_gen_prompt=cypher_gen_prompt,
-    cypher_gen_prompt_history=cypher_gen_prompt_history,
-    qa_prompt=qa_prompt
-    host="127.0.0.1",
-    port=6379,
-    # username=falkor_username, # optional
-    # password=falkor_password  # optional
-)
+graphrag_sdk/
+├── api/main.py                     # GraphRAG facade (ingest, query, detect_synonymy)
+├── core/
+│   ├── connection.py               # FalkorDB connection & config
+│   ├── context.py                  # Execution context (logging, budget)
+│   ├── exceptions.py               # Exception hierarchy
+│   ├── models.py                   # Pydantic data models (30+ classes)
+│   └── providers.py                # LLM & Embedder ABCs + built-in providers
+├── ingestion/
+│   ├── pipeline.py                 # 10-step ingestion orchestrator
+│   ├── loaders/                    # TextLoader, PdfLoader
+│   ├── chunking_strategies/        # FixedSizeChunking
+│   ├── extraction_strategies/      # SchemaGuided, MergedExtraction
+│   └── resolution_strategies/      # ExactMatch, DescriptionMerge
+├── retrieval/
+│   ├── strategies/                 # LocalRetrieval, MultiPathRetrieval
+│   └── reranking_strategies/       # CosineReranker
+├── storage/
+│   ├── graph_store.py              # Batched Cypher operations
+│   └── vector_store.py             # Vector index management & search
+├── telemetry/                      # Tracing
+└── utils/                          # Graph visualization
 ```
 
+## Examples
 
-## FAQ
-**Which databases are supported?**
+- [`examples/01_quickstart.py`](examples/01_quickstart.py) -- Minimal ingest & query (30 lines)
+- [`examples/02_pdf_with_schema.py`](examples/02_pdf_with_schema.py) -- PDF ingestion with custom schema
+- [`examples/03_custom_strategies.py`](examples/03_custom_strategies.py) -- Benchmark-winning pipeline configuration
+- [`examples/04_custom_provider.py`](examples/04_custom_provider.py) -- Write your own LLM/Embedder
 
-GraphRAG-SDK is optimized for FalkorDB. Other backends may require adapters.
+## Documentation
 
-**How scalable is the SDK?**
+- [Architecture](docs/architecture.md) -- How the pipeline works
+- [Strategy Reference](docs/strategies.md) -- All ABCs and built-in implementations
+- [Providers](docs/providers.md) -- LLM & Embedder configuration
+- [Benchmark](docs/benchmark.md) -- Reproducing the 88.2% accuracy result
+- [API Reference](docs/api-reference.md) -- Full API documentation
 
-GraphRAG-SDK is designed for multi-tenancy and large-scale applications. Performance depends on FalkorDB deployment configuration.
+## Core Principles
 
-**How does this SDK improve retrieval-augmented generation?**
+- **Strategy Modularity** -- Swap any algorithmic concern via strategy ABCs
+- **Zero-Loss Data** -- Full traceability from raw text to graph nodes
+- **Production Latency** -- Async-first, pooled connections, batched writes
+- **Simplicity** -- One entry point, flat structure, no meta-programming
 
-By leveraging knowledge graphs, GraphRAG-SDK enables semantic relationships and ontology-driven queries that go beyond standard vector similarity.
+## License
 
-**Which file formats does the SDK support?**
-
-Supported formats include PDF, JSONL, CSV, HTML, TEXT, and URLs.
-
-**How does the SDK handle latency?**
-
-The SDK is optimized for low-latency operations through FalkorDB, using techniques like query optimization and in-memory processing.
-
-**Does the SDK support multi-graph querying?**
-
-Yes. Multi-graph querying is supported with APIs designed for cross-domain and hierarchical graph exploration.
-
-<br />
-
-# License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-Keywords: RAG, graphrag, Retrieval-Augmented Generation, NLP, AI, Information Retrieval, Natural Language Processing, LLM, Embeddings, Semantic Search
+Apache 2.0
