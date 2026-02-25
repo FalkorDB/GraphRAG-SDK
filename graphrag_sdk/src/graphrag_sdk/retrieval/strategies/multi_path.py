@@ -213,7 +213,15 @@ class MultiPathRetrieval(RetrievalStrategy):
         llm_kw: list[str],
         all_keywords: list[str],
     ) -> tuple[dict[str, dict], dict[str, str]]:
-        """5-path entity discovery."""
+        """5-path entity discovery.
+
+        Paths:
+        2a: Entity vector search per keyword
+        2b: Cypher CONTAINS on entity names
+        2c: Fulltext search on entity index (returns name/description)
+        2d: Question vector on entity index
+        2e: Relationship vector search (discovers entities via RELATES edges)
+        """
         found: dict[str, dict] = {}
         sources: dict[str, str] = {}
 
@@ -255,16 +263,29 @@ class MultiPathRetrieval(RetrievalStrategy):
             except Exception:
                 pass
 
-        # 2c: Fulltext search on entity index
+        # 2c: Fulltext search on entity index (returns name/description for entities)
         for kw in all_keywords[: 6]:
             try:
                 ft_ents = await self._vector.fulltext_search(kw, top_k=3, label="__Entity__")
                 for ent in ft_ents:
-                    _add(
-                        ent.get("id", ""),
-                        {"name": ent.get("name", ""), "description": ent.get("description", "")},
-                        "fulltext",
-                    )
+                    eid = ent.get("id", "")
+                    if eid:
+                        # Fulltext on __Entity__ returns node.text which is None;
+                        # fetch name/description via a quick lookup
+                        try:
+                            detail = await self._graph.query_raw(
+                                "MATCH (e:__Entity__ {id: $eid}) "
+                                "RETURN e.name AS name, e.description AS desc",
+                                {"eid": eid},
+                            )
+                            if detail.result_set:
+                                row = detail.result_set[0]
+                                _add(eid, {
+                                    "name": row[0] if row[0] else "",
+                                    "description": row[1] if len(row) > 1 and row[1] else "",
+                                }, "fulltext")
+                        except Exception:
+                            _add(eid, {"name": "", "description": ""}, "fulltext")
             except Exception:
                 pass
 
@@ -280,36 +301,32 @@ class MultiPathRetrieval(RetrievalStrategy):
         except Exception:
             pass
 
-        # 2e: Synonym expansion (batched UNWIND)
-        synonym_batch: dict[str, dict] = {}
-        eids_for_syn = list(found.keys())[:10]
-        if eids_for_syn:
-            try:
-                syn_result = await self._graph.query_raw(
-                    "UNWIND $eids AS eid "
-                    "MATCH (e:__Entity__ {id: eid})-[:SYNONYM]-(s:__Entity__) "
-                    "RETURN s.id AS id, s.name AS name, s.description AS desc "
-                    "LIMIT 30",
-                    {"eids": eids_for_syn},
-                )
-                for row in syn_result.result_set:
-                    sid = row[0]
-                    if sid and sid not in found and sid not in synonym_batch:
-                        synonym_batch[sid] = {
-                            "name": row[1] if len(row) > 1 else "",
-                            "description": row[2] if len(row) > 2 else "",
-                        }
-                        sources[sid] = "synonym"
-            except Exception:
-                pass
-        found.update(synonym_batch)
+        # 2e: Relationship vector search — discover entities via RELATES edges
+        try:
+            rel_results = await self._vector.search_relationships(query_vector, top_k=10)
+            for rel in rel_results:
+                src_name = rel.get("src_name", "")
+                tgt_name = rel.get("tgt_name", "")
+                if src_name:
+                    src_id = src_name.strip().lower().replace(" ", "_")
+                    _add(src_id, {"name": src_name, "description": ""}, "rel_vector")
+                if tgt_name:
+                    tgt_id = tgt_name.strip().lower().replace(" ", "_")
+                    _add(tgt_id, {"name": tgt_name, "description": ""}, "rel_vector")
+        except Exception:
+            pass
 
         return found, sources
 
     async def _expand_relationships(
         self, entity_list: list[tuple[str, dict]]
     ) -> list[str]:
-        """1-hop relationship expansion from top entities."""
+        """1-hop + 2-hop relationship expansion from top entities.
+
+        Uses the single ``RELATES`` edge type — no need to filter out
+        SYNONYM or MENTIONED_IN edges. The ``rel_type`` property stores
+        the original relationship type, and ``fact`` stores the evidence.
+        """
         relationship_strings: list[str] = []
         seen: set[tuple] = set()
 
@@ -319,10 +336,9 @@ class MultiPathRetrieval(RetrievalStrategy):
             try:
                 result = await self._graph.query_raw(
                     "UNWIND $eids AS eid "
-                    "MATCH (a:__Entity__ {id: eid})-[r]->(b:__Entity__) "
-                    "WHERE type(r) <> 'SYNONYM' AND type(r) <> 'MENTIONED_IN' "
-                    "RETURN a.name AS src, type(r) AS rel, b.name AS tgt, "
-                    "COALESCE(r.description, '') AS desc "
+                    "MATCH (a:__Entity__ {id: eid})-[r:RELATES]->(b:__Entity__) "
+                    "RETURN a.name AS src, r.rel_type AS rel, b.name AS tgt, "
+                    "COALESCE(r.fact, r.description, '') AS fact "
                     "LIMIT 150",
                     {"eids": eids_1hop},
                 )
@@ -330,13 +346,13 @@ class MultiPathRetrieval(RetrievalStrategy):
                     src = row[0] or ""
                     rel_type = row[1] if len(row) > 1 else ""
                     tgt = row[2] if len(row) > 2 else ""
-                    desc = row[3] if len(row) > 3 else ""
+                    fact = row[3] if len(row) > 3 else ""
                     key = (src.lower(), rel_type, tgt.lower())
                     if src and rel_type and tgt and key not in seen:
                         seen.add(key)
                         line = f"{src} —[{rel_type}]→ {tgt}"
-                        if desc:
-                            line += f": {desc}"
+                        if fact:
+                            line += f": {fact}"
                         relationship_strings.append(line)
             except Exception:
                 pass
@@ -347,10 +363,9 @@ class MultiPathRetrieval(RetrievalStrategy):
             try:
                 result = await self._graph.query_raw(
                     "UNWIND $eids AS eid "
-                    "MATCH (a:__Entity__ {id: eid})-[r1]->(b:__Entity__)-[r2]->(c:__Entity__) "
-                    "WHERE type(r1) <> 'SYNONYM' AND type(r1) <> 'MENTIONED_IN' "
-                    "AND type(r2) <> 'SYNONYM' AND type(r2) <> 'MENTIONED_IN' "
-                    "RETURN a.name, type(r1), b.name, type(r2), c.name "
+                    "MATCH (a:__Entity__ {id: eid})-[r1:RELATES]->(b:__Entity__)"
+                    "-[r2:RELATES]->(c:__Entity__) "
+                    "RETURN a.name, r1.rel_type, b.name, r2.rel_type, c.name "
                     "LIMIT 25",
                     {"eids": eids_2hop},
                 )
@@ -379,7 +394,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         simple_kw: list[str],
         entity_list: list[tuple[str, dict]],
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """4-path chunk retrieval."""
+        """5-path chunk retrieval."""
         chunks: dict[str, str] = {}
         sources: dict[str, str] = {}
 
@@ -407,8 +422,6 @@ class MultiPathRetrieval(RetrievalStrategy):
             pass
 
         # Path C: MENTIONED_IN (collect, deduplicate in Python)
-        # Fetch all mention chunks for top entities, then deduplicate.
-        # Using a generous LIMIT to ensure coverage across entities.
         eids_mention = [eid for eid, _ in entity_list[:15]]
         if eids_mention:
             try:
@@ -456,9 +469,8 @@ class MultiPathRetrieval(RetrievalStrategy):
             try:
                 result = await self._graph.query_raw(
                     "UNWIND $eids AS eid "
-                    "MATCH (e:__Entity__ {id: eid})-[r]-(neighbor:__Entity__)"
+                    "MATCH (e:__Entity__ {id: eid})-[:RELATES]-(neighbor:__Entity__)"
                     "-[:MENTIONED_IN]->(c:Chunk) "
-                    "WHERE type(r) <> 'SYNONYM' AND type(r) <> 'MENTIONED_IN' "
                     "RETURN DISTINCT c.id AS id, c.text AS text "
                     "LIMIT 20",
                     {"eids": eids_2hop_chunk},

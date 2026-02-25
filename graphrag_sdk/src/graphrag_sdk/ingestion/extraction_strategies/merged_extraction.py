@@ -421,15 +421,23 @@ class MergedExtraction(ExtractionStrategy):
         self,
         relations: list[ExtractedRelation],
     ) -> list[GraphRelationship]:
-        """Convert ExtractedRelation list to GraphRelationship list."""
+        """Convert ExtractedRelation list to GraphRelationship list.
+
+        All LLM-extracted relationships use the single ``RELATES`` edge type.
+        The original relationship type is preserved as the ``rel_type`` property,
+        and a ``fact`` property stores a human-readable fact string for embedding.
+        """
         relationships: list[GraphRelationship] = []
         for rel in relations:
+            fact = f"({rel.source}, {rel.type}, {rel.target}): {rel.description}" if rel.description else f"({rel.source}, {rel.type}, {rel.target})"
             relationships.append(
                 GraphRelationship(
                     start_node_id=compute_entity_id(rel.source),
                     end_node_id=compute_entity_id(rel.target),
-                    type=rel.type,
+                    type="RELATES",
                     properties={
+                        "rel_type": rel.type,
+                        "fact": fact,
                         "keywords": rel.keywords,
                         "description": rel.description,
                         "weight": rel.weight,

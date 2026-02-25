@@ -218,115 +218,87 @@ class VectorStore:
         logger.debug(f"Indexed {count}/{len(chunks.chunks)} chunks")
         return count
 
-    # Structural relationship types that should NOT be embedded
-    _STRUCTURAL_REL_TYPES = frozenset({"PART_OF", "NEXT_CHUNK", "MENTIONED_IN", "SYNONYM"})
+    async def embed_relationships(self, batch_size: int = 500) -> int:
+        """Batch-embed all RELATES edges that are missing embeddings.
 
-    async def index_relationship_embeddings(
-        self, relationships: list[GraphRelationship]
-    ) -> int:
-        """Embed relationships and create thin __Fact__ index nodes.
-
-        Filters out structural relationship types, generates fact text via
-        ``to_fact_text()``, batch-embeds, and writes the embeddings to
-        ``__Fact__`` index nodes (unified vector index for fast retrieval).
+        Queries RELATES edges where ``embedding IS NULL``, batch-embeds
+        the ``fact`` property text, and writes the embedding vectors
+        directly onto the edges.
 
         Args:
-            relationships: List of GraphRelationship objects to embed.
+            batch_size: Number of edges per batch (default: 500).
 
         Returns:
-            Number of relationships indexed.
+            Number of edges embedded.
         """
         if not self._embedder:
             logger.warning("No embedder configured — skipping relationship embedding")
             return 0
 
-        # Filter out structural types
-        semantic_rels = [
-            r for r in relationships
-            if r.type not in self._STRUCTURAL_REL_TYPES
-        ]
-        if not semantic_rels:
-            return 0
+        total_embedded = 0
+        offset = 0
 
-        # Generate fact text for each relationship
-        texts = [r.to_fact_text() for r in semantic_rels]
-
-        # Batch embed all texts in one API call
-        try:
-            vectors = await self._embedder.aembed_documents(texts)
-        except Exception as exc:
-            logger.warning(f"Batch embedding failed, falling back to sequential: {exc}")
-            vectors = []
-            for text in texts:
-                try:
-                    vec = await self._embedder.aembed_query(text)
-                    vectors.append(vec)
-                except Exception:
-                    vectors.append([])
-
-        # Build batch data for __Fact__ index nodes
-        batch_data: list[dict] = []
-        for i, (rel, text, vector) in enumerate(zip(semantic_rels, texts, vectors)):
-            if not vector:
-                continue
-            fact_id = f"fact_{rel.start_node_id}_{rel.type}_{rel.end_node_id}"
-            batch_data.append({
-                "fact_id": fact_id,
-                "text": text,
-                "src_name": rel.properties.get("src_name", rel.start_node_id),
-                "tgt_name": rel.properties.get("tgt_name", rel.end_node_id),
-                "rel_type": rel.type,
-                "description": rel.properties.get("description", ""),
-                "vector": vector,
-            })
-
-        if not batch_data:
-            return 0
-
-        # Ensure __Fact__ vector index exists
-        await self.create_vector_index(label="__Fact__", property="embedding")
-
-        # Batch write __Fact__ nodes with embeddings
-        batch_size = 500
-        count = 0
-        query = (
-            "UNWIND $batch AS item "
-            "MERGE (f:__Fact__ {id: item.fact_id}) "
-            "SET f.text = item.text, "
-            "f.src_name = item.src_name, "
-            "f.tgt_name = item.tgt_name, "
-            "f.rel_type = item.rel_type, "
-            "f.description = item.description, "
-            "f.embedding = vecf32(item.vector)"
-        )
-        for start in range(0, len(batch_data), batch_size):
-            batch = batch_data[start : start + batch_size]
+        while True:
             try:
-                await self._conn.query(query, {"batch": batch})
-                count += len(batch)
-            except Exception as exc:
-                logger.warning(
-                    f"Batch __Fact__ node write failed ({len(batch)} items), "
-                    f"falling back to individual: {exc}"
+                result = await self._conn.query(
+                    "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
+                    "WHERE r.embedding IS NULL AND r.fact IS NOT NULL "
+                    "RETURN id(a) AS aid, id(b) AS bid, id(r) AS rid, r.fact AS fact "
+                    "SKIP $offset LIMIT $limit",
+                    {"offset": offset, "limit": batch_size},
                 )
-                for item in batch:
+            except Exception as exc:
+                logger.warning(f"RELATES edge query failed at offset {offset}: {exc}")
+                break
+
+            if not result.result_set:
+                break
+
+            edge_ids: list[int] = []
+            texts: list[str] = []
+            for row in result.result_set:
+                rid = row[2]
+                fact = row[3] if len(row) > 3 and row[3] else ""
+                if fact:
+                    edge_ids.append(rid)
+                    texts.append(fact)
+
+            if not texts:
+                offset += batch_size
+                continue
+
+            try:
+                vectors = await self._embedder.aembed_documents(texts)
+            except Exception as exc:
+                logger.warning(f"Batch embedding failed at offset {offset}: {exc}")
+                offset += batch_size
+                continue
+
+            # Write embeddings back to edges using internal edge IDs
+            embed_data = [
+                {"rid": rid, "vector": vector}
+                for rid, vector in zip(edge_ids, vectors)
+                if vector
+            ]
+            if embed_data:
+                # FalkorDB doesn't support UNWIND SET on edges by internal ID easily,
+                # so we batch with individual queries grouped for efficiency
+                for item in embed_data:
                     try:
                         await self._conn.query(
-                            "MERGE (f:__Fact__ {id: $fact_id}) "
-                            "SET f.text = $text, "
-                            "f.src_name = $src_name, "
-                            "f.tgt_name = $tgt_name, "
-                            "f.rel_type = $rel_type, "
-                            "f.description = $description, "
-                            "f.embedding = vecf32($vector)",
+                            "MATCH ()-[r:RELATES]->() "
+                            "WHERE id(r) = $rid "
+                            "SET r.embedding = vecf32($vector)",
                             item,
                         )
-                        count += 1
+                        total_embedded += 1
                     except Exception as inner_exc:
-                        logger.warning(f"Failed to write __Fact__ node {item['fact_id']}: {inner_exc}")
+                        logger.warning(f"Failed to embed edge {item['rid']}: {inner_exc}")
 
-        logger.debug(f"Indexed {count}/{len(semantic_rels)} relationship embeddings as __Fact__ nodes")
-        return count
+            offset += batch_size
+
+        logger.info(f"Embedded {total_embedded} RELATES edges")
+        return total_embedded
 
     # ── Search ───────────────────────────────────────────────────
 
@@ -406,23 +378,25 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 15,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search on __Fact__ index nodes.
+        """Vector similarity search on RELATES edges.
 
-        Uses a single unified vector index for fast retrieval across all
-        relationship types.
+        Uses the RELATES edge vector index for retrieval. Falls back to
+        a Cypher-based cosine distance scan if edge vector queries
+        are not supported.
 
         Args:
             query_vector: The query embedding vector.
             top_k: Number of results to return.
 
         Returns:
-            List of dicts with src_name, type, tgt_name, description, score.
+            List of dicts with src_name, type, tgt_name, fact, score.
         """
+        # Try edge vector index query first (FalkorDB >= 4.2)
         query = (
-            "CALL db.idx.vector.queryNodes('__Fact__', 'embedding', $top_k, vecf32($vector)) "
-            "YIELD node, score "
-            "RETURN node.src_name AS src, node.rel_type AS type, "
-            "node.tgt_name AS tgt, node.description AS desc, score "
+            "CALL db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector)) "
+            "YIELD relationship AS r, score "
+            "RETURN r.src_name AS src, r.rel_type AS type, "
+            "r.tgt_name AS tgt, r.fact AS fact, score "
             "ORDER BY score DESC"
         )
         try:
@@ -435,13 +409,40 @@ class VectorStore:
                     "src_name": row[0] if row[0] else "",
                     "type": row[1] if len(row) > 1 and row[1] else "",
                     "tgt_name": row[2] if len(row) > 2 and row[2] else "",
-                    "description": row[3] if len(row) > 3 and row[3] else "",
+                    "fact": row[3] if len(row) > 3 and row[3] else "",
                     "score": row[4] if len(row) > 4 else 0.0,
                 }
                 for row in result.result_set
             ]
         except Exception as exc:
-            logger.warning(f"Fact vector search failed: {exc}")
+            logger.debug(f"Edge vector query not available, falling back to Cypher scan: {exc}")
+
+        # Fallback: Cypher-based cosine distance scan
+        fallback_query = (
+            "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
+            "WHERE r.embedding IS NOT NULL "
+            "WITH a, r, b, vecf32.distance.cosine(r.embedding, vecf32($vector)) AS dist "
+            "RETURN r.src_name AS src, r.rel_type AS type, "
+            "r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score "
+            "ORDER BY dist ASC LIMIT $top_k"
+        )
+        try:
+            result = await self._conn.query(fallback_query, {
+                "top_k": top_k,
+                "vector": query_vector,
+            })
+            return [
+                {
+                    "src_name": row[0] if row[0] else "",
+                    "type": row[1] if len(row) > 1 and row[1] else "",
+                    "tgt_name": row[2] if len(row) > 2 and row[2] else "",
+                    "fact": row[3] if len(row) > 3 and row[3] else "",
+                    "score": row[4] if len(row) > 4 else 0.0,
+                }
+                for row in result.result_set
+            ]
+        except Exception as exc:
+            logger.warning(f"Relationship vector search failed: {exc}")
             return []
 
     async def fulltext_search(
@@ -491,6 +492,7 @@ class VectorStore:
         Creates:
         - Chunk vector index (embedding)
         - __Entity__ vector index (embedding)
+        - RELATES edge vector index (embedding)
         - Chunk fulltext index (text)
         - __Entity__ fulltext index (name, description)
 
@@ -512,6 +514,13 @@ class VectorStore:
                 results[key] = True
             except Exception:
                 results[key] = False
+
+        # RELATES edge vector index
+        try:
+            await self.create_relationship_vector_index("RELATES")
+            results["vector_RELATES"] = True
+        except Exception:
+            results["vector_RELATES"] = False
 
         for label, props in [
             ("Chunk", ("text",)),
@@ -570,7 +579,7 @@ class VectorStore:
                 name = row[1] if len(row) > 1 and row[1] else str(eid)
                 desc = row[2] if len(row) > 2 and row[2] else ""
                 ids.append(eid)
-                texts.append(f"{name}\n{desc}" if desc else str(name))
+                texts.append(str(name))
 
             try:
                 vectors = await self._embedder.aembed_documents(texts)

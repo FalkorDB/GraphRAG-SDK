@@ -11,8 +11,6 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-import numpy as np
-
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import IngestionError, SchemaValidationError
 from graphrag_sdk.core.models import (
@@ -84,7 +82,6 @@ class IngestionPipeline:
         vector_store: Any,  # storage.VectorStore
         schema: GraphSchema | None = None,
         embedder: Any | None = None,  # optional, for future use
-        skip_synonymy: bool = False,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -94,7 +91,6 @@ class IngestionPipeline:
         self.vector_store = vector_store
         self.schema = schema or GraphSchema()
         self.embedder = embedder
-        self._skip_synonymy = skip_synonymy
 
     async def run(
         self,
@@ -133,11 +129,11 @@ class IngestionPipeline:
                 )
                 ctx.log("Using provided text (loader skipped)")
             else:
-                ctx.log("Step 1/10: Loading source")
+                ctx.log("Step 1/9: Loading source")
                 document = await self.loader.load(source, ctx)
 
             # Step 2: Chunk
-            ctx.log("Step 2/10: Chunking text")
+            ctx.log("Step 2/9: Chunking text")
             chunks = await self.chunker.chunk(document.text, ctx)
 
             if not chunks.chunks:
@@ -145,55 +141,44 @@ class IngestionPipeline:
                 return IngestionResult(document_info=document.document_info)
 
             # Step 3: Build lexical graph (MANDATORY — not a strategy)
-            ctx.log("Step 3/10: Building lexical graph (provenance chain)")
+            ctx.log("Step 3/9: Building lexical graph (provenance chain)")
             await self._build_lexical_graph(document.document_info, chunks, ctx)
 
             # Step 4: Extract entities & relationships
-            ctx.log("Step 4/10: Extracting entities & relationships")
+            ctx.log("Step 4/9: Extracting entities & relationships")
             graph_data = await self.extractor.extract(chunks, self.schema, ctx)
 
             # Step 4b: Quality filter — remove empty-ID and invalid nodes
             graph_data = self._filter_quality(graph_data)
 
             # Step 5: Prune against schema
-            ctx.log("Step 5/10: Pruning against schema")
+            ctx.log("Step 5/9: Pruning against schema")
             graph_data = self._prune(graph_data, self.schema)
 
             # Step 6: Resolve duplicate entities
-            ctx.log("Step 6/10: Resolving duplicates")
+            ctx.log("Step 6/9: Resolving duplicates")
             resolved = await self.resolver.resolve(graph_data, ctx)
 
             # Step 7: Write to graph (batched)
-            ctx.log("Step 7/10: Writing to graph store")
+            ctx.log("Step 7/9: Writing to graph store")
             await self.graph_store.upsert_nodes(resolved.nodes)
             await self.graph_store.upsert_relationships(resolved.relationships)
 
-            # Steps 8-10: Run in parallel (independent of each other)
-            async def _step_synonymy() -> list[GraphRelationship]:
-                if self._skip_synonymy:
-                    ctx.log("Step 8/10: Synonymy skipped (post-ingestion mode)")
-                    return []
-                ctx.log("Step 8/10: Detecting synonymy")
-                edges = await self._detect_synonymy_edges(resolved.nodes, ctx)
-                if edges:
-                    await self.graph_store.upsert_relationships(edges)
-                return edges
-
+            # Steps 8-9: Run in parallel (independent of each other)
             async def _step_mentions() -> int:
-                ctx.log("Step 9/10: Writing mentions")
+                ctx.log("Step 8/9: Writing mentions (uncapped)")
                 return await self._write_mentions(graph_data, ctx)
 
             async def _step_index_chunks() -> None:
-                ctx.log("Step 10/10: Embedding & indexing chunks")
+                ctx.log("Step 9/9: Embedding & indexing chunks")
                 await self.vector_store.index_chunks(chunks)
 
-            synonym_edges, mentions_written, _ = await asyncio.gather(
-                _step_synonymy(),
+            mentions_written, _ = await asyncio.gather(
                 _step_mentions(),
                 _step_index_chunks(),
             )
 
-            total_rels = len(resolved.relationships) + len(synonym_edges) + mentions_written
+            total_rels = len(resolved.relationships) + mentions_written
             result = IngestionResult(
                 document_info=document.document_info,
                 nodes_created=len(resolved.nodes),
@@ -203,7 +188,6 @@ class IngestionPipeline:
                     "merged_entities": resolved.merged_count,
                     "raw_nodes": len(graph_data.nodes),
                     "raw_relationships": len(graph_data.relationships),
-                    "synonym_edges_created": len(synonym_edges),
                     "mention_edges_created": mentions_written,
                 },
             )
@@ -211,7 +195,6 @@ class IngestionPipeline:
                 f"Pipeline complete: {result.nodes_created} nodes, "
                 f"{result.relationships_created} rels, "
                 f"{result.chunks_indexed} chunks indexed, "
-                f"{len(synonym_edges)} synonyms, "
                 f"{mentions_written} mentions"
             )
             return result
@@ -436,15 +419,13 @@ class IngestionPipeline:
         return synonym_edges
 
     async def _write_mentions(
-        self, graph_data: GraphData, ctx: Context, *, max_per_entity: int = 2
+        self, graph_data: GraphData, ctx: Context
     ) -> int:
         """Write MENTIONED_IN edges linking entities to their source chunks.
 
-        Args:
-            max_per_entity: Maximum MENTIONED_IN edges per entity. Capping
-                prevents popular entities from dominating the LIMIT in
-                retrieval queries (see LIMIT-starvation analysis). Default 2
-                keeps the first (most definitional) chunks per entity.
+        Every entity connects to every chunk it was extracted from (uncapped).
+        With global dedup controlling entity cardinality, uncapped mentions
+        provide richer entity-chunk connectivity for retrieval.
         """
         mentions: list[EntityMention] = []
         if hasattr(graph_data, "mentions") and graph_data.mentions:
@@ -454,18 +435,12 @@ class IngestionPipeline:
             return 0
 
         seen: set[tuple[str, str]] = set()
-        entity_counts: dict[str, int] = {}
         mention_rels: list[GraphRelationship] = []
         for m in mentions:
             key = (m.entity_id, m.chunk_id)
             if key in seen:
                 continue
-            # Enforce per-entity cap
-            count = entity_counts.get(m.entity_id, 0)
-            if count >= max_per_entity:
-                continue
             seen.add(key)
-            entity_counts[m.entity_id] = count + 1
             mention_rels.append(
                 GraphRelationship(
                     start_node_id=m.entity_id,
@@ -474,5 +449,5 @@ class IngestionPipeline:
                 )
             )
         await self.graph_store.upsert_relationships(mention_rels)
-        ctx.log(f"Wrote {len(mention_rels)} MENTIONED_IN edges (cap={max_per_entity}/entity)")
+        ctx.log(f"Wrote {len(mention_rels)} MENTIONED_IN edges (uncapped)")
         return len(mention_rels)

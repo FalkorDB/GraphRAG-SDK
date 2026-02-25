@@ -52,11 +52,19 @@ class GraphRelationship(DataModel):
     embedding_properties: Optional[dict[str, list[float]]] = None
 
     def to_fact_text(self) -> str:
-        """Return a human-readable fact string for embedding on this edge."""
+        """Return a human-readable fact string for embedding on this edge.
+
+        For ``RELATES`` edges, reads the original relationship type from
+        ``properties["rel_type"]``; otherwise falls back to ``self.type``.
+        Prefers the pre-built ``fact`` property if available.
+        """
+        if self.properties.get("fact"):
+            return self.properties["fact"]
         src = self.properties.get("src_name", self.start_node_id)
         tgt = self.properties.get("tgt_name", self.end_node_id)
+        rel_type = self.properties.get("rel_type", self.type)
         desc = self.properties.get("description", "")
-        base = f"({src}, {self.type}, {tgt})"
+        base = f"({src}, {rel_type}, {tgt})"
         return f"{base}: {desc}" if desc else base
 
 
