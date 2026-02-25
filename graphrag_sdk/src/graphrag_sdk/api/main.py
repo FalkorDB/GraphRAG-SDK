@@ -418,7 +418,7 @@ class GraphRAG:
             valid = [
                 (eid, name, vec)
                 for eid, name, vec in zip(all_ids, all_names, raw_vectors)
-                if vec is not None
+                if vec
             ]
             if len(valid) < 2:
                 return total_merged

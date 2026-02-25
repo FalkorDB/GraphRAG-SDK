@@ -372,8 +372,8 @@ class IngestionPipeline:
         names = [n.properties.get("name", n.id) for n in entity_nodes]
         raw_vectors = await self.embedder.aembed_documents(names)
 
-        # Filter out entities whose embedding failed (None)
-        valid = [(node, vec) for node, vec in zip(entity_nodes, raw_vectors) if vec is not None]
+        # Filter out entities whose embedding failed (None or empty list)
+        valid = [(node, vec) for node, vec in zip(entity_nodes, raw_vectors) if vec]
         if len(valid) < 2:
             return []
         entity_nodes, vectors = zip(*valid)  # type: ignore[assignment]

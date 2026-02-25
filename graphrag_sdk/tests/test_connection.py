@@ -101,8 +101,9 @@ class TestFalkorDBConnection:
 
         result = await conn.query("MATCH (n {id: $id}) RETURN n", {"id": "test"})
         assert result == "ok"
+        # Default query_timeout_ms is 10_000
         mock_graph.query.assert_called_once_with(
-            "MATCH (n {id: $id}) RETURN n", params={"id": "test"}, timeout=None
+            "MATCH (n {id: $id}) RETURN n", params={"id": "test"}, timeout=10_000
         )
 
     async def test_graph_property_lazy_init(self):

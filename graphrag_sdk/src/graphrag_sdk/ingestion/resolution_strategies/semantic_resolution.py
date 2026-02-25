@@ -243,7 +243,7 @@ class SemanticResolution(ResolutionStrategy):
             valid = [
                 (i, node, vec)
                 for i, (node, vec) in enumerate(zip(label_nodes, vectors))
-                if vec is not None
+                if vec
             ]
             if len(valid) < 2:
                 continue

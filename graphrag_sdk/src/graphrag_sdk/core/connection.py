@@ -125,11 +125,13 @@ class FalkorDBConnection:
         self._ensure_client()
         assert self._graph is not None  # for type-checkers
 
+        effective_timeout = timeout if timeout is not None else self.config.query_timeout_ms
+
         last_exc: Exception | None = None
         for attempt in range(self.config.retry_count):
             try:
                 return await self._graph.query(
-                    cypher, params=params, timeout=timeout
+                    cypher, params=params, timeout=effective_timeout
                 )
             except Exception as exc:
                 last_exc = exc
