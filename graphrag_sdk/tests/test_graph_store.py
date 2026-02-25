@@ -142,6 +142,13 @@ class TestGraphStoreQueryRaw:
 
 class TestGraphStoreDeleteAll:
     async def test_delete_all(self, graph_store, mock_connection):
+        mock_connection.delete_graph = AsyncMock()
+        await graph_store.delete_all()
+        mock_connection.delete_graph.assert_called_once()
+
+    async def test_delete_all_fallback(self, graph_store, mock_connection):
+        """Falls back to DETACH DELETE if delete_graph() raises."""
+        mock_connection.delete_graph = AsyncMock(side_effect=Exception("no graph"))
         await graph_store.delete_all()
         cypher = mock_connection.query.call_args[0][0]
         assert "DETACH DELETE" in cypher

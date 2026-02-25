@@ -8,6 +8,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,24 @@ class ConnectionConfig:
     max_connections: int = 16
     retry_count: int = 3
     retry_delay: float = 1.0
+    pool_timeout: float = 30.0
+    query_timeout_ms: int | None = 10_000
+
+    @classmethod
+    def from_url(cls, url: str, **kwargs: Any) -> "ConnectionConfig":
+        """Create a ConnectionConfig from a ``redis://`` URL.
+
+        Supports ``redis://[user:pass@]host[:port][/db]``.
+        Extra keyword arguments override parsed values.
+        """
+        parsed = urlparse(url)
+        return cls(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 6379,
+            username=parsed.username or None,
+            password=parsed.password or None,
+            **kwargs,
+        )
 
 
 class FalkorDBConnection:
@@ -66,7 +85,7 @@ class FalkorDBConnection:
             username=self.config.username,
             password=self.config.password,
             max_connections=self.config.max_connections,
-            timeout=None,
+            timeout=self.config.pool_timeout,
             decode_responses=True,
         )
         self._driver = FalkorDB(connection_pool=self._pool)
@@ -141,6 +160,36 @@ class FalkorDBConnection:
     def _is_non_transient(cls, exc: Exception) -> bool:
         msg = str(exc).lower()
         return any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS)
+
+    # ── Health & Admin ────────────────────────────────────────────
+
+    async def ping(self) -> bool:
+        """Send a Redis PING to verify the connection is alive."""
+        self._ensure_client()
+        try:
+            from redis.asyncio import Redis
+            redis: Redis = Redis(connection_pool=self._pool)
+            return await redis.ping()
+        except Exception:
+            return False
+
+    async def delete_graph(self) -> None:
+        """Delete the entire graph using ``GRAPH.DELETE`` (fast).
+
+        Prefer this over ``MATCH (n) DETACH DELETE n`` which hangs on
+        large graphs with many indexes.
+        """
+        self._ensure_client()
+        from redis.asyncio import Redis
+        redis: Redis = Redis(connection_pool=self._pool)
+        try:
+            await redis.execute_command("GRAPH.DELETE", self.config.graph_name)
+            logger.info("Deleted graph '%s' via GRAPH.DELETE", self.config.graph_name)
+        except Exception as exc:
+            if "empty" in str(exc).lower() or "invalid" in str(exc).lower():
+                logger.debug("Graph '%s' already deleted or empty", self.config.graph_name)
+            else:
+                raise
 
     # ── Lifecycle ────────────────────────────────────────────────
 

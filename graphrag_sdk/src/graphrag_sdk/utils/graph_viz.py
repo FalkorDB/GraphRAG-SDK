@@ -6,6 +6,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,7 +98,8 @@ class GraphVisualizer:
             List of node dicts.
         """
         if label:
-            query = f"MATCH (n:`{label}`) RETURN n LIMIT $limit"
+            safe_label = sanitize_cypher_label(label)
+            query = f"MATCH (n:`{safe_label}`) RETURN n LIMIT $limit"
         else:
             query = "MATCH (n) RETURN n LIMIT $limit"
 

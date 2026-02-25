@@ -229,6 +229,8 @@ class SemanticResolution(ResolutionStrategy):
             if len(label_nodes) < 2:
                 continue
 
+            remap_before = len(remap)
+
             names = [n.properties.get("name", n.id) for n in label_nodes]
             try:
                 vectors = await self.embedder.aembed_documents(
@@ -298,10 +300,11 @@ class SemanticResolution(ResolutionStrategy):
                         if key not in survivor.properties:
                             survivor.properties[key] = value
 
-            if remap:
+            label_merges = len(remap) - remap_before
+            if label_merges:
                 ctx.log(
                     f"Fuzzy merge on label '{label}': "
-                    f"{len(remap)} duplicates found"
+                    f"{label_merges} duplicates found"
                 )
 
         return remap

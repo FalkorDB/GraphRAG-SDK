@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import GraphNode, GraphRelationship
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class GraphStore:
     # ── Write Operations ─────────────────────────────────────────
 
     _BATCH_SIZE = 500
-    _STRUCTURAL_LABELS = frozenset({"Chunk", "Document", "__Fact__"})
+    _STRUCTURAL_LABELS = frozenset({"Chunk", "Document"})
     _REL_LABEL_HINTS: dict[str, tuple[str, str]] = {
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),
@@ -74,6 +76,7 @@ class GraphStore:
 
         count = 0
         for label, group in by_label.items():
+            safe_label = sanitize_cypher_label(label)
             is_entity = label not in self._STRUCTURAL_LABELS
             # Filter out nodes with None or empty id (bad LLM extraction)
             group = [n for n in group if n.id is not None and str(n.id).strip()]
@@ -83,12 +86,12 @@ class GraphStore:
             for start in range(0, len(group), self._BATCH_SIZE):
                 batch = group[start : start + self._BATCH_SIZE]
                 batch_data = [
-                    {"id": n.id, "properties": self._clean_properties(n.properties)}
+                    {"id": str(n.id), "properties": self._clean_properties(n.properties)}
                     for n in batch
                 ]
                 query = (
                     f"UNWIND $batch AS item "
-                    f"MERGE (n:`{label}` {{id: item.id}}) "
+                    f"MERGE (n:`{safe_label}` {{id: item.id}}) "
                     f"SET n += item.properties"
                 )
                 if is_entity:
@@ -98,26 +101,30 @@ class GraphStore:
                     count += len(batch)
                 except Exception as exc:
                     logger.warning(
-                        f"Batch upsert failed for {label} ({len(batch)} nodes), "
+                        f"Batch upsert failed for {safe_label} ({len(batch)} nodes), "
                         f"falling back to individual: {exc}"
                     )
                     # Per-item fallback
                     for node in batch:
+                        safe_node_label = sanitize_cypher_label(node.label)
                         q = (
-                            f"MERGE (n:`{node.label}` {{id: $id}}) "
+                            f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
                             f"SET n += $properties"
                         )
                         if is_entity:
                             q += " SET n:__Entity__"
                         params = {
-                            "id": node.id,
+                            "id": str(node.id),
                             "properties": self._clean_properties(node.properties),
                         }
                         try:
                             await self._conn.query(q, params)
                             count += 1
                         except Exception as inner_exc:
-                            logger.warning(f"Failed to upsert node {node.id}: {inner_exc}")
+                            logger.warning(
+                                f"Failed to upsert node {node.id} "
+                                f"(label={safe_node_label}): {inner_exc}"
+                            )
                             raise DatabaseError(f"Node upsert failed: {inner_exc}") from inner_exc
 
         logger.debug(f"Upserted {count} nodes")
@@ -142,12 +149,13 @@ class GraphStore:
 
         count = 0
         for rel_type, group in by_type.items():
+            safe_rel_type = sanitize_cypher_label(rel_type)
             for start in range(0, len(group), self._BATCH_SIZE):
                 batch = group[start : start + self._BATCH_SIZE]
                 batch_data = [
                     {
-                        "start_id": r.start_node_id,
-                        "end_id": r.end_node_id,
+                        "start_id": str(r.start_node_id),
+                        "end_id": str(r.end_node_id),
                         "properties": self._clean_properties(r.properties),
                     }
                     for r in batch
@@ -155,11 +163,13 @@ class GraphStore:
                 src_label, tgt_label = self._REL_LABEL_HINTS.get(
                     rel_type, ("__Entity__", "__Entity__")
                 )
+                safe_src = sanitize_cypher_label(src_label)
+                safe_tgt = sanitize_cypher_label(tgt_label)
                 query = (
                     f"UNWIND $batch AS item "
-                    f"MATCH (a:`{src_label}` {{id: item.start_id}}), "
-                    f"(b:`{tgt_label}` {{id: item.end_id}}) "
-                    f"MERGE (a)-[r:`{rel_type}`]->(b) "
+                    f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
+                    f"(b:`{safe_tgt}` {{id: item.end_id}}) "
+                    f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
                     f"SET r += item.properties"
                 )
                 try:
@@ -167,7 +177,8 @@ class GraphStore:
                     count += len(batch)
                 except Exception as exc:
                     logger.warning(
-                        f"Batch upsert failed for [{rel_type}] ({len(batch)} rels), "
+                        f"Batch upsert failed for [{safe_rel_type}] "
+                        f"({safe_src}→{safe_tgt}, {len(batch)} rels), "
                         f"falling back to individual: {exc}"
                     )
                     # Per-item fallback
@@ -175,15 +186,18 @@ class GraphStore:
                         fb_src, fb_tgt = self._REL_LABEL_HINTS.get(
                             rel.type, ("__Entity__", "__Entity__")
                         )
+                        safe_fb_src = sanitize_cypher_label(fb_src)
+                        safe_fb_tgt = sanitize_cypher_label(fb_tgt)
+                        safe_fb_rel = sanitize_cypher_label(rel.type)
                         q = (
-                            f"MATCH (a:`{fb_src}` {{id: $start_id}}), "
-                            f"(b:`{fb_tgt}` {{id: $end_id}}) "
-                            f"MERGE (a)-[r:`{rel.type}`]->(b) "
+                            f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
+                            f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
+                            f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
                             f"SET r += $properties"
                         )
                         params = {
-                            "start_id": rel.start_node_id,
-                            "end_id": rel.end_node_id,
+                            "start_id": str(rel.start_node_id),
+                            "end_id": str(rel.end_node_id),
                             "properties": self._clean_properties(rel.properties),
                         }
                         try:
@@ -192,7 +206,8 @@ class GraphStore:
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert relationship "
-                                f"{rel.start_node_id}-[{rel.type}]->{rel.end_node_id}: {inner_exc}"
+                                f"{rel.start_node_id}-[{safe_fb_rel}]->{rel.end_node_id} "
+                                f"({safe_fb_src}→{safe_fb_tgt}): {inner_exc}"
                             )
 
         logger.debug(f"Upserted {count} relationships")
@@ -216,6 +231,7 @@ class GraphStore:
         Returns:
             List of entity dicts with id, label, properties.
         """
+        max_hops = max(1, min(max_hops, 5))
         query = (
             f"MATCH (c {{id: $chunk_id}})-[*1..{max_hops}]-(e:__Entity__) "
             f"RETURN DISTINCT e.id AS id, labels(e) AS labels, properties(e) AS props "
@@ -271,12 +287,14 @@ class GraphStore:
         n = stats["node_count"]
         stats["graph_density"] = stats["edge_count"] / n if n > 0 else 0
 
-        # Count __Fact__ index nodes
+        # Count RELATES edges with embeddings (replaces legacy __Fact__ count)
         try:
-            r = await self._conn.query("MATCH (f:__Fact__) RETURN count(f)")
-            stats["fact_node_count"] = r.result_set[0][0] if r.result_set else 0
+            r = await self._conn.query(
+                "MATCH ()-[r:RELATES]->() WHERE r.embedding IS NOT NULL RETURN count(r)"
+            )
+            stats["embedded_relationship_count"] = r.result_set[0][0] if r.result_set else 0
         except Exception:
-            stats["fact_node_count"] = 0
+            stats["embedded_relationship_count"] = 0
 
         for label, key in [
             ("SYNONYM", "synonym_edge_count"),
@@ -296,15 +314,27 @@ class GraphStore:
     # ── Cleanup ──────────────────────────────────────────────────
 
     async def delete_all(self) -> None:
-        """Delete all nodes and relationships. Use with caution."""
-        await self._conn.query("MATCH (n) DETACH DELETE n")
+        """Delete all nodes and relationships. Use with caution.
+
+        Uses ``GRAPH.DELETE`` via the connection for speed on large graphs.
+        Falls back to ``MATCH (n) DETACH DELETE n`` if ``delete_graph`` is
+        not available.
+        """
+        try:
+            await self._conn.delete_graph()
+        except Exception:
+            await self._conn.query("MATCH (n) DETACH DELETE n")
         logger.info("Deleted all graph data")
 
     # ── Helpers ──────────────────────────────────────────────────
 
     @staticmethod
     def _clean_properties(props: dict[str, Any]) -> dict[str, Any]:
-        """Remove None values and non-serialisable types from properties."""
+        """Remove None values and non-serialisable types from properties.
+
+        - Lists: filter items to primitives only, drop None/empty.
+        - Dicts: serialise to JSON string.
+        """
         cleaned: dict[str, Any] = {}
         for key, value in props.items():
             if value is None:
@@ -312,8 +342,15 @@ class GraphStore:
             if isinstance(value, (str, int, float, bool)):
                 cleaned[key] = value
             elif isinstance(value, list):
-                # FalkorDB supports lists of primitives
-                cleaned[key] = value
+                # FalkorDB supports lists of primitives — filter items
+                filtered = [
+                    item for item in value
+                    if isinstance(item, (str, int, float, bool))
+                ]
+                if filtered:
+                    cleaned[key] = filtered
+            elif isinstance(value, dict):
+                cleaned[key] = json.dumps(value)
             else:
                 cleaned[key] = str(value)
         return cleaned

@@ -77,7 +77,14 @@ _GLEANING_PROMPT = (
 
 
 def compute_entity_id(name: str) -> str:
-    """Deterministic entity ID from normalized name."""
+    """Deterministic entity ID from normalized name.
+
+    Note: Two entities with the same name but different labels (e.g.
+    Person "Paris" vs Location "Paris") will share the same ID. This is
+    safe because graph MERGE uses ``(n:`Label` {id: …})``, so they
+    become distinct nodes. Cross-type merge prevention is handled by
+    ``DescriptionMergeResolution`` which groups by ``(name, label)``.
+    """
     return name.strip().lower().replace(" ", "_")
 
 
@@ -233,11 +240,13 @@ class MergedExtraction(ExtractionStrategy):
         nodes = self._entities_to_nodes(merged_entities)
         relationships = self._relations_to_relationships(merged_relations)
 
-        # Attach extra data via extra="allow"
-        graph_data = GraphData(nodes=nodes, relationships=relationships)
-        graph_data.mentions = all_mentions  # type: ignore[attr-defined]
-        graph_data.extracted_entities = merged_entities  # type: ignore[attr-defined]
-        graph_data.extracted_relations = merged_relations  # type: ignore[attr-defined]
+        graph_data = GraphData(
+            nodes=nodes,
+            relationships=relationships,
+            mentions=all_mentions,
+            extracted_entities=merged_entities,
+            extracted_relations=merged_relations,
+        )
 
         ctx.log(
             f"Extracted {len(nodes)} nodes, {len(relationships)} relationships, "
@@ -272,11 +281,15 @@ class MergedExtraction(ExtractionStrategy):
             if not record:
                 continue
 
-            # Extract content between parentheses
-            match = re.search(r"\((.+)\)", record, re.DOTALL)
-            if not match:
-                continue
-            inner = match.group(1)
+            # Extract content between outermost parentheses
+            stripped = record.strip()
+            if stripped.startswith("(") and stripped.endswith(")"):
+                inner = stripped[1:-1]
+            else:
+                match = re.search(r"\((.+)\)", record, re.DOTALL)
+                if not match:
+                    continue
+                inner = match.group(1)
 
             parts = [p.strip().strip('"').strip("'") for p in inner.split(TUPLE_DELIMITER)]
 
@@ -348,6 +361,9 @@ class MergedExtraction(ExtractionStrategy):
                 continue  # skip empty names that slipped through
             if key in seen:
                 existing = seen[key]
+                # Prefer properly-capitalized name
+                if ent.name[0].isupper() and not existing.name[0].isupper():
+                    existing.name = ent.name
                 # Keep longer description
                 if len(ent.description) > len(existing.description):
                     existing.description = ent.description

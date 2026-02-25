@@ -11,6 +11,8 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+import numpy as np
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import IngestionError, SchemaValidationError
 from graphrag_sdk.core.models import (
@@ -318,10 +320,13 @@ class IngestionPipeline:
         if pruned_node_count or pruned_rel_count:
             logger.info(f"Pruned {pruned_node_count} nodes, {pruned_rel_count} rels")
 
-        new_gd = GraphData(nodes=pruned_nodes, relationships=pruned_rels)
-        # Propagate extras (mentions) through pruning
-        if hasattr(graph_data, "mentions"):
-            new_gd.mentions = graph_data.mentions
+        new_gd = GraphData(
+            nodes=pruned_nodes,
+            relationships=pruned_rels,
+            mentions=graph_data.mentions,
+            extracted_entities=graph_data.extracted_entities,
+            extracted_relations=graph_data.extracted_relations,
+        )
         return new_gd
 
     def _filter_quality(self, graph_data: GraphData) -> GraphData:
@@ -335,19 +340,14 @@ class IngestionPipeline:
             r for r in graph_data.relationships
             if r.start_node_id in valid_ids and r.end_node_id in valid_ids
         ]
-        new_gd = GraphData(nodes=valid_nodes, relationships=valid_rels)
-        # Propagate extras (mentions) through quality filter
-        if hasattr(graph_data, "mentions"):
-            new_gd.mentions = graph_data.mentions
+        new_gd = GraphData(
+            nodes=valid_nodes,
+            relationships=valid_rels,
+            mentions=graph_data.mentions,
+            extracted_entities=graph_data.extracted_entities,
+            extracted_relations=graph_data.extracted_relations,
+        )
         return new_gd
-
-    async def _index_relationship_embeddings(
-        self, relationships: list[GraphRelationship], ctx: Context
-    ) -> int:
-        """Embed relationships and store vectors directly on edges."""
-        if not relationships:
-            return 0
-        return await self.vector_store.index_relationship_embeddings(relationships)
 
     async def _detect_synonymy_edges(
         self,
@@ -427,9 +427,7 @@ class IngestionPipeline:
         With global dedup controlling entity cardinality, uncapped mentions
         provide richer entity-chunk connectivity for retrieval.
         """
-        mentions: list[EntityMention] = []
-        if hasattr(graph_data, "mentions") and graph_data.mentions:
-            mentions = graph_data.mentions
+        mentions: list[EntityMention] = graph_data.mentions or []
 
         if not mentions:
             return 0

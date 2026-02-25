@@ -63,11 +63,12 @@ class DescriptionMergeResolution(ResolutionStrategy):
             f"({len(graph_data.nodes)} nodes, {len(graph_data.relationships)} rels)"
         )
 
-        # Group nodes by normalised name
-        groups: dict[str, list[GraphNode]] = defaultdict(list)
+        # Group nodes by (normalised name, label) — prevents cross-type merges
+        # e.g. Person "Paris" stays separate from Location "Paris"
+        groups: dict[tuple[str, str], list[GraphNode]] = defaultdict(list)
         for node in graph_data.nodes:
             name = node.properties.get("name", node.id)
-            key = str(name).strip().lower()
+            key = (str(name).strip().lower(), node.label)
             groups[key].append(node)
 
         # Build ID remap and deduplicated nodes
@@ -156,6 +157,12 @@ class DescriptionMergeResolution(ResolutionStrategy):
                 for key, value in duplicate.properties.items():
                     if key not in survivor.properties:
                         survivor.properties[key] = value
+                    elif key not in ("description", "source_chunk_ids", "name") and survivor.properties[key] != value:
+                        logger.debug(
+                            "Property conflict on '%s' for entity '%s': "
+                            "keeping %r, discarding %r",
+                            key, survivor.id, survivor.properties[key], value,
+                        )
                 id_remap[duplicate.id] = survivor.id
                 merged_count += 1
 

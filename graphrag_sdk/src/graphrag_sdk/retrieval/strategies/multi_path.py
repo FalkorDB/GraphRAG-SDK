@@ -421,27 +421,22 @@ class MultiPathRetrieval(RetrievalStrategy):
         except Exception:
             pass
 
-        # Path C: MENTIONED_IN (collect, deduplicate in Python)
+        # Path C: MENTIONED_IN — fair Cypher-level distribution (3 chunks per entity)
         eids_mention = [eid for eid, _ in entity_list[:15]]
         if eids_mention:
             try:
                 result = await self._graph.query_raw(
                     "UNWIND $eids AS eid "
                     "MATCH (e:__Entity__ {id: eid})-[:MENTIONED_IN]->(c:Chunk) "
-                    "RETURN eid, c.id AS id, c.text AS text "
-                    "LIMIT 200",
+                    "WITH eid, COLLECT(c)[..3] AS chunks "
+                    "UNWIND chunks AS c "
+                    "RETURN eid, c.id AS id, c.text AS text",
                     {"eids": eids_mention},
                 )
-                # Distribute fairly: keep up to 3 chunks per entity
-                per_entity: dict[str, int] = {}
                 for row in result.result_set:
-                    eid_val = row[0]
                     cid = row[1]
                     text = row[2] if len(row) > 2 else ""
-                    count = per_entity.get(eid_val, 0)
-                    if count < 3:
-                        per_entity[eid_val] = count + 1
-                        _add(cid, text, "mentioned_in")
+                    _add(cid, text, "mentioned_in")
             except Exception:
                 pass
 

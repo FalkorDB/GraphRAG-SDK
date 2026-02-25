@@ -10,6 +10,7 @@ from typing import Any
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import GraphRelationship, TextChunks
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +67,9 @@ class VectorStore:
             label: Node label to index (default: "Chunk").
             property: Property containing the vector (default: "embedding").
         """
+        safe_label = sanitize_cypher_label(label)
         query = (
-            f"CREATE VECTOR INDEX FOR (n:{label}) ON (n.{property}) "
+            f"CREATE VECTOR INDEX FOR (n:{safe_label}) ON (n.{property}) "
             f"OPTIONS {{dimension:{self.embedding_dimension}, "
             f"similarityFunction:'{self.similarity_function}'}}"
         )
@@ -92,8 +94,9 @@ class VectorStore:
 
         Idempotent — silently succeeds if the index already exists.
         """
+        safe_rel_type = sanitize_cypher_label(rel_type)
         query = (
-            f"CREATE VECTOR INDEX FOR ()-[e:`{rel_type}`]->() ON (e.embedding) "
+            f"CREATE VECTOR INDEX FOR ()-[e:`{safe_rel_type}`]->() ON (e.embedding) "
             f"OPTIONS {{dimension:{self.embedding_dimension}, "
             f"similarityFunction:'{self.similarity_function}'}}"
         )
@@ -122,8 +125,9 @@ class VectorStore:
         """
         if not properties:
             properties = ("text",)
+        safe_label = sanitize_cypher_label(label)
         props = ", ".join(f"'{p}'" for p in properties)
-        query = f"CALL db.idx.fulltext.createNodeIndex('{label}', {props})"
+        query = f"CALL db.idx.fulltext.createNodeIndex('{safe_label}', {props})"
         try:
             await self._conn.query(query)
             logger.info(f"Created fulltext index on {label}({', '.join(properties)})")
@@ -135,9 +139,10 @@ class VectorStore:
 
     async def drop_vector_index(self, label: str = "Chunk") -> None:
         """Drop a vector index."""
+        safe_label = sanitize_cypher_label(label)
         try:
-            await self._conn.query(f"CALL db.idx.vector.drop('{label}')")
-            logger.info(f"Dropped vector index on {label}")
+            await self._conn.query(f"CALL db.idx.vector.drop('{safe_label}')")
+            logger.info(f"Dropped vector index on {safe_label}")
         except Exception as exc:
             logger.warning(f"Could not drop vector index: {exc}")
 
@@ -320,8 +325,9 @@ class VectorStore:
         Returns:
             List of dicts with id, text, score, and other properties.
         """
+        safe_label = sanitize_cypher_label(label)
         query = (
-            f"CALL db.idx.vector.queryNodes('{label}', 'embedding', $top_k, vecf32($vector)) "
+            f"CALL db.idx.vector.queryNodes('{safe_label}', 'embedding', $top_k, vecf32($vector)) "
             f"YIELD node, score "
             f"RETURN node.id AS id, node.text AS text, score "
             f"ORDER BY score DESC"
@@ -461,8 +467,9 @@ class VectorStore:
         Returns:
             List of dicts with id, text, score.
         """
+        safe_label = sanitize_cypher_label(label)
         query = (
-            f"CALL db.idx.fulltext.queryNodes('{label}', $query_text) "
+            f"CALL db.idx.fulltext.queryNodes('{safe_label}', $query_text) "
             f"YIELD node, score "
             f"RETURN node.id AS id, node.text AS text, score "
             f"ORDER BY score DESC LIMIT $top_k"

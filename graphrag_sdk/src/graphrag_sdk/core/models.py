@@ -41,6 +41,11 @@ class GraphNode(DataModel):
     def __hash__(self) -> int:
         return hash(self.id)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, GraphNode):
+            return NotImplemented
+        return self.id == other.id
+
 
 class GraphRelationship(DataModel):
     """A relationship between two nodes in the knowledge graph."""
@@ -123,6 +128,11 @@ class EntityType(DataModel):
     def __hash__(self) -> int:
         return hash(self.label)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EntityType):
+            return NotImplemented
+        return self.label == other.label
+
 
 class RelationType(DataModel):
     """Definition of a relationship type in the graph schema."""
@@ -133,6 +143,11 @@ class RelationType(DataModel):
 
     def __hash__(self) -> int:
         return hash(self.label)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, RelationType):
+            return NotImplemented
+        return self.label == other.label
 
 
 class SchemaPattern(DataModel):
@@ -163,6 +178,9 @@ class GraphData(DataModel):
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
+    mentions: list["EntityMention"] = Field(default_factory=list)
+    extracted_entities: list["ExtractedEntity"] = Field(default_factory=list)
+    extracted_relations: list["ExtractedRelation"] = Field(default_factory=list)
 
 
 class ExtractedEntity(DataModel):

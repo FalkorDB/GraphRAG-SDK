@@ -279,6 +279,19 @@ class LiteLLM(LLMInterface):
         raise last_exc  # type: ignore[misc]
 
 
+def _is_transient_embedding_error(exc: Exception) -> bool:
+    """Return True if the embedding error is transient (worth retrying via split).
+
+    Non-transient errors (auth failures, invalid key, permission denied)
+    should be raised immediately instead of binary-splitting down to
+    single texts.
+    """
+    msg = str(exc).lower()
+    non_transient = ("401", "403", "invalid api key", "authentication",
+                     "unauthorized", "permission denied", "invalid_api_key")
+    return not any(marker in msg for marker in non_transient)
+
+
 class LiteLLMEmbedder(Embedder):
     """Embedding provider backed by LiteLLM.
 
@@ -340,17 +353,19 @@ class LiteLLMEmbedder(Embedder):
 
     def _embed_batch_sync(
         self, texts: list[str], **kwargs: Any
-    ) -> list[list[float] | None]:
-        """Embed a batch with binary-split recovery on failure."""
+    ) -> list[list[float]]:
+        """Embed a batch with binary-split recovery on transient failure."""
         litellm = self._import_litellm()
         try:
             response = litellm.embedding(**self._embedding_kwargs(texts, **kwargs))
             sorted_data = sorted(response.data, key=lambda x: x["index"])
             return [d["embedding"] for d in sorted_data]
-        except Exception:
+        except Exception as exc:
+            if not _is_transient_embedding_error(exc):
+                raise
             if len(texts) == 1:
                 logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))
-                return [None]
+                return [[]]
             mid = len(texts) // 2
             left = self._embed_batch_sync(texts[:mid], **kwargs)
             right = self._embed_batch_sync(texts[mid:], **kwargs)
@@ -358,26 +373,28 @@ class LiteLLMEmbedder(Embedder):
 
     async def _embed_batch_async(
         self, texts: list[str], **kwargs: Any
-    ) -> list[list[float] | None]:
-        """Async embed a batch with binary-split recovery on failure."""
+    ) -> list[list[float]]:
+        """Async embed a batch with binary-split recovery on transient failure."""
         litellm = self._import_litellm()
         try:
             response = await litellm.aembedding(**self._embedding_kwargs(texts, **kwargs))
             sorted_data = sorted(response.data, key=lambda x: x["index"])
             return [d["embedding"] for d in sorted_data]
-        except Exception:
+        except Exception as exc:
+            if not _is_transient_embedding_error(exc):
+                raise
             if len(texts) == 1:
                 logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))
-                return [None]
+                return [[]]
             mid = len(texts) // 2
             left = await self._embed_batch_async(texts[:mid], **kwargs)
             right = await self._embed_batch_async(texts[mid:], **kwargs)
             return left + right
 
-    def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float] | None]:
+    def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         if not texts:
             return []
-        results: list[list[float] | None] = []
+        results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
             results.extend(self._embed_batch_sync(batch, **kwargs))
@@ -388,10 +405,10 @@ class LiteLLMEmbedder(Embedder):
         response = await litellm.aembedding(**self._embedding_kwargs(text, **kwargs))
         return response.data[0]["embedding"]
 
-    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float] | None]:
+    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         if not texts:
             return []
-        results: list[list[float] | None] = []
+        results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
             results.extend(await self._embed_batch_async(batch, **kwargs))
@@ -568,17 +585,19 @@ class OpenRouterEmbedder(Embedder):
 
     def _embed_batch_sync(
         self, texts: list[str], **kwargs: Any
-    ) -> list[list[float] | None]:
-        """Embed a batch with binary-split recovery on failure."""
+    ) -> list[list[float]]:
+        """Embed a batch with binary-split recovery on transient failure."""
         client = self._get_client()
         try:
             response = client.embeddings.create(model=self.model, input=texts)
             sorted_data = sorted(response.data, key=lambda x: x.index)
             return [d.embedding for d in sorted_data]
-        except Exception:
+        except Exception as exc:
+            if not _is_transient_embedding_error(exc):
+                raise
             if len(texts) == 1:
                 logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))
-                return [None]
+                return [[]]
             mid = len(texts) // 2
             left = self._embed_batch_sync(texts[:mid], **kwargs)
             right = self._embed_batch_sync(texts[mid:], **kwargs)
@@ -586,26 +605,28 @@ class OpenRouterEmbedder(Embedder):
 
     async def _embed_batch_async(
         self, texts: list[str], **kwargs: Any
-    ) -> list[list[float] | None]:
-        """Async embed a batch with binary-split recovery on failure."""
+    ) -> list[list[float]]:
+        """Async embed a batch with binary-split recovery on transient failure."""
         client = self._get_async_client()
         try:
             response = await client.embeddings.create(model=self.model, input=texts)
             sorted_data = sorted(response.data, key=lambda x: x.index)
             return [d.embedding for d in sorted_data]
-        except Exception:
+        except Exception as exc:
+            if not _is_transient_embedding_error(exc):
+                raise
             if len(texts) == 1:
                 logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))
-                return [None]
+                return [[]]
             mid = len(texts) // 2
             left = await self._embed_batch_async(texts[:mid], **kwargs)
             right = await self._embed_batch_async(texts[mid:], **kwargs)
             return left + right
 
-    def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float] | None]:
+    def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         if not texts:
             return []
-        results: list[list[float] | None] = []
+        results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
             results.extend(self._embed_batch_sync(batch, **kwargs))
@@ -616,10 +637,10 @@ class OpenRouterEmbedder(Embedder):
         response = await client.embeddings.create(model=self.model, input=text)
         return response.data[0].embedding
 
-    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float] | None]:
+    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         if not texts:
             return []
-        results: list[list[float] | None] = []
+        results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
             results.extend(await self._embed_batch_async(batch, **kwargs))
