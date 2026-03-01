@@ -149,13 +149,6 @@ class TestPipeline10StepExecution:
         assert result.nodes_created == 3
         assert result.chunks_indexed == 2
 
-    async def test_synonym_edges_written(self, pipeline, pipeline_components, ctx):
-        """Synonym edges should be upserted to graph store."""
-        result = await pipeline.run("test.txt", ctx)
-
-        # Check metadata for synonym count
-        assert "synonym_edges_created" in result.metadata
-
     async def test_mention_edges_written(self, pipeline, pipeline_components, ctx):
         """MENTIONED_IN edges should be upserted to graph store."""
         result = await pipeline.run("test.txt", ctx)
@@ -164,28 +157,26 @@ class TestPipeline10StepExecution:
         assert result.metadata["mention_edges_created"] > 0
 
         # Graph store should have multiple upsert_relationships calls
-        # (lexical, entity rels, synonyms, mentions)
+        # (lexical, entity rels, mentions)
         assert pipeline_components["graph_store"].upsert_relationships.call_count >= 2
 
     async def test_metadata_includes_new_fields(self, pipeline, ctx):
-        """IngestionResult.metadata should include all new counters."""
+        """IngestionResult.metadata should include mention and merge counters."""
         result = await pipeline.run("test.txt", ctx)
 
-        assert "synonym_edges_created" in result.metadata
         assert "mention_edges_created" in result.metadata
         assert "merged_entities" in result.metadata
 
     async def test_relationships_count_includes_all_types(
         self, pipeline, pipeline_components, ctx
     ):
-        """relationships_created should include entity rels + synonym + mention."""
+        """relationships_created should include entity rels + mention."""
         result = await pipeline.run("test.txt", ctx)
 
-        # relationships_created = entity rels + synonym edges + mention edges
+        # relationships_created = entity rels + mention edges
         entity_rels = 2
         mention_edges = result.metadata["mention_edges_created"]
-        synonym_edges = result.metadata["synonym_edges_created"]
-        assert result.relationships_created == entity_rels + synonym_edges + mention_edges
+        assert result.relationships_created == entity_rels + mention_edges
 
 
 class TestPipelineWithTextInput:
@@ -230,38 +221,17 @@ class TestPipelineEmptyChunks:
         assert result.chunks_indexed == 0
 
 
-class TestPipelineNoEmbedder:
-    async def test_no_embedder_skips_synonymy(
-        self, pipeline_components, ctx
-    ):
-        """Pipeline without embedder should skip synonymy detection gracefully."""
-        pipeline = IngestionPipeline(
-            loader=pipeline_components["loader"],
-            chunker=pipeline_components["chunker"],
-            extractor=pipeline_components["extractor"],
-            resolver=pipeline_components["resolver"],
-            graph_store=pipeline_components["graph_store"],
-            vector_store=pipeline_components["vector_store"],
-            embedder=None,  # No embedder
-        )
-
-        result = await pipeline.run("test.txt", ctx)
-
-        assert result.metadata["synonym_edges_created"] == 0
-
-
 class TestPipelineParallelSteps:
     async def test_parallel_steps_same_results(self, pipeline, pipeline_components, ctx):
-        """Parallel steps 8-10 should produce same results as sequential."""
+        """Parallel steps 8-9 should produce same results as sequential."""
         result = await pipeline.run("test.txt", ctx)
 
-        # All 3 parallel steps should have executed
+        # Both parallel steps should have executed
         pipeline_components["vector_store"].index_chunks.assert_called_once()
-        assert "synonym_edges_created" in result.metadata
         assert "mention_edges_created" in result.metadata
 
-    async def test_all_three_steps_called(self, pipeline, pipeline_components, ctx):
-        """All 3 parallel steps (synonymy, mentions, chunks) should be called."""
+    async def test_both_parallel_steps_called(self, pipeline, pipeline_components, ctx):
+        """Both parallel steps (mentions, chunks) should be called."""
         result = await pipeline.run("test.txt", ctx)
 
         pipeline_components["vector_store"].index_chunks.assert_called_once()
@@ -269,23 +239,3 @@ class TestPipelineParallelSteps:
         assert pipeline_components["graph_store"].upsert_relationships.call_count >= 2
 
 
-class TestPipelineSkipSynonymy:
-    async def test_skip_synonymy_skips_step_9(self, pipeline_components, ctx):
-        """skip_synonymy=True should skip synonym detection."""
-        pipeline = IngestionPipeline(
-            loader=pipeline_components["loader"],
-            chunker=pipeline_components["chunker"],
-            extractor=pipeline_components["extractor"],
-            resolver=pipeline_components["resolver"],
-            graph_store=pipeline_components["graph_store"],
-            vector_store=pipeline_components["vector_store"],
-            embedder=pipeline_components["embedder"],
-            skip_synonymy=True,
-        )
-
-        result = await pipeline.run("test.txt", ctx)
-
-        assert result.metadata["synonym_edges_created"] == 0
-        # Other steps still run
-        pipeline_components["vector_store"].index_chunks.assert_called_once()
-        assert result.metadata["mention_edges_created"] > 0

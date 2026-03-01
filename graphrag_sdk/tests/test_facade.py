@@ -236,37 +236,37 @@ class TestGraphRAGQuery:
         assert result.metadata["model"] == "mock-llm"
 
 
-class TestGraphRAGDetectSynonymy:
-    async def test_detect_synonymy_returns_count(self, mock_conn, embedder, llm):
-        """detect_synonymy should return count of SYNONYM edges created."""
+class TestGraphRAGDeduplicateEntities:
+    async def test_deduplicate_entities_merges_duplicates(self, mock_conn, embedder, llm):
+        """deduplicate_entities should merge entities with the same normalized name."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
 
-        # Mock graph_store.query_raw to return entities then empty
+        # First query returns entities with duplicate names (4 cols: id, name, desc, label)
         entity_result = MagicMock()
         entity_result.result_set = [
-            ["e1", "Alice"],
-            ["e2", "Alice Smith"],  # similar enough for synonym
+            ["e1", "Alice", "A software engineer", "Person"],
+            ["e2", "alice", "An engineer", "Person"],  # duplicate by (name, label)
         ]
         empty_result = MagicMock()
         empty_result.result_set = []
+
+        # First call: entity query, second: pagination end, rest: edge remap + delete
         g.graph_store.query_raw = AsyncMock(
-            side_effect=[entity_result, empty_result]
+            side_effect=[entity_result, empty_result, empty_result, empty_result, empty_result, empty_result]
         )
-        g.graph_store.upsert_relationships = AsyncMock(return_value=0)
 
-        count = await g.detect_synonymy(similarity_threshold=0.5)
-        # With threshold 0.5, the two similar names should produce edges
-        assert count >= 0  # exact count depends on embedder similarity
+        count = await g.deduplicate_entities()
+        assert count == 1  # one duplicate merged
 
-    async def test_detect_synonymy_no_entities(self, mock_conn, embedder, llm):
-        """detect_synonymy with < 2 entities should return 0."""
+    async def test_deduplicate_entities_no_duplicates(self, mock_conn, embedder, llm):
+        """deduplicate_entities with < 2 entities should return 0."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
 
         empty_result = MagicMock()
         empty_result.result_set = []
         g.graph_store.query_raw = AsyncMock(return_value=empty_result)
 
-        count = await g.detect_synonymy()
+        count = await g.deduplicate_entities()
         assert count == 0
 
 

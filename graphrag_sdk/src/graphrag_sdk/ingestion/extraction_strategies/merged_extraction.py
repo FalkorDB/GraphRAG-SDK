@@ -76,16 +76,20 @@ _GLEANING_PROMPT = (
 )
 
 
-def compute_entity_id(name: str) -> str:
-    """Deterministic entity ID from normalized name.
+def compute_entity_id(name: str, entity_type: str = "") -> str:
+    """Deterministic entity ID from normalized name and optional type.
 
-    Note: Two entities with the same name but different labels (e.g.
-    Person "Paris" vs Location "Paris") will share the same ID. This is
-    safe because graph MERGE uses ``(n:`Label` {id: …})``, so they
-    become distinct nodes. Cross-type merge prevention is handled by
-    ``DescriptionMergeResolution`` which groups by ``(name, label)``.
+    When ``entity_type`` is provided, a ``__type`` suffix is appended to
+    prevent cross-type collisions (e.g. Person "Paris" vs Location "Paris"
+    produce different IDs: ``paris__person`` vs ``paris__location``).
+
+    When ``entity_type`` is empty, returns just the normalized name for
+    backwards compatibility.
     """
-    return name.strip().lower().replace(" ", "_")
+    base = name.strip().lower().replace(" ", "_")
+    if entity_type:
+        return f"{base}__{entity_type.strip().lower()}"
+    return base
 
 
 class MergedExtraction(ExtractionStrategy):
@@ -226,7 +230,7 @@ class MergedExtraction(ExtractionStrategy):
 
         # Generate HippoRAG-style mentions
         for ent in all_entities:
-            ent_id = compute_entity_id(ent.name)
+            ent_id = compute_entity_id(ent.name, ent.type)
             for chunk_id in ent.source_chunk_ids:
                 all_mentions.append(
                     EntityMention(chunk_id=chunk_id, entity_id=ent_id)
@@ -236,9 +240,14 @@ class MergedExtraction(ExtractionStrategy):
         merged_entities = self._aggregate_entities(all_entities)
         merged_relations = self._aggregate_relations(all_relations)
 
+        # Build entity type map for relationship endpoint resolution
+        entity_type_map: dict[str, str] = {}
+        for ent in merged_entities:
+            entity_type_map[ent.name.strip().lower()] = ent.type
+
         # Convert to GraphData nodes + relationships
         nodes = self._entities_to_nodes(merged_entities)
-        relationships = self._relations_to_relationships(merged_relations)
+        relationships = self._relations_to_relationships(merged_relations, entity_type_map)
 
         graph_data = GraphData(
             nodes=nodes,
@@ -353,12 +362,13 @@ class MergedExtraction(ExtractionStrategy):
         self,
         entities: list[ExtractedEntity],
     ) -> list[ExtractedEntity]:
-        """Deduplicate entities by normalized name, keeping longer descriptions."""
-        seen: dict[str, ExtractedEntity] = {}
+        """Deduplicate entities by (normalized name, type), keeping longer descriptions."""
+        seen: dict[tuple[str, str], ExtractedEntity] = {}
         for ent in entities:
-            key = ent.name.strip().lower()
-            if not key:
+            name_key = ent.name.strip().lower()
+            if not name_key:
                 continue  # skip empty names that slipped through
+            key = (name_key, ent.type.strip().lower())
             if key in seen:
                 existing = seen[key]
                 # Prefer properly-capitalized name
@@ -417,7 +427,7 @@ class MergedExtraction(ExtractionStrategy):
         """
         nodes: list[GraphNode] = []
         for ent in entities:
-            node_id = compute_entity_id(ent.name)
+            node_id = compute_entity_id(ent.name, ent.type)
             if not node_id:
                 continue
             nodes.append(
@@ -436,20 +446,29 @@ class MergedExtraction(ExtractionStrategy):
     def _relations_to_relationships(
         self,
         relations: list[ExtractedRelation],
+        entity_type_map: dict[str, str] | None = None,
     ) -> list[GraphRelationship]:
         """Convert ExtractedRelation list to GraphRelationship list.
 
         All LLM-extracted relationships use the single ``RELATES`` edge type.
         The original relationship type is preserved as the ``rel_type`` property,
         and a ``fact`` property stores a human-readable fact string for embedding.
+
+        Args:
+            relations: Extracted relations to convert.
+            entity_type_map: Mapping from normalized entity name to type,
+                used to compute type-qualified entity IDs for endpoints.
         """
+        entity_type_map = entity_type_map or {}
         relationships: list[GraphRelationship] = []
         for rel in relations:
             fact = f"({rel.source}, {rel.type}, {rel.target}): {rel.description}" if rel.description else f"({rel.source}, {rel.type}, {rel.target})"
+            src_type = entity_type_map.get(rel.source.strip().lower(), "")
+            tgt_type = entity_type_map.get(rel.target.strip().lower(), "")
             relationships.append(
                 GraphRelationship(
-                    start_node_id=compute_entity_id(rel.source),
-                    end_node_id=compute_entity_id(rel.target),
+                    start_node_id=compute_entity_id(rel.source, src_type),
+                    end_node_id=compute_entity_id(rel.target, tgt_type),
                     type="RELATES",
                     properties={
                         "rel_type": rel.type,

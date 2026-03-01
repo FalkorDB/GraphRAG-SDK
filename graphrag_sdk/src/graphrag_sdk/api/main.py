@@ -121,14 +121,12 @@ class GraphRAG:
             embedder=self.embedder,
         )
 
-        # Default retrieval strategy (llm_rerank=False: cosine reranker is sufficient,
-        # LLM reranker adds ~1s latency with no measurable accuracy gain)
+        # Default retrieval strategy
         self._retrieval_strategy = retrieval_strategy or MultiPathRetrieval(
             graph_store=self.graph_store,
             vector_store=self.vector_store,
             embedder=self.embedder,
             llm=self.llm,
-            llm_rerank=False,
         )
 
     # ── Ingestion ────────────────────────────────────────────────
@@ -309,13 +307,14 @@ class GraphRAG:
         total_merged = 0
 
         # ── Phase 1: Exact name match ──
-        # Query all entities
+        # Query all entities (include label to prevent cross-type merging)
         offset = 0
         entities: list[dict] = []
         while True:
             result = await self.graph_store.query_raw(
                 "MATCH (e:__Entity__) "
-                "RETURN e.id AS id, e.name AS name, e.description AS desc "
+                "RETURN e.id AS id, e.name AS name, e.description AS desc, "
+                "HEAD(filter(l IN labels(e) WHERE l <> '__Entity__')) AS label "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -326,6 +325,7 @@ class GraphRAG:
                     "id": row[0],
                     "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
                     "description": row[2] if len(row) > 2 and row[2] else "",
+                    "label": row[3] if len(row) > 3 and row[3] else "",
                 })
             offset += batch_size
 
@@ -333,14 +333,15 @@ class GraphRAG:
             logger.info("deduplicate_entities: fewer than 2 entities, nothing to dedup")
             return 0
 
-        # Group by normalized name
-        groups: dict[str, list[dict]] = {}
+        # Group by (normalized name, label) to prevent cross-type merging
+        groups: dict[tuple[str, str], list[dict]] = {}
         for ent in entities:
             norm = ent["name"].strip().lower()
-            groups.setdefault(norm, []).append(ent)
+            label = ent.get("label", "").strip().lower()
+            groups.setdefault((norm, label), []).append(ent)
 
         # Merge duplicates
-        for norm_name, group in groups.items():
+        for (norm_name, _label), group in groups.items():
             if len(group) < 2:
                 continue
 

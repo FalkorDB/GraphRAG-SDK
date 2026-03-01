@@ -38,6 +38,22 @@ class TestComputeEntityId:
     def test_already_normalised(self):
         assert compute_entity_id("bob") == "bob"
 
+    def test_type_qualified_id(self):
+        """Entity ID should include type suffix when entity_type is provided."""
+        assert compute_entity_id("Paris", "Location") == "paris__location"
+        assert compute_entity_id("Paris", "Person") == "paris__person"
+
+    def test_cross_type_collision_prevented(self):
+        """Same name with different types should produce different IDs."""
+        id_person = compute_entity_id("Paris", "Person")
+        id_location = compute_entity_id("Paris", "Location")
+        assert id_person != id_location
+
+    def test_no_type_backwards_compatible(self):
+        """Without entity_type, should return just the normalized name."""
+        assert compute_entity_id("Alice") == "alice"
+        assert compute_entity_id("Alice", "") == "alice"
+
 
 class TestMergedExtractionBasic:
     @pytest.fixture
@@ -62,8 +78,12 @@ class TestMergedExtractionBasic:
         result = await extractor.extract(chunks, schema, ctx)
 
         assert len(result.relationships) > 0
+        # All relationships use the single RELATES edge type
         types = {r.type for r in result.relationships}
-        assert "WORKS_AT" in types
+        assert "RELATES" in types
+        # Original relationship type preserved in rel_type property
+        rel_types = {r.properties.get("rel_type") for r in result.relationships}
+        assert "WORKS_AT" in rel_types
 
     async def test_entities_have_descriptions(self, extractor, schema, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")

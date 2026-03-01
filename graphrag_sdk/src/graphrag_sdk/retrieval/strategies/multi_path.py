@@ -1,6 +1,7 @@
-# GraphRAG SDK 2.0 — Retrieval: Multi-Path Strategy
-# Proven 87.9%-accuracy retrieval with 5-path entity discovery,
-# 5-path chunk retrieval (incl. 2-hop), and cosine reranking.
+# GraphRAG SDK 2.0 — Retrieval: Multi-Path Strategy (Lean)
+# Lean retrieval with RELATES edge vector search for facts + entity
+# entry points, 2-path entity discovery, 4-path chunk retrieval,
+# and cosine reranking.
 
 from __future__ import annotations
 
@@ -23,29 +24,32 @@ logger = logging.getLogger(__name__)
 
 
 class MultiPathRetrieval(RetrievalStrategy):
-    """Multi-path retrieval combining vector, fulltext, graph, and keyword search.
+    """Multi-path retrieval combining RELATES edge vector search, fulltext,
+    graph traversal, and cosine reranking.
 
     Retrieval pipeline:
       1. Keyword extraction (stopword filter + LLM proper nouns)
-      2. Batch embed question + keywords (single API call)
-      3. Entity discovery (5 paths: vector/kw, CONTAINS, fulltext, q-vector, synonyms)
-      4. Relationship expansion (1-hop + 2-hop from top entities)
-      5. Chunk retrieval (5 paths: fulltext, vector, MENTIONED_IN, CONTAINS, 2-hop)
-      6. Cosine reranking of all candidate chunks
-      6b. LLM reranking for entity-specificity (top_k -> llm_rerank_top_k)
-      7. Context assembly into structured sections
+      2. Embed question only (single API call)
+      3. RELATES edge vector search -> fact strings + entity entry points
+      4. Entity discovery (2 paths: Cypher CONTAINS, fulltext)
+         + merge entities from step 3
+      5. Relationship expansion (1-hop + 2-hop from top entities)
+      6. Chunk retrieval (4 paths: fulltext, vector, MENTIONED_IN, 2-hop)
+      7. Fetch source document names
+      8. Cosine reranking of all candidate chunks
+      9. Context assembly into structured sections (hint, entities,
+         relationships, facts, passages)
 
     Args:
         graph_store: Graph data access object.
         vector_store: Vector data access object.
         embedder: Embedding provider.
         llm: LLM provider for keyword extraction.
-        entity_top_k: Entities per vector search (default: 5).
-        chunk_top_k: Final chunks after reranking (default: 10).
-        max_entities: Max entities to keep (default: 20).
-        max_relationships: Max relationships to keep (default: 15).
+        chunk_top_k: Final chunks after reranking (default: 15).
+        max_entities: Max entities to keep (default: 30).
+        max_relationships: Max relationships to keep (default: 20).
+        rel_top_k: RELATES edge vector search results (default: 15).
         keyword_limit: Max keywords to extract (default: 10).
-        llm_rerank_top_k: Passages after LLM reranking (default: 8).
     """
 
     _STOP_WORDS = frozenset({
@@ -67,26 +71,22 @@ class MultiPathRetrieval(RetrievalStrategy):
         embedder: Embedder,
         llm: LLMInterface,
         *,
-        entity_top_k: int = 5,
-        chunk_top_k: int = 10,
-        max_entities: int = 20,
-        max_relationships: int = 15,
+        chunk_top_k: int = 15,
+        max_entities: int = 30,
+        max_relationships: int = 20,
+        rel_top_k: int = 15,
         keyword_limit: int = 10,
-        llm_rerank_top_k: int = 8,
-        llm_rerank: bool = True,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
         self._llm = llm
-        self._entity_top_k = entity_top_k
         self._chunk_top_k = chunk_top_k
         self._max_entities = max_entities
         self._max_relationships = max_relationships
+        self._rel_top_k = rel_top_k
         self._keyword_limit = keyword_limit
-        self._llm_rerank_top_k = llm_rerank_top_k
-        self._llm_rerank = llm_rerank
 
-    # ── Template Method hook ──────────────────────────────────────
+    # -- Template Method hook --
 
     async def _execute(
         self,
@@ -96,38 +96,39 @@ class MultiPathRetrieval(RetrievalStrategy):
     ) -> RawSearchResult:
         # 1. Extract keywords
         simple_kw, llm_kw = await self._extract_keywords(query)
-        all_keywords = llm_kw[: 8] + simple_kw
+        all_keywords = llm_kw[:8] + simple_kw
 
-        # 2. Batch embed question + keywords
-        query_vector, kw_vectors = await self._batch_embed(query, all_keywords)
+        # 2. Embed question only
+        query_vector = await self._embedder.aembed_query(query)
 
-        # 3. Discover entities (5 paths)
+        # 3. RELATES edge vector search
+        fact_strings, rel_entities = await self._search_relates_edges(query_vector)
+
+        # 4. Entity discovery (2 paths) + merge rel_entities
         found_entities, entity_sources = await self._discover_entities(
-            query_vector, kw_vectors, llm_kw, all_keywords
+            llm_kw, all_keywords
         )
+        for eid, einfo in rel_entities.items():
+            if eid not in found_entities:
+                found_entities[eid] = einfo
+                entity_sources[eid] = "rel_vector"
 
-        # 4. Expand relationships
-        entity_list = list(found_entities.items())[: self._max_entities]
+        # 5. Relationship expansion
+        entity_list = list(found_entities.items())[:self._max_entities]
         relationship_strings = await self._expand_relationships(entity_list)
 
-        # 5. Retrieve chunks (5 paths)
+        # 6. Chunk retrieval (4 paths)
         candidate_chunks, chunk_sources = await self._retrieve_chunks(
             query, query_vector, llm_kw, simple_kw, entity_list
         )
 
-        # 5b. Fetch source document names for chunks
+        # 7. Source document names
         chunk_doc_map = await self._fetch_chunk_documents(list(candidate_chunks.keys()))
 
-        # 6. Cosine rerank
+        # 8. Cosine rerank
         source_passages = await self._rerank_chunks(query_vector, candidate_chunks)
 
-        # 6b. LLM rerank (entity-specificity filter) — optional
-        if self._llm_rerank:
-            source_passages = await self._llm_rerank_passages(
-                query, source_passages, self._llm_rerank_top_k
-            )
-
-        # 6c. Tag passages with source document names
+        # Tag with source docs
         text_to_doc: dict[str, str] = {
             candidate_chunks[cid]: doc_name
             for cid, doc_name in chunk_doc_map.items()
@@ -138,13 +139,11 @@ class MultiPathRetrieval(RetrievalStrategy):
             for p in source_passages
         ]
 
-        # 7. Detect question type
+        # 9. Detect question type + assemble
         q_type_hint = self._detect_question_type(query)
-
-        # 8. Assemble structured result
         return self._assemble_raw_result(
-            entity_list, relationship_strings, source_passages,
-            q_type_hint,
+            entity_list, relationship_strings, fact_strings,
+            source_passages, q_type_hint,
         )
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
@@ -162,7 +161,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 )
         return RetrieverResult(items=items, metadata=raw.metadata)
 
-    # ── Private helpers ───────────────────────────────────────────
+    # -- Private helpers --
 
     @staticmethod
     def _cosine_sim(a: list[float], b: list[float]) -> float:
@@ -177,7 +176,7 @@ class MultiPathRetrieval(RetrievalStrategy):
     ) -> tuple[list[str], list[str]]:
         """Extract simple + LLM-based keywords from the query."""
         words = re.sub(r"[?.!,;:'\"-]", " ", query.lower()).split()
-        simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][: 12]
+        simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][:12]
 
         llm_kw: list[str] = []
         try:
@@ -197,30 +196,55 @@ class MultiPathRetrieval(RetrievalStrategy):
 
         return simple, llm_kw
 
-    async def _batch_embed(
-        self, query: str, keywords: list[str]
-    ) -> tuple[list[float], list[list[float]]]:
-        """Embed query + keywords in a single API call."""
-        kw_to_embed = keywords[: self._keyword_limit]
-        texts = [query] + kw_to_embed
-        vectors = await self._embedder.aembed_documents(texts)
-        return vectors[0], vectors[1:]
+    async def _search_relates_edges(
+        self, query_vector: list[float]
+    ) -> tuple[list[str], dict[str, dict]]:
+        """Search RELATES edges by vector similarity.
+
+        Returns:
+            fact_strings: ["src -[type]-> tgt: fact_text", ...]
+            entities: dict of entity_id -> {name, description} discovered
+                      from matched edge endpoints.
+        """
+        fact_strings: list[str] = []
+        entities: dict[str, dict] = {}
+        try:
+            results = await self._vector.search_relationships(
+                query_vector, top_k=self._rel_top_k
+            )
+            for rel in results:
+                src = rel.get("src_name", "")
+                tgt = rel.get("tgt_name", "")
+                rel_type = rel.get("type", "")
+                fact = rel.get("fact", "")
+                if src and rel_type and tgt:
+                    line = f"{src} —[{rel_type}]→ {tgt}"
+                    if fact:
+                        line += f": {fact}"
+                    fact_strings.append(line)
+                # Add entities as graph entry points
+                if src:
+                    src_id = src.strip().lower().replace(" ", "_")
+                    if src_id not in entities:
+                        entities[src_id] = {"name": src, "description": ""}
+                if tgt:
+                    tgt_id = tgt.strip().lower().replace(" ", "_")
+                    if tgt_id not in entities:
+                        entities[tgt_id] = {"name": tgt, "description": ""}
+        except Exception:
+            pass
+        return fact_strings, entities
 
     async def _discover_entities(
         self,
-        query_vector: list[float],
-        kw_vectors: list[list[float]],
         llm_kw: list[str],
         all_keywords: list[str],
     ) -> tuple[dict[str, dict], dict[str, str]]:
-        """5-path entity discovery.
+        """2-path entity discovery.
 
         Paths:
-        2a: Entity vector search per keyword
-        2b: Cypher CONTAINS on entity names
-        2c: Fulltext search on entity index (returns name/description)
-        2d: Question vector on entity index
-        2e: Relationship vector search (discovers entities via RELATES edges)
+        a: Cypher CONTAINS on entity names
+        b: Fulltext search on entity index
         """
         found: dict[str, dict] = {}
         sources: dict[str, str] = {}
@@ -230,20 +254,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 found[eid] = info
                 sources[eid] = source
 
-        # 2a: Entity vector search per keyword
-        for kw_vec in kw_vectors:
-            try:
-                results = await self._vector.search_entities(kw_vec, top_k=self._entity_top_k)
-                for ent in results:
-                    _add(
-                        ent.get("id", ""),
-                        {"name": ent.get("name", ""), "description": ent.get("description", "")},
-                        "vector_kw",
-                    )
-            except Exception:
-                pass
-
-        # 2b: Cypher CONTAINS on entity names (batched UNWIND)
+        # Path a: Cypher CONTAINS on entity names (batched UNWIND)
         kw_batch = [kw for kw in llm_kw[:8] if kw]
         if kw_batch:
             try:
@@ -263,15 +274,13 @@ class MultiPathRetrieval(RetrievalStrategy):
             except Exception:
                 pass
 
-        # 2c: Fulltext search on entity index (returns name/description for entities)
-        for kw in all_keywords[: 6]:
+        # Path b: Fulltext search on entity index
+        for kw in all_keywords[:6]:
             try:
                 ft_ents = await self._vector.fulltext_search(kw, top_k=3, label="__Entity__")
                 for ent in ft_ents:
                     eid = ent.get("id", "")
                     if eid:
-                        # Fulltext on __Entity__ returns node.text which is None;
-                        # fetch name/description via a quick lookup
                         try:
                             detail = await self._graph.query_raw(
                                 "MATCH (e:__Entity__ {id: $eid}) "
@@ -288,33 +297,6 @@ class MultiPathRetrieval(RetrievalStrategy):
                             _add(eid, {"name": "", "description": ""}, "fulltext")
             except Exception:
                 pass
-
-        # 2d: Question vector on entity index
-        try:
-            q_ents = await self._vector.search_entities(query_vector, top_k=10)
-            for ent in q_ents:
-                _add(
-                    ent.get("id", ""),
-                    {"name": ent.get("name", ""), "description": ent.get("description", "")},
-                    "question_vector",
-                )
-        except Exception:
-            pass
-
-        # 2e: Relationship vector search — discover entities via RELATES edges
-        try:
-            rel_results = await self._vector.search_relationships(query_vector, top_k=10)
-            for rel in rel_results:
-                src_name = rel.get("src_name", "")
-                tgt_name = rel.get("tgt_name", "")
-                if src_name:
-                    src_id = src_name.strip().lower().replace(" ", "_")
-                    _add(src_id, {"name": src_name, "description": ""}, "rel_vector")
-                if tgt_name:
-                    tgt_id = tgt_name.strip().lower().replace(" ", "_")
-                    _add(tgt_id, {"name": tgt_name, "description": ""}, "rel_vector")
-        except Exception:
-            pass
 
         return found, sources
 
@@ -384,7 +366,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             except Exception:
                 pass
 
-        return relationship_strings[: self._max_relationships]
+        return relationship_strings[:self._max_relationships]
 
     async def _retrieve_chunks(
         self,
@@ -394,7 +376,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         simple_kw: list[str],
         entity_list: list[tuple[str, dict]],
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """5-path chunk retrieval."""
+        """4-path chunk retrieval: fulltext + vector + MENTIONED_IN + 2-hop."""
         chunks: dict[str, str] = {}
         sources: dict[str, str] = {}
 
@@ -404,7 +386,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 sources[cid] = source
 
         # Path A: Fulltext search
-        fulltext_queries = [query] + llm_kw[: 6] + simple_kw[: 4]
+        fulltext_queries = [query] + llm_kw[:6] + simple_kw[:4]
         for ft_q in fulltext_queries:
             try:
                 results = await self._vector.fulltext_search(ft_q, top_k=5, label="Chunk")
@@ -421,7 +403,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         except Exception:
             pass
 
-        # Path C: MENTIONED_IN — fair Cypher-level distribution (3 chunks per entity)
+        # Path C: MENTIONED_IN — 3 chunks per entity (batched UNWIND)
         eids_mention = [eid for eid, _ in entity_list[:15]]
         if eids_mention:
             try:
@@ -440,25 +422,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             except Exception:
                 pass
 
-        # Path D: Cypher CONTAINS (batched UNWIND)
-        contains_kws = [kw for kw in llm_kw[:6] if len(kw) >= 4]
-        if contains_kws:
-            try:
-                result = await self._graph.query_raw(
-                    "UNWIND $keywords AS kw "
-                    "MATCH (c:Chunk) WHERE c.text CONTAINS kw "
-                    "RETURN c.id AS id, c.text AS text "
-                    "LIMIT 18",
-                    {"keywords": contains_kws},
-                )
-                for row in result.result_set:
-                    cid = row[0]
-                    text = row[1] if len(row) > 1 else ""
-                    _add(cid, text, "contains")
-            except Exception:
-                pass
-
-        # Path E: 2-hop entity→neighbor→chunk (batched UNWIND)
+        # Path D: 2-hop entity→neighbor→chunk (batched UNWIND)
         eids_2hop_chunk = [eid for eid, _ in entity_list[:10]]
         if eids_2hop_chunk:
             try:
@@ -497,7 +461,6 @@ class MultiPathRetrieval(RetrievalStrategy):
                 cid = row[0] or ""
                 path = row[1] if len(row) > 1 else ""
                 if cid and path:
-                    # Extract filename from path
                     name = path.rsplit("/", 1)[-1] if "/" in path else path
                     mapping[cid] = name
             return mapping
@@ -521,44 +484,9 @@ class MultiPathRetrieval(RetrievalStrategy):
                 for i, cvec in enumerate(chunk_vectors)
             ]
             scored.sort(key=lambda x: x[1], reverse=True)
-            return [chunk_texts[i] for i, _ in scored[: self._chunk_top_k]]
+            return [chunk_texts[i] for i, _ in scored[:self._chunk_top_k]]
         except Exception:
-            return chunk_texts[: self._chunk_top_k]
-
-    async def _llm_rerank_passages(
-        self, question: str, passages: list[str], top_k: int,
-    ) -> list[str]:
-        """Use the LLM to select the most entity-specific passages."""
-        if len(passages) <= top_k:
-            return passages
-
-        numbered = "\n\n".join(
-            f"[{i + 1}] {p[:500]}" for i, p in enumerate(passages)
-        )
-        prompt = (
-            f"Question: {question}\n\n"
-            f"Below are {len(passages)} passages. Return the numbers of the "
-            f"{top_k} most relevant passages as a comma-separated list "
-            f"(e.g. 3,1,7,2,...). Most relevant first.\n\n"
-            "IMPORTANT: A passage is relevant ONLY if it contains information "
-            "about the SPECIFIC entity or fact the question asks about. "
-            "Passages mentioning related but DIFFERENT entities are NOT relevant.\n\n"
-            f"{numbered}\n\nRelevant passage numbers:"
-        )
-        try:
-            response = await self._llm.ainvoke(prompt)
-            indices: list[int] = []
-            seen_idx: set[int] = set()
-            for m in re.findall(r"\d+", response.content):
-                idx = int(m) - 1  # 1-based -> 0-based
-                if 0 <= idx < len(passages) and idx not in seen_idx:
-                    seen_idx.add(idx)
-                    indices.append(idx)
-            if indices:
-                return [passages[i] for i in indices[:top_k]]
-        except Exception:
-            pass
-        return passages[:top_k]
+            return chunk_texts[:self._chunk_top_k]
 
     @staticmethod
     def _detect_question_type(query: str) -> str:
@@ -582,6 +510,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         self,
         entity_list: list[tuple[str, dict]],
         relationship_strings: list[str],
+        fact_strings: list[str],
         source_passages: list[str],
         q_type_hint: str = "",
     ) -> RawSearchResult:
@@ -607,7 +536,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         if entity_lines:
             records.append({
                 "section": "entities",
-                "content": "## Key Entities\n" + "\n".join(entity_lines[: 15]),
+                "content": "## Key Entities\n" + "\n".join(entity_lines[:25]),
             })
 
         # Relationship section
@@ -615,7 +544,15 @@ class MultiPathRetrieval(RetrievalStrategy):
             records.append({
                 "section": "relationships",
                 "content": "## Entity Relationships\n"
-                + "\n".join(f"- {r}" for r in relationship_strings[: 15]),
+                + "\n".join(f"- {r}" for r in relationship_strings[:20]),
+            })
+
+        # Knowledge Graph Facts section (from RELATES edge vector search)
+        if fact_strings:
+            records.append({
+                "section": "facts",
+                "content": "## Knowledge Graph Facts\n"
+                + "\n".join(f"- {f}" for f in fact_strings[:15]),
             })
 
         # Passages section
@@ -623,7 +560,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             records.append({
                 "section": "passages",
                 "content": "## Source Document Passages\n"
-                + "\n---\n".join(source_passages[: 10]),
+                + "\n---\n".join(source_passages[:15]),
             })
 
         return RawSearchResult(
