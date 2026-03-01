@@ -14,6 +14,24 @@ from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
 
+# Characters that RediSearch treats as syntax in fulltext queries.
+_REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
+
+
+def _escape_fulltext_query(text: str) -> str:
+    """Escape special characters for RediSearch fulltext queries.
+
+    Prepends a backslash to every character that RediSearch treats as
+    a separator or operator so the term is searched literally.
+    """
+    escaped: list[str] = []
+    for ch in text:
+        if ch in _REDISEARCH_SPECIAL:
+            escaped.append(f"\\{ch}")
+        else:
+            escaped.append(ch)
+    return "".join(escaped)
+
 
 class VectorStore:
     """Vector index management and search for FalkorDB.
@@ -468,6 +486,7 @@ class VectorStore:
             List of dicts with id, text, score.
         """
         safe_label = sanitize_cypher_label(label)
+        escaped_text = _escape_fulltext_query(query_text)
         query = (
             f"CALL db.idx.fulltext.queryNodes('{safe_label}', $query_text) "
             f"YIELD node, score "
@@ -476,7 +495,7 @@ class VectorStore:
         )
         try:
             result = await self._conn.query(query, {
-                "query_text": query_text,
+                "query_text": escaped_text,
                 "top_k": top_k,
             })
             results: list[dict[str, Any]] = []

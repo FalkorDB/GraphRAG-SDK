@@ -314,7 +314,7 @@ class GraphRAG:
             result = await self.graph_store.query_raw(
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, e.description AS desc, "
-                "HEAD(filter(l IN labels(e) WHERE l <> '__Entity__')) AS label "
+                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
