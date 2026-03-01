@@ -33,7 +33,7 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.20"]
 cohere = ["cohere>=5.0"]
 sentence-transformers = ["sentence-transformers>=2.0"]
-pdf = ["pypdf>=4.0"]
+pdf = ["pypdf>=5.0"]
 litellm = ["litellm>=1.40"]
 openrouter = ["openai>=1.0"]
 all = [
@@ -41,7 +41,7 @@ all = [
     "anthropic>=0.20",
     "cohere>=5.0",
     "sentence-transformers>=2.0",
-    "pypdf>=4.0",
+    "pypdf>=5.0",
     "litellm>=1.40",
 ]
 dev = [
