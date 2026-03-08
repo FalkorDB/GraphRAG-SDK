@@ -22,6 +22,7 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
 from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -147,7 +148,7 @@ class GraphRAG:
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
         - Chunker: FixedSizeChunking(chunk_size=1000)
-        - Extractor: SchemaGuidedExtraction with configured LLM
+        - Extractor: auto-selected (MergedExtraction for open-schema, SchemaGuidedExtraction for ontology)
         - Resolver: ExactMatchResolution
 
         Args:
@@ -175,7 +176,7 @@ class GraphRAG:
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
             chunker=chunker or FixedSizeChunking(),
-            extractor=extractor or SchemaGuidedExtraction(llm=self.llm),
+            extractor=extractor or self._default_extractor(),
             resolver=resolver or ExactMatchResolution(),
             graph_store=self.graph_store,
             vector_store=self.vector_store,
@@ -192,6 +193,12 @@ class GraphRAG:
         await self.vector_store.ensure_indices()
 
         return result
+
+    def _default_extractor(self) -> ExtractionStrategy:
+        """Pick extractor based on schema: MergedExtraction for open-schema, SchemaGuidedExtraction for ontology."""
+        if self.schema.entities or self.schema.relations:
+            return SchemaGuidedExtraction(llm=self.llm)
+        return MergedExtraction(llm=self.llm, embedder=self.embedder)
 
     # ── Query ────────────────────────────────────────────────────
 
@@ -307,14 +314,13 @@ class GraphRAG:
         total_merged = 0
 
         # ── Phase 1: Exact name match ──
-        # Query all entities (include label to prevent cross-type merging)
+        # Query all entities
         offset = 0
         entities: list[dict] = []
         while True:
             result = await self.graph_store.query_raw(
                 "MATCH (e:__Entity__) "
-                "RETURN e.id AS id, e.name AS name, e.description AS desc, "
-                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label "
+                "RETURN e.id AS id, e.name AS name, e.description AS desc "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -325,7 +331,6 @@ class GraphRAG:
                     "id": row[0],
                     "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
                     "description": row[2] if len(row) > 2 and row[2] else "",
-                    "label": row[3] if len(row) > 3 and row[3] else "",
                 })
             offset += batch_size
 
@@ -333,15 +338,14 @@ class GraphRAG:
             logger.info("deduplicate_entities: fewer than 2 entities, nothing to dedup")
             return 0
 
-        # Group by (normalized name, label) to prevent cross-type merging
-        groups: dict[tuple[str, str], list[dict]] = {}
+        # Group by normalized name
+        groups: dict[str, list[dict]] = {}
         for ent in entities:
             norm = ent["name"].strip().lower()
-            label = ent.get("label", "").strip().lower()
-            groups.setdefault((norm, label), []).append(ent)
+            groups.setdefault(norm, []).append(ent)
 
         # Merge duplicates
-        for (norm_name, _label), group in groups.items():
+        for norm_name, group in groups.items():
             if len(group) < 2:
                 continue
 
@@ -490,7 +494,7 @@ class GraphRAG:
         1. ``deduplicate_entities()`` — global exact-name dedup
         2. ``backfill_entity_embeddings()`` — name-only embeddings
         3. ``embed_relationships()`` — fact text embeddings on RELATES edges
-        4. ``ensure_indices()`` — all 5 indexes
+        4. ``ensure_indices()`` — all indexes
 
         Returns:
             Dict with counts from each step.

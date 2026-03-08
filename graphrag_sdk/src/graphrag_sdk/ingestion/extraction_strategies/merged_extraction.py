@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import defaultdict
 from typing import Any
+
+import numpy as np
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
@@ -92,6 +95,16 @@ def compute_entity_id(name: str, entity_type: str = "") -> str:
     return base
 
 
+def _normalize_type_label(raw: str) -> str:
+    """Normalize type string by lowercasing and removing separators.
+
+    Collapses trivial formatting variants:
+    "Data Type" / "DataType" / "data_type" / "data-type" → "datatype"
+    """
+    s = raw.strip().lower()
+    return re.sub(r"[\s_\-/]+", "", s)
+
+
 class MergedExtraction(ExtractionStrategy):
     """Merged extraction combining LightRAG + HippoRAG patterns.
 
@@ -104,6 +117,15 @@ class MergedExtraction(ExtractionStrategy):
         embedder: Embedder (reserved for future use).
         enable_gleaning: If True, perform a second LLM pass to catch missed entities.
         max_concurrency: Maximum parallel LLM calls.
+        type_resolution_threshold: Cosine similarity threshold for merging
+            semantically similar type labels (0-1). Default 0.90 is tuned
+            for ada-002 embeddings where short type labels have a high
+            baseline similarity (~0.75-0.85). Set to 1.0 to disable
+            embedding clustering (surface normalization still applies).
+        consolidate_by_name: If True, entities with the same name but
+            different types are consolidated to the dominant (most frequent)
+            type. This eliminates duplicate nodes caused by LLM type
+            inconsistency across chunks. Default True.
     """
 
     def __init__(
@@ -112,11 +134,15 @@ class MergedExtraction(ExtractionStrategy):
         embedder: Embedder | None = None,
         enable_gleaning: bool = False,
         max_concurrency: int | None = None,
+        type_resolution_threshold: float = 0.90,
+        consolidate_by_name: bool = True,
     ) -> None:
         self.llm = llm
         self.embedder = embedder
         self.enable_gleaning = enable_gleaning
         self._max_concurrency = max_concurrency  # None = use LLM's default
+        self._type_resolution_threshold = type_resolution_threshold
+        self._consolidate_by_name = consolidate_by_name
 
     async def extract(
         self,
@@ -227,6 +253,9 @@ class MergedExtraction(ExtractionStrategy):
             all_entities.extend(ents)
         for rels in chunk_relations:
             all_relations.extend(rels)
+
+        # ── Resolve type taxonomy (open-schema dedup) ──
+        all_entities = await self._resolve_type_taxonomy(all_entities, ctx)
 
         # Generate HippoRAG-style mentions
         for ent in all_entities:
@@ -416,6 +445,181 @@ class MergedExtraction(ExtractionStrategy):
                     source_chunk_ids=list(rel.source_chunk_ids),
                 )
         return list(seen.values())
+
+    async def _resolve_type_taxonomy(
+        self,
+        entities: list[ExtractedEntity],
+        ctx: Context,
+    ) -> list[ExtractedEntity]:
+        """Resolve inconsistent type labels into canonical types.
+
+        Two-phase approach:
+        1. Surface normalization — collapse formatting variants (free, <1ms)
+        2. Embedding clustering — merge semantically similar types (single API call)
+        """
+        # Collect raw type frequencies
+        type_freq: dict[str, int] = defaultdict(int)
+        for ent in entities:
+            type_freq[ent.type] += 1
+
+        unique_types = set(type_freq.keys())
+        if len(unique_types) < 2:
+            return entities
+
+        # ── Phase 1: Surface normalization ──
+        # Group raw types by their normalized form
+        norm_groups: dict[str, list[str]] = defaultdict(list)
+        for raw_type in unique_types:
+            norm_groups[_normalize_type_label(raw_type)].append(raw_type)
+
+        surface_remap: dict[str, str] = {}
+        surface_merges = 0
+        for _norm_key, variants in norm_groups.items():
+            if len(variants) <= 1:
+                continue
+            # Pick the most frequent variant; on tie prefer Title Case
+            canonical = max(
+                variants,
+                key=lambda v: (type_freq[v], v[0].isupper() if v else False, v),
+            )
+            for v in variants:
+                if v != canonical:
+                    surface_remap[v] = canonical
+                    surface_merges += 1
+
+        # Apply surface remapping
+        if surface_remap:
+            for ent in entities:
+                if ent.type in surface_remap:
+                    ent.type = surface_remap[ent.type]
+
+        # ── Phase 2: Embedding clustering ──
+        embedding_merges = 0
+        if self.embedder is not None and self._type_resolution_threshold < 1.0:
+            # Recompute unique types after surface pass
+            type_freq_post: dict[str, int] = defaultdict(int)
+            for ent in entities:
+                type_freq_post[ent.type] += 1
+            canonical_types = sorted(type_freq_post.keys())
+
+            if len(canonical_types) >= 2:
+                try:
+                    embeddings = await self.embedder.aembed_documents(canonical_types)
+                    emb_matrix = np.array(embeddings, dtype=np.float32)
+
+                    # Normalize rows for cosine similarity via dot product
+                    norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+                    norms = np.where(norms == 0, 1.0, norms)
+                    emb_matrix = emb_matrix / norms
+
+                    sim_matrix = emb_matrix @ emb_matrix.T
+
+                    # Union-Find clustering
+                    n = len(canonical_types)
+                    parent = list(range(n))
+
+                    def find(x: int) -> int:
+                        while parent[x] != x:
+                            parent[x] = parent[parent[x]]
+                            x = parent[x]
+                        return x
+
+                    def union(a: int, b: int) -> None:
+                        ra, rb = find(a), find(b)
+                        if ra != rb:
+                            parent[ra] = rb
+
+                    for i in range(n):
+                        for j in range(i + 1, n):
+                            if sim_matrix[i, j] >= self._type_resolution_threshold:
+                                union(i, j)
+
+                    # Group by cluster root
+                    clusters: dict[int, list[int]] = defaultdict(list)
+                    for i in range(n):
+                        clusters[find(i)].append(i)
+
+                    embed_remap: dict[str, str] = {}
+                    for members in clusters.values():
+                        if len(members) <= 1:
+                            continue
+                        # Pick most frequent type as canonical
+                        cluster_canonical = max(
+                            members,
+                            key=lambda idx: (
+                                type_freq_post[canonical_types[idx]],
+                                canonical_types[idx][0].isupper() if canonical_types[idx] else False,
+                                canonical_types[idx],
+                            ),
+                        )
+                        canonical_label = canonical_types[cluster_canonical]
+                        for idx in members:
+                            if idx != cluster_canonical:
+                                embed_remap[canonical_types[idx]] = canonical_label
+                                embedding_merges += 1
+
+                    if embed_remap:
+                        for ent in entities:
+                            if ent.type in embed_remap:
+                                ent.type = embed_remap[ent.type]
+
+                except Exception as e:
+                    ctx.log(
+                        f"Type taxonomy embedding clustering failed, "
+                        f"using surface-only resolution: {e}",
+                        logging.WARNING,
+                    )
+
+        # ── Phase 3: Name-based dominant-type consolidation ──
+        name_merges = 0
+        if self._consolidate_by_name:
+            # Group entities by normalized name
+            name_groups: dict[str, list[ExtractedEntity]] = defaultdict(list)
+            for ent in entities:
+                name_groups[ent.name.strip().lower()].append(ent)
+
+            name_remap: dict[str, dict[str, str]] = {}  # {norm_name: {old_type: new_type}}
+            for norm_name, group in name_groups.items():
+                # Count type frequencies within this name group
+                group_type_freq: dict[str, int] = defaultdict(int)
+                for ent in group:
+                    group_type_freq[ent.type] += 1
+
+                if len(group_type_freq) < 2:
+                    continue  # single type, nothing to consolidate
+
+                # Pick the most frequent type; tie-break: prefer Title Case, then alphabetical
+                dominant_type = max(
+                    group_type_freq,
+                    key=lambda t: (
+                        group_type_freq[t],
+                        t[0].isupper() if t else False,
+                        t,
+                    ),
+                )
+
+                for old_type in group_type_freq:
+                    if old_type != dominant_type:
+                        name_remap.setdefault(norm_name, {})[old_type] = dominant_type
+                        name_merges += group_type_freq[old_type]
+
+            # Apply name-based remapping
+            if name_remap:
+                for ent in entities:
+                    norm_name = ent.name.strip().lower()
+                    if norm_name in name_remap and ent.type in name_remap[norm_name]:
+                        ent.type = name_remap[norm_name][ent.type]
+
+        # Compute final type count
+        final_types = len({ent.type for ent in entities})
+        ctx.log(
+            f"Type resolution: {len(unique_types)} raw types -> "
+            f"{final_types} canonical "
+            f"(surface={surface_merges}, embedding={embedding_merges}, "
+            f"name={name_merges})"
+        )
+
+        return entities
 
     def _entities_to_nodes(
         self,
