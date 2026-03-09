@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 
+import tiktoken
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import TextChunk, TextChunks
 from graphrag_sdk.core.providers import LLMInterface
@@ -80,9 +82,7 @@ class ContextualChunking(ChunkingStrategy):
             f"ContextualChunking(max_tokens={self.max_tokens})"
         )
 
-        import tiktoken
         enc = tiktoken.get_encoding(self.encoding_name)
-
         # ── 1. Sentence split ────────────────────────────────────────
         sentences = [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
         if not sentences:
@@ -121,7 +121,7 @@ class ContextualChunking(ChunkingStrategy):
 
         # ── 3. Batch LLM call for context generation ─────────────────
         prompts = [
-            _CONTEXT_PROMPT.format(full_document=text, chunk_text=chunk_text)
+            _CONTEXT_PROMPT.replace("{full_document}", text).replace("{chunk_text}", chunk_text)
             for chunk_text, _ in raw_chunks
         ]
 
@@ -153,7 +153,8 @@ class ContextualChunking(ChunkingStrategy):
                         "strategy": "contextual_chunking",
                         "max_tokens": self.max_tokens,
                         "overlap_sentences": self.overlap_sentences,
-                        "token_count": tok_count,
+                        "token_count": len(enc.encode(enriched_text)),
+                        "raw_token_count": tok_count,
                         "char_count": len(enriched_text),
                         "context_prefix": context,
                         "original_chunk": chunk_text,

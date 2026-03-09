@@ -19,7 +19,7 @@ try:
     from graphrag_sdk.ingestion.chunking_strategies.llama_semantic import LlamaSemanticChunking
     from graphrag_sdk.ingestion.chunking_strategies.llama_semantic_double import LlamaSemanticDoubleChunking
     from graphrag_sdk.ingestion.chunking_strategies.llama_topic import LlamaTopicChunking
-except ModuleNotFoundError:
+except ImportError:
     # Optional llama-based strategies are unavailable when the 'llama' extra is not installed.
     pass
 else:

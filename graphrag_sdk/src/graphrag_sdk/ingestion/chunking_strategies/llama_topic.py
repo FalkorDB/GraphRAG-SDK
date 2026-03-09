@@ -60,8 +60,8 @@ class LlamaTopicChunking(ChunkingStrategy):
             from llama_index.node_parser.topic import TopicNodeParser
             from llama_index.llms.openai import OpenAI as LlamaOpenAI
             from llama_index.core import Document
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(
+        except ImportError:
+            raise ImportError(
                 "LlamaIndex is required for LlamaTopicChunking. "
                 "Install with: pip install graphrag-sdk[llama]"
             )

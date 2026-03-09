@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pytest
 
-from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import LLMResponse
 from graphrag_sdk.core.providers import LLMBatchItem, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
@@ -38,11 +37,6 @@ SAMPLE_TEXT = (
     "Bob borrowed three books on local history while Alice chose a novel. "
     "They left the library just as the afternoon rain began to fall."
 )
-
-
-@pytest.fixture
-def ctx() -> Context:
-    return Context(tenant_id="test", latency_budget_ms=30_000.0)
 
 
 # ---------------------------------------------------------------------------

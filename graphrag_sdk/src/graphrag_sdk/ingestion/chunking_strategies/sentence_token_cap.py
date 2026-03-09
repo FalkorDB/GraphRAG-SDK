@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+import tiktoken
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import TextChunk, TextChunks
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
@@ -52,7 +54,6 @@ class SentenceTokenCapChunking(ChunkingStrategy):
             f"SentenceTokenCapChunking(max_tokens={self.max_tokens}, overlap={self.overlap_sentences})"
         )
 
-        import tiktoken
         enc = tiktoken.get_encoding(self.encoding_name)
 
         sentences = [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]

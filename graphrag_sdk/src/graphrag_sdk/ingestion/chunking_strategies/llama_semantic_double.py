@@ -67,8 +67,8 @@ class LlamaSemanticDoubleChunking(ChunkingStrategy):
             from llama_index.core.node_parser import LanguageConfig
             from llama_index.embeddings.openai import OpenAIEmbedding
             from llama_index.core import Document
-        except ModuleNotFoundError:
-            raise ModuleNotFoundError(
+        except ImportError:
+            raise ImportError(
                 "LlamaIndex is required for LlamaSemanticDoubleChunking. "
                 "Install with: pip install graphrag-sdk[llama]"
             )
