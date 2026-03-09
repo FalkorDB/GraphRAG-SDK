@@ -453,9 +453,10 @@ class MergedExtraction(ExtractionStrategy):
     ) -> list[ExtractedEntity]:
         """Resolve inconsistent type labels into canonical types.
 
-        Two-phase approach:
+        Three-phase approach:
         1. Surface normalization — collapse formatting variants (free, <1ms)
         2. Embedding clustering — merge semantically similar types (single API call)
+        3. Name-based consolidation — unify types for same-name entities
         """
         # Collect raw type frequencies
         type_freq: dict[str, int] = defaultdict(int)

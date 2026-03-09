@@ -287,18 +287,6 @@ class TestGraphRAGDefaultExtractor:
         extractor = g._default_extractor()
         assert isinstance(extractor, SchemaGuidedExtraction)
 
-    async def test_ingest_explicit_extractor_overrides(self, mock_conn, embedder, llm, sample_schema):
-        """Explicit extractor param should override _default_extractor."""
-        from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
-
-        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, schema=sample_schema)
-        # Even with a populated schema, explicit MergedExtraction should be used
-        custom = MergedExtraction(llm=llm, embedder=embedder)
-        # We just verify the method returns SchemaGuided for populated schema
-        assert not isinstance(g._default_extractor(), MergedExtraction)
-        # But the ingest call would use custom if passed — test via pipeline construction
-        # (Full integration test would need pipeline mock; here we verify the logic)
-
 
 class TestGraphRAGSyncWrappers:
     def test_query_sync(self, mock_conn, embedder):

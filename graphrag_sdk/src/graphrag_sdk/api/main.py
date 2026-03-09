@@ -338,7 +338,9 @@ class GraphRAG:
             logger.info("deduplicate_entities: fewer than 2 entities, nothing to dedup")
             return 0
 
-        # Group by normalized name
+        # Group by normalized name — intentionally cross-type.
+        # Type taxonomy resolution handles type unification at extraction time;
+        # this catches residual duplicates from separate ingestion batches.
         groups: dict[str, list[dict]] = {}
         for ent in entities:
             norm = ent["name"].strip().lower()
