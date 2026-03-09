@@ -2,9 +2,7 @@
 #
 # Best of both worlds: never splits mid-sentence (sentence boundaries via
 # regex) AND enforces a token cap per chunk (via tiktoken).
-# No LLM or embedder needed — just tiktoken.
-#
-# Requires: pip install tiktoken
+# No LLM or embedder needed — tiktoken is a core dependency.
 
 from __future__ import annotations
 
@@ -53,14 +51,8 @@ class SentenceTokenCapChunking(ChunkingStrategy):
             f"SentenceTokenCapChunking(max_tokens={self.max_tokens}, overlap={self.overlap_sentences})"
         )
 
-        try:
-            import tiktoken
-            enc = tiktoken.get_encoding(self.encoding_name)
-        except ImportError:
-            raise ImportError(
-                "tiktoken is required for SentenceTokenCapChunking. "
-                "Install with: pip install tiktoken"
-            )
+        import tiktoken
+        enc = tiktoken.get_encoding(self.encoding_name)
 
         sentences = [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
         token_counts = [len(enc.encode(s)) for s in sentences]
@@ -86,6 +78,7 @@ class SentenceTokenCapChunking(ChunkingStrategy):
             if not buf:
                 # Single sentence exceeds cap — emit as-is
                 buf = [sentences[start]]
+                buf_tokens = token_counts[start]
                 j = start + 1
 
             chunk_text = " ".join(buf)

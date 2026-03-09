@@ -180,9 +180,15 @@ class TestContextualChunking:
 # 4–7. Llama strategies (skipped when [llama] extra not installed)
 # ---------------------------------------------------------------------------
 
-_llama_core = pytest.importorskip("llama_index.core", reason="graphrag-sdk[llama] not installed")
-
+import importlib as _importlib
 import os as _os
+
+_has_llama = _importlib.util.find_spec("llama_index") is not None
+_needs_llama = pytest.mark.skipif(
+    not _has_llama,
+    reason="graphrag-sdk[llama] not installed",
+)
+
 _has_openai_key = bool(_os.getenv("OPENAI_API_KEY"))
 _needs_openai_key = pytest.mark.skipif(
     not _has_openai_key,
@@ -190,6 +196,7 @@ _needs_openai_key = pytest.mark.skipif(
 )
 
 
+@_needs_llama
 class TestLlamaSentenceChunking:
     """LlamaIndex sentence splitter — no API key needed."""
 
@@ -221,6 +228,7 @@ class TestLlamaSentenceChunking:
         assert "strategy" in result.chunks[0].metadata
 
 
+@_needs_llama
 @_needs_openai_key
 class TestLlamaSemanticChunking:
     """Requires OPENAI_API_KEY (calls OpenAI embeddings during chunking)."""
@@ -246,6 +254,7 @@ class TestLlamaSemanticChunking:
         assert "strategy" in result.chunks[0].metadata
 
 
+@_needs_llama
 @_needs_openai_key
 class TestLlamaSemanticDoubleChunking:
     """Requires OPENAI_API_KEY (calls OpenAI embeddings during chunking)."""
@@ -271,6 +280,7 @@ class TestLlamaSemanticDoubleChunking:
         assert "strategy" in result.chunks[0].metadata
 
 
+@_needs_llama
 @_needs_openai_key
 class TestLlamaTopicChunking:
     """Requires OPENAI_API_KEY (calls OpenAI LLM during chunking)."""

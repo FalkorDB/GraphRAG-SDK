@@ -65,8 +65,9 @@ class LlamaSentenceChunking(ChunkingStrategy):
                     "char_count": len(node.text),
                 },
             )
-            for i, node in enumerate(nodes)
-            if node.text.strip()
+            for i, node in enumerate(
+                node for node in nodes if node.text.strip()
+            )
         ]
 
         ctx.log(f"LlamaSentenceChunking produced {len(chunks)} chunks")
