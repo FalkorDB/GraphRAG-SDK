@@ -41,6 +41,7 @@ class SentenceTokenCapChunking(ChunkingStrategy):
         overlap_sentences: int = 2,
         encoding_name: str = "cl100k_base",
     ) -> None:
+        super().__init__()
         self.max_tokens = max_tokens
         self.overlap_sentences = overlap_sentences
         self.encoding_name = encoding_name

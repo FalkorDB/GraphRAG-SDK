@@ -22,10 +22,11 @@ class LlamaSemanticDoubleChunking(ChunkingStrategy):
     Pass 2 — re-merges semantically similar adjacent pieces into coherent chunks,
     then appends any orphaned small pieces to their nearest neighbor.
 
-    Uses OpenAI text-embedding-3-small for similarity measurement.
+    Uses OpenAI embeddings for similarity measurement.
 
     Args:
         api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
+        embed_model_name: OpenAI embedding model to use. Default ``text-embedding-3-small``.
         initial_threshold: Similarity bar for first-pass merging. Lower = more merging. Default 0.4.
         appending_threshold: Similarity bar for attaching orphan pieces. Default 0.5.
         merging_threshold: Final-pass merge strictness. Default 0.5.
@@ -40,12 +41,15 @@ class LlamaSemanticDoubleChunking(ChunkingStrategy):
     def __init__(
         self,
         api_key: str | None = None,
+        embed_model_name: str = "text-embedding-3-small",
         initial_threshold: float = 0.4,
         appending_threshold: float = 0.5,
         merging_threshold: float = 0.5,
         max_chunk_size: int = 512,
     ) -> None:
+        super().__init__()
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        self.embed_model_name = embed_model_name
         self.initial_threshold = initial_threshold
         self.appending_threshold = appending_threshold
         self.merging_threshold = merging_threshold
@@ -63,14 +67,14 @@ class LlamaSemanticDoubleChunking(ChunkingStrategy):
             from llama_index.core.node_parser import LanguageConfig
             from llama_index.embeddings.openai import OpenAIEmbedding
             from llama_index.core import Document
-        except ImportError:
-            raise ImportError(
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(
                 "LlamaIndex is required for LlamaSemanticDoubleChunking. "
                 "Install with: pip install graphrag-sdk[llama]"
             )
 
         embed_model = OpenAIEmbedding(
-            model="text-embedding-3-small",
+            model=self.embed_model_name,
             api_key=self.api_key,
         )
         language_config = LanguageConfig(language="english")
@@ -82,7 +86,7 @@ class LlamaSemanticDoubleChunking(ChunkingStrategy):
             max_chunk_size=self.max_chunk_size,
             embed_model=embed_model,
         )
-        nodes = splitter.get_nodes_from_documents([Document(text=text)])
+        nodes = await splitter.aget_nodes_from_documents([Document(text=text)])
 
         chunks = [
             TextChunk(

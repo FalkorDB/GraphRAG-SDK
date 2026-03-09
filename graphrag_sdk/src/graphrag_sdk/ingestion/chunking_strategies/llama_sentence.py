@@ -30,6 +30,7 @@ class LlamaSentenceChunking(ChunkingStrategy):
     """
 
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 50) -> None:
+        super().__init__()
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
@@ -42,8 +43,8 @@ class LlamaSentenceChunking(ChunkingStrategy):
         try:
             from llama_index.core.node_parser import SentenceSplitter
             from llama_index.core import Document
-        except ImportError:
-            raise ImportError(
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(
                 "LlamaIndex is required for LlamaSentenceChunking. "
                 "Install with: pip install graphrag-sdk[llama]"
             )

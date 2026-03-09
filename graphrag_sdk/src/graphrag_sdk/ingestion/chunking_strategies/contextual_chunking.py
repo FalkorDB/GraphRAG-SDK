@@ -68,6 +68,7 @@ class ContextualChunking(ChunkingStrategy):
         overlap_sentences: int = 2,
         encoding_name: str = "cl100k_base",
     ) -> None:
+        super().__init__()
         self.llm = llm
         self.max_tokens = max_tokens
         self.overlap_sentences = overlap_sentences

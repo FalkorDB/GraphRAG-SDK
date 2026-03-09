@@ -19,11 +19,12 @@ class LlamaSemanticChunking(ChunkingStrategy):
     """Embedding-based semantic chunking via LlamaIndex SemanticSplitterNodeParser.
 
     Analyzes semantic similarity between sentences and splits where meaning
-    changes significantly (topic shifts). Uses OpenAI text-embedding-3-small
-    to measure sentence similarity.
+    changes significantly (topic shifts). Uses OpenAI embeddings to measure
+    sentence similarity.
 
     Args:
         api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
+        embed_model_name: OpenAI embedding model to use. Default ``text-embedding-3-small``.
         buffer_size: Sentences to look ahead when detecting breakpoints. Default 1.
         breakpoint_percentile_threshold: Sensitivity — higher means fewer splits. Default 95.
 
@@ -36,10 +37,13 @@ class LlamaSemanticChunking(ChunkingStrategy):
     def __init__(
         self,
         api_key: str | None = None,
+        embed_model_name: str = "text-embedding-3-small",
         buffer_size: int = 1,
         breakpoint_percentile_threshold: int = 95,
     ) -> None:
+        super().__init__()
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        self.embed_model_name = embed_model_name
         self.buffer_size = buffer_size
         self.breakpoint_percentile_threshold = breakpoint_percentile_threshold
 
@@ -54,14 +58,14 @@ class LlamaSemanticChunking(ChunkingStrategy):
             from llama_index.core.node_parser import SemanticSplitterNodeParser
             from llama_index.embeddings.openai import OpenAIEmbedding
             from llama_index.core import Document
-        except ImportError:
-            raise ImportError(
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(
                 "LlamaIndex is required for LlamaSemanticChunking. "
                 "Install with: pip install graphrag-sdk[llama]"
             )
 
         embed_model = OpenAIEmbedding(
-            model="text-embedding-3-small",
+            model=self.embed_model_name,
             api_key=self.api_key,
         )
         splitter = SemanticSplitterNodeParser(
