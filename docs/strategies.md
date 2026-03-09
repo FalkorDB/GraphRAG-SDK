@@ -107,6 +107,106 @@ chunker = FixedSizeChunking(
 - Benchmark-winning config uses `1500/200` for richer extraction context
 - Smaller chunks (500) for fine-grained retrieval, larger (2000) for broader context
 
+### Built-in: SentenceTokenCapChunking
+
+Splits at sentence boundaries (never mid-sentence) and enforces a hard token cap per chunk using tiktoken. No LLM or embedder required.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
+
+chunker = SentenceTokenCapChunking(
+    max_tokens=512,         # max tokens per chunk (default: 512)
+    overlap_sentences=2,    # sentences shared between chunks (default: 2)
+    encoding_name="cl100k_base",  # tiktoken encoding (default: cl100k_base)
+)
+```
+
+### Built-in: ContextualChunking
+
+Sentence-boundary chunking with LLM-generated context prefixes prepended to each chunk (Anthropic's contextual retrieval approach). Improves retrieval for cross-chunk co-reference questions.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import ContextualChunking
+
+chunker = ContextualChunking(
+    llm=my_llm,
+    max_tokens=512,              # token cap per chunk (default: 512)
+    overlap_sentences=2,         # sentence overlap (default: 2)
+    max_document_tokens=16_000,  # truncation limit for the doc reference in prompts (default: 16000)
+)
+```
+
+> **Cost note:** generates one LLM call per chunk at ingestion time.
+
+### Optional: Llama-based strategies (`pip install graphrag-sdk[llama]`)
+
+Four additional strategies are available when the `[llama]` extra is installed:
+
+```bash
+pip install graphrag-sdk[llama]
+```
+
+#### LlamaSentenceChunking
+
+Wraps LlamaIndex `SentenceSplitter`. Splits at sentence boundaries with token-capped groups and configurable overlap. No API key required.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.llama_sentence import LlamaSentenceChunking
+
+chunker = LlamaSentenceChunking(
+    chunk_size=512,     # max tokens per chunk (default: 512)
+    chunk_overlap=50,   # token overlap (default: 50)
+)
+```
+
+#### LlamaSemanticChunking
+
+Embedding-based splitting — detects topic shifts using OpenAI embeddings and cuts where meaning changes significantly.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.llama_semantic import LlamaSemanticChunking
+
+chunker = LlamaSemanticChunking(
+    api_key="sk-...",                       # defaults to OPENAI_API_KEY env var
+    embed_model_name="text-embedding-3-small",  # configurable (default: text-embedding-3-small)
+    buffer_size=1,                          # sentences to look ahead (default: 1)
+    breakpoint_percentile_threshold=95,     # higher = fewer splits (default: 95)
+)
+```
+
+#### LlamaSemanticDoubleChunking
+
+Two-pass semantic chunking: first splits into small pieces, then re-merges semantically similar adjacent pieces.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.llama_semantic_double import LlamaSemanticDoubleChunking
+
+chunker = LlamaSemanticDoubleChunking(
+    api_key="sk-...",
+    embed_model_name="text-embedding-3-small",
+    initial_threshold=0.4,      # first-pass merge sensitivity (default: 0.4)
+    appending_threshold=0.5,    # orphan attachment sensitivity (default: 0.5)
+    merging_threshold=0.5,      # final-pass merge strictness (default: 0.5)
+    max_chunk_size=512,         # token safety cap (default: 512)
+)
+```
+
+#### LlamaTopicChunking
+
+LLM-driven topic detection — groups text into chunks aligned to detected topic boundaries.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.llama_topic import LlamaTopicChunking
+
+chunker = LlamaTopicChunking(
+    api_key="sk-...",
+    llm_model_name="gpt-4o-mini",   # configurable (default: gpt-4o-mini)
+    similarity_threshold=0.8,        # topic change sensitivity (default: 0.8)
+    window_size=3,                   # sentences analyzed per window (default: 3)
+    max_chunk_size=512,              # token safety cap (default: 512)
+)
+```
+
 ### Writing Your Own
 
 ```python
