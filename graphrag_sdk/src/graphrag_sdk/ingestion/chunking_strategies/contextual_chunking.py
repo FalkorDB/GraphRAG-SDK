@@ -56,6 +56,9 @@ class ContextualChunking(ChunkingStrategy):
         max_tokens: Token cap per chunk. Default 512.
         overlap_sentences: Sentences shared between consecutive chunks. Default 2.
         encoding_name: tiktoken encoding for token counting. Default ``cl100k_base``.
+        max_document_tokens: Maximum tokens of the source document included in each
+            context prompt. Documents exceeding this are truncated before being sent
+            to the LLM, preventing context-window overflows on large inputs. Default 16 000.
 
     Example::
 
@@ -69,12 +72,14 @@ class ContextualChunking(ChunkingStrategy):
         max_tokens: int = 512,
         overlap_sentences: int = 2,
         encoding_name: str = "cl100k_base",
+        max_document_tokens: int = 16_000,
     ) -> None:
         super().__init__()
         self.llm = llm
         self.max_tokens = max_tokens
         self.overlap_sentences = overlap_sentences
         self.encoding_name = encoding_name
+        self.max_document_tokens = max_document_tokens
 
     async def chunk(self, text: str, ctx: Context) -> TextChunks:
         ctx.log(
@@ -120,8 +125,19 @@ class ContextualChunking(ChunkingStrategy):
             start = max(j - self.overlap_sentences, start + 1)
 
         # ── 3. Batch LLM call for context generation ─────────────────
+        # Truncate the document reference to avoid exceeding the LLM context window.
+        doc_tokens = enc.encode(text)
+        if len(doc_tokens) > self.max_document_tokens:
+            ctx.log(
+                f"Document ({len(doc_tokens)} tokens) exceeds max_document_tokens "
+                f"({self.max_document_tokens}); truncating for context prompts."
+            )
+            document_ref = enc.decode(doc_tokens[: self.max_document_tokens])
+        else:
+            document_ref = text
+
         prompts = [
-            _CONTEXT_PROMPT.replace("{full_document}", text).replace("{chunk_text}", chunk_text)
+            _CONTEXT_PROMPT.replace("{full_document}", document_ref).replace("{chunk_text}", chunk_text)
             for chunk_text, _ in raw_chunks
         ]
 
