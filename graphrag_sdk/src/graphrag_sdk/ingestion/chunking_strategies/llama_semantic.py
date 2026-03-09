@@ -69,7 +69,7 @@ class LlamaSemanticChunking(ChunkingStrategy):
             breakpoint_percentile_threshold=self.breakpoint_percentile_threshold,
             embed_model=embed_model,
         )
-        nodes = splitter.get_nodes_from_documents([Document(text=text)])
+        nodes = await splitter.aget_nodes_from_documents([Document(text=text)])
 
         chunks = [
             TextChunk(

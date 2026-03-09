@@ -79,14 +79,8 @@ class ContextualChunking(ChunkingStrategy):
             f"ContextualChunking(max_tokens={self.max_tokens})"
         )
 
-        try:
-            import tiktoken
-            enc = tiktoken.get_encoding(self.encoding_name)
-        except ImportError:
-            raise ImportError(
-                "tiktoken is required for ContextualChunking. "
-                "Install with: pip install tiktoken"
-            )
+        import tiktoken
+        enc = tiktoken.get_encoding(self.encoding_name)
 
         # ── 1. Sentence split ────────────────────────────────────────
         sentences = [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
