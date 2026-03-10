@@ -68,14 +68,14 @@ class CallableChunking(ChunkingStrategy):
 
         chunks = [
             TextChunk(
-                text=c,
+                text=chunk,
                 index=i,
                 metadata={
                     "strategy": self.strategy_name,
-                    "char_count": len(c),
+                    "char_count": len(chunk),
                 },
             )
-            for i, c in enumerate(c for c in raw_chunks if c.strip())
+            for i, chunk in enumerate(c for c in raw_chunks if c.strip())
         ]
 
         ctx.log(f"CallableChunking produced {len(chunks)} chunks")
