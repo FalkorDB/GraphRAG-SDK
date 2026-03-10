@@ -102,7 +102,7 @@ def _normalize_type_label(raw: str) -> str:
     "Data Type" / "DataType" / "data_type" / "data-type" → "datatype"
     """
     s = raw.strip().lower()
-    return re.sub(r"[\s_\-/]+", "", s)
+    return re.sub(r"[\s_/-]+", "", s)
 
 
 class MergedExtraction(ExtractionStrategy):

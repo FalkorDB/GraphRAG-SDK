@@ -241,11 +241,11 @@ class TestGraphRAGDeduplicateEntities:
         """deduplicate_entities should merge entities with the same normalized name."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
 
-        # First query returns entities with duplicate names (3 cols: id, name, desc)
+        # First query returns entities with duplicate names (4 cols: id, name, desc, label)
         entity_result = MagicMock()
         entity_result.result_set = [
-            ["e1", "Alice", "A software engineer"],
-            ["e2", "alice", "An engineer"],  # duplicate by name
+            ["e1", "Alice", "A software engineer", "Person"],
+            ["e2", "alice", "An engineer", "Person"],  # duplicate by (name, label)
         ]
         empty_result = MagicMock()
         empty_result.result_set = []
