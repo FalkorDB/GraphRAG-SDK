@@ -138,73 +138,57 @@ chunker = ContextualChunking(
 
 > **Cost note:** generates one LLM call per chunk at ingestion time.
 
-### Optional: Llama-based strategies (`pip install graphrag-sdk[llama]`)
+### Built-in: CallableChunking (bring your own framework)
 
-Four additional strategies are available when the `[llama]` extra is installed:
+Adapts any `text → list[str]` function into a chunking strategy. Use this to plug in **any** chunking library — LlamaIndex, LangChain, Unstructured, spaCy, or your own logic — without the SDK carrying those dependencies.
+
+Works with sync functions, async functions, and callable classes.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import CallableChunking
+
+# Plain function
+chunker = CallableChunking(lambda text: text.split("\n\n"))
+```
+
+#### LlamaIndex example
 
 ```bash
-pip install graphrag-sdk[llama]
+pip install llama-index-core
 ```
 
-#### LlamaSentenceChunking
-
-Wraps LlamaIndex `SentenceSplitter`. Splits at sentence boundaries with token-capped groups and configurable overlap. No API key required.
-
 ```python
-from graphrag_sdk.ingestion.chunking_strategies.llama_sentence import LlamaSentenceChunking
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core import Document
 
-chunker = LlamaSentenceChunking(
-    chunk_size=512,     # max tokens per chunk (default: 512)
-    chunk_overlap=50,   # token overlap (default: 50)
+splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
+chunker = CallableChunking(
+    lambda text: [n.text for n in splitter.get_nodes_from_documents([Document(text=text)])],
+    strategy_name="llama_sentence",
 )
 ```
 
-#### LlamaSemanticChunking
+#### LangChain example
 
-Embedding-based splitting — detects topic shifts using OpenAI embeddings and cuts where meaning changes significantly.
-
-```python
-from graphrag_sdk.ingestion.chunking_strategies.llama_semantic import LlamaSemanticChunking
-
-chunker = LlamaSemanticChunking(
-    api_key="sk-...",                       # defaults to OPENAI_API_KEY env var
-    embed_model_name="text-embedding-3-small",  # configurable (default: text-embedding-3-small)
-    buffer_size=1,                          # sentences to look ahead (default: 1)
-    breakpoint_percentile_threshold=95,     # higher = fewer splits (default: 95)
-)
+```bash
+pip install langchain-text-splitters
 ```
 
-#### LlamaSemanticDoubleChunking
-
-Two-pass semantic chunking: first splits into small pieces, then re-merges semantically similar adjacent pieces.
-
 ```python
-from graphrag_sdk.ingestion.chunking_strategies.llama_semantic_double import LlamaSemanticDoubleChunking
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-chunker = LlamaSemanticDoubleChunking(
-    api_key="sk-...",
-    embed_model_name="text-embedding-3-small",
-    initial_threshold=0.4,      # first-pass merge sensitivity (default: 0.4)
-    appending_threshold=0.5,    # orphan attachment sensitivity (default: 0.5)
-    merging_threshold=0.5,      # final-pass merge strictness (default: 0.5)
-    max_chunk_size=512,         # token safety cap (default: 512)
-)
+lc = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+chunker = CallableChunking(lc.split_text, strategy_name="langchain_recursive")
 ```
 
-#### LlamaTopicChunking
-
-LLM-driven topic detection — groups text into chunks aligned to detected topic boundaries.
+#### Async example
 
 ```python
-from graphrag_sdk.ingestion.chunking_strategies.llama_topic import LlamaTopicChunking
+async def semantic_split(text: str) -> list[str]:
+    # Your async chunking logic here
+    ...
 
-chunker = LlamaTopicChunking(
-    api_key="sk-...",
-    llm_model_name="gpt-4o-mini",   # configurable (default: gpt-4o-mini)
-    similarity_threshold=0.8,        # topic change sensitivity (default: 0.8)
-    window_size=3,                   # sentences analyzed per window (default: 3)
-    max_chunk_size=512,              # token safety cap (default: 512)
-)
+chunker = CallableChunking(semantic_split, strategy_name="my_semantic")
 ```
 
 ### Writing Your Own

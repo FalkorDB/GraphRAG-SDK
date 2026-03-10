@@ -51,9 +51,6 @@ pip install graphrag-sdk[openrouter]
 # PDF support
 pip install graphrag-sdk[pdf]
 
-# LlamaIndex-based chunking strategies (LlamaSentence, LlamaSemantic, LlamaSemanticDouble, LlamaTopic)
-pip install graphrag-sdk[llama]
-
 # Everything
 pip install graphrag-sdk[all]
 ```
@@ -163,13 +160,11 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | Concern | ABC | Built-in Options | Default |
 |---------|-----|-----------------|---------|
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by file extension |
-| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `LlamaSentenceChunking`\*, `LlamaSemanticChunking`\*, `LlamaSemanticDoubleChunking`\*, `LlamaTopicChunking`\* | `FixedSizeChunking` (1000 chars, 100 overlap) |
+| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` (1000 chars, 100 overlap) |
 | **Extraction** | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction` | SchemaGuided |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
-
-> \* Requires `pip install graphrag-sdk[llama]`
 
 ### LLM & Embedding Providers
 
@@ -227,7 +222,7 @@ graphrag_sdk/
 ├── ingestion/
 │   ├── pipeline.py                 # 10-step ingestion orchestrator
 │   ├── loaders/                    # TextLoader, PdfLoader
-│   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, Llama*
+│   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, CallableChunking
 │   ├── extraction_strategies/      # SchemaGuided, MergedExtraction
 │   └── resolution_strategies/      # ExactMatch, DescriptionMerge
 ├── retrieval/

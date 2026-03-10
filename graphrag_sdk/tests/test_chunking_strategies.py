@@ -1,15 +1,10 @@
-"""Unit tests for all 7 supported chunking strategies.
+"""Unit tests for chunking strategies.
 
 Strategies under test:
-  1. FixedSizeChunking          (char baseline, zero deps)
-  2. SentenceTokenCapChunking   (tiktoken, no LLM)
-  3. ContextualChunking         (tiktoken + LLM — mock LLM used)
-  4. LlamaSentenceChunking      (optional: requires graphrag-sdk[llama])
-  5. LlamaSemanticChunking      (optional: requires graphrag-sdk[llama])
-  6. LlamaSemanticDoubleChunking(optional: requires graphrag-sdk[llama])
-  7. LlamaTopicChunking         (optional: requires graphrag-sdk[llama])
-
-Llama tests are skipped automatically when the optional deps are absent.
+  1. FixedSizeChunking        (char baseline, zero deps)
+  2. SentenceTokenCapChunking (tiktoken, no LLM)
+  3. ContextualChunking       (tiktoken + LLM — mock LLM used)
+  4. CallableChunking         (adapts any function — sync & async)
 """
 from __future__ import annotations
 
@@ -17,9 +12,10 @@ import pytest
 
 from graphrag_sdk.core.models import LLMResponse
 from graphrag_sdk.core.providers import LLMBatchItem, LLMInterface
+from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import CallableChunking
+from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import ContextualChunking
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
-from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import ContextualChunking
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -171,130 +167,68 @@ class TestContextualChunking:
 
 
 # ---------------------------------------------------------------------------
-# 4–7. Llama strategies (skipped when [llama] extra not installed)
+# 4. CallableChunking
 # ---------------------------------------------------------------------------
 
-import importlib as _importlib
-import os as _os
+class TestCallableChunking:
+    """Tests for the framework-agnostic callable adapter."""
 
-_has_llama = _importlib.util.find_spec("llama_index") is not None
-_needs_llama = pytest.mark.skipif(
-    not _has_llama,
-    reason="graphrag-sdk[llama] not installed",
-)
-
-_has_openai_key = bool(_os.getenv("OPENAI_API_KEY"))
-_needs_openai_key = pytest.mark.skipif(
-    not _has_openai_key,
-    reason="OPENAI_API_KEY not set — skipping llama strategies that call OpenAI",
-)
-
-
-@_needs_llama
-class TestLlamaSentenceChunking:
-    """LlamaIndex sentence splitter — no API key needed."""
-
-    async def test_produces_chunks(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_sentence import LlamaSentenceChunking
-        chunker = LlamaSentenceChunking(chunk_size=256, chunk_overlap=20)
+    async def test_sync_function(self, ctx):
+        chunker = CallableChunking(lambda text: text.split(". "))
         result = await chunker.chunk(SAMPLE_TEXT, ctx)
         assert len(result.chunks) >= 1
 
-    async def test_no_empty_chunk_text(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_sentence import LlamaSentenceChunking
-        chunker = LlamaSentenceChunking(chunk_size=256, chunk_overlap=20)
+    async def test_async_function(self, ctx):
+        async def async_split(text: str) -> list[str]:
+            return text.split(". ")
+
+        chunker = CallableChunking(async_split)
         result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        for chunk in result.chunks:
-            assert chunk.text.strip() != ""
+        assert len(result.chunks) >= 1
+
+    async def test_empty_input(self, ctx):
+        chunker = CallableChunking(lambda text: text.split("\n\n"))
+        result = await chunker.chunk("", ctx)
+        assert result.chunks == []
+
+    async def test_filters_whitespace_only_chunks(self, ctx):
+        chunker = CallableChunking(lambda text: ["hello", "  ", "", "world"])
+        result = await chunker.chunk("ignored", ctx)
+        assert len(result.chunks) == 2
+        assert result.chunks[0].text == "hello"
+        assert result.chunks[1].text == "world"
 
     async def test_sequential_indices(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_sentence import LlamaSentenceChunking
-        chunker = LlamaSentenceChunking(chunk_size=256, chunk_overlap=20)
+        chunker = CallableChunking(lambda text: text.split(". "))
         result = await chunker.chunk(SAMPLE_TEXT, ctx)
         for i, chunk in enumerate(result.chunks):
             assert chunk.index == i
 
     async def test_metadata_has_strategy(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_sentence import LlamaSentenceChunking
-        chunker = LlamaSentenceChunking(chunk_size=512, chunk_overlap=50)
+        chunker = CallableChunking(
+            lambda text: text.split(". "), strategy_name="sentence_split"
+        )
         result = await chunker.chunk(SAMPLE_TEXT, ctx)
         assert len(result.chunks) >= 1
-        assert "strategy" in result.chunks[0].metadata
+        assert result.chunks[0].metadata["strategy"] == "sentence_split"
 
-
-@_needs_llama
-@_needs_openai_key
-class TestLlamaSemanticChunking:
-    """Requires OPENAI_API_KEY (calls OpenAI embeddings during chunking)."""
-
-    async def test_produces_chunks(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_semantic import LlamaSemanticChunking
-        chunker = LlamaSemanticChunking()
+    async def test_default_strategy_name(self, ctx):
+        chunker = CallableChunking(lambda text: [text])
         result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        assert len(result.chunks) >= 1
+        assert result.chunks[0].metadata["strategy"] == "custom"
 
-    async def test_no_empty_chunk_text(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_semantic import LlamaSemanticChunking
-        chunker = LlamaSemanticChunking()
+    async def test_metadata_has_char_count(self, ctx):
+        chunker = CallableChunking(lambda text: [text])
         result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        for chunk in result.chunks:
-            assert chunk.text.strip() != ""
+        assert result.chunks[0].metadata["char_count"] == len(SAMPLE_TEXT)
 
-    async def test_metadata_has_strategy(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_semantic import LlamaSemanticChunking
-        chunker = LlamaSemanticChunking()
-        result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        assert len(result.chunks) >= 1
-        assert "strategy" in result.chunks[0].metadata
+    async def test_callable_class(self, ctx):
+        """A class with __call__ should work too."""
 
+        class ParagraphSplitter:
+            def __call__(self, text: str) -> list[str]:
+                return text.split("\n\n")
 
-@_needs_llama
-@_needs_openai_key
-class TestLlamaSemanticDoubleChunking:
-    """Requires OPENAI_API_KEY (calls OpenAI embeddings during chunking)."""
-
-    async def test_produces_chunks(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_semantic_double import LlamaSemanticDoubleChunking
-        chunker = LlamaSemanticDoubleChunking()
-        result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        assert len(result.chunks) >= 1
-
-    async def test_no_empty_chunk_text(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_semantic_double import LlamaSemanticDoubleChunking
-        chunker = LlamaSemanticDoubleChunking()
-        result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        for chunk in result.chunks:
-            assert chunk.text.strip() != ""
-
-    async def test_metadata_has_strategy(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_semantic_double import LlamaSemanticDoubleChunking
-        chunker = LlamaSemanticDoubleChunking()
-        result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        assert len(result.chunks) >= 1
-        assert "strategy" in result.chunks[0].metadata
-
-
-@_needs_llama
-@_needs_openai_key
-class TestLlamaTopicChunking:
-    """Requires OPENAI_API_KEY (calls OpenAI LLM during chunking)."""
-
-    async def test_produces_chunks(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_topic import LlamaTopicChunking
-        chunker = LlamaTopicChunking()
-        result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        assert len(result.chunks) >= 1
-
-    async def test_no_empty_chunk_text(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_topic import LlamaTopicChunking
-        chunker = LlamaTopicChunking()
-        result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        for chunk in result.chunks:
-            assert chunk.text.strip() != ""
-
-    async def test_metadata_has_strategy(self, ctx):
-        from graphrag_sdk.ingestion.chunking_strategies.llama_topic import LlamaTopicChunking
-        chunker = LlamaTopicChunking()
-        result = await chunker.chunk(SAMPLE_TEXT, ctx)
-        assert len(result.chunks) >= 1
-        assert "strategy" in result.chunks[0].metadata
+        chunker = CallableChunking(ParagraphSplitter())
+        result = await chunker.chunk("Para one.\n\nPara two.", ctx)
+        assert len(result.chunks) == 2
