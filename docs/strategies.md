@@ -107,6 +107,90 @@ chunker = FixedSizeChunking(
 - Benchmark-winning config uses `1500/200` for richer extraction context
 - Smaller chunks (500) for fine-grained retrieval, larger (2000) for broader context
 
+### Built-in: SentenceTokenCapChunking
+
+Splits at sentence boundaries (never mid-sentence) and enforces a hard token cap per chunk using tiktoken. No LLM or embedder required.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
+
+chunker = SentenceTokenCapChunking(
+    max_tokens=512,         # max tokens per chunk (default: 512)
+    overlap_sentences=2,    # sentences shared between chunks (default: 2)
+    encoding_name="cl100k_base",  # tiktoken encoding (default: cl100k_base)
+)
+```
+
+### Built-in: ContextualChunking
+
+Sentence-boundary chunking with LLM-generated context prefixes prepended to each chunk (Anthropic's contextual retrieval approach). Improves retrieval for cross-chunk co-reference questions.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import ContextualChunking
+
+chunker = ContextualChunking(
+    llm=my_llm,
+    max_tokens=512,              # token cap per chunk (default: 512)
+    overlap_sentences=2,         # sentence overlap (default: 2)
+    max_document_tokens=16_000,  # truncation limit for the doc reference in prompts (default: 16000)
+)
+```
+
+> **Cost note:** generates one LLM call per chunk at ingestion time.
+
+### Built-in: CallableChunking (bring your own framework)
+
+Adapts any `text → list[str]` function into a chunking strategy. Use this to plug in **any** chunking library — LlamaIndex, LangChain, Unstructured, spaCy, or your own logic — without the SDK carrying those dependencies.
+
+Works with sync functions, async functions, and callable classes.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import CallableChunking
+
+# Plain function
+chunker = CallableChunking(lambda text: text.split("\n\n"))
+```
+
+#### LlamaIndex example
+
+```bash
+pip install llama-index-core
+```
+
+```python
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core import Document
+
+splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
+chunker = CallableChunking(
+    lambda text: [n.text for n in splitter.get_nodes_from_documents([Document(text=text)])],
+    strategy_name="llama_sentence",
+)
+```
+
+#### LangChain example
+
+```bash
+pip install langchain-text-splitters
+```
+
+```python
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+lc = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+chunker = CallableChunking(lc.split_text, strategy_name="langchain_recursive")
+```
+
+#### Async example
+
+```python
+async def semantic_split(text: str) -> list[str]:
+    # Your async chunking logic here
+    ...
+
+chunker = CallableChunking(semantic_split, strategy_name="my_semantic")
+```
+
 ### Writing Your Own
 
 ```python
