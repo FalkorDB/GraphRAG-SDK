@@ -270,6 +270,24 @@ class TestGraphRAGDeduplicateEntities:
         assert count == 0
 
 
+class TestGraphRAGDefaultExtractor:
+    def test_ingest_empty_schema_uses_merged_extraction(self, mock_conn, embedder, llm):
+        """With no schema entities/relations, _default_extractor returns MergedExtraction."""
+        from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        extractor = g._default_extractor()
+        assert isinstance(extractor, MergedExtraction)
+
+    def test_ingest_populated_schema_uses_schema_guided(self, mock_conn, embedder, llm, sample_schema):
+        """With schema entities/relations, _default_extractor returns SchemaGuidedExtraction."""
+        from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, schema=sample_schema)
+        extractor = g._default_extractor()
+        assert isinstance(extractor, SchemaGuidedExtraction)
+
+
 class TestGraphRAGSyncWrappers:
     def test_query_sync(self, mock_conn, embedder):
         llm = MockLLM(responses=["Sync answer."])
