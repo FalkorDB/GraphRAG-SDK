@@ -160,7 +160,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | Concern | ABC | Built-in Options | Default |
 |---------|-----|-----------------|---------|
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by file extension |
-| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking(size, overlap)` | 1000 chars, 100 overlap |
+| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` (1000 chars, 100 overlap) |
 | **Extraction** | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction` | SchemaGuided |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
@@ -222,7 +222,7 @@ graphrag_sdk/
 ├── ingestion/
 │   ├── pipeline.py                 # 10-step ingestion orchestrator
 │   ├── loaders/                    # TextLoader, PdfLoader
-│   ├── chunking_strategies/        # FixedSizeChunking
+│   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, CallableChunking
 │   ├── extraction_strategies/      # SchemaGuided, MergedExtraction
 │   └── resolution_strategies/      # ExactMatch, DescriptionMerge
 ├── retrieval/
