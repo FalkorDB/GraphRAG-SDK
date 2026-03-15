@@ -161,7 +161,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 |---------|-----|-----------------|---------|
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by file extension |
 | **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` (1000 chars, 100 overlap) |
-| **Extraction** | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction` | SchemaGuided |
+| **Extraction** | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction`, `CorefGLiNERLLMExtraction` | SchemaGuided |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
@@ -223,7 +223,7 @@ graphrag_sdk/
 │   ├── pipeline.py                 # 10-step ingestion orchestrator
 │   ├── loaders/                    # TextLoader, PdfLoader
 │   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, CallableChunking
-│   ├── extraction_strategies/      # SchemaGuided, MergedExtraction
+│   ├── extraction_strategies/      # SchemaGuided, MergedExtraction, CorefGLiNERLLMExtraction
 │   └── resolution_strategies/      # ExactMatch, DescriptionMerge
 ├── retrieval/
 │   ├── strategies/                 # LocalRetrieval, MultiPathRetrieval
