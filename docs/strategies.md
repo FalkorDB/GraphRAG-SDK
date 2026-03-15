@@ -8,7 +8,7 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 |---|---------|-----|------------------------|
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader` |
 | 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking` |
-| 3 | Extraction | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction` |
+| 3 | Extraction | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction`, `CorefGLiNERLLMExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
@@ -266,6 +266,32 @@ extractor = MergedExtraction(
 ```
 
 **When to use:** Best accuracy. Used in the benchmark-winning pipeline. Produces richer graphs (mentions, typed relationships) but uses more LLM calls.
+
+### Built-in: CorefGLiNERLLMExtraction
+
+Hybrid extraction that combines local models for entities with LLM for relationships:
+
+1. **fastcoref** (LingMessCoref) resolves pronouns and short mentions → full entity names
+2. **GLiNER** zero-shot NER with schema types → typed entities (≥ 0.75 confidence → typed, below → "Unknown")
+3. **LLM call per chunk**: given the entities found, extract all relationships → structured JSON with source, target, type, sentence, explanation
+
+Entities are grounded by GLiNER (no hallucinated entities). Only relationship extraction uses the LLM, significantly reducing token usage compared to fully LLM-based strategies.
+
+```python
+from graphrag_sdk.ingestion.extraction_strategies.coref_gliner_llm_extraction import CorefGLiNERLLMExtraction
+
+extractor = CorefGLiNERLLMExtraction(
+    llm=llm,                    # LLMInterface instance (used for relationships only)
+    schema_types=None,          # Entity type labels for GLiNER (default: person, location, org, ...)
+    gliner_threshold=0.75,      # Confidence threshold for typed vs Unknown entities
+    enable_coref=True,          # Enable coreference resolution (default: True)
+    max_concurrency=None,       # Override LLM concurrency (default: uses LLM's setting)
+)
+```
+
+**Requirements:** `pip install gliner fastcoref spacy && python -m spacy download en_core_web_lg`
+
+**When to use:** Highest semantic relationship recall (95% on novel benchmark). Best when you need rich relationship extraction with grounded entities. Uses fewer LLM tokens than SchemaGuided or MergedExtraction since entities are extracted locally.
 
 ---
 
