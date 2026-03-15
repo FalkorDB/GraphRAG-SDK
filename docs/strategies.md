@@ -289,7 +289,7 @@ extractor = CorefGLiNERLLMExtraction(
 )
 ```
 
-**Requirements:** `pip install gliner fastcoref spacy && python -m spacy download en_core_web_lg`
+**Requirements:** `pip install gliner fastcoref`
 
 **When to use:** Highest semantic relationship recall (95% on novel benchmark). Best when you need rich relationship extraction with grounded entities. Uses fewer LLM tokens than SchemaGuided or MergedExtraction since entities are extracted locally.
 

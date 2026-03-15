@@ -27,8 +27,7 @@
 #   ⚠ LLM still needed for relationships
 #
 # Requirements:
-#   pip install spacy gliner fastcoref openai
-#   python -m spacy download en_core_web_lg
+#   pip install gliner fastcoref
 #   OPENAI_API_KEY in environment
 #
 # Usage::
@@ -64,8 +63,6 @@ logger = logging.getLogger(__name__)
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
 _DEFAULT_GLINER_MODEL = "urchade/gliner_medium-v2.1"
-_DEFAULT_SPACY_MODEL = "en_core_web_lg"
-_DEFAULT_COREF_MODEL = "biu-nlp/f-coref"
 
 _DEFAULT_SCHEMA_TYPES = [
     "person",
@@ -146,8 +143,6 @@ class CorefGLiNERLLMExtraction(ExtractionStrategy):
     Args:
         llm: LLM provider for relationship extraction.
         gliner_model_name: HuggingFace model ID for GLiNER.
-        spacy_model_name: spaCy pipeline name (used for sentence splitting only).
-        coref_model_name: HuggingFace model ID for fastcoref.
         schema_types: Entity type labels for GLiNER zero-shot NER.
         gliner_threshold: Confidence threshold — ≥ this → typed, below → "Unknown".
         enable_coref: Enable/disable coreference resolution.
@@ -163,8 +158,6 @@ class CorefGLiNERLLMExtraction(ExtractionStrategy):
         self,
         llm: LLMInterface,
         gliner_model_name: str = _DEFAULT_GLINER_MODEL,
-        spacy_model_name: str = _DEFAULT_SPACY_MODEL,
-        coref_model_name: str = _DEFAULT_COREF_MODEL,
         schema_types: list[str] | None = None,
         gliner_threshold: float = _DEFAULT_GLINER_THRESHOLD,
         enable_coref: bool = True,
@@ -172,15 +165,12 @@ class CorefGLiNERLLMExtraction(ExtractionStrategy):
     ) -> None:
         self.llm = llm
         self.gliner_model_name = gliner_model_name
-        self.spacy_model_name = spacy_model_name
-        self.coref_model_name = coref_model_name
         self.schema_types = [t.lower() for t in (schema_types or _DEFAULT_SCHEMA_TYPES)]
         self.gliner_threshold = gliner_threshold
         self.enable_coref = enable_coref
         self._max_concurrency = max_concurrency
 
         self._gliner: Any | None = None
-        self._nlp: Any | None = None
         self._coref: Any | None = None
 
     # ── Model loading ─────────────────────────────────────────────────────────
@@ -196,28 +186,24 @@ class CorefGLiNERLLMExtraction(ExtractionStrategy):
                     "gliner is required. Install: pip install gliner"
                 ) from exc
 
-        if self._nlp is None:
-            try:
-                import spacy
-                self._nlp = spacy.load(self.spacy_model_name, disable=["ner"])
-            except OSError as exc:
-                raise OSError(
-                    f"spaCy model '{self.spacy_model_name}' not found. "
-                    f"Install: python -m spacy download {self.spacy_model_name}"
-                ) from exc
-
         if self.enable_coref and self._coref is None:
             try:
                 import transformers
                 # LingMessCoref uses Longformer which doesn't support SDPA yet.
-                # Patch the check so it falls back to eager attention automatically.
+                # Patch the check so it falls back to eager attention automatically,
+                # but ensure we always restore the original attribute afterwards.
                 _orig_sdpa = getattr(transformers.LongformerModel, "_sdpa_can_dispatch", None)
-                if _orig_sdpa is not None:
-                    transformers.LongformerModel._sdpa_can_dispatch = lambda self, *a, **k: False
-
-                from fastcoref import LingMessCoref
-                logger.info("Loading LingMessCoref (full-accuracy coreference model)")
-                self._coref = LingMessCoref(device="cpu")
+                try:
+                    if _orig_sdpa is not None:
+                        transformers.LongformerModel._sdpa_can_dispatch = (
+                            lambda self, *a, **k: False
+                        )
+                    from fastcoref import LingMessCoref
+                    logger.info("Loading LingMessCoref (full-accuracy coreference model)")
+                    self._coref = LingMessCoref(device="cpu")
+                finally:
+                    if _orig_sdpa is not None:
+                        transformers.LongformerModel._sdpa_can_dispatch = _orig_sdpa
             except ImportError as exc:
                 raise ImportError(
                     "fastcoref is required. Install: pip install fastcoref"
@@ -453,12 +439,17 @@ class CorefGLiNERLLMExtraction(ExtractionStrategy):
                 end_node_id=_entity_id(rel.target),
                 type="RELATES",
                 properties={
-                    "predicate": rel.keywords,
-                    "type": rel.type,
-                    "sentence": rel.description,
+                    "rel_type": rel.type,
+                    "description": rel.description,
+                    "keywords": rel.keywords,
+                    "weight": rel.weight,
+                    "fact": rel.description,
                     "source_chunk_ids": rel.source_chunk_ids,
                     "src_name": rel.source,
                     "tgt_name": rel.target,
+                    "predicate": rel.keywords,
+                    "type": rel.type,
+                    "sentence": rel.description,
                 },
             )
             for rel in all_relations.values()
@@ -504,8 +495,13 @@ def _parse_llm_relationships(
 
     try:
         data = json.loads(content)
-    except json.JSONDecodeError:
-        logger.warning(f"Failed to parse LLM relationship JSON: {content[:200]}")
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Failed to parse LLM relationship JSON for chunk %s: %s (response_length=%d)",
+            chunk_uid,
+            exc,
+            len(content),
+        )
         return []
 
     if not isinstance(data, list):
