@@ -1,10 +1,10 @@
-"""Tests for _entity_utils.py — shared entity utilities."""
+"""Tests for entity utility functions in entity_extractors.py."""
 
 from __future__ import annotations
 
 import pytest
 
-from graphrag_sdk.ingestion.extraction_strategies._entity_utils import (
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
     UNKNOWN_LABEL,
     compute_entity_id,

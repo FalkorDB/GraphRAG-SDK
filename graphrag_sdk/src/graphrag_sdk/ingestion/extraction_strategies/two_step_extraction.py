@@ -1,7 +1,6 @@
-# GraphRAG SDK 2.0 — Ingestion: Hybrid Extraction Strategy
+# GraphRAG SDK 2.0 — Ingestion: Two-Step Extraction Strategy
 # Composable 2-step extraction: pluggable entity NER (step 1) +
 # LLM verify/enrich/relationship extraction (step 2).
-# Benchmark-winning: Entity F1 80.8%, Relation F1 72.1%.
 
 from __future__ import annotations
 
@@ -23,22 +22,63 @@ from graphrag_sdk.core.models import (
     TextChunks,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
-from graphrag_sdk.ingestion.extraction_strategies._entity_utils import (
+from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
+    NER_PROMPT,
+    EntityExtractor,
     compute_entity_id,
     is_valid_entity_name,
     label_for_type,
 )
-from graphrag_sdk.ingestion.extraction_strategies._prompts import (
-    VERIFY_EXTRACT_RELS_PROMPT,
-)
-from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
-from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
-    EntityExtractor,
-)
 
 logger = logging.getLogger(__name__)
+
+VERIFY_EXTRACT_RELS_PROMPT = (
+    "You are an expert knowledge graph builder.\n"
+    "Given the text and pre-extracted entities below, do two things:\n"
+    "1. VERIFY the entities: remove any that are not actually in the text, "
+    "fix any naming errors, and add any missed entities.\n"
+    "2. EXTRACT all relationships between the verified entities.\n\n"
+    "## Entity Types\n"
+    "{entity_types}\n\n"
+    "## Pre-extracted Entities\n"
+    "{entities_json}\n\n"
+    "## Text\n"
+    "{text}\n\n"
+    "## Instructions\n\n"
+    "### Entities\n"
+    "- For each verified entity provide a rich description that captures "
+    "key attributes, roles, and context from the text. This description is "
+    "used for search and retrieval — make it informative.\n"
+    "- span_start: the character offset in the text where the entity name "
+    "first appears.\n"
+    "- span_end: the character offset where the entity name ends.\n\n"
+    "### Relationships\n"
+    "- Extract ALL factual connections stated or implied in the text.\n"
+    "- source and target must be entity names from the verified entity list.\n"
+    "- type: a descriptive relationship label in UPPER_SNAKE_CASE "
+    "(e.g. WORKS_AT, MARRIED_TO, LOCATED_IN, CREATED_BY, PART_OF).\n"
+    "- description: a concise sentence describing the relationship as a "
+    "standalone fact. This is embedded for semantic search — it must be "
+    "self-contained and understandable without the original text.\n"
+    "- keywords: comma-separated terms that characterize this relationship "
+    "(e.g. 'employment, career' or 'family, parentage'). Used for "
+    "fulltext search.\n"
+    "- weight: a float 0-1 indicating confidence (1.0 = explicitly stated, "
+    "0.5 = implied, 0.2 = weak inference).\n"
+    "- span_start: the character offset in the text where the evidence "
+    "sentence for this relationship starts.\n"
+    "- span_end: the character offset where the evidence sentence ends.\n\n"
+    "Return ONLY a JSON object with two arrays:\n"
+    '{{"entities": [{{"name": "...", "type": "...", "description": "...", '
+    '"span_start": 0, "span_end": 5}}], '
+    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
+    '"description": "...", "keywords": "...", "weight": 0.9, '
+    '"span_start": 0, "span_end": 50}}]}}\n\n'
+    "Return ONLY valid JSON, nothing else."
+)
 
 
 class TwoStepExtraction(ExtractionStrategy):
@@ -132,8 +172,6 @@ class TwoStepExtraction(ExtractionStrategy):
 
         if self.entity_extractor.mode == "llm":
             # Batch through LLM for efficiency
-            from graphrag_sdk.ingestion.extraction_strategies._prompts import NER_PROMPT
-
             prompts = [
                 NER_PROMPT.format(
                     entity_types=", ".join(entity_types),
