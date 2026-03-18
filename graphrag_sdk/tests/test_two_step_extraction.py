@@ -1,4 +1,4 @@
-"""Tests for HybridExtraction strategy."""
+"""Tests for TwoStepExtraction strategy."""
 
 from __future__ import annotations
 
@@ -20,11 +20,11 @@ from graphrag_sdk.core.models import (
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     EntityExtractor,
 )
-from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import (
-    HybridExtraction,
+from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
+    TwoStepExtraction,
 )
 
-from .conftest import MockEmbedder, MockLLM, MockLLMWithHybridExtraction
+from .conftest import MockEmbedder, MockLLM, MockLLMWithTwoStepExtraction
 
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -65,11 +65,11 @@ def _mock_hybrid_llm(
 # ── Tests ──────────────────────────────────────────────────────
 
 
-class TestHybridExtractionSmoke:
+class TestTwoStepExtractionSmoke:
     @pytest.fixture
     def extractor(self):
         llm = _mock_hybrid_llm()
-        return HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        return TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
 
     async def test_produces_nodes(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
@@ -118,19 +118,19 @@ class TestHybridExtractionSmoke:
             assert "description" in node.properties
 
 
-class TestHybridExtractionWithMock:
-    """Tests using the MockLLMWithHybridExtraction from conftest."""
+class TestTwoStepExtractionWithMock:
+    """Tests using the MockLLMWithTwoStepExtraction from conftest."""
 
     async def test_mock_llm_produces_output(self, ctx):
-        llm = MockLLMWithHybridExtraction()
-        extractor = HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        llm = MockLLMWithTwoStepExtraction()
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
         assert len(result.nodes) >= 2
         assert len(result.relationships) >= 1
 
 
-class TestHybridExtractionSchemaTypes:
+class TestTwoStepExtractionSchemaTypes:
     async def test_schema_entity_types_used(self, ctx):
         """Entity types from schema override defaults."""
         captured_prompts: list[str] = []
@@ -151,7 +151,7 @@ class TestHybridExtractionSchemaTypes:
                 EntityType(label="Road", description="A road"),
             ],
         )
-        extractor = HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
         chunks = _make_chunks("The car drove down the highway.")
         await extractor.extract(chunks, schema, ctx)
 
@@ -161,10 +161,10 @@ class TestHybridExtractionSchemaTypes:
         assert "Road" in captured_prompts[0]
 
 
-class TestHybridExtractionBudget:
+class TestTwoStepExtractionBudget:
     async def test_budget_exceeded_stops_extraction(self):
         llm = _mock_hybrid_llm()
-        extractor = HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
         chunks = _make_chunks("Text 1", "Text 2", "Text 3")
 
         ctx = Context(tenant_id="test", latency_budget_ms=0.0)
@@ -174,7 +174,7 @@ class TestHybridExtractionBudget:
         assert llm._call_index == 0 or len(result.nodes) == 0
 
 
-class TestHybridExtractionAggregation:
+class TestTwoStepExtractionAggregation:
     async def test_cross_chunk_entity_dedup(self, ctx):
         """Same entity from multiple chunks should be deduplicated."""
         step1 = json.dumps([{"name": "Alice", "type": "Person", "description": "An engineer"}])
@@ -183,7 +183,7 @@ class TestHybridExtractionAggregation:
             "relationships": [],
         })
         llm = MockLLM(responses=[step1, step1, step2, step2])
-        extractor = HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
 
         chunks = _make_chunks("Alice is an engineer.", "Alice works hard.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
@@ -194,11 +194,11 @@ class TestHybridExtractionAggregation:
         assert "chunk-1" in alice_nodes[0].properties["source_chunk_ids"]
 
 
-class TestHybridExtractionGraphOutput:
+class TestTwoStepExtractionGraphOutput:
     async def test_node_ids_are_type_qualified(self, ctx):
         """Node IDs should include entity type for collision prevention."""
         llm = _mock_hybrid_llm()
-        extractor = HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
 
@@ -210,7 +210,7 @@ class TestHybridExtractionGraphOutput:
     async def test_relationship_edge_type_is_relates(self, ctx):
         """All relationships should use RELATES edge type."""
         llm = _mock_hybrid_llm()
-        extractor = HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
 
@@ -219,9 +219,9 @@ class TestHybridExtractionGraphOutput:
             assert rel.properties["rel_type"] == "WORKS_AT"
 
 
-class TestHybridExtractionPluggableExtractor:
+class TestTwoStepExtractionPluggableExtractor:
     async def test_custom_ner_model(self, ctx):
-        """HybridExtraction works with a custom NER model."""
+        """TwoStepExtraction works with a custom NER model."""
 
         class SimpleNER:
             def predict_entities(self, text, labels, **kwargs):
@@ -242,7 +242,7 @@ class TestHybridExtractionPluggableExtractor:
         })
         llm = MockLLM(responses=[step2])
         custom_extractor = EntityExtractor(model=SimpleNER())
-        extractor = HybridExtraction(
+        extractor = TwoStepExtraction(
             llm=llm,
             entity_extractor=custom_extractor,
         )
@@ -256,10 +256,10 @@ class TestHybridExtractionPluggableExtractor:
         assert len(result.relationships) >= 1
 
 
-class TestHybridExtractionConcurrency:
+class TestTwoStepExtractionConcurrency:
     async def test_max_concurrency_stored(self, ctx):
         llm = _mock_hybrid_llm()
-        extractor = HybridExtraction(
+        extractor = TwoStepExtraction(
             llm=llm, entity_extractor=EntityExtractor(llm=llm), max_concurrency=2,
         )
         assert extractor._max_concurrency == 2
@@ -269,17 +269,17 @@ class TestHybridExtractionConcurrency:
         assert len(result.nodes) > 0
 
 
-class TestHybridExtractionDefaults:
+class TestTwoStepExtractionDefaults:
     def test_default_entity_types(self):
         llm = MockLLM()
-        extractor = HybridExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
         assert "Person" in extractor.entity_types
         assert "Organization" in extractor.entity_types
         assert "Location" in extractor.entity_types
 
     def test_custom_entity_types(self):
         llm = MockLLM()
-        extractor = HybridExtraction(
+        extractor = TwoStepExtraction(
             llm=llm,
             entity_extractor=EntityExtractor(llm=llm),
             entity_types=["Vehicle", "Road"],
@@ -287,7 +287,7 @@ class TestHybridExtractionDefaults:
         assert extractor.entity_types == ["Vehicle", "Road"]
 
 
-class TestHybridExtractionStep2Parsing:
+class TestTwoStepExtractionStep2Parsing:
     def test_parse_valid_response(self):
         content = json.dumps({
             "entities": [
@@ -298,7 +298,7 @@ class TestHybridExtractionStep2Parsing:
                  "description": "Friends", "weight": 0.8},
             ],
         })
-        ents, rels = HybridExtraction._parse_step2_response(
+        ents, rels = TwoStepExtraction._parse_step2_response(
             content, ["Person"], "chunk-0"
         )
         assert len(ents) == 1
@@ -308,7 +308,7 @@ class TestHybridExtractionStep2Parsing:
         assert rels[0].target == "Bob"
 
     def test_parse_invalid_json(self):
-        ents, rels = HybridExtraction._parse_step2_response(
+        ents, rels = TwoStepExtraction._parse_step2_response(
             "not json", ["Person"], "chunk-0"
         )
         assert ents == []
@@ -324,7 +324,7 @@ class TestHybridExtractionStep2Parsing:
                  "description": "", "weight": 0.5},
             ],
         })
-        ents, rels = HybridExtraction._parse_step2_response(
+        ents, rels = TwoStepExtraction._parse_step2_response(
             content, ["Person"], "chunk-0"
         )
         assert len(rels) == 0  # "he" is in stoplist
@@ -337,7 +337,7 @@ class TestHybridExtractionStep2Parsing:
             ],
             "relationships": [],
         })
-        ents, rels = HybridExtraction._parse_step2_response(
+        ents, rels = TwoStepExtraction._parse_step2_response(
             content, ["Person", "Animal"], "chunk-0"
         )
         names = {e.name for e in ents}
@@ -346,7 +346,7 @@ class TestHybridExtractionStep2Parsing:
 
     def test_parse_markdown_fences(self):
         content = '```json\n{"entities": [{"name": "Alice", "type": "Person", "description": ""}], "relationships": []}\n```'
-        ents, rels = HybridExtraction._parse_step2_response(
+        ents, rels = TwoStepExtraction._parse_step2_response(
             content, ["Person"], "chunk-0"
         )
         assert len(ents) == 1
@@ -381,7 +381,7 @@ class TestSpansMerging:
                 source_chunk_ids=["chunk-0"],
             ),
         ]
-        HybridExtraction._merge_step1_metadata(verified, step1)
+        TwoStepExtraction._merge_step1_metadata(verified, step1)
 
         alice = next(e for e in verified if e.name == "Alice")
         assert hasattr(alice, "spans")
@@ -406,7 +406,7 @@ class TestSpansMerging:
             source_chunk_ids=["chunk-1"],
             spans={"chunk-1": [{"start": 10, "end": 15}]},
         )
-        merged = HybridExtraction._aggregate_entities([ent1, ent2])
+        merged = TwoStepExtraction._aggregate_entities([ent1, ent2])
         assert len(merged) == 1
         assert "chunk-0" in merged[0].spans
         assert "chunk-1" in merged[0].spans
@@ -423,7 +423,7 @@ class TestSpansMerging:
             name="Alice", type="Person", description="longer description",
             source_chunk_ids=["chunk-1"],
         )
-        merged = HybridExtraction._aggregate_entities([ent1, ent2])
+        merged = TwoStepExtraction._aggregate_entities([ent1, ent2])
         assert len(merged) == 1
         assert merged[0].description == "longer description"
         assert "chunk-0" in merged[0].source_chunk_ids
@@ -436,7 +436,7 @@ class TestSpansMerging:
             source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 0, "end": 5}]},
         )
-        nodes = HybridExtraction._entities_to_nodes([ent])
+        nodes = TwoStepExtraction._entities_to_nodes([ent])
         assert len(nodes) == 1
         assert "spans" in nodes[0].properties
         assert nodes[0].properties["spans"]["chunk-0"] == [{"start": 0, "end": 5}]
@@ -447,7 +447,7 @@ class TestSpansMerging:
             name="Alice", type="Person", description="",
             source_chunk_ids=["chunk-0"],
         )
-        nodes = HybridExtraction._entities_to_nodes([ent])
+        nodes = TwoStepExtraction._entities_to_nodes([ent])
         assert "spans" not in nodes[0].properties
 
     def test_relationship_spans_parsed(self):
@@ -463,7 +463,7 @@ class TestSpansMerging:
                  "weight": 0.9, "span_start": 10, "span_end": 35},
             ],
         })
-        ents, rels = HybridExtraction._parse_step2_response(
+        ents, rels = TwoStepExtraction._parse_step2_response(
             content, ["Person"], "chunk-5"
         )
         assert len(rels) == 1
@@ -481,7 +481,7 @@ class TestSpansMerging:
             weight=0.9, source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 10, "end": 35}]},
         )
-        rels = HybridExtraction._relations_to_relationships([rel])
+        rels = TwoStepExtraction._relations_to_relationships([rel])
         assert len(rels) == 1
         assert "spans" in rels[0].properties
         assert rels[0].properties["spans"]["chunk-0"] == [{"start": 10, "end": 35}]
@@ -495,7 +495,7 @@ class TestSpansMerging:
             keywords="", description="", weight=1.0,
             source_chunk_ids=["chunk-0"],
         )
-        rels = HybridExtraction._relations_to_relationships([rel])
+        rels = TwoStepExtraction._relations_to_relationships([rel])
         assert "spans" not in rels[0].properties
 
     def test_relationship_spans_merge_across_chunks(self):
@@ -514,7 +514,7 @@ class TestSpansMerging:
             weight=0.9, source_chunk_ids=["chunk-1"],
             spans={"chunk-1": [{"start": 5, "end": 40}]},
         )
-        merged = HybridExtraction._aggregate_relations([rel1, rel2])
+        merged = TwoStepExtraction._aggregate_relations([rel1, rel2])
         assert len(merged) == 1
         assert "chunk-0" in merged[0].spans
         assert "chunk-1" in merged[0].spans

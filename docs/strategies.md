@@ -8,7 +8,7 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 |---|---------|-----|------------------------|
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader` |
 | 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` |
-| 3 | Extraction | `ExtractionStrategy` | `HybridExtraction` |
+| 3 | Extraction | `ExtractionStrategy` | `TwoStepExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
@@ -187,7 +187,7 @@ class ExtractionStrategy(ABC):
         ...
 ```
 
-### Built-in: HybridExtraction
+### Built-in: TwoStepExtraction
 
 Composable 2-step extraction with pluggable entity NER and LLM relationship extraction.
 
@@ -202,19 +202,19 @@ The LLM receives the pre-extracted entities and original text, verifies entities
 **Fixed Ontology**: All entities are mapped to a fixed set of types (default 11 types). Types not in the ontology become `"Unknown"`. No post-hoc type resolution needed.
 
 ```python
-from graphrag_sdk import HybridExtraction, EntityExtractor
+from graphrag_sdk import TwoStepExtraction, EntityExtractor
 
 # Default: GLiNER2 for step 1, LLM for step 2
-extractor = HybridExtraction(llm=llm)
+extractor = TwoStepExtraction(llm=llm)
 
 # With LLM for step 1 instead of GLiNER2
-extractor = HybridExtraction(
+extractor = TwoStepExtraction(
     llm=llm,
     entity_extractor=EntityExtractor(llm=llm),
 )
 
 # With custom NER model
-extractor = HybridExtraction(
+extractor = TwoStepExtraction(
     llm=llm,
     entity_extractor=EntityExtractor(model=my_spacy_ner),
 )
@@ -222,13 +222,13 @@ extractor = HybridExtraction(
 # With coreference resolution
 from graphrag_sdk import FastCorefResolver
 
-extractor = HybridExtraction(
+extractor = TwoStepExtraction(
     llm=llm,
     coref_resolver=FastCorefResolver(),  # pip install graphrag-sdk[fastcoref]
 )
 
 # Custom entity types
-extractor = HybridExtraction(
+extractor = TwoStepExtraction(
     llm=llm,
     entity_types=["Gene", "Protein", "Disease", "Drug"],
 )

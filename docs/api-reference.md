@@ -72,7 +72,7 @@ Build a knowledge graph from a source. Auto-detects loader from file extension.
 | `text` | `str \| None` | `None` | Raw text (skips loader if provided) |
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
 | `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (FixedSizeChunking(1000) if None) |
-| `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (HybridExtraction if None) |
+| `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (TwoStepExtraction if None) |
 | `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None) |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
@@ -519,7 +519,7 @@ class ExtractionStrategy(ABC):
 ```
 
 **Built-in:**
-- `HybridExtraction(llm, *, entity_extractor=None, coref_resolver=None, embedder=None, entity_types=None, max_concurrency=None)`
+- `TwoStepExtraction(llm, *, entity_extractor=None, coref_resolver=None, embedder=None, entity_types=None, max_concurrency=None)`
 
 ### ResolutionStrategy (ABC)
 

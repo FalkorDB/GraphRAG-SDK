@@ -386,7 +386,7 @@ Larger chunks provide more context per extraction call but increase LLM token us
 
 ### Extraction Strategy Parameters
 
-**HybridExtraction** -- composable 2-step extraction (GLiNER2 NER + LLM relationship extraction):
+**TwoStepExtraction** -- composable 2-step extraction (GLiNER2 NER + LLM relationship extraction):
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
@@ -397,19 +397,19 @@ Larger chunks provide more context per extraction call but increase LLM token us
 | `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during extraction. |
 
 ```python
-from graphrag_sdk import HybridExtraction, EntityExtractor
+from graphrag_sdk import TwoStepExtraction, EntityExtractor
 
 # Default: GLiNER2 for entity NER, LLM for relationship extraction
-extractor = HybridExtraction(llm=my_llm)
+extractor = TwoStepExtraction(llm=my_llm)
 
 # With LLM-based entity NER instead of GLiNER2
-extractor = HybridExtraction(
+extractor = TwoStepExtraction(
     llm=my_llm,
     entity_extractor=EntityExtractor(llm=my_llm),
 )
 
 # With custom entity types
-extractor = HybridExtraction(
+extractor = TwoStepExtraction(
     llm=my_llm,
     entity_types=["Gene", "Protein", "Disease"],
 )
@@ -426,10 +426,10 @@ llm = LiteLLM(model="azure/gpt-4.1", api_key="...")
 llm.max_concurrency = 8  # limit to 8 parallel calls
 ```
 
-For `HybridExtraction`, you can also pass `max_concurrency` directly:
+For `TwoStepExtraction`, you can also pass `max_concurrency` directly:
 
 ```python
-extractor = HybridExtraction(llm=my_llm, max_concurrency=6)
+extractor = TwoStepExtraction(llm=my_llm, max_concurrency=6)
 ```
 
 ---

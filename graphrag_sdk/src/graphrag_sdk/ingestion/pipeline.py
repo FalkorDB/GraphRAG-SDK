@@ -65,7 +65,7 @@ class IngestionPipeline:
         pipeline = IngestionPipeline(
             loader=PdfLoader(),
             chunker=FixedSizeChunking(chunk_size=500),
-            extractor=HybridExtraction(llm=my_llm),
+            extractor=TwoStepExtraction(llm=my_llm),
             resolver=ExactMatchResolution(),
             graph_store=my_graph_store,
             vector_store=my_vector_store,
@@ -287,7 +287,7 @@ class IngestionPipeline:
 
         If the schema has no entity types defined, all data passes through
         (open-schema mode). ``Unknown`` entities (low-confidence NER) and
-        ``RELATES`` edges (HybridExtraction unified type) always pass through.
+        ``RELATES`` edges (TwoStepExtraction unified type) always pass through.
         """
         if not schema.entities and not schema.relations:
             return graph_data  # Open schema — no pruning
@@ -301,7 +301,7 @@ class IngestionPipeline:
             pruned_nodes = graph_data.nodes
 
         # Filter relationships by allowed types
-        # Always allow "RELATES" — HybridExtraction's unified edge type
+        # Always allow "RELATES" — TwoStepExtraction's unified edge type
         allowed_types = {r.label for r in schema.relations}
         if allowed_types:
             allowed_types.add("RELATES")

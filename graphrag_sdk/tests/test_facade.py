@@ -272,20 +272,20 @@ class TestGraphRAGDeduplicateEntities:
 
 class TestGraphRAGDefaultExtractor:
     def test_default_extractor_is_hybrid(self, mock_conn, embedder, llm):
-        """_default_extractor always returns HybridExtraction."""
-        from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import HybridExtraction
+        """_default_extractor always returns TwoStepExtraction."""
+        from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import TwoStepExtraction
 
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
         extractor = g._default_extractor()
-        assert isinstance(extractor, HybridExtraction)
+        assert isinstance(extractor, TwoStepExtraction)
 
     def test_default_extractor_uses_schema_types(self, mock_conn, embedder, llm, sample_schema):
-        """Schema entity types should be passed to HybridExtraction."""
-        from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import HybridExtraction
+        """Schema entity types should be passed to TwoStepExtraction."""
+        from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import TwoStepExtraction
 
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, schema=sample_schema)
         extractor = g._default_extractor()
-        assert isinstance(extractor, HybridExtraction)
+        assert isinstance(extractor, TwoStepExtraction)
         assert "Person" in extractor.entity_types
         assert "Company" in extractor.entity_types
 

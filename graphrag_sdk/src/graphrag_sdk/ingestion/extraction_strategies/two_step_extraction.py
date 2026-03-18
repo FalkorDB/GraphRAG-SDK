@@ -41,7 +41,7 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 logger = logging.getLogger(__name__)
 
 
-class HybridExtraction(ExtractionStrategy):
+class TwoStepExtraction(ExtractionStrategy):
     """Composable 2-step extraction with pluggable entity NER and coreference.
 
     **Step 1** — Entity extraction via a pluggable ``EntityExtractor``

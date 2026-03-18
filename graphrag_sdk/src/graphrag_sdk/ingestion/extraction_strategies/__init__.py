@@ -8,13 +8,13 @@ from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     EntityExtractor,
 )
-from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import (
-    HybridExtraction,
+from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
+    TwoStepExtraction,
 )
 
 __all__ = [
     "ExtractionStrategy",
-    "HybridExtraction",
+    "TwoStepExtraction",
     "EntityExtractor",
     "CorefResolver",
     "FastCorefResolver",
