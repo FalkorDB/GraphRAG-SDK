@@ -85,7 +85,7 @@ from graphrag_sdk import (
 )
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk import HybridExtraction
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
     DescriptionMergeResolution,
 )
@@ -240,7 +240,7 @@ async def main():
                 source_name,
                 text=text,
                 chunker=FixedSizeChunking(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP),
-                extractor=MergedExtraction(llm=llm, embedder=embedder),
+                extractor=HybridExtraction(llm=llm, embedder=embedder),
                 resolver=DescriptionMergeResolution(llm=llm),
                 ctx=Context(tenant_id="benchmark"),
             )
@@ -334,7 +334,7 @@ The benchmark uses this specific combination of strategies:
 | Strategy | Class | Key Parameters |
 |----------|-------|---------------|
 | **Chunking** | `FixedSizeChunking` | `chunk_size=1500`, `chunk_overlap=200` |
-| **Extraction** | `MergedExtraction` | Combines LightRAG typed extraction with HippoRAG fact triples + entity mentions |
+| **Extraction** | `HybridExtraction` | Combines LightRAG typed extraction with HippoRAG fact triples + entity mentions |
 | **Resolution** | `DescriptionMergeResolution` | LLM-assisted entity deduplication with description merging |
 | **Post-ingestion** | `finalize()` | Dedup entities, backfill entity embeddings, embed relationships, ensure indexes |
 
@@ -365,7 +365,7 @@ await rag.ingest(
     source_name,
     text=document_text,
     chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-    extractor=MergedExtraction(llm=llm, embedder=embedder),
+    extractor=HybridExtraction(llm=llm, embedder=embedder),
     resolver=DescriptionMergeResolution(llm=llm),
 )
 

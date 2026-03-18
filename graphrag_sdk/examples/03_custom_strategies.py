@@ -3,7 +3,7 @@ GraphRAG SDK v2 -- Custom Strategies (Benchmark-Winning Pipeline)
 ==================================================================
 Demonstrates the full pipeline configuration that achieved 88.2% accuracy
 on the 20-document novel benchmark. Uses:
-  - MergedExtraction (LightRAG + HippoRAG combined)
+  - HybridExtraction (GLiNER2 NER + LLM relationship extraction)
   - DescriptionMergeResolution (LLM-assisted entity dedup)
   - Post-ingestion synonym detection
   - MultiPathRetrieval (default, configured automatically)
@@ -32,7 +32,7 @@ from graphrag_sdk import (
 )
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk import HybridExtraction
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
 
 # Sample documents (replace with your own)
@@ -119,8 +119,8 @@ async def main():
             text=text,
             # Larger chunks capture more context per extraction call
             chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-            # MergedExtraction: LightRAG typed entities + HippoRAG fact triples & mentions
-            extractor=MergedExtraction(llm=llm, embedder=embedder),
+            # HybridExtraction: GLiNER2 entity NER + LLM verify & relationship extraction
+            extractor=HybridExtraction(llm=llm, embedder=embedder),
             # LLM-assisted deduplication merges entity descriptions
             resolver=DescriptionMergeResolution(llm=llm),
             ctx=Context(tenant_id="demo"),

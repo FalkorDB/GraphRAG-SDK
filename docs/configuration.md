@@ -386,13 +386,13 @@ Larger chunks provide more context per extraction call but increase LLM token us
 
 ### Extraction Strategy Parameters
 
-**SchemaGuidedExtraction** -- JSON-based extraction constrained to schema types:
+**HybridExtraction** -- JSON-based extraction constrained to schema types:
 
 | Parameter          | Type  | Default | Description                                    |
 |--------------------|-------|---------|------------------------------------------------|
 | `chunk_batch_size` | `int` | `1`     | Number of chunks per LLM call.                 |
 
-**MergedExtraction** -- delimiter-based extraction combining LightRAG and HippoRAG patterns:
+**HybridExtraction** -- delimiter-based extraction combining LightRAG and HippoRAG patterns:
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
@@ -400,9 +400,9 @@ Larger chunks provide more context per extraction call but increase LLM token us
 | `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during extraction.   |
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk import HybridExtraction
 
-extractor = MergedExtraction(
+extractor = HybridExtraction(
     llm=my_llm,
     enable_gleaning=True,      # second-pass extraction for higher recall
     max_concurrency=8,         # limit parallel LLM calls
@@ -420,10 +420,10 @@ llm = LiteLLM(model="azure/gpt-4.1", api_key="...")
 llm.max_concurrency = 8  # limit to 8 parallel calls
 ```
 
-For `MergedExtraction`, you can also pass `max_concurrency` directly to override the LLM's default:
+For `HybridExtraction`, you can also pass `max_concurrency` directly to override the LLM's default:
 
 ```python
-extractor = MergedExtraction(llm=my_llm, max_concurrency=6)
+extractor = HybridExtraction(llm=my_llm, max_concurrency=6)
 ```
 
 ---
