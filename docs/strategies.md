@@ -7,8 +7,8 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 | # | Concern | ABC | Built-in Implementations |
 |---|---------|-----|------------------------|
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader` |
-| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking` |
-| 3 | Extraction | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction`, `CorefGLiNERLLMExtraction` |
+| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` |
+| 3 | Extraction | `ExtractionStrategy` | `HybridExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
@@ -140,7 +140,7 @@ chunker = ContextualChunking(
 
 ### Built-in: CallableChunking (bring your own framework)
 
-Adapts any `text → list[str]` function into a chunking strategy. Use this to plug in **any** chunking library — LlamaIndex, LangChain, Unstructured, spaCy, or your own logic — without the SDK carrying those dependencies.
+Adapts any `text -> list[str]` function into a chunking strategy. Use this to plug in **any** chunking library -- LlamaIndex, LangChain, Unstructured, spaCy, or your own logic -- without the SDK carrying those dependencies.
 
 Works with sync functions, async functions, and callable classes.
 
@@ -149,46 +149,6 @@ from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import Callabl
 
 # Plain function
 chunker = CallableChunking(lambda text: text.split("\n\n"))
-```
-
-#### LlamaIndex example
-
-```bash
-pip install llama-index-core
-```
-
-```python
-from llama_index.core.node_parser import SentenceSplitter
-from llama_index.core import Document
-
-splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
-chunker = CallableChunking(
-    lambda text: [n.text for n in splitter.get_nodes_from_documents([Document(text=text)])],
-    strategy_name="llama_sentence",
-)
-```
-
-#### LangChain example
-
-```bash
-pip install langchain-text-splitters
-```
-
-```python
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-lc = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-chunker = CallableChunking(lc.split_text, strategy_name="langchain_recursive")
-```
-
-#### Async example
-
-```python
-async def semantic_split(text: str) -> list[str]:
-    # Your async chunking logic here
-    ...
-
-chunker = CallableChunking(semantic_split, strategy_name="my_semantic")
 ```
 
 ### Writing Your Own
@@ -208,7 +168,7 @@ class SentenceChunking(ChunkingStrategy):
 
 ## 3. ExtractionStrategy
 
-Extracts entities, relationships, and optionally entity mentions from text chunks using an LLM.
+Extracts entities, relationships, and entity mentions from text chunks.
 
 ### ABC
 
@@ -227,71 +187,87 @@ class ExtractionStrategy(ABC):
         ...
 ```
 
-### Built-in: SchemaGuidedExtraction
+### Built-in: HybridExtraction
 
-LLM-based extraction constrained to the provided schema. Prompts the LLM with entity types, relationship types, and schema patterns.
+Composable 2-step extraction with pluggable entity NER and LLM relationship extraction.
+
+**Step 1 -- Entity NER** (pluggable via `EntityExtractor`):
+- **GLiNER2** (default): Local transformer NER, no API calls. Returns typed entities with confidence scores and character spans.
+- **LLM**: Uses a structured NER prompt. Returns entities with confidence, spans, descriptions.
+- **Custom**: Any model implementing `predict_entities(text, labels)`.
+
+**Step 2 -- LLM Verify + Relationship Extraction**:
+The LLM receives the pre-extracted entities and original text, verifies entities (removes invalid, adds missed), and extracts relationships with descriptions, keywords, confidence, and evidence spans.
+
+**Fixed Ontology**: All entities are mapped to a fixed set of types (default 11 types). Types not in the ontology become `"Unknown"`. No post-hoc type resolution needed.
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+from graphrag_sdk import HybridExtraction, EntityExtractor
 
-extractor = SchemaGuidedExtraction(
-    llm=llm,              # LLMInterface instance
-    chunk_batch_size=1,   # chunks per LLM call (default: 1)
+# Default: GLiNER2 for step 1, LLM for step 2
+extractor = HybridExtraction(llm=llm)
+
+# With LLM for step 1 instead of GLiNER2
+extractor = HybridExtraction(
+    llm=llm,
+    entity_extractor=EntityExtractor(llm=llm),
+)
+
+# With custom NER model
+extractor = HybridExtraction(
+    llm=llm,
+    entity_extractor=EntityExtractor(model=my_spacy_ner),
+)
+
+# With coreference resolution
+from graphrag_sdk import FastCorefResolver
+
+extractor = HybridExtraction(
+    llm=llm,
+    coref_resolver=FastCorefResolver(),  # pip install graphrag-sdk[fastcoref]
+)
+
+# Custom entity types
+extractor = HybridExtraction(
+    llm=llm,
+    entity_types=["Gene", "Protein", "Disease", "Drug"],
 )
 ```
 
-**When to use:** Default choice. Good accuracy, respects schema constraints, straightforward.
+**Default entity types:** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method.
 
-### Built-in: MergedExtraction
+**EntityExtractor parameters:**
 
-Combines two extraction approaches:
-- **LightRAG-style**: Rich typed entity extraction with descriptions, delimiter-based parsing
-- **HippoRAG-style**: Entity mentions linking entities to source chunks
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model` | None | Custom NER model with `predict_entities(text, labels)` |
+| `llm` | None | LLMInterface for LLM-based NER |
+| `threshold` | 0.75 | Confidence threshold -- below this, entities become "Unknown" |
+| `gliner_model_name` | `urchade/gliner_medium-v2.1` | GLiNER model (when using default mode) |
 
-All LLM-extracted relationships produce the single `RELATES` edge type. The original relationship type (e.g. `WORKS_AT`) is preserved in the `rel_type` property on each edge. A `fact` property stores a human-readable fact string for embedding.
+If neither `model` nor `llm` is provided, GLiNER2 is used (local, no API calls).
 
-Entity IDs are type-qualified via `compute_entity_id(name, entity_type)` to prevent cross-type collisions (e.g. Person "Paris" and Location "Paris" get different IDs).
+**Graph output:**
+- All relationships use `RELATES` edge type. The original type (e.g. `WORKS_AT`) is in `properties["rel_type"]`.
+- Entity IDs are type-qualified: `compute_entity_id("Paris", "Location")` -> `"paris__location"`.
+- Character spans stored as `properties["spans"]` = `{chunk_id: [{start, end}]}` on both entities and relationships.
+- Entity mentions (`MENTIONED_IN` edges) link entities to source chunks.
 
-Attaches `mentions`, `extracted_entities`, and `extracted_relations` to the `GraphData` object via Pydantic's `extra="allow"`.
+**When to use:** Default and only built-in extraction strategy. Composable via pluggable entity extractors and optional coreference resolution.
 
-```python
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
-
-extractor = MergedExtraction(
-    llm=llm,                    # LLMInterface instance
-    embedder=embedder,          # Embedder instance (optional)
-    enable_gleaning=False,      # Second LLM pass for missed entities (default: False)
-    max_concurrency=None,       # Override LLM concurrency (default: uses LLM's setting)
-)
-```
-
-**When to use:** Best accuracy. Used in the benchmark-winning pipeline. Produces richer graphs (mentions, typed relationships) but uses more LLM calls.
-
-### Built-in: CorefGLiNERLLMExtraction
-
-Hybrid extraction that combines local models for entities with LLM for relationships:
-
-1. **fastcoref** (LingMessCoref) resolves pronouns and short mentions → full entity names
-2. **GLiNER** zero-shot NER with schema types → typed entities (≥ 0.75 confidence → typed, below → "Unknown")
-3. **LLM call per chunk**: given the entities found, extract all relationships → structured JSON with source, target, type, sentence, explanation
-
-Entities are grounded by GLiNER (no hallucinated entities). Only relationship extraction uses the LLM, significantly reducing token usage compared to fully LLM-based strategies.
+### Writing Your Own
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies.coref_gliner_llm_extraction import CorefGLiNERLLMExtraction
+class MyExtraction(ExtractionStrategy):
+    async def extract(self, chunks, schema, ctx):
+        nodes, rels = [], []
+        for chunk in chunks.chunks:
+            # Your extraction logic
+            ...
+        return GraphData(nodes=nodes, relationships=rels)
 
-extractor = CorefGLiNERLLMExtraction(
-    llm=llm,                    # LLMInterface instance (used for relationships only)
-    schema_types=None,          # Entity type labels for GLiNER (default: person, location, org, ...)
-    gliner_threshold=0.75,      # Confidence threshold for typed vs Unknown entities
-    enable_coref=True,          # Enable coreference resolution (default: True)
-    max_concurrency=None,       # Override LLM concurrency (default: uses LLM's setting)
-)
+await rag.ingest("doc.txt", extractor=MyExtraction())
 ```
-
-**Requirements:** `pip install gliner fastcoref`
-
-**When to use:** Highest semantic relationship recall (95% on novel benchmark). Best when you need rich relationship extraction with grounded entities. Uses fewer LLM tokens than SchemaGuided or MergedExtraction since entities are extracted locally.
 
 ---
 
@@ -414,16 +390,6 @@ retriever = MultiPathRetrieval(
 
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=retriever)
 ```
-
-**Pipeline:**
-1. Extract keywords from question (stopword filter + LLM proper nouns)
-2. Embed question only (single API call)
-3. RELATES edge vector search -> fact strings + entity entry points
-4. 2-path entity discovery (Cypher CONTAINS, fulltext) + merge RELATES entities
-5. 2-hop relationship expansion for top entities
-6. 4-path chunk retrieval (fulltext, vector, MENTIONED_IN, 2-hop entity->neighbor->chunk)
-7. Cosine reranking of candidate chunks
-8. Question type detection + structured context assembly
 
 **When to use:** Default choice. Best accuracy on benchmark. Handles complex multi-hop questions.
 
