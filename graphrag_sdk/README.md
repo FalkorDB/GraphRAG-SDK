@@ -138,15 +138,13 @@ await rag.ingest(
 
 ### Post-Ingestion Operations
 
-After ingesting all documents, run synonym detection and backfill embeddings:
+After ingesting all documents, run `finalize()` to deduplicate entities, backfill embeddings, and ensure indexes:
 
 ```python
-# Detect synonym entities across the entire graph
-synonyms = await rag.detect_synonymy(similarity_threshold=0.9)
-print(f"Created {synonyms} SYNONYM edges")
-
-# Backfill entity embeddings (for entity vector search)
-backfilled = await rag.vector_store.backfill_entity_embeddings()
+# Run all post-ingestion steps
+result = await rag.finalize()
+print(f"Deduplicated: {result['entities_deduplicated']}")
+print(f"Embedded: {result['entities_embedded']} entities, {result['relationships_embedded']} rels")
 
 # Inspect graph statistics
 stats = await rag.graph_store.get_statistics()
@@ -212,7 +210,7 @@ See [docs/benchmark.md](docs/benchmark.md) for full reproduction instructions.
 
 ```
 graphrag_sdk/
-├── api/main.py                     # GraphRAG facade (ingest, query, detect_synonymy)
+├── api/main.py                     # GraphRAG facade (ingest, query, finalize)
 ├── core/
 │   ├── connection.py               # FalkorDB connection & config
 │   ├── context.py                  # Execution context (logging, budget)
@@ -220,7 +218,7 @@ graphrag_sdk/
 │   ├── models.py                   # Pydantic data models (30+ classes)
 │   └── providers.py                # LLM & Embedder ABCs + built-in providers
 ├── ingestion/
-│   ├── pipeline.py                 # 10-step ingestion orchestrator
+│   ├── pipeline.py                 # 9-step ingestion orchestrator
 │   ├── loaders/                    # TextLoader, PdfLoader
 │   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, CallableChunking
 │   ├── extraction_strategies/      # HybridExtraction (GLiNER2 + LLM)

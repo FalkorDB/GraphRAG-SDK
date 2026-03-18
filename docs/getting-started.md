@@ -117,7 +117,7 @@ print(f"Created {result.nodes_created} nodes, {result.relationships_created} rel
 print(f"Indexed {result.chunks_indexed} chunks")
 ```
 
-The ingestion pipeline runs a 10-step process: Load, Chunk, Lexical Index, Extract, Prune, Resolve, Write, Synonymy, Mentions, and Chunk Indexing (the last three run in parallel).
+The ingestion pipeline runs a 9-step process: Load, Chunk, Lexical Graph, Extract, Quality Filter, Prune, Resolve, Write, then Mentions and Chunk Indexing in parallel.
 
 ---
 

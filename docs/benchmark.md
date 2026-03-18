@@ -334,7 +334,7 @@ The benchmark uses this specific combination of strategies:
 | Strategy | Class | Key Parameters |
 |----------|-------|---------------|
 | **Chunking** | `FixedSizeChunking` | `chunk_size=1500`, `chunk_overlap=200` |
-| **Extraction** | `HybridExtraction` | Combines LightRAG typed extraction with HippoRAG fact triples + entity mentions |
+| **Extraction** | `HybridExtraction` | GLiNER2 entity NER (step 1) + LLM verify & relationship extraction (step 2) |
 | **Resolution** | `DescriptionMergeResolution` | LLM-assisted entity deduplication with description merging |
 | **Post-ingestion** | `finalize()` | Dedup entities, backfill entity embeddings, embed relationships, ensure indexes |
 

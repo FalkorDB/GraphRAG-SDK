@@ -519,8 +519,7 @@ class ExtractionStrategy(ABC):
 ```
 
 **Built-in:**
-- `HybridExtraction(llm, chunk_batch_size=1)`
-- `HybridExtraction(llm, embedder=None, enable_gleaning=False, max_concurrency=None)`
+- `HybridExtraction(llm, *, entity_extractor=None, coref_resolver=None, embedder=None, entity_types=None, max_concurrency=None)`
 
 ### ResolutionStrategy (ABC)
 

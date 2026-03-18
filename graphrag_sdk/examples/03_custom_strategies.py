@@ -5,7 +5,7 @@ Demonstrates the full pipeline configuration that achieved 88.2% accuracy
 on the 20-document novel benchmark. Uses:
   - HybridExtraction (GLiNER2 NER + LLM relationship extraction)
   - DescriptionMergeResolution (LLM-assisted entity dedup)
-  - Post-ingestion synonym detection
+  - Post-ingestion finalize (dedup, embeddings, indexes)
   - MultiPathRetrieval (default, configured automatically)
 
 Prerequisites:
@@ -127,15 +127,12 @@ async def main():
         )
         print(f"  {source_id}: {result.nodes_created} nodes, {result.relationships_created} edges")
 
-    # --- Post-ingestion: synonym detection ---
-    print("\nDetecting synonyms across all entities...")
-    synonym_count = await rag.detect_synonymy(similarity_threshold=0.9)
-    print(f"  Created {synonym_count} SYNONYM edges")
-
-    # --- Post-ingestion: backfill entity embeddings ---
-    print("Backfilling entity embeddings...")
-    backfilled = await rag.vector_store.backfill_entity_embeddings()
-    print(f"  Backfilled {backfilled} entities")
+    # --- Post-ingestion: finalize (dedup, embeddings, indexes) ---
+    print("\nRunning finalize()...")
+    finalize_result = await rag.finalize()
+    print(f"  Deduplicated: {finalize_result['entities_deduplicated']} entities")
+    print(f"  Embedded: {finalize_result['entities_embedded']} entities, "
+          f"{finalize_result['relationships_embedded']} relationships")
 
     elapsed = time.time() - t0
     print(f"\nTotal ingestion time: {elapsed:.1f}s")
@@ -145,8 +142,6 @@ async def main():
     print(f"\nGraph Statistics:")
     print(f"  Nodes:         {stats['node_count']}")
     print(f"  Edges:         {stats['edge_count']}")
-    print(f"  Facts:         {stats['fact_node_count']}")
-    print(f"  Synonyms:      {stats['synonym_edge_count']}")
     print(f"  Mentions:      {stats['mention_edge_count']}")
     print(f"  Entity types:  {stats['entity_types']}")
 

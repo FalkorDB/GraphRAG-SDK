@@ -386,26 +386,32 @@ Larger chunks provide more context per extraction call but increase LLM token us
 
 ### Extraction Strategy Parameters
 
-**HybridExtraction** -- JSON-based extraction constrained to schema types:
-
-| Parameter          | Type  | Default | Description                                    |
-|--------------------|-------|---------|------------------------------------------------|
-| `chunk_batch_size` | `int` | `1`     | Number of chunks per LLM call.                 |
-
-**HybridExtraction** -- delimiter-based extraction combining LightRAG and HippoRAG patterns:
+**HybridExtraction** -- composable 2-step extraction (GLiNER2 NER + LLM relationship extraction):
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
-| `enable_gleaning`  | `bool`          | `False`        | If `True`, performs a second LLM pass per chunk to catch missed entities. |
-| `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during extraction.   |
+| `entity_extractor` | `EntityExtractor \| None` | `None` (GLiNER2) | Pluggable NER backend. Pass `EntityExtractor(llm=llm)` for LLM-based NER. |
+| `coref_resolver`   | `CorefResolver \| None` | `None` | Optional coreference resolution (e.g. `FastCorefResolver()`). |
+| `embedder`         | `Embedder \| None` | `None` | Embedder instance (reserved for future use). |
+| `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `schema.entities` if set. |
+| `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during extraction. |
 
 ```python
-from graphrag_sdk import HybridExtraction
+from graphrag_sdk import HybridExtraction, EntityExtractor
 
+# Default: GLiNER2 for entity NER, LLM for relationship extraction
+extractor = HybridExtraction(llm=my_llm)
+
+# With LLM-based entity NER instead of GLiNER2
 extractor = HybridExtraction(
     llm=my_llm,
-    enable_gleaning=True,      # second-pass extraction for higher recall
-    max_concurrency=8,         # limit parallel LLM calls
+    entity_extractor=EntityExtractor(llm=my_llm),
+)
+
+# With custom entity types
+extractor = HybridExtraction(
+    llm=my_llm,
+    entity_types=["Gene", "Protein", "Disease"],
 )
 
 result = await rag.ingest("document.txt", extractor=extractor)
@@ -413,14 +419,14 @@ result = await rag.ingest("document.txt", extractor=extractor)
 
 ### LLM Concurrency
 
-The `LLMInterface.max_concurrency` parameter (default: 12) controls how many LLM calls run in parallel during `abatch_invoke()`. This applies to both extraction and other batch operations. Set it lower to avoid rate limits, or higher if your provider supports it:
+The `LLMInterface.max_concurrency` parameter (default: 12) controls how many LLM calls run in parallel during `abatch_invoke()`. Set it lower to avoid rate limits:
 
 ```python
 llm = LiteLLM(model="azure/gpt-4.1", api_key="...")
 llm.max_concurrency = 8  # limit to 8 parallel calls
 ```
 
-For `HybridExtraction`, you can also pass `max_concurrency` directly to override the LLM's default:
+For `HybridExtraction`, you can also pass `max_concurrency` directly:
 
 ```python
 extractor = HybridExtraction(llm=my_llm, max_concurrency=6)
