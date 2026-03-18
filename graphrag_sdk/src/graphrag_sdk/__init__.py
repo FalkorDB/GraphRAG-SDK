@@ -52,16 +52,30 @@ from graphrag_sdk.core.providers import (
 
 # ── Ingestion Strategies ────────────────────────────────────────
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
+from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
-from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
+    CorefResolver,
+    FastCorefResolver,
+)
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    EntityExtractor,
+)
+from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import (
+    HybridExtraction,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+from graphrag_sdk.ingestion.resolution_strategies.embedding_cluster import (
+    EmbeddingClusterResolution,
+)
 
 # ── Retrieval Strategies ────────────────────────────────────────
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
+from graphrag_sdk.retrieval.reranking_strategies.rrf import reciprocal_rank_fusion
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
@@ -106,15 +120,21 @@ __all__ = [
     "TextChunks",
     # Ingestion
     "ChunkingStrategy",
+    "FixedSizeChunking",
+    "SentenceTokenCapChunking",
+    "EmbeddingClusterResolution",
     "ExtractionStrategy",
+    "HybridExtraction",
+    "EntityExtractor",
+    "CorefResolver",
+    "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
-    "MergedExtraction",
     "ResolutionStrategy",
-    "SchemaGuidedExtraction",
     # Retrieval
     "CosineReranker",
     "MultiPathRetrieval",
+    "reciprocal_rank_fusion",
     "RerankingStrategy",
     "RetrievalStrategy",
     # Storage

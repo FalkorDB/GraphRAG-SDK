@@ -26,6 +26,8 @@ dependencies = [
     "falkordb>=1.0",
     "numpy>=1.24",
     "python-dotenv>=1.0",
+    "tiktoken>=0.5",
+    "gliner>=0.2",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +38,8 @@ sentence-transformers = ["sentence-transformers>=2.0"]
 pdf = ["pypdf>=5.0"]
 litellm = ["litellm>=1.40"]
 openrouter = ["openai>=1.0"]
+fastcoref = ["fastcoref>=2.0"]
+spacy = ["spacy>=3.0"]
 all = [
     "openai>=1.0",
     "anthropic>=0.20",
@@ -60,12 +64,51 @@ target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP"]
+select = [
+    "E", "F", "I", "W", "UP",   # existing
+    "B",    # flake8-bugbear: common bugs
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "C4",   # flake8-comprehensions
+    "T20",  # detect print() statements
+    "PIE",  # misc lints
+    "PT",   # pytest-style
+    "N",    # pep8-naming
+    "S",    # bandit security (conservative)
+    "TCH",  # TYPE_CHECKING optimization
+]
+ignore = [
+    "S101",  # assert — needed for type narrowing + tests
+    "N818",  # exception naming — intentional names
+    "N806",  # UPPER_CASE in function — used for constants like BLOCK_SIZE
+    "TC001", # TYPE_CHECKING imports — risks breaking Pydantic/runtime
+    "TC002", # TYPE_CHECKING third-party — risks breaking runtime
+    "TC003", # TYPE_CHECKING stdlib — risks breaking runtime
+    "B905",  # zip-strict — not all zips need strict=True
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
 
 [tool.mypy]
 python_version = "3.10"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["falkordb.*", "redis.*", "litellm.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/graphrag_sdk"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "@abstractmethod"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

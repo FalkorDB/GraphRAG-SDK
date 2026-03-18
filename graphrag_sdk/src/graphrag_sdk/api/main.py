@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Optional
@@ -22,8 +23,9 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
-from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import (
+    HybridExtraction,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
@@ -104,6 +106,8 @@ class GraphRAG:
         embedder: Embedder,
         schema: GraphSchema | None = None,
         retrieval_strategy: RetrievalStrategy | None = None,
+        edge_embedder: Embedder | None = None,
+        edge_embedding_dimension: int | None = None,
     ) -> None:
         # Connection
         if isinstance(connection, ConnectionConfig):
@@ -113,6 +117,7 @@ class GraphRAG:
 
         self.llm = llm
         self.embedder = embedder
+        self.edge_embedder = edge_embedder
         self.schema = schema or GraphSchema()
 
         # Storage layer
@@ -120,6 +125,8 @@ class GraphRAG:
         self.vector_store = VectorStore(
             self._conn,
             embedder=self.embedder,
+            edge_embedder=self.edge_embedder,
+            edge_embedding_dimension=edge_embedding_dimension,
         )
 
         # Default retrieval strategy
@@ -128,6 +135,7 @@ class GraphRAG:
             vector_store=self.vector_store,
             embedder=self.embedder,
             llm=self.llm,
+            edge_embedder=self.edge_embedder,
         )
 
     # ── Ingestion ────────────────────────────────────────────────
@@ -148,7 +156,7 @@ class GraphRAG:
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
         - Chunker: FixedSizeChunking(chunk_size=1000)
-        - Extractor: auto-selected (MergedExtraction for open-schema, SchemaGuidedExtraction for ontology)
+        - Extractor: HybridExtraction with configured LLM
         - Resolver: ExactMatchResolution
 
         Args:
@@ -176,7 +184,15 @@ class GraphRAG:
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
             chunker=chunker or FixedSizeChunking(),
-            extractor=extractor or self._default_extractor(),
+            extractor=extractor or HybridExtraction(
+                llm=self.llm,
+                embedder=self.embedder,
+                entity_types=(
+                    [e.label for e in self.schema.entities]
+                    if self.schema.entities
+                    else None
+                ),
+            ),
             resolver=resolver or ExactMatchResolution(),
             graph_store=self.graph_store,
             vector_store=self.vector_store,
@@ -193,12 +209,6 @@ class GraphRAG:
         await self.vector_store.ensure_indices()
 
         return result
-
-    def _default_extractor(self) -> ExtractionStrategy:
-        """Pick extractor based on schema: MergedExtraction for open-schema, SchemaGuidedExtraction for ontology."""
-        if self.schema.entities or self.schema.relations:
-            return SchemaGuidedExtraction(llm=self.llm)
-        return MergedExtraction(llm=self.llm, embedder=self.embedder)
 
     # ── Query ────────────────────────────────────────────────────
 
@@ -338,9 +348,7 @@ class GraphRAG:
             logger.info("deduplicate_entities: fewer than 2 entities, nothing to dedup")
             return 0
 
-        # Group by normalized name — intentionally cross-type.
-        # Type taxonomy resolution handles type unification at extraction time;
-        # this catches residual duplicates from separate ingestion batches.
+        # Group by normalized name
         groups: dict[str, list[dict]] = {}
         for ent in entities:
             norm = ent["name"].strip().lower()
@@ -359,21 +367,27 @@ class GraphRAG:
             for dup in duplicates:
                 # Remap RELATES edges (both directions)
                 for direction_query in [
-                    # Outgoing RELATES from duplicate
+                    # Outgoing RELATES from duplicate — MATCH survivor first to avoid stub creation
                     "MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__) "
                     "WHERE b.id <> $survivor_id "
-                    "MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b) "
-                    "SET nr += properties(r) "
+                    "WITH r, b, properties(r) AS rprops "
+                    "MATCH (s:__Entity__ {id: $survivor_id}) "
+                    "MERGE (s)-[nr:RELATES]->(b) "
+                    "SET nr += rprops "
                     "DELETE r",
-                    # Incoming RELATES to duplicate
+                    # Incoming RELATES to duplicate — MATCH survivor first to avoid stub creation
                     "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
                     "WHERE a.id <> $survivor_id "
-                    "MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id}) "
-                    "SET nr += properties(r) "
+                    "WITH r, a, properties(r) AS rprops "
+                    "MATCH (s:__Entity__ {id: $survivor_id}) "
+                    "MERGE (a)-[nr:RELATES]->(s) "
+                    "SET nr += rprops "
                     "DELETE r",
-                    # Remap MENTIONED_IN edges
+                    # Remap MENTIONED_IN edges — MATCH survivor first to avoid stub creation
                     "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "
-                    "MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c) "
+                    "WITH r, c "
+                    "MATCH (s:__Entity__ {id: $survivor_id}) "
+                    "MERGE (s)-[:MENTIONED_IN]->(c) "
                     "DELETE r",
                 ]:
                     try:
@@ -460,14 +474,20 @@ class GraphRAG:
                         for q in [
                             "MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__) "
                             "WHERE b.id <> $survivor_id "
-                            "MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b) "
-                            "SET nr += properties(r) DELETE r",
+                            "WITH r, b, properties(r) AS rprops "
+                            "MATCH (s:__Entity__ {id: $survivor_id}) "
+                            "MERGE (s)-[nr:RELATES]->(b) "
+                            "SET nr += rprops DELETE r",
                             "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
                             "WHERE a.id <> $survivor_id "
-                            "MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id}) "
-                            "SET nr += properties(r) DELETE r",
+                            "WITH r, a, properties(r) AS rprops "
+                            "MATCH (s:__Entity__ {id: $survivor_id}) "
+                            "MERGE (a)-[nr:RELATES]->(s) "
+                            "SET nr += rprops DELETE r",
                             "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "
-                            "MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c) "
+                            "WITH r, c "
+                            "MATCH (s:__Entity__ {id: $survivor_id}) "
+                            "MERGE (s)-[:MENTIONED_IN]->(c) "
                             "DELETE r",
                         ]:
                             try:
@@ -489,14 +509,39 @@ class GraphRAG:
         logger.info(f"deduplicate_entities total: {total_merged} duplicates merged")
         return total_merged
 
+    async def _compute_pagerank(self) -> int:
+        """Compute PageRank on __Entity__ nodes via FalkorDB algo.pageRank.
+
+        Stores ``node.pagerank`` on each entity for:
+        - PPR seed prior (Offline-Online Hybrid Scoring)
+        - Graph TF-IDF (specificity = query_PPR / static_pagerank)
+
+        Returns:
+            Number of nodes scored, or 0 if algorithm unavailable.
+        """
+        try:
+            result = await self.graph_store.query_raw(
+                "CALL algo.pageRank('__Entity__', 'RELATES') YIELD node, score "
+                "SET node.pagerank = score "
+                "RETURN count(node)"
+            )
+            count = result.result_set[0][0] if result.result_set else 0
+            logger.info(f"PageRank computed for {count} entities")
+            return count
+        except Exception as exc:
+            logger.warning(f"PageRank computation failed (non-fatal): {exc}")
+            return 0
+
     async def finalize(self) -> dict[str, Any]:
         """Run all post-ingestion steps after all documents are ingested.
 
         Bundles:
-        1. ``deduplicate_entities()`` — global exact-name dedup
-        2. ``backfill_entity_embeddings()`` — name-only embeddings
-        3. ``embed_relationships()`` — fact text embeddings on RELATES edges
-        4. ``ensure_indices()`` — all indexes
+        1. Remove NULL-name stub entities
+        2. ``deduplicate_entities()`` — global exact-name dedup
+        3. ``backfill_entity_embeddings()`` — name-only embeddings
+        4. ``embed_relationships()`` — fact text embeddings on RELATES edges
+        5. ``_compute_pagerank()`` — static PageRank for Graph TF-IDF
+        6. ``ensure_indices()`` — all indexes
 
         Returns:
             Dict with counts from each step.
@@ -505,27 +550,41 @@ class GraphRAG:
 
         ctx_log("finalize: starting post-ingestion steps")
 
-        # Step 1: Global dedup
+        # Step 1: Remove NULL-name stub entities (created by legacy path-MERGE bugs)
+        r = await self.graph_store.query_raw(
+            "MATCH (e:__Entity__) WHERE e.name IS NULL DETACH DELETE e RETURN count(e)"
+        )
+        null_cleaned = r.result_set[0][0] if r.result_set else 0
+        if null_cleaned:
+            ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
+
+        # Step 2: Global dedup
         dedup_count = await self.deduplicate_entities()
         ctx_log(f"finalize: deduplicated {dedup_count} entities")
 
-        # Step 2: Entity embeddings (name-only)
+        # Step 3: Entity embeddings (name-only)
         entity_count = await self.vector_store.backfill_entity_embeddings()
         ctx_log(f"finalize: embedded {entity_count} entities")
 
-        # Step 3: Relationship embeddings (fact text on RELATES edges)
+        # Step 4: Relationship embeddings (fact text on RELATES edges)
         rel_count = await self.vector_store.embed_relationships()
         ctx_log(f"finalize: embedded {rel_count} relationships")
 
-        # Step 4: Ensure all indexes
+        # Step 5: PageRank for Graph TF-IDF + PPR seed prior
+        pagerank_count = await self._compute_pagerank()
+        ctx_log(f"finalize: PageRank scored {pagerank_count} entities")
+
+        # Step 6: Ensure all indexes
         self.vector_store._indices_ensured = False  # force re-check
         index_results = await self.vector_store.ensure_indices()
         ctx_log(f"finalize: indexes = {index_results}")
 
         return {
+            "null_stubs_removed": null_cleaned,
             "entities_deduplicated": dedup_count,
             "entities_embedded": entity_count,
             "relationships_embedded": rel_count,
+            "pagerank_scored": pagerank_count,
             "indexes": index_results,
         }
 

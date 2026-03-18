@@ -65,7 +65,7 @@ class IngestionPipeline:
         pipeline = IngestionPipeline(
             loader=PdfLoader(),
             chunker=FixedSizeChunking(chunk_size=500),
-            extractor=SchemaGuidedExtraction(llm=my_llm),
+            extractor=HybridExtraction(llm=my_llm),
             resolver=ExactMatchResolution(),
             graph_store=my_graph_store,
             vector_store=my_vector_store,
@@ -287,20 +287,31 @@ class IngestionPipeline:
 
         If the schema has no entity types defined, all data passes through
         (open-schema mode).
+
+        Notes:
+        - ``RELATES`` is always an allowed relationship type since
+          HybridExtraction uses it as the unified edge type (the original
+          type is stored in the ``rel_type`` property).
+        - ``Unknown`` entities (low-confidence NER) are kept — they still
+          carry valid graph structure. Type taxonomy resolution and
+          post-ingestion normalization handle cleanup.
         """
         if not schema.entities and not schema.relations:
             return graph_data  # Open schema — no pruning
 
-        # Filter nodes by allowed labels
+        # Filter nodes by allowed labels (keep "Unknown" — valid low-confidence entities)
         allowed_labels = {e.label for e in schema.entities}
         if allowed_labels:
+            allowed_labels.add("Unknown")
             pruned_nodes = [n for n in graph_data.nodes if n.label in allowed_labels]
         else:
             pruned_nodes = graph_data.nodes
 
         # Filter relationships by allowed types
+        # Always allow "RELATES" — HybridExtraction's unified edge type
         allowed_types = {r.label for r in schema.relations}
         if allowed_types:
+            allowed_types.add("RELATES")
             pruned_rels = [
                 r for r in graph_data.relationships if r.type in allowed_types
             ]
