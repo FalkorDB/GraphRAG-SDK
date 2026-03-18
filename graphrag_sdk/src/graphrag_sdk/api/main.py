@@ -22,8 +22,9 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
-from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import (
+    HybridExtraction,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
@@ -148,7 +149,7 @@ class GraphRAG:
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
         - Chunker: FixedSizeChunking(chunk_size=1000)
-        - Extractor: auto-selected (MergedExtraction for open-schema, SchemaGuidedExtraction for ontology)
+        - Extractor: HybridExtraction with configured LLM
         - Resolver: ExactMatchResolution
 
         Args:
@@ -195,10 +196,17 @@ class GraphRAG:
         return result
 
     def _default_extractor(self) -> ExtractionStrategy:
-        """Pick extractor based on schema: MergedExtraction for open-schema, SchemaGuidedExtraction for ontology."""
-        if self.schema.entities or self.schema.relations:
-            return SchemaGuidedExtraction(llm=self.llm)
-        return MergedExtraction(llm=self.llm, embedder=self.embedder)
+        """Return default HybridExtraction with schema entity types if available."""
+        entity_types = (
+            [e.label for e in self.schema.entities]
+            if self.schema.entities
+            else None
+        )
+        return HybridExtraction(
+            llm=self.llm,
+            embedder=self.embedder,
+            entity_types=entity_types,
+        )
 
     # ── Query ────────────────────────────────────────────────────
 

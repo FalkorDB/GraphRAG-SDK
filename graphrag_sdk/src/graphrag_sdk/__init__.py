@@ -53,8 +53,16 @@ from graphrag_sdk.core.providers import (
 # ── Ingestion Strategies ────────────────────────────────────────
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
-from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
+    CorefResolver,
+    FastCorefResolver,
+)
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    EntityExtractor,
+)
+from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import (
+    HybridExtraction,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
@@ -107,11 +115,13 @@ __all__ = [
     # Ingestion
     "ChunkingStrategy",
     "ExtractionStrategy",
+    "HybridExtraction",
+    "EntityExtractor",
+    "CorefResolver",
+    "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
-    "MergedExtraction",
     "ResolutionStrategy",
-    "SchemaGuidedExtraction",
     # Retrieval
     "CosineReranker",
     "MultiPathRetrieval",

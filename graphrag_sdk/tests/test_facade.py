@@ -271,21 +271,23 @@ class TestGraphRAGDeduplicateEntities:
 
 
 class TestGraphRAGDefaultExtractor:
-    def test_ingest_empty_schema_uses_merged_extraction(self, mock_conn, embedder, llm):
-        """With no schema entities/relations, _default_extractor returns MergedExtraction."""
-        from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+    def test_default_extractor_is_hybrid(self, mock_conn, embedder, llm):
+        """_default_extractor always returns HybridExtraction."""
+        from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import HybridExtraction
 
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
         extractor = g._default_extractor()
-        assert isinstance(extractor, MergedExtraction)
+        assert isinstance(extractor, HybridExtraction)
 
-    def test_ingest_populated_schema_uses_schema_guided(self, mock_conn, embedder, llm, sample_schema):
-        """With schema entities/relations, _default_extractor returns SchemaGuidedExtraction."""
-        from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+    def test_default_extractor_uses_schema_types(self, mock_conn, embedder, llm, sample_schema):
+        """Schema entity types should be passed to HybridExtraction."""
+        from graphrag_sdk.ingestion.extraction_strategies.hybrid_extraction import HybridExtraction
 
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, schema=sample_schema)
         extractor = g._default_extractor()
-        assert isinstance(extractor, SchemaGuidedExtraction)
+        assert isinstance(extractor, HybridExtraction)
+        assert "Person" in extractor.entity_types
+        assert "Company" in extractor.entity_types
 
 
 class TestGraphRAGSyncWrappers:
