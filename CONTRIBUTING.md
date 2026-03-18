@@ -1,114 +1,132 @@
-# Contributing to GraphRAG-SDK
+# Contributing to GraphRAG SDK v2
 
-Thank you for your interest in contributing to **GraphRAG-SDK**! 
-We welcome contributions in any form—whether it's reporting issues, suggesting new features, improving documentation, or submitting code. 
-This guide will help you get started.
+Thank you for your interest in contributing to the GraphRAG SDK v2. This guide covers setup, testing, code conventions, and how to extend the SDK with custom strategies.
 
-## Table of Contents
+---
 
-- [Code of Conduct](#code-of-conduct)
-- [How to Contribute](#how-to-contribute)
-- [Development Setup](#development-setup)
-- [Pull Request Guidelines](#pull-request-guidelines)
-- [Issue Tracking](#issue-tracking)
-- [Testing](#testing)
+## 1. Development Setup
 
-## Code of Conduct
+Clone the repository and create a virtual environment:
 
-Please make sure to review and follow our [Code of Conduct](./CODE_OF_CONDUCT.md). 
-We expect all contributors to be respectful and considerate in all interactions.
-
-## How to Contribute
-
-### 1. Reporting Bugs
-
-To report a bug:
-- First, check the [issue tracker](https://github.com/FalkorDB/GraphRAG-SDK/issues) to see if the issue has already been reported.
-- If not, open a new issue with the following information:
-  - Steps to reproduce the issue.
-  - The expected outcome.
-  - The actual outcome, with any relevant error messages or logs.
-
-### 2. Proposing New Features
-
-If you have a feature suggestion:
-- Open an issue to start a discussion about the feature and its potential impact.
-- Wait for feedback from maintainers before starting any implementation work.
-
-### 3. Improving Documentation
-
-Help us by improving the documentation, which may include:
-- Fixing any typos or broken links.
-- Adding examples to clarify functionality.
-- Submit a pull request directly for minor updates, or open an issue for larger changes.
-
-## Development Setup
-
-To set up **GraphRAG-SDK** for local development:
-
-1. Fork the repository and clone your fork:
-   ```bash
-   git clone https://github.com/your-username/GraphRAG-SDK.git
-   cd GraphRAG-SDK
-   ```
-   
-2. Install uv (if not already installed):
-   ```bash
-   pip install uv
-   # Or on macOS/Linux:
-   # curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-
-3. Install the required dependencies:
-   ```bash
-   uv sync --all-extras
-   ```
-   
-## Pull Request Guidelines
-
-Before submitting a pull request, please make sure you follow these guidelines:
-
-- **Fork and branch**: Create a new branch from `main` for your work:
-   ```bash
-   git checkout -b feature-branch
-   ```
-
-- **Commits**: Write clear and concise commit messages.
-   ```bash
-   git commit -m "Add feature X to improve Y"
-   ```
-
-- **Link issues**: If your PR addresses an existing issue, mention it in the PR (e.g., `Closes #123`).
-- **Testing**: Ensure that your changes are properly tested before submitting the PR.
-- **Documentation**: Update any relevant documentation if your changes introduce new features or alter existing behavior.
-
-Once ready, push your branch:
 ```bash
-git push origin feature-branch
+git clone <repo-url>
+cd GraphRAG-SDKv2-DEMO
+python -m venv .venv
+source .venv/bin/activate
 ```
 
-Then, open a pull request from your fork to the main repository.
+Install the SDK in editable mode with development dependencies:
 
-## Issue Tracking
+```bash
+pip install -e "graphrag_sdk[dev]"
+```
 
-We use GitHub Issues for tracking bugs, feature requests, and questions. When opening an issue, please:
-- Provide a clear and descriptive title.
-- Use labels like **bug**, **enhancement**, or **documentation** to categorize your issue.
+You will need a running FalkorDB instance for integration work. The easiest way is via Docker:
 
-## Testing
+```bash
+docker run -p 6379:6379 falkordb/falkordb
+```
 
-Testing is essential for ensuring code quality in **GraphRAG-SDK**. Before submitting your changes:
-- **Write tests**: Ensure all new functionality is covered by tests.
-- **Run tests**: Ensure that all tests pass.
-- 
-   ```bash
-   export PROJECT_ID=${PROJECT_ID}
-   export REGION=${REGION}
-   export OPENAI_API_KEY=${OPENAI_API_KEY}
-   export GOOGLE_API_KEY=${GOOGLE_API_KEY}
-   uv run pytest
-   ```
+This exposes FalkorDB on the default Redis port (6379). No additional configuration is required for local development.
 
-## Thank You!
+---
 
-We truly appreciate your time and effort in contributing to **GraphRAG-SDK**. Every contribution helps improve the project for everyone!
+## 2. Running Tests
+
+Run the full test suite with:
+
+```bash
+python -m pytest graphrag_sdk/tests/ -q
+```
+
+There are approximately 390 tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
+
+---
+
+## 3. Code Style
+
+- **Python 3.10+** is the minimum supported version.
+- **Pydantic v2** is used throughout. The core `DataModel` uses `extra="allow"` so that dynamic attributes (such as mention metadata) can be attached at runtime.
+- **Async-first design**: all public methods are implemented as `async` coroutines, with thin synchronous wrappers provided for convenience. When contributing new functionality, implement the async version first and add a sync wrapper if needed.
+- **Type hints everywhere**: every function signature, return type, and class attribute should be fully annotated. Avoid `Any` unless strictly necessary.
+
+---
+
+## 4. Project Structure
+
+```
+graphrag_sdk/
+  src/graphrag_sdk/          -- SDK source code
+    api/                     -- GraphRAG facade (main.py)
+    core/                    -- connection, models, providers, context, exceptions
+    ingestion/               -- pipeline, loaders, chunking, extraction strategies, resolution strategies
+    retrieval/               -- retrieval and reranking strategies
+    storage/                 -- graph_store.py, vector_store.py
+    utils/                   -- utilities (Cypher helpers, graph visualization, etc.)
+  tests/                     -- all tests (mock-based, no external services required)
+docs/                        -- documentation
+```
+
+Key entry points:
+
+- `graphrag_sdk/src/graphrag_sdk/api/main.py` -- the `GraphRAG` class that serves as the primary facade for ingestion and querying.
+- `graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py` -- the 10-step ingestion pipeline (Load, Chunk, Lexical, Extract, Prune, Resolve, Write, Synonymy, Mentions, Index Chunks).
+- `graphrag_sdk/src/graphrag_sdk/retrieval/` -- retrieval strategies including multi-path retrieval.
+- `graphrag_sdk/src/graphrag_sdk/storage/` -- graph store (FalkorDB) and vector store abstractions.
+
+---
+
+## 5. Commit Rules
+
+- **All code changes must achieve greater than 85% benchmark accuracy before they can be committed.** The benchmark is a 100-question evaluation over a 20-document novel corpus. Run it and verify your score before proposing a commit.
+- **Always ask before committing.** Do not create commits autonomously. Confirm with the project maintainer that the changes are ready and that benchmark results meet the threshold.
+- Write clear, descriptive commit messages that explain *why* the change was made, not just *what* changed.
+
+---
+
+## 6. Adding Strategies
+
+The SDK is designed to be extended via an Abstract Base Class (ABC) pattern. There are three main extension points: extraction strategies, resolution strategies, and retrieval strategies.
+
+### General Pattern
+
+1. Identify the relevant ABC for the kind of strategy you want to add (extraction, resolution, or retrieval).
+2. Create a new class that subclasses the ABC.
+3. Implement all required abstract methods.
+4. Pass your custom strategy to `ingest()` (for extraction/resolution) or to the `GraphRAG` constructor (for retrieval).
+
+### Example: Custom Extraction Strategy
+
+```python
+from graphrag_sdk.ingestion.extraction_strategies import ExtractionStrategy
+from graphrag_sdk.core.models import ExtractionOutput
+
+
+class MyCustomExtraction(ExtractionStrategy):
+    """A custom extraction strategy that implements domain-specific entity/relation extraction."""
+
+    async def extract(self, chunks, context) -> ExtractionOutput:
+        # Your extraction logic here.
+        # Process the input chunks and return an ExtractionOutput containing
+        # ExtractedEntity and ExtractedRelation objects.
+        entities = []
+        relations = []
+        # ... populate entities and relations ...
+        return ExtractionOutput(entities=entities, relations=relations)
+```
+
+Then use it during ingestion:
+
+```python
+graphrag = GraphRAG(config=my_config)
+await graphrag.ingest(
+    sources=["path/to/documents/"],
+    extraction_strategy=MyCustomExtraction(),
+)
+```
+
+The same pattern applies to resolution strategies (subclass `ResolutionStrategy`) and retrieval strategies (subclass `RetrievalStrategy` and pass it to the `GraphRAG` constructor or query method).
+
+---
+
+If you have questions or run into issues, open an issue in the repository or reach out to the maintainers.

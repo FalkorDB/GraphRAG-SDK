@@ -1,17 +1,52 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
 .env
-__pycache__
-cache
-output
-.venv
-.vscode
+.env.*
 
-logs
-falkordb-data
-weaviate-data
-.deepeval_telemtry.txt
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-.claude
+# OS files
+.DS_Store
+Thumbs.db
 
-# Build artifacts
+# Local dev tooling
+.pre-commit-config.yaml
+.github/
+
+# Local planning / review docs (not part of the SDK)
+GraphRAG-SDK Planning*
+Architecture-Review-Suggestions.md
+GraphRAG-SDK-v2-Infrastructure-Blueprint.md
+GraphRAG-SDK-v2-Target-Architecture.md
+Merged-Indexing-Strategy-Implementation-Plan.md
+Novel-Retrieval-Implementation-Guide.md
+Novel-Techniques-Proposal.md
+Production-Readiness-Review.md
+RAG-Architecture-Comparison.md
+RECOMMENDATIONS.md
+REVIEW-REPORT.md
+SDK_BUG_REPORT.md
+UI_FEEDBACK.md
+
+# Presentations / binary docs
+*.odp
+*.pptx
+*.pdf
+
+# Local example scripts (not part of the SDK package)
+example.py
+example_*.py
+
+# Build / dist
 dist/
 build/
+*.egg-info/
+*.egg
