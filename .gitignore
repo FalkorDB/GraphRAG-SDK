@@ -17,7 +17,12 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Local dev tooling
+.pre-commit-config.yaml
+.github/
+
 # Local planning / review docs (not part of the SDK)
+GraphRAG-SDK Planning*
 Architecture-Review-Suggestions.md
 GraphRAG-SDK-v2-Infrastructure-Blueprint.md
 GraphRAG-SDK-v2-Target-Architecture.md
