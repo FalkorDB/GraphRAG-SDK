@@ -386,36 +386,67 @@ Larger chunks provide more context per extraction call but increase LLM token us
 
 ### Extraction Strategy Parameters
 
-**TwoStepExtraction** -- composable 2-step extraction (GLiNER2 NER + LLM relationship extraction):
+**TwoStepExtraction** -- composable 2-step extraction (GLiNER NER + LLM relationship extraction):
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
-| `entity_extractor` | `EntityExtractor \| None` | `None` (GLiNER2) | Pluggable NER backend. Pass `EntityExtractor(llm=llm)` for LLM-based NER. |
+| `entity_extractor` | `EntityExtractor \| None` | `None` (`GLiNERExtractor()`) | Pluggable NER backend for step 1. |
 | `coref_resolver`   | `CorefResolver \| None` | `None` | Optional coreference resolution (e.g. `FastCorefResolver()`). |
 | `embedder`         | `Embedder \| None` | `None` | Embedder instance (reserved for future use). |
 | `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `schema.entities` if set. |
 | `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during extraction. |
 
-```python
-from graphrag_sdk import TwoStepExtraction, EntityExtractor
+**Built-in entity extractors:**
 
-# Default: GLiNER2 for entity NER, LLM for relationship extraction
+| Class | Description | Parameters |
+|-------|-------------|------------|
+| `GLiNERExtractor` | Local GLiNER model (default) | `threshold=0.75`, `model_name="urchade/gliner_medium-v2.1"` |
+| `LLMExtractor` | LLM-based NER via prompt | `llm` (required), `threshold=0.75` |
+
+```python
+from graphrag_sdk import TwoStepExtraction, GLiNERExtractor, LLMExtractor
+
+# Default: GLiNER for entity NER, LLM for relationship extraction
 extractor = TwoStepExtraction(llm=my_llm)
 
-# With LLM-based entity NER instead of GLiNER2
+# Use LLM for step 1 instead of GLiNER
 extractor = TwoStepExtraction(
     llm=my_llm,
-    entity_extractor=EntityExtractor(llm=my_llm),
+    entity_extractor=LLMExtractor(my_llm),
 )
 
-# With custom entity types
+# GLiNER with lower confidence threshold
 extractor = TwoStepExtraction(
     llm=my_llm,
-    entity_types=["Gene", "Protein", "Disease"],
+    entity_extractor=GLiNERExtractor(threshold=0.6),
 )
 
 result = await rag.ingest("document.txt", extractor=extractor)
 ```
+
+### Custom Entity Types
+
+Override the default 11 entity types with your own domain-specific ontology:
+
+```python
+# Pass entity_types to TwoStepExtraction
+extractor = TwoStepExtraction(
+    llm=my_llm,
+    entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
+)
+
+# Or define them in the schema (takes priority)
+from graphrag_sdk import GraphSchema, EntityType
+
+schema = GraphSchema(entities=[
+    EntityType(label="Gene", description="A gene or genetic locus"),
+    EntityType(label="Protein", description="A protein or enzyme"),
+    EntityType(label="Disease", description="A disease or condition"),
+])
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+```
+
+Priority: `schema.entities` > `entity_types` param > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method).
 
 ### LLM Concurrency
 

@@ -41,9 +41,10 @@ UI_FEEDBACK.md
 *.pptx
 *.pdf
 
-# Local example scripts (not part of the SDK package)
+# Local example / debug scripts (not part of the SDK package)
 example.py
 example_*.py
+debug_*.py
 
 # Build / dist
 dist/

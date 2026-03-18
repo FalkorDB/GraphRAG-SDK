@@ -1,8 +1,5 @@
-# GraphRAG SDK 2.0 — Extraction: Pluggable Entity Extractor
-# Single class that handles multiple NER backends:
-# - Default: GLiNER2 (local, fast, no API calls)
-# - LLM: Uses NER_PROMPT template with any LLMInterface
-# - Custom: Any model implementing predict_entities(text, labels)
+# GraphRAG SDK 2.0 — Extraction: Entity Extractors
+# ABC + built-in implementations for step 1 entity NER.
 #
 # Also exports shared entity utilities (constants, ID computation,
 # name validation, type mapping) used by TwoStepExtraction.
@@ -13,7 +10,8 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Protocol, runtime_checkable
+from abc import ABC, abstractmethod
+from typing import Any
 
 from graphrag_sdk.core.models import ExtractedEntity
 from graphrag_sdk.core.providers import LLMInterface
@@ -67,12 +65,7 @@ _ENTITY_STOPLIST: set[str] = _PRONOUNS | {
 
 
 def compute_entity_id(name: str, entity_type: str = "") -> str:
-    """Deterministic entity ID from normalized name and optional type.
-
-    When ``entity_type`` is provided, a ``__type`` suffix is appended to
-    prevent cross-type collisions (e.g. Person "Paris" vs Location "Paris"
-    produce different IDs: ``paris__person`` vs ``paris__location``).
-    """
+    """Deterministic entity ID from normalized name and optional type."""
     base = name.strip().lower().replace(" ", "_")
     if entity_type:
         return f"{base}__{entity_type.strip().lower()}"
@@ -98,14 +91,9 @@ def is_valid_entity_name(name: str) -> bool:
 
 
 def label_for_type(raw_type: str, allowed_types: list[str]) -> str:
-    """Map a raw type string to the closest allowed type, or UNKNOWN_LABEL.
-
-    Performs case-insensitive matching against the normalized forms of
-    allowed_types.
-    """
+    """Map a raw type string to the closest allowed type, or UNKNOWN_LABEL."""
     if not raw_type or not raw_type.strip():
         return UNKNOWN_LABEL
-
     norm = _normalize_type_label(raw_type)
     for allowed in allowed_types:
         if _normalize_type_label(allowed) == norm:
@@ -113,7 +101,57 @@ def label_for_type(raw_type: str, allowed_types: list[str]) -> str:
     return UNKNOWN_LABEL
 
 
-# ── NER Prompt ───────────────────────────────────────────────────
+def _parse_predictions(
+    predictions: list[dict[str, Any]],
+    entity_types: list[str],
+    source_chunk_id: str,
+    threshold: float,
+) -> list[ExtractedEntity]:
+    """Parse NER predictions into ExtractedEntity objects.
+
+    Shared by GLiNERExtractor and any custom extractor that returns
+    the same format: ``[{"text": ..., "label": ..., "score": ...,
+    "start": ..., "end": ...}]``.
+    """
+    entities: list[ExtractedEntity] = []
+    for pred in predictions:
+        if not isinstance(pred, dict):
+            continue
+        name = str(pred.get("text", "")).strip()
+        if not is_valid_entity_name(name):
+            continue
+        raw_type = str(pred.get("label", "")).strip()
+
+        confidence = pred.get("score") or pred.get("confidence")
+        if confidence is not None:
+            confidence = float(confidence)
+            etype = label_for_type(raw_type, entity_types) if confidence >= threshold else UNKNOWN_LABEL
+        else:
+            etype = label_for_type(raw_type, entity_types)
+
+        extra: dict[str, Any] = {}
+        start, end = pred.get("start"), pred.get("end")
+        if start is not None and end is not None:
+            try:
+                extra["spans"] = {source_chunk_id: [{"start": int(start), "end": int(end)}]}
+            except (ValueError, TypeError):
+                pass
+        if confidence is not None:
+            extra["confidence"] = confidence
+
+        entities.append(
+            ExtractedEntity(
+                name=name,
+                type=etype,
+                description=pred.get("description", ""),
+                source_chunk_ids=[source_chunk_id],
+                **extra,
+            )
+        )
+    return entities
+
+
+# ── NER Prompt (used by LLMExtractor) ────────────────────────────
 
 NER_PROMPT = (
     "You are an expert named entity recognition system.\n"
@@ -146,71 +184,17 @@ NER_PROMPT = (
 )
 
 
-# ── NER Model Protocol ───────────────────────────────────────────
+# ── ABC ──────────────────────────────────────────────────────────
 
 
-@runtime_checkable
-class NERModel(Protocol):
-    """Protocol for custom NER models.
+class EntityExtractor(ABC):
+    """Abstract base for entity extractors (step 1 of TwoStepExtraction).
 
-    Any model that implements ``predict_entities(text, labels)``
-    returning a list of dicts with ``text`` and ``label`` keys.
+    Subclass this to build your own NER backend. Built-in implementations:
+    ``GLiNERExtractor`` (default, local) and ``LLMExtractor`` (API-based).
     """
 
-    def predict_entities(
-        self, text: str, labels: list[str], **kwargs: Any
-    ) -> list[dict[str, Any]]: ...
-
-
-# ── Entity Extractor ─────────────────────────────────────────────
-
-
-class EntityExtractor:
-    """Single entity extractor supporting multiple backends.
-
-    By default uses GLiNER2 for local NER (no API calls, fast).
-    Pass an ``LLMInterface`` to use LLM-based NER prompts instead.
-    Pass any model implementing ``predict_entities(text, labels)``
-    for custom backends (spaCy, custom transformers, etc.).
-
-    Args:
-        model: A NER model implementing ``predict_entities(text, labels)``.
-            Default: GLiNER2 (lazy-loaded).
-        llm: An LLMInterface for LLM-based NER. Takes precedence if both
-            ``model`` and ``llm`` are provided.
-        threshold: Confidence threshold (0-1). Entities below this are
-            labeled "Unknown". Applied to all backends (GLiNER2, LLM, custom).
-        gliner_model_name: GLiNER2 model name (only used when neither
-            ``model`` nor ``llm`` is provided).
-    """
-
-    def __init__(
-        self,
-        *,
-        model: Any | None = None,
-        llm: LLMInterface | None = None,
-        threshold: float = 0.75,
-        gliner_model_name: str = "urchade/gliner_medium-v2.1",
-    ) -> None:
-        self._llm = llm
-        self._custom_model = model
-        self._threshold = threshold
-        self._gliner_model_name = gliner_model_name
-        self._gliner_model: Any = None
-
-        # Determine mode
-        if llm is not None:
-            self._mode = "llm"
-        elif model is not None:
-            self._mode = "custom"
-        else:
-            self._mode = "gliner2"
-
-    @property
-    def mode(self) -> str:
-        """Return the active backend mode: 'llm', 'custom', or 'gliner2'."""
-        return self._mode
-
+    @abstractmethod
     async def extract_entities(
         self,
         text: str,
@@ -219,48 +203,109 @@ class EntityExtractor:
     ) -> list[ExtractedEntity]:
         """Extract entities from a single chunk of text.
 
-        Routes to the appropriate backend based on how the extractor
-        was constructed.
+        Args:
+            text: The chunk text to extract from.
+            entity_types: Allowed entity type labels.
+            source_chunk_id: UID of the source chunk for provenance.
+
+        Returns:
+            List of extracted entities.
         """
-        if self._mode == "llm":
-            return await self._extract_llm(text, entity_types, source_chunk_id)
-        elif self._mode == "custom":
-            return await self._extract_custom(text, entity_types, source_chunk_id)
-        else:
-            return await self._extract_gliner2(text, entity_types, source_chunk_id)
+        ...
 
-    # ── LLM backend ──────────────────────────────────────────────
 
-    async def _extract_llm(
+# ── GLiNER Extractor (default) ───────────────────────────────────
+
+
+class GLiNERExtractor(EntityExtractor):
+    """Entity extraction via GLiNER local transformer model.
+
+    Default extractor — no API calls, fast. Returns entities with
+    confidence scores and character spans.
+
+    Args:
+        threshold: Confidence threshold (0-1). Below this → "Unknown".
+        model_name: HuggingFace model name for GLiNER.
+    """
+
+    def __init__(
+        self,
+        threshold: float = 0.75,
+        model_name: str = "urchade/gliner_medium-v2.1",
+    ) -> None:
+        self._threshold = threshold
+        self._model_name = model_name
+        self._model: Any = None
+
+    def _load_model(self) -> Any:
+        if self._model is None:
+            try:
+                from gliner import GLiNER
+            except ImportError:
+                raise ImportError(
+                    "GLiNER is required for GLiNERExtractor. "
+                    "Install with: pip install gliner"
+                )
+            self._model = GLiNER.from_pretrained(self._model_name)
+        return self._model
+
+    def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
+        model = self._load_model()
+        labels = [t.lower() for t in entity_types]
+        return model.predict_entities(text, labels, threshold=self._threshold)
+
+    async def extract_entities(
         self,
         text: str,
         entity_types: list[str],
         source_chunk_id: str,
     ) -> list[ExtractedEntity]:
-        assert self._llm is not None
+        raw = await asyncio.to_thread(self._predict_sync, text, entity_types)
+        return _parse_predictions(raw, entity_types, source_chunk_id, self._threshold)
+
+
+# ── LLM Extractor ────────────────────────────────────────────────
+
+
+class LLMExtractor(EntityExtractor):
+    """Entity extraction via LLM using structured NER prompt.
+
+    Uses ``NER_PROMPT`` to ask the LLM for entities with confidence
+    and character spans.
+
+    Args:
+        llm: LLMInterface instance.
+        threshold: Confidence threshold (0-1). Below this → "Unknown".
+    """
+
+    def __init__(self, llm: LLMInterface, threshold: float = 0.75) -> None:
+        self._llm = llm
+        self._threshold = threshold
+
+    async def extract_entities(
+        self,
+        text: str,
+        entity_types: list[str],
+        source_chunk_id: str,
+    ) -> list[ExtractedEntity]:
         prompt = NER_PROMPT.format(
             entity_types=", ".join(entity_types),
             text=text,
         )
         response = await self._llm.ainvoke(prompt)
-        return self._parse_llm_response(
+        return self._parse_response(
             response.content, entity_types, source_chunk_id, self._threshold
         )
 
     @staticmethod
-    def _parse_llm_response(
+    def _parse_response(
         content: str,
         entity_types: list[str],
         source_chunk_id: str,
         threshold: float = 0.75,
     ) -> list[ExtractedEntity]:
-        """Parse JSON array of entities from LLM response.
-
-        Extracts confidence and character spans (start/end) when provided.
-        Entities with confidence below ``threshold`` are labeled "Unknown".
-        """
+        """Parse JSON array of entities from LLM response."""
         text = content.strip()
-        # Strip markdown fences
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
@@ -284,7 +329,6 @@ class EntityExtractor:
             raw_type = str(item.get("type", "")).strip()
             description = str(item.get("description", "")).strip()
 
-            # Confidence: low → Unknown
             confidence = None
             try:
                 confidence = float(item["confidence"])
@@ -296,10 +340,8 @@ class EntityExtractor:
             else:
                 etype = label_for_type(raw_type, entity_types)
 
-            # Spans: character offsets in the chunk
             spans: dict[str, list[dict[str, int]]] = {}
-            start = item.get("start")
-            end = item.get("end")
+            start, end = item.get("start"), item.get("end")
             if start is not None and end is not None:
                 try:
                     spans[source_chunk_id] = [{"start": int(start), "end": int(end)}]
@@ -317,151 +359,6 @@ class EntityExtractor:
                     name=name,
                     type=etype,
                     description=description,
-                    source_chunk_ids=[source_chunk_id],
-                    **extra,
-                )
-            )
-        return entities
-
-    # ── GLiNER2 backend ──────────────────────────────────────────
-
-    def _load_gliner2(self) -> Any:
-        if self._gliner_model is None:
-            try:
-                from gliner import GLiNER
-            except ImportError:
-                raise ImportError(
-                    "GLiNER is required for the default entity extractor. "
-                    "Install with: pip install gliner\n"
-                    "Or pass llm= to use LLM-based extraction instead."
-                )
-            self._gliner_model = GLiNER.from_pretrained(self._gliner_model_name)
-        return self._gliner_model
-
-    def _predict_gliner2_sync(
-        self, text: str, entity_types: list[str]
-    ) -> list[dict[str, Any]]:
-        model = self._load_gliner2()
-        labels = [t.lower() for t in entity_types]
-        return model.predict_entities(text, labels, threshold=self._threshold)
-
-    async def _extract_gliner2(
-        self,
-        text: str,
-        entity_types: list[str],
-        source_chunk_id: str,
-    ) -> list[ExtractedEntity]:
-        raw = await asyncio.to_thread(self._predict_gliner2_sync, text, entity_types)
-        return self._parse_gliner2_response(raw, entity_types, source_chunk_id)
-
-    def _parse_gliner2_response(
-        self,
-        predictions: list[dict[str, Any]],
-        entity_types: list[str],
-        source_chunk_id: str,
-    ) -> list[ExtractedEntity]:
-        """Parse GLiNER predict_entities response.
-
-        Each prediction: {"text": "...", "label": "...", "score": 0.95,
-                          "start": 0, "end": 5}
-
-        Entities below threshold are labeled "Unknown".
-        Character spans stored as ``{chunk_id: [{"start": N, "end": M}]}``.
-        """
-        entities: list[ExtractedEntity] = []
-        for pred in predictions:
-            if not isinstance(pred, dict):
-                continue
-            name = str(pred.get("text", "")).strip()
-            if not is_valid_entity_name(name):
-                continue
-
-            confidence = float(pred.get("score", 0.0))
-            raw_type = str(pred.get("label", "")).strip()
-            start = pred.get("start")
-            end = pred.get("end")
-
-            # Low confidence → Unknown
-            if confidence >= self._threshold:
-                etype = label_for_type(raw_type, entity_types)
-            else:
-                etype = UNKNOWN_LABEL
-
-            # Build spans dict: {chunk_id: [{start, end}]}
-            spans: dict[str, list[dict[str, int]]] = {}
-            if start is not None and end is not None:
-                spans[source_chunk_id] = [{"start": int(start), "end": int(end)}]
-
-            entities.append(
-                ExtractedEntity(
-                    name=name,
-                    type=etype,
-                    description="",
-                    source_chunk_ids=[source_chunk_id],
-                    spans=spans,
-                    confidence=confidence,
-                )
-            )
-        return entities
-
-    # ── Custom model backend ─────────────────────────────────────
-
-    async def _extract_custom(
-        self,
-        text: str,
-        entity_types: list[str],
-        source_chunk_id: str,
-    ) -> list[ExtractedEntity]:
-        assert self._custom_model is not None
-        labels = [t.lower() for t in entity_types]
-        raw = await asyncio.to_thread(
-            self._custom_model.predict_entities, text, labels
-        )
-        return self._parse_ner_predictions(raw, entity_types, source_chunk_id)
-
-    # ── Shared NER prediction parser (custom models) ─────────────
-
-    @staticmethod
-    def _parse_ner_predictions(
-        predictions: list[dict[str, Any]],
-        entity_types: list[str],
-        source_chunk_id: str,
-    ) -> list[ExtractedEntity]:
-        """Parse NER model predictions into ExtractedEntity objects.
-
-        Expects predictions with 'text' and 'label' keys.
-        Passes through 'confidence', 'start', 'end' if present.
-        """
-        entities: list[ExtractedEntity] = []
-        for pred in predictions:
-            name = str(pred.get("text", "")).strip()
-            if not is_valid_entity_name(name):
-                continue
-            raw_type = str(pred.get("label", "")).strip()
-            etype = label_for_type(raw_type, entity_types)
-
-            extra: dict[str, Any] = {}
-            start = pred.get("start")
-            end = pred.get("end")
-            if start is not None and end is not None:
-                try:
-                    extra["spans"] = {
-                        source_chunk_id: [{"start": int(start), "end": int(end)}]
-                    }
-                except (ValueError, TypeError):
-                    pass
-            confidence = pred.get("confidence")
-            if confidence is not None:
-                try:
-                    extra["confidence"] = float(confidence)
-                except (ValueError, TypeError):
-                    pass
-
-            entities.append(
-                ExtractedEntity(
-                    name=name,
-                    type=etype,
-                    description="",
                     source_chunk_ids=[source_chunk_id],
                     **extra,
                 )

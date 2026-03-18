@@ -124,15 +124,21 @@ Override any pipeline step by passing a strategy:
 
 ```python
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
-from graphrag_sdk import TwoStepExtraction, EntityExtractor
+from graphrag_sdk import TwoStepExtraction, GLiNERExtractor, LLMExtractor
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
 
-# Ingest with custom strategies
+# Default: GLiNER for entity NER (step 1), LLM for relationships (step 2)
 await rag.ingest(
     "document.txt",
     chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-    extractor=TwoStepExtraction(llm=llm, embedder=embedder),
+    extractor=TwoStepExtraction(llm=llm),
     resolver=DescriptionMergeResolution(llm=llm),
+)
+
+# Use LLM for step 1 instead of GLiNER
+await rag.ingest(
+    "document.txt",
+    extractor=TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm)),
 )
 ```
 

@@ -191,32 +191,81 @@ class ExtractionStrategy(ABC):
 
 Composable 2-step extraction with pluggable entity NER and LLM relationship extraction.
 
-**Step 1 -- Entity NER** (pluggable via `EntityExtractor`):
-- **GLiNER2** (default): Local transformer NER, no API calls. Returns typed entities with confidence scores and character spans.
-- **LLM**: Uses a structured NER prompt. Returns entities with confidence, spans, descriptions.
-- **Custom**: Any model implementing `predict_entities(text, labels)`.
+**Step 1 -- Entity NER** (pluggable via `EntityExtractor` ABC):
+- **`GLiNERExtractor`** (default): Local GLiNER transformer model, no API calls. Returns typed entities with confidence scores and character spans.
+- **`LLMExtractor`**: Uses a structured NER prompt. Returns entities with confidence, spans, and descriptions.
+- **Custom**: Subclass `EntityExtractor` and implement `extract_entities()`.
 
 **Step 2 -- LLM Verify + Relationship Extraction**:
 The LLM receives the pre-extracted entities and original text, verifies entities (removes invalid, adds missed), and extracts relationships with descriptions, keywords, confidence, and evidence spans.
 
-**Fixed Ontology**: All entities are mapped to a fixed set of types (default 11 types). Types not in the ontology become `"Unknown"`. No post-hoc type resolution needed.
+**Entity Ontology**: Every extracted entity is mapped to a known type from the ontology. Entities that don't match any type are labeled `"Unknown"`. There are three ways to define the ontology:
+
+**1. Use the defaults** (11 built-in types, good for general use):
 
 ```python
-from graphrag_sdk import TwoStepExtraction, EntityExtractor
+from graphrag_sdk import TwoStepExtraction
 
-# Default: GLiNER2 for step 1, LLM for step 2
+# Uses: Person, Organization, Technology, Product, Location, Date,
+#       Event, Concept, Law, Dataset, Method
 extractor = TwoStepExtraction(llm=llm)
+```
 
-# With LLM for step 1 instead of GLiNER2
+**2. Pass `entity_types` directly** (overrides defaults completely):
+
+```python
+# Biomedical domain
 extractor = TwoStepExtraction(
     llm=llm,
-    entity_extractor=EntityExtractor(llm=llm),
+    entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
 )
 
-# With custom NER model
+# Legal domain
 extractor = TwoStepExtraction(
     llm=llm,
-    entity_extractor=EntityExtractor(model=my_spacy_ner),
+    entity_types=["Person", "Organization", "Law", "Court", "Jurisdiction", "Date"],
+)
+```
+
+**3. Use `GraphSchema` entities** (schema types override both defaults and `entity_types`):
+
+```python
+from graphrag_sdk import GraphRAG, GraphSchema, EntityType
+
+schema = GraphSchema(entities=[
+    EntityType(label="Vehicle", description="Cars, trucks, etc."),
+    EntityType(label="Road", description="Streets, highways, etc."),
+    EntityType(label="Location", description="Cities, countries, etc."),
+])
+
+# Schema entity types are automatically used for extraction
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+await rag.ingest("traffic_report.txt")
+# Extraction uses: ["Vehicle", "Road", "Location"]
+```
+
+The priority order is: `schema.entities` > `entity_types` parameter > defaults.
+
+**Default entity types:** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method.
+
+#### Choosing an Entity Extractor
+
+```python
+from graphrag_sdk import TwoStepExtraction, GLiNERExtractor, LLMExtractor
+
+# Default: GLiNER for step 1, LLM for step 2
+extractor = TwoStepExtraction(llm=llm)
+
+# Use LLM for step 1 instead of GLiNER
+extractor = TwoStepExtraction(
+    llm=llm,
+    entity_extractor=LLMExtractor(llm),
+)
+
+# GLiNER with custom threshold
+extractor = TwoStepExtraction(
+    llm=llm,
+    entity_extractor=GLiNERExtractor(threshold=0.6),
 )
 
 # With coreference resolution
@@ -226,26 +275,17 @@ extractor = TwoStepExtraction(
     llm=llm,
     coref_resolver=FastCorefResolver(),  # pip install graphrag-sdk[fastcoref]
 )
-
-# Custom entity types
-extractor = TwoStepExtraction(
-    llm=llm,
-    entity_types=["Gene", "Protein", "Disease", "Drug"],
-)
 ```
 
-**Default entity types:** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method.
+**Entity Extractors:**
 
-**EntityExtractor parameters:**
+| Class | Description | Parameters |
+|-------|-------------|------------|
+| `GLiNERExtractor` | Local GLiNER model (default, no API calls) | `threshold=0.75`, `model_name="urchade/gliner_medium-v2.1"` |
+| `LLMExtractor` | LLM-based NER via structured prompt | `llm` (required), `threshold=0.75` |
+| Custom subclass | Your own `EntityExtractor` subclass | Implement `extract_entities()` |
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `model` | None | Custom NER model with `predict_entities(text, labels)` |
-| `llm` | None | LLMInterface for LLM-based NER |
-| `threshold` | 0.75 | Confidence threshold -- below this, entities become "Unknown" |
-| `gliner_model_name` | `urchade/gliner_medium-v2.1` | GLiNER model (when using default mode) |
-
-If neither `model` nor `llm` is provided, GLiNER2 is used (local, no API calls).
+All extractors share the same `threshold` behavior: entities with confidence below the threshold are labeled `"Unknown"`.
 
 **Graph output:**
 - All relationships use `RELATES` edge type. The original type (e.g. `WORKS_AT`) is in `properties["rel_type"]`.
@@ -253,9 +293,41 @@ If neither `model` nor `llm` is provided, GLiNER2 is used (local, no API calls).
 - Character spans stored as `properties["spans"]` = `{chunk_id: [{start, end}]}` on both entities and relationships.
 - Entity mentions (`MENTIONED_IN` edges) link entities to source chunks.
 
-**When to use:** Default and only built-in extraction strategy. Composable via pluggable entity extractors and optional coreference resolution.
+### Writing Your Own Entity Extractor
 
-### Writing Your Own
+Subclass `EntityExtractor` and implement `extract_entities()`:
+
+```python
+from graphrag_sdk import EntityExtractor, TwoStepExtraction
+from graphrag_sdk.core.models import ExtractedEntity
+
+class SpaCyExtractor(EntityExtractor):
+    def __init__(self, model_name="en_core_web_sm"):
+        import spacy
+        self._nlp = spacy.load(model_name)
+
+    async def extract_entities(self, text, entity_types, source_chunk_id):
+        import asyncio
+        doc = await asyncio.to_thread(self._nlp, text)
+        return [
+            ExtractedEntity(
+                name=ent.text,
+                type=ent.label_,
+                description="",
+                source_chunk_ids=[source_chunk_id],
+                spans={source_chunk_id: [{"start": ent.start_char, "end": ent.end_char}]},
+            )
+            for ent in doc.ents
+        ]
+
+# Use it
+extractor = TwoStepExtraction(llm=llm, entity_extractor=SpaCyExtractor())
+await rag.ingest("doc.txt", extractor=extractor)
+```
+
+### Writing Your Own Extraction Strategy
+
+Replace the entire 2-step pipeline by subclassing `ExtractionStrategy`:
 
 ```python
 class MyExtraction(ExtractionStrategy):

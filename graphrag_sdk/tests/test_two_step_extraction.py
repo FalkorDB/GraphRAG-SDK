@@ -19,6 +19,7 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     EntityExtractor,
+    LLMExtractor,
 )
 from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
     TwoStepExtraction,
@@ -69,7 +70,7 @@ class TestTwoStepExtractionSmoke:
     @pytest.fixture
     def extractor(self):
         llm = _mock_hybrid_llm()
-        return TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        return TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
 
     async def test_produces_nodes(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
@@ -123,7 +124,7 @@ class TestTwoStepExtractionWithMock:
 
     async def test_mock_llm_produces_output(self, ctx):
         llm = MockLLMWithTwoStepExtraction()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
         assert len(result.nodes) >= 2
@@ -151,7 +152,7 @@ class TestTwoStepExtractionSchemaTypes:
                 EntityType(label="Road", description="A road"),
             ],
         )
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("The car drove down the highway.")
         await extractor.extract(chunks, schema, ctx)
 
@@ -164,7 +165,7 @@ class TestTwoStepExtractionSchemaTypes:
 class TestTwoStepExtractionBudget:
     async def test_budget_exceeded_stops_extraction(self):
         llm = _mock_hybrid_llm()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Text 1", "Text 2", "Text 3")
 
         ctx = Context(tenant_id="test", latency_budget_ms=0.0)
@@ -183,7 +184,7 @@ class TestTwoStepExtractionAggregation:
             "relationships": [],
         })
         llm = MockLLM(responses=[step1, step1, step2, step2])
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
 
         chunks = _make_chunks("Alice is an engineer.", "Alice works hard.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
@@ -198,7 +199,7 @@ class TestTwoStepExtractionGraphOutput:
     async def test_node_ids_are_type_qualified(self, ctx):
         """Node IDs should include entity type for collision prevention."""
         llm = _mock_hybrid_llm()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
 
@@ -210,7 +211,7 @@ class TestTwoStepExtractionGraphOutput:
     async def test_relationship_edge_type_is_relates(self, ctx):
         """All relationships should use RELATES edge type."""
         llm = _mock_hybrid_llm()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
 
@@ -223,11 +224,14 @@ class TestTwoStepExtractionPluggableExtractor:
     async def test_custom_ner_model(self, ctx):
         """TwoStepExtraction works with a custom NER model."""
 
-        class SimpleNER:
-            def predict_entities(self, text, labels, **kwargs):
+        class SimpleNERExtractor(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                from graphrag_sdk.core.models import ExtractedEntity
                 return [
-                    {"text": "Alice", "label": "person"},
-                    {"text": "Bob", "label": "person"},
+                    ExtractedEntity(name="Alice", type="Person", description="",
+                                    source_chunk_ids=[source_chunk_id]),
+                    ExtractedEntity(name="Bob", type="Person", description="",
+                                    source_chunk_ids=[source_chunk_id]),
                 ]
 
         step2 = json.dumps({
@@ -241,7 +245,7 @@ class TestTwoStepExtractionPluggableExtractor:
             ],
         })
         llm = MockLLM(responses=[step2])
-        custom_extractor = EntityExtractor(model=SimpleNER())
+        custom_extractor = SimpleNERExtractor()
         extractor = TwoStepExtraction(
             llm=llm,
             entity_extractor=custom_extractor,
@@ -260,7 +264,7 @@ class TestTwoStepExtractionConcurrency:
     async def test_max_concurrency_stored(self, ctx):
         llm = _mock_hybrid_llm()
         extractor = TwoStepExtraction(
-            llm=llm, entity_extractor=EntityExtractor(llm=llm), max_concurrency=2,
+            llm=llm, entity_extractor=LLMExtractor(llm), max_concurrency=2,
         )
         assert extractor._max_concurrency == 2
 
@@ -272,7 +276,7 @@ class TestTwoStepExtractionConcurrency:
 class TestTwoStepExtractionDefaults:
     def test_default_entity_types(self):
         llm = MockLLM()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=EntityExtractor(llm=llm))
+        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         assert "Person" in extractor.entity_types
         assert "Organization" in extractor.entity_types
         assert "Location" in extractor.entity_types
@@ -281,7 +285,7 @@ class TestTwoStepExtractionDefaults:
         llm = MockLLM()
         extractor = TwoStepExtraction(
             llm=llm,
-            entity_extractor=EntityExtractor(llm=llm),
+            entity_extractor=LLMExtractor(llm),
             entity_types=["Vehicle", "Road"],
         )
         assert extractor.entity_types == ["Vehicle", "Road"]

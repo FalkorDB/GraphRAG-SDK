@@ -521,6 +521,11 @@ class ExtractionStrategy(ABC):
 **Built-in:**
 - `TwoStepExtraction(llm, *, entity_extractor=None, coref_resolver=None, embedder=None, entity_types=None, max_concurrency=None)`
 
+**Entity Extractors** (step 1 backends for `TwoStepExtraction`):
+- `GLiNERExtractor(threshold=0.75, model_name="urchade/gliner_medium-v2.1")` -- default, local NER
+- `LLMExtractor(llm, threshold=0.75)` -- LLM-based NER
+- Subclass `EntityExtractor` for custom backends
+
 ### ResolutionStrategy (ABC)
 
 ```python

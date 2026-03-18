@@ -26,8 +26,8 @@ from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
-    NER_PROMPT,
     EntityExtractor,
+    GLiNERExtractor,
     compute_entity_id,
     is_valid_entity_name,
     label_for_type,
@@ -116,7 +116,7 @@ class TwoStepExtraction(ExtractionStrategy):
         max_concurrency: int | None = None,
     ) -> None:
         self.llm = llm
-        self.entity_extractor = entity_extractor or EntityExtractor()
+        self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
         self.embedder = embedder
         self.entity_types = entity_types or list(DEFAULT_ENTITY_TYPES)
@@ -166,58 +166,21 @@ class TwoStepExtraction(ExtractionStrategy):
             chunk_texts = [chunk.text for chunk in active_chunks]
 
         # ── Step 1: Entity extraction (pluggable) ──
-        # For LLM extractors, use abatch_invoke pattern;
-        # for local extractors, use asyncio.gather
         chunk_entities: list[list[ExtractedEntity]] = []
-
-        if self.entity_extractor.mode == "llm":
-            # Batch through LLM for efficiency
-            prompts = [
-                NER_PROMPT.format(
-                    entity_types=", ".join(entity_types),
-                    text=text,
+        tasks = [
+            self.entity_extractor.extract_entities(text, entity_types, chunk.uid)
+            for text, chunk in zip(chunk_texts, active_chunks)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                ctx.log(
+                    f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
+                    logging.WARNING,
                 )
-                for text in chunk_texts
-            ]
-            batch_kw: dict[str, Any] = {}
-            if self._max_concurrency is not None:
-                batch_kw["max_concurrency"] = self._max_concurrency
-
-            step1_results = await self.llm.abatch_invoke(prompts, **batch_kw)
-
-            for item in step1_results:
-                chunk = active_chunks[item.index]
-                if not item.ok:
-                    ctx.log(
-                        f"Step 1 NER failed for chunk {chunk.index}: {item.error}",
-                        logging.WARNING,
-                    )
-                    chunk_entities.append([])
-                    continue
-                assert item.response is not None
-                parsed = EntityExtractor._parse_llm_response(
-                    item.response.content, entity_types, chunk.uid,
-                    self.entity_extractor._threshold,
-                )
-                chunk_entities.append(parsed)
-        else:
-            # Local extractors (GLiNER2, custom): use asyncio.gather
-            tasks = [
-                self.entity_extractor.extract_entities(
-                    text, entity_types, chunk.uid
-                )
-                for text, chunk in zip(chunk_texts, active_chunks)
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    ctx.log(
-                        f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
-                        logging.WARNING,
-                    )
-                    chunk_entities.append([])
-                else:
-                    chunk_entities.append(result)
+                chunk_entities.append([])
+            else:
+                chunk_entities.append(result)
 
         # ── Step 2: LLM verify + relationship extraction ──
         step2_prompts: list[str] = []
