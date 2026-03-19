@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from typing import Any
 
 from graphrag_sdk.core.context import Context
@@ -21,13 +20,15 @@ from graphrag_sdk.core.models import (
     GraphSchema,
     TextChunks,
 )
-from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
     EntityExtractor,
     GLiNERExtractor,
+    _build_spans,
+    _strip_markdown_fences,
     compute_entity_id,
     is_valid_entity_name,
     label_for_type,
@@ -82,10 +83,11 @@ VERIFY_EXTRACT_RELS_PROMPT = (
 
 
 class TwoStepExtraction(ExtractionStrategy):
-    """Composable 2-step extraction with pluggable entity NER and coreference.
+    """Composable 2-step extraction with pluggable entity NER.
 
-    **Step 1** — Entity extraction via a pluggable ``EntityExtractor``
-    (default: LLM-based NER). Supports LLM, GLiNER2, spaCy backends.
+    **Step 1** — Entity extraction via a pluggable ``EntityExtractor``.
+    Default: ``GLiNERExtractor`` (local, no API calls).
+    Alternative: ``LLMExtractor`` or any custom ``EntityExtractor`` subclass.
 
     **Step 2** — LLM verification + relationship extraction. The LLM
     receives the pre-extracted entities and original text, verifies
@@ -96,10 +98,9 @@ class TwoStepExtraction(ExtractionStrategy):
 
     Args:
         llm: LLM provider for step 2 (verify + relationship extraction).
-        entity_extractor: Pluggable NER backend. Default: GLiNER2 (local, fast).
-            Pass ``EntityExtractor(llm=llm)`` to use LLM for step 1 instead.
+        entity_extractor: Step 1 NER backend. Default: ``GLiNERExtractor()``.
+            Pass ``LLMExtractor(llm)`` to use LLM for step 1 instead.
         coref_resolver: Optional coreference resolver applied per-chunk.
-        embedder: Embedder for type taxonomy resolution.
         entity_types: Entity type labels. Default: DEFAULT_ENTITY_TYPES.
             Overridden by schema.entities if present.
         max_concurrency: Maximum parallel LLM calls.
@@ -111,14 +112,12 @@ class TwoStepExtraction(ExtractionStrategy):
         *,
         entity_extractor: EntityExtractor | None = None,
         coref_resolver: CorefResolver | None = None,
-        embedder: Embedder | None = None,
         entity_types: list[str] | None = None,
         max_concurrency: int | None = None,
     ) -> None:
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.embedder = embedder
         self.entity_types = entity_types or list(DEFAULT_ENTITY_TYPES)
         self._max_concurrency = max_concurrency
 
@@ -308,11 +307,7 @@ class TwoStepExtraction(ExtractionStrategy):
         source_chunk_id: str,
     ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
         """Parse the step 2 LLM response (verified entities + relationships)."""
-        text = content.strip()
-        # Strip markdown fences
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
+        text = _strip_markdown_fences(content)
 
         try:
             data = json.loads(text)
@@ -334,23 +329,15 @@ class TwoStepExtraction(ExtractionStrategy):
             if not is_valid_entity_name(name):
                 continue
             raw_type = str(item.get("type", "")).strip()
-            # Reject slash/parenthetical compound types
             if "/" in raw_type or "(" in raw_type or ")" in raw_type:
                 continue
             etype = label_for_type(raw_type, entity_types)
             description = str(item.get("description", "")).strip()
 
-            # Entity span from step 2
             extra: dict[str, Any] = {}
-            span_start = item.get("span_start")
-            span_end = item.get("span_end")
-            if span_start is not None and span_end is not None:
-                try:
-                    extra["spans"] = {
-                        source_chunk_id: [{"start": int(span_start), "end": int(span_end)}]
-                    }
-                except (ValueError, TypeError):
-                    pass
+            spans = _build_spans(item, source_chunk_id, "span_start", "span_end")
+            if spans:
+                extra["spans"] = spans
 
             entities.append(
                 ExtractedEntity(
@@ -372,7 +359,6 @@ class TwoStepExtraction(ExtractionStrategy):
             rel_type = str(item.get("type", "")).strip()
             if not source or not target or not rel_type:
                 continue
-            # Reject relations referencing stoplist entities
             if not is_valid_entity_name(source) or not is_valid_entity_name(target):
                 continue
 
@@ -385,17 +371,10 @@ class TwoStepExtraction(ExtractionStrategy):
             description = str(item.get("description", "")).strip()
             keywords = str(item.get("keywords", "")).strip()
 
-            # Span: evidence sentence offsets in the chunk
             extra: dict[str, Any] = {}
-            span_start = item.get("span_start")
-            span_end = item.get("span_end")
-            if span_start is not None and span_end is not None:
-                try:
-                    extra["spans"] = {
-                        source_chunk_id: [{"start": int(span_start), "end": int(span_end)}]
-                    }
-                except (ValueError, TypeError):
-                    pass
+            spans = _build_spans(item, source_chunk_id, "span_start", "span_end")
+            if spans:
+                extra["spans"] = spans
 
             relations.append(
                 ExtractedRelation(

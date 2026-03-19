@@ -101,6 +101,47 @@ def label_for_type(raw_type: str, allowed_types: list[str]) -> str:
     return UNKNOWN_LABEL
 
 
+def _parse_confidence(item: dict[str, Any]) -> float | None:
+    """Extract confidence from a prediction dict.
+
+    Checks ``score`` first (GLiNER), then ``confidence`` (LLM).
+    Returns None if neither is present.
+    """
+    for key in ("score", "confidence"):
+        val = item.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+def _build_spans(
+    item: dict[str, Any],
+    source_chunk_id: str,
+    start_key: str = "start",
+    end_key: str = "end",
+) -> dict[str, list[dict[str, int]]]:
+    """Build spans dict from a prediction item. Returns empty dict if no spans."""
+    start, end = item.get(start_key), item.get(end_key)
+    if start is not None and end is not None:
+        try:
+            return {source_chunk_id: [{"start": int(start), "end": int(end)}]}
+        except (ValueError, TypeError):
+            pass
+    return {}
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Strip ```json ... ``` fences from LLM responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text
+
+
 def _parse_predictions(
     predictions: list[dict[str, Any]],
     entity_types: list[str],
@@ -122,20 +163,16 @@ def _parse_predictions(
             continue
         raw_type = str(pred.get("label", "")).strip()
 
-        confidence = pred.get("score") or pred.get("confidence")
-        if confidence is not None:
-            confidence = float(confidence)
-            etype = label_for_type(raw_type, entity_types) if confidence >= threshold else UNKNOWN_LABEL
+        confidence = _parse_confidence(pred)
+        if confidence is not None and confidence < threshold:
+            etype = UNKNOWN_LABEL
         else:
             etype = label_for_type(raw_type, entity_types)
 
         extra: dict[str, Any] = {}
-        start, end = pred.get("start"), pred.get("end")
-        if start is not None and end is not None:
-            try:
-                extra["spans"] = {source_chunk_id: [{"start": int(start), "end": int(end)}]}
-            except (ValueError, TypeError):
-                pass
+        spans = _build_spans(pred, source_chunk_id)
+        if spans:
+            extra["spans"] = spans
         if confidence is not None:
             extra["confidence"] = confidence
 
@@ -305,10 +342,7 @@ class LLMExtractor(EntityExtractor):
         threshold: float = 0.75,
     ) -> list[ExtractedEntity]:
         """Parse JSON array of entities from LLM response."""
-        text = content.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
+        text = _strip_markdown_fences(content)
 
         try:
             data = json.loads(text)
@@ -329,26 +363,14 @@ class LLMExtractor(EntityExtractor):
             raw_type = str(item.get("type", "")).strip()
             description = str(item.get("description", "")).strip()
 
-            confidence = None
-            try:
-                confidence = float(item["confidence"])
-            except (KeyError, ValueError, TypeError):
-                pass
-
+            confidence = _parse_confidence(item)
             if confidence is not None and confidence < threshold:
                 etype = UNKNOWN_LABEL
             else:
                 etype = label_for_type(raw_type, entity_types)
 
-            spans: dict[str, list[dict[str, int]]] = {}
-            start, end = item.get("start"), item.get("end")
-            if start is not None and end is not None:
-                try:
-                    spans[source_chunk_id] = [{"start": int(start), "end": int(end)}]
-                except (ValueError, TypeError):
-                    pass
-
             extra: dict[str, Any] = {}
+            spans = _build_spans(item, source_chunk_id)
             if spans:
                 extra["spans"] = spans
             if confidence is not None:

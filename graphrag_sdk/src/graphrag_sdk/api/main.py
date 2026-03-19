@@ -204,7 +204,6 @@ class GraphRAG:
         )
         return TwoStepExtraction(
             llm=self.llm,
-            embedder=self.embedder,
             entity_types=entity_types,
         )
 
