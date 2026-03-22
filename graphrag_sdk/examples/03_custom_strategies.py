@@ -120,7 +120,7 @@ async def main():
             # Larger chunks capture more context per extraction call
             chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
             # TwoStepExtraction: GLiNER2 entity NER + LLM verify & relationship extraction
-            extractor=TwoStepExtraction(llm=llm, embedder=embedder),
+            extractor=TwoStepExtraction(llm=llm),
             # LLM-assisted deduplication merges entity descriptions
             resolver=DescriptionMergeResolution(llm=llm),
             ctx=Context(tenant_id="demo"),
