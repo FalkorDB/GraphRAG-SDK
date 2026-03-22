@@ -65,7 +65,7 @@ class IngestionPipeline:
         pipeline = IngestionPipeline(
             loader=PdfLoader(),
             chunker=FixedSizeChunking(chunk_size=500),
-            extractor=SchemaGuidedExtraction(llm=my_llm),
+            extractor=GraphExtraction(llm=my_llm),
             resolver=ExactMatchResolution(),
             graph_store=my_graph_store,
             vector_store=my_vector_store,
@@ -286,21 +286,25 @@ class IngestionPipeline:
         """Filter graph data to only include schema-conforming nodes and relationships.
 
         If the schema has no entity types defined, all data passes through
-        (open-schema mode).
+        (open-schema mode). ``Unknown`` entities (low-confidence NER) and
+        ``RELATES`` edges (GraphExtraction unified type) always pass through.
         """
         if not schema.entities and not schema.relations:
             return graph_data  # Open schema — no pruning
 
-        # Filter nodes by allowed labels
+        # Filter nodes by allowed labels (keep "Unknown" — valid low-confidence entities)
         allowed_labels = {e.label for e in schema.entities}
         if allowed_labels:
+            allowed_labels.add("Unknown")
             pruned_nodes = [n for n in graph_data.nodes if n.label in allowed_labels]
         else:
             pruned_nodes = graph_data.nodes
 
         # Filter relationships by allowed types
+        # Always allow "RELATES" — GraphExtraction's unified edge type
         allowed_types = {r.label for r in schema.relations}
         if allowed_types:
+            allowed_types.add("RELATES")
             pruned_rels = [
                 r for r in graph_data.relationships if r.type in allowed_types
             ]

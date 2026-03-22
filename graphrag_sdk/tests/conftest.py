@@ -93,17 +93,33 @@ class MockLLMWithExtraction(MockLLM):
         super().__init__(responses=[extraction_response])
 
 
-class MockLLMWithMergedExtraction(MockLLM):
-    """Mock LLM that returns a realistic merged-extraction (delimiter) response."""
+class MockLLMWithGraphExtraction(MockLLM):
+    """Mock LLM that returns step-1 NER JSON then step-2 verify+rels JSON."""
 
     def __init__(self) -> None:
-        merged_response = (
-            '("entity"<|#|>Alice<|#|>Person<|#|>A software engineer)##'
-            '("entity"<|#|>Acme Corp<|#|>Company<|#|>A tech company)##'
-            '("relationship"<|#|>Alice<|#|>Acme Corp<|#|>WORKS_AT'
-            "<|#|>employment<|#|>Alice works at Acme Corp<|#|>0.9)##"
-        )
-        super().__init__(responses=[merged_response])
+        step1_response = json.dumps([
+            {"name": "Alice", "type": "Person", "description": "A software engineer"},
+            {"name": "Acme Corp", "type": "Organization", "description": "A tech company"},
+        ])
+        step2_response = json.dumps({
+            "entities": [
+                {"name": "Alice", "type": "Person",
+                 "description": "A software engineer who builds GraphRAG systems"},
+                {"name": "Acme Corp", "type": "Organization",
+                 "description": "A technology company specializing in AI products"},
+            ],
+            "relationships": [
+                {
+                    "source": "Alice",
+                    "target": "Acme Corp",
+                    "type": "WORKS_AT",
+                    "description": "Alice is employed as a software engineer at Acme Corp",
+                    "keywords": "employment, engineering, career",
+                    "weight": 0.9,
+                },
+            ],
+        })
+        super().__init__(responses=[step1_response, step2_response])
 
 
 # ── Fixtures ────────────────────────────────────────────────────
@@ -245,7 +261,7 @@ def mock_graph_store(mock_connection: MagicMock) -> MagicMock:
     store.get_statistics = AsyncMock(return_value={
         "node_count": 0, "edge_count": 0, "entity_types": [],
         "relationship_types": [], "graph_density": 0,
-        "fact_node_count": 0, "synonym_edge_count": 0, "mention_edge_count": 0,
+        "synonym_edge_count": 0, "mention_edge_count": 0,
     })
     return store
 

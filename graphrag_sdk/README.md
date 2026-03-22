@@ -124,29 +124,33 @@ Override any pipeline step by passing a strategy:
 
 ```python
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
 
-# Ingest with custom strategies
+# Default: GLiNER for entity NER (step 1), LLM for relationships (step 2)
 await rag.ingest(
     "document.txt",
     chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-    extractor=MergedExtraction(llm=llm, embedder=embedder),
+    extractor=GraphExtraction(llm=llm),
     resolver=DescriptionMergeResolution(llm=llm),
+)
+
+# Use LLM for step 1 instead of GLiNER
+await rag.ingest(
+    "document.txt",
+    extractor=GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm)),
 )
 ```
 
 ### Post-Ingestion Operations
 
-After ingesting all documents, run synonym detection and backfill embeddings:
+After ingesting all documents, run `finalize()` to deduplicate entities, backfill embeddings, and ensure indexes:
 
 ```python
-# Detect synonym entities across the entire graph
-synonyms = await rag.detect_synonymy(similarity_threshold=0.9)
-print(f"Created {synonyms} SYNONYM edges")
-
-# Backfill entity embeddings (for entity vector search)
-backfilled = await rag.vector_store.backfill_entity_embeddings()
+# Run all post-ingestion steps
+result = await rag.finalize()
+print(f"Deduplicated: {result['entities_deduplicated']}")
+print(f"Embedded: {result['entities_embedded']} entities, {result['relationships_embedded']} rels")
 
 # Inspect graph statistics
 stats = await rag.graph_store.get_statistics()
@@ -161,7 +165,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 |---------|-----|-----------------|---------|
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by file extension |
 | **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` (1000 chars, 100 overlap) |
-| **Extraction** | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction` | SchemaGuided |
+| **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | GraphExtraction |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
@@ -200,7 +204,7 @@ The default pipeline achieves **88.2% accuracy** (8.82/10) on a 100-question ben
 ### Winning Pipeline Configuration
 
 The benchmark-winning pipeline uses:
-- **Extraction**: `MergedExtraction` -- combines LightRAG-style typed extraction with HippoRAG fact triples and entity mentions
+- **Extraction**: `GraphExtraction` -- GLiNER2 local NER (step 1) + LLM verify & relationship extraction (step 2)
 - **Resolution**: `DescriptionMergeResolution` -- LLM-assisted entity deduplication with description merging
 - **Retrieval**: `MultiPathRetrieval` -- 5-path entity discovery, 2-hop relationship expansion, 5-path chunk retrieval, cosine reranking, fact retrieval
 - **Chunking**: 1500 chars / 200 overlap
@@ -212,7 +216,7 @@ See [docs/benchmark.md](docs/benchmark.md) for full reproduction instructions.
 
 ```
 graphrag_sdk/
-├── api/main.py                     # GraphRAG facade (ingest, query, detect_synonymy)
+├── api/main.py                     # GraphRAG facade (ingest, query, finalize)
 ├── core/
 │   ├── connection.py               # FalkorDB connection & config
 │   ├── context.py                  # Execution context (logging, budget)
@@ -220,10 +224,10 @@ graphrag_sdk/
 │   ├── models.py                   # Pydantic data models (30+ classes)
 │   └── providers.py                # LLM & Embedder ABCs + built-in providers
 ├── ingestion/
-│   ├── pipeline.py                 # 10-step ingestion orchestrator
+│   ├── pipeline.py                 # 9-step ingestion orchestrator
 │   ├── loaders/                    # TextLoader, PdfLoader
 │   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, CallableChunking
-│   ├── extraction_strategies/      # SchemaGuided, MergedExtraction
+│   ├── extraction_strategies/      # GraphExtraction (GLiNER2 + LLM)
 │   └── resolution_strategies/      # ExactMatch, DescriptionMerge
 ├── retrieval/
 │   ├── strategies/                 # LocalRetrieval, MultiPathRetrieval

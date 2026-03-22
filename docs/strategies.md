@@ -7,8 +7,8 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 | # | Concern | ABC | Built-in Implementations |
 |---|---------|-----|------------------------|
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader` |
-| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking` |
-| 3 | Extraction | `ExtractionStrategy` | `SchemaGuidedExtraction`, `MergedExtraction` |
+| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` |
+| 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
@@ -140,7 +140,7 @@ chunker = ContextualChunking(
 
 ### Built-in: CallableChunking (bring your own framework)
 
-Adapts any `text → list[str]` function into a chunking strategy. Use this to plug in **any** chunking library — LlamaIndex, LangChain, Unstructured, spaCy, or your own logic — without the SDK carrying those dependencies.
+Adapts any `text -> list[str]` function into a chunking strategy. Use this to plug in **any** chunking library -- LlamaIndex, LangChain, Unstructured, spaCy, or your own logic -- without the SDK carrying those dependencies.
 
 Works with sync functions, async functions, and callable classes.
 
@@ -149,46 +149,6 @@ from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import Callabl
 
 # Plain function
 chunker = CallableChunking(lambda text: text.split("\n\n"))
-```
-
-#### LlamaIndex example
-
-```bash
-pip install llama-index-core
-```
-
-```python
-from llama_index.core.node_parser import SentenceSplitter
-from llama_index.core import Document
-
-splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
-chunker = CallableChunking(
-    lambda text: [n.text for n in splitter.get_nodes_from_documents([Document(text=text)])],
-    strategy_name="llama_sentence",
-)
-```
-
-#### LangChain example
-
-```bash
-pip install langchain-text-splitters
-```
-
-```python
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-lc = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-chunker = CallableChunking(lc.split_text, strategy_name="langchain_recursive")
-```
-
-#### Async example
-
-```python
-async def semantic_split(text: str) -> list[str]:
-    # Your async chunking logic here
-    ...
-
-chunker = CallableChunking(semantic_split, strategy_name="my_semantic")
 ```
 
 ### Writing Your Own
@@ -208,7 +168,7 @@ class SentenceChunking(ChunkingStrategy):
 
 ## 3. ExtractionStrategy
 
-Extracts entities, relationships, and optionally entity mentions from text chunks using an LLM.
+Extracts entities, relationships, and entity mentions from text chunks.
 
 ### ABC
 
@@ -227,45 +187,159 @@ class ExtractionStrategy(ABC):
         ...
 ```
 
-### Built-in: SchemaGuidedExtraction
+### Built-in: GraphExtraction
 
-LLM-based extraction constrained to the provided schema. Prompts the LLM with entity types, relationship types, and schema patterns.
+Composable 2-step extraction with pluggable entity NER and LLM relationship extraction.
+
+**Step 1 -- Entity NER** (pluggable via `EntityExtractor` ABC):
+- **`GLiNERExtractor`** (default): Local GLiNER transformer model, no API calls. Returns typed entities with confidence scores and character spans.
+- **`LLMExtractor`**: Uses a structured NER prompt. Returns entities with confidence, spans, and descriptions.
+- **Custom**: Subclass `EntityExtractor` and implement `extract_entities()`.
+
+**Step 2 -- LLM Verify + Relationship Extraction**:
+The LLM receives the pre-extracted entities and original text, verifies entities (removes invalid, adds missed), and extracts relationships with descriptions, keywords, confidence, and evidence spans.
+
+**Entity Ontology**: Every extracted entity is mapped to a known type from the ontology. Entities that don't match any type are labeled `"Unknown"`. There are three ways to define the ontology:
+
+**1. Use the defaults** (11 built-in types, good for general use):
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+from graphrag_sdk import GraphExtraction
 
-extractor = SchemaGuidedExtraction(
-    llm=llm,              # LLMInterface instance
-    chunk_batch_size=1,   # chunks per LLM call (default: 1)
+# Uses: Person, Organization, Technology, Product, Location, Date,
+#       Event, Concept, Law, Dataset, Method
+extractor = GraphExtraction(llm=llm)
+```
+
+**2. Pass `entity_types` directly** (overrides defaults completely):
+
+```python
+# Biomedical domain
+extractor = GraphExtraction(
+    llm=llm,
+    entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
+)
+
+# Legal domain
+extractor = GraphExtraction(
+    llm=llm,
+    entity_types=["Person", "Organization", "Law", "Court", "Jurisdiction", "Date"],
 )
 ```
 
-**When to use:** Default choice. Good accuracy, respects schema constraints, straightforward.
-
-### Built-in: MergedExtraction
-
-Combines two extraction approaches:
-- **LightRAG-style**: Rich typed entity extraction with descriptions, delimiter-based parsing
-- **HippoRAG-style**: Entity mentions linking entities to source chunks
-
-All LLM-extracted relationships produce the single `RELATES` edge type. The original relationship type (e.g. `WORKS_AT`) is preserved in the `rel_type` property on each edge. A `fact` property stores a human-readable fact string for embedding.
-
-Entity IDs are type-qualified via `compute_entity_id(name, entity_type)` to prevent cross-type collisions (e.g. Person "Paris" and Location "Paris" get different IDs).
-
-Attaches `mentions`, `extracted_entities`, and `extracted_relations` to the `GraphData` object via Pydantic's `extra="allow"`.
+**3. Use `GraphSchema` entities** (schema types override both defaults and `entity_types`):
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk import GraphRAG, GraphSchema, EntityType
 
-extractor = MergedExtraction(
-    llm=llm,                    # LLMInterface instance
-    embedder=embedder,          # Embedder instance (optional)
-    enable_gleaning=False,      # Second LLM pass for missed entities (default: False)
-    max_concurrency=None,       # Override LLM concurrency (default: uses LLM's setting)
+schema = GraphSchema(entities=[
+    EntityType(label="Vehicle", description="Cars, trucks, etc."),
+    EntityType(label="Road", description="Streets, highways, etc."),
+    EntityType(label="Location", description="Cities, countries, etc."),
+])
+
+# Schema entity types are automatically used for extraction
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+await rag.ingest("traffic_report.txt")
+# Extraction uses: ["Vehicle", "Road", "Location"]
+```
+
+The priority order is: `schema.entities` > `entity_types` parameter > defaults.
+
+**Default entity types:** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method.
+
+#### Choosing an Entity Extractor
+
+```python
+from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
+
+# Default: GLiNER for step 1, LLM for step 2
+extractor = GraphExtraction(llm=llm)
+
+# Use LLM for step 1 instead of GLiNER
+extractor = GraphExtraction(
+    llm=llm,
+    entity_extractor=LLMExtractor(llm),
+)
+
+# GLiNER with custom threshold
+extractor = GraphExtraction(
+    llm=llm,
+    entity_extractor=GLiNERExtractor(threshold=0.6),
+)
+
+# With coreference resolution
+from graphrag_sdk import FastCorefResolver
+
+extractor = GraphExtraction(
+    llm=llm,
+    coref_resolver=FastCorefResolver(),  # pip install graphrag-sdk[fastcoref]
 )
 ```
 
-**When to use:** Best accuracy. Used in the benchmark-winning pipeline. Produces richer graphs (mentions, typed relationships) but uses more LLM calls.
+**Entity Extractors:**
+
+| Class | Description | Parameters |
+|-------|-------------|------------|
+| `GLiNERExtractor` | Local GLiNER model (default, no API calls) | `threshold=0.75`, `model_name="urchade/gliner_medium-v2.1"` |
+| `LLMExtractor` | LLM-based NER via structured prompt | `llm` (required), `threshold=0.75` |
+| Custom subclass | Your own `EntityExtractor` subclass | Implement `extract_entities()` |
+
+All extractors share the same `threshold` behavior: entities with confidence below the threshold are labeled `"Unknown"`.
+
+**Graph output:**
+- All relationships use `RELATES` edge type. The original type (e.g. `WORKS_AT`) is in `properties["rel_type"]`.
+- Entity IDs are type-qualified: `compute_entity_id("Paris", "Location")` -> `"paris__location"`.
+- Character spans stored as `properties["spans"]` = `{chunk_id: [{start, end}]}` on both entities and relationships.
+- Entity mentions (`MENTIONED_IN` edges) link entities to source chunks.
+
+### Writing Your Own Entity Extractor
+
+Subclass `EntityExtractor` and implement `extract_entities()`:
+
+```python
+from graphrag_sdk import EntityExtractor, GraphExtraction
+from graphrag_sdk.core.models import ExtractedEntity
+
+class SpaCyExtractor(EntityExtractor):
+    def __init__(self, model_name="en_core_web_sm"):
+        import spacy
+        self._nlp = spacy.load(model_name)
+
+    async def extract_entities(self, text, entity_types, source_chunk_id):
+        import asyncio
+        doc = await asyncio.to_thread(self._nlp, text)
+        return [
+            ExtractedEntity(
+                name=ent.text,
+                type=ent.label_,
+                description="",
+                source_chunk_ids=[source_chunk_id],
+                spans={source_chunk_id: [{"start": ent.start_char, "end": ent.end_char}]},
+            )
+            for ent in doc.ents
+        ]
+
+# Use it
+extractor = GraphExtraction(llm=llm, entity_extractor=SpaCyExtractor())
+await rag.ingest("doc.txt", extractor=extractor)
+```
+
+### Writing Your Own Extraction Strategy
+
+Replace the entire 2-step pipeline by subclassing `ExtractionStrategy`:
+
+```python
+class MyExtraction(ExtractionStrategy):
+    async def extract(self, chunks, schema, ctx):
+        nodes, rels = [], []
+        for chunk in chunks.chunks:
+            # Your extraction logic
+            ...
+        return GraphData(nodes=nodes, relationships=rels)
+
+await rag.ingest("doc.txt", extractor=MyExtraction())
+```
 
 ---
 
@@ -388,16 +462,6 @@ retriever = MultiPathRetrieval(
 
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, retrieval_strategy=retriever)
 ```
-
-**Pipeline:**
-1. Extract keywords from question (stopword filter + LLM proper nouns)
-2. Embed question only (single API call)
-3. RELATES edge vector search -> fact strings + entity entry points
-4. 2-path entity discovery (Cypher CONTAINS, fulltext) + merge RELATES entities
-5. 2-hop relationship expansion for top entities
-6. 4-path chunk retrieval (fulltext, vector, MENTIONED_IN, 2-hop entity->neighbor->chunk)
-7. Cosine reranking of candidate chunks
-8. Question type detection + structured context assembly
 
 **When to use:** Default choice. Best accuracy on benchmark. Handles complex multi-hop questions.
 

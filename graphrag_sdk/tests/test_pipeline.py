@@ -147,22 +147,27 @@ class TestIngestionPipeline:
         assert result.nodes_created >= 0
 
     async def test_schema_pruning(self, ctx, mock_graph_store, mock_vector_store):
-        """Pruning step filters nodes/rels by schema."""
+        """Pruning keeps Unknown + RELATES, drops non-schema labels/types."""
         schema = GraphSchema(
             entities=[EntityType(label="Person")],
             relations=[RelationType(label="KNOWS")],
         )
 
-        class ExtractorWithWrongLabels(ExtractionStrategy):
+        class ExtractorWithMixedLabels(ExtractionStrategy):
             async def extract(self, chunks, schema, ctx):
                 return GraphData(
                     nodes=[
                         GraphNode(id="p1", label="Person", properties={"name": "Alice"}),
                         GraphNode(id="x1", label="Unknown", properties={"name": "???"}),
+                        GraphNode(id="a1", label="Alien", properties={"name": "Zorg"}),
                     ],
                     relationships=[
                         GraphRelationship(
                             start_node_id="p1", end_node_id="x1",
+                            type="RELATES", properties={},
+                        ),
+                        GraphRelationship(
+                            start_node_id="p1", end_node_id="a1",
                             type="WRONG", properties={},
                         ),
                     ],
@@ -171,17 +176,17 @@ class TestIngestionPipeline:
         pipeline = IngestionPipeline(
             loader=StubLoader("Test"),
             chunker=StubChunker(),
-            extractor=ExtractorWithWrongLabels(),
+            extractor=ExtractorWithMixedLabels(),
             resolver=StubResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
             schema=schema,
         )
         result = await pipeline.run("test.txt", ctx)
-        # Only Person nodes survive, Unknown gets pruned
-        # The WRONG relationship refs Unknown, so it also gets pruned
-        assert result.nodes_created == 1
-        assert result.relationships_created == 0
+        # Person + Unknown survive; Alien pruned
+        assert result.nodes_created == 2
+        # RELATES survives; WRONG pruned (+ Alien endpoint gone)
+        assert result.relationships_created == 1
 
     async def test_pipeline_wraps_exception(self, ctx, mock_graph_store, mock_vector_store):
         """Non-IngestionError exceptions get wrapped."""
@@ -238,12 +243,15 @@ class TestPruneMethod:
             nodes=[
                 GraphNode(id="p", label="Person"),
                 GraphNode(id="x", label="Unknown"),
+                GraphNode(id="z", label="Alien"),
             ],
             relationships=[],
         )
         result = pipeline._prune(data, schema)
-        assert len(result.nodes) == 1
-        assert result.nodes[0].label == "Person"
+        # Person + Unknown survive; Alien pruned
+        assert len(result.nodes) == 2
+        labels = {n.label for n in result.nodes}
+        assert labels == {"Person", "Unknown"}
 
     def test_prune_removes_orphaned_rels(self):
         pipeline = IngestionPipeline(

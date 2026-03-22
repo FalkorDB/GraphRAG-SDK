@@ -386,44 +386,81 @@ Larger chunks provide more context per extraction call but increase LLM token us
 
 ### Extraction Strategy Parameters
 
-**SchemaGuidedExtraction** -- JSON-based extraction constrained to schema types:
-
-| Parameter          | Type  | Default | Description                                    |
-|--------------------|-------|---------|------------------------------------------------|
-| `chunk_batch_size` | `int` | `1`     | Number of chunks per LLM call.                 |
-
-**MergedExtraction** -- delimiter-based extraction combining LightRAG and HippoRAG patterns:
+**GraphExtraction** -- composable 2-step extraction (GLiNER NER + LLM relationship extraction):
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
-| `enable_gleaning`  | `bool`          | `False`        | If `True`, performs a second LLM pass per chunk to catch missed entities. |
-| `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during extraction.   |
+| `llm`              | `LLMInterface`  | required       | LLM provider for step 2 (verify + relationship extraction). |
+| `entity_extractor` | `EntityExtractor \| None` | `None` (`GLiNERExtractor()`) | Pluggable NER backend for step 1. |
+| `coref_resolver`   | `CorefResolver \| None` | `None` | Optional coreference resolution (e.g. `FastCorefResolver()`). |
+| `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `schema.entities` if set. |
+| `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during step 2. |
+
+**Built-in entity extractors:**
+
+| Class | Description | Parameters |
+|-------|-------------|------------|
+| `GLiNERExtractor` | Local GLiNER model (default) | `threshold=0.75`, `model_name="urchade/gliner_medium-v2.1"` |
+| `LLMExtractor` | LLM-based NER via prompt | `llm` (required), `threshold=0.75` |
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
 
-extractor = MergedExtraction(
+# Default: GLiNER for entity NER, LLM for relationship extraction
+extractor = GraphExtraction(llm=my_llm)
+
+# Use LLM for step 1 instead of GLiNER
+extractor = GraphExtraction(
     llm=my_llm,
-    enable_gleaning=True,      # second-pass extraction for higher recall
-    max_concurrency=8,         # limit parallel LLM calls
+    entity_extractor=LLMExtractor(my_llm),
+)
+
+# GLiNER with lower confidence threshold
+extractor = GraphExtraction(
+    llm=my_llm,
+    entity_extractor=GLiNERExtractor(threshold=0.6),
 )
 
 result = await rag.ingest("document.txt", extractor=extractor)
 ```
 
+### Custom Entity Types
+
+Override the default 11 entity types with your own domain-specific ontology:
+
+```python
+# Pass entity_types to GraphExtraction
+extractor = GraphExtraction(
+    llm=my_llm,
+    entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
+)
+
+# Or define them in the schema (takes priority)
+from graphrag_sdk import GraphSchema, EntityType
+
+schema = GraphSchema(entities=[
+    EntityType(label="Gene", description="A gene or genetic locus"),
+    EntityType(label="Protein", description="A protein or enzyme"),
+    EntityType(label="Disease", description="A disease or condition"),
+])
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+```
+
+Priority: `schema.entities` > `entity_types` param > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method).
+
 ### LLM Concurrency
 
-The `LLMInterface.max_concurrency` parameter (default: 12) controls how many LLM calls run in parallel during `abatch_invoke()`. This applies to both extraction and other batch operations. Set it lower to avoid rate limits, or higher if your provider supports it:
+The `LLMInterface.max_concurrency` parameter (default: 12) controls how many LLM calls run in parallel during `abatch_invoke()`. Set it lower to avoid rate limits:
 
 ```python
 llm = LiteLLM(model="azure/gpt-4.1", api_key="...")
 llm.max_concurrency = 8  # limit to 8 parallel calls
 ```
 
-For `MergedExtraction`, you can also pass `max_concurrency` directly to override the LLM's default:
+For `GraphExtraction`, you can also pass `max_concurrency` directly:
 
 ```python
-extractor = MergedExtraction(llm=my_llm, max_concurrency=6)
+extractor = GraphExtraction(llm=my_llm, max_concurrency=6)
 ```
 
 ---

@@ -3,9 +3,9 @@ GraphRAG SDK v2 -- Custom Strategies (Benchmark-Winning Pipeline)
 ==================================================================
 Demonstrates the full pipeline configuration that achieved 88.2% accuracy
 on the 20-document novel benchmark. Uses:
-  - MergedExtraction (LightRAG + HippoRAG combined)
+  - GraphExtraction (GLiNER2 NER + LLM relationship extraction)
   - DescriptionMergeResolution (LLM-assisted entity dedup)
-  - Post-ingestion synonym detection
+  - Post-ingestion finalize (dedup, embeddings, indexes)
   - MultiPathRetrieval (default, configured automatically)
 
 Prerequisites:
@@ -32,7 +32,7 @@ from graphrag_sdk import (
 )
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
+from graphrag_sdk import GraphExtraction
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
 
 # Sample documents (replace with your own)
@@ -119,23 +119,20 @@ async def main():
             text=text,
             # Larger chunks capture more context per extraction call
             chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-            # MergedExtraction: LightRAG typed entities + HippoRAG fact triples & mentions
-            extractor=MergedExtraction(llm=llm, embedder=embedder),
+            # GraphExtraction: GLiNER2 entity NER + LLM verify & relationship extraction
+            extractor=GraphExtraction(llm=llm),
             # LLM-assisted deduplication merges entity descriptions
             resolver=DescriptionMergeResolution(llm=llm),
             ctx=Context(tenant_id="demo"),
         )
         print(f"  {source_id}: {result.nodes_created} nodes, {result.relationships_created} edges")
 
-    # --- Post-ingestion: synonym detection ---
-    print("\nDetecting synonyms across all entities...")
-    synonym_count = await rag.detect_synonymy(similarity_threshold=0.9)
-    print(f"  Created {synonym_count} SYNONYM edges")
-
-    # --- Post-ingestion: backfill entity embeddings ---
-    print("Backfilling entity embeddings...")
-    backfilled = await rag.vector_store.backfill_entity_embeddings()
-    print(f"  Backfilled {backfilled} entities")
+    # --- Post-ingestion: finalize (dedup, embeddings, indexes) ---
+    print("\nRunning finalize()...")
+    finalize_result = await rag.finalize()
+    print(f"  Deduplicated: {finalize_result['entities_deduplicated']} entities")
+    print(f"  Embedded: {finalize_result['entities_embedded']} entities, "
+          f"{finalize_result['relationships_embedded']} relationships")
 
     elapsed = time.time() - t0
     print(f"\nTotal ingestion time: {elapsed:.1f}s")
@@ -145,8 +142,6 @@ async def main():
     print(f"\nGraph Statistics:")
     print(f"  Nodes:         {stats['node_count']}")
     print(f"  Edges:         {stats['edge_count']}")
-    print(f"  Facts:         {stats['fact_node_count']}")
-    print(f"  Synonyms:      {stats['synonym_edge_count']}")
     print(f"  Mentions:      {stats['mention_edge_count']}")
     print(f"  Entity types:  {stats['entity_types']}")
 

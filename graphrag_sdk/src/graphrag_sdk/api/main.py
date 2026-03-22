@@ -22,8 +22,9 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.merged_extraction import MergedExtraction
-from graphrag_sdk.ingestion.extraction_strategies.schema_guided import SchemaGuidedExtraction
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    GraphExtraction,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
@@ -148,7 +149,7 @@ class GraphRAG:
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
         - Chunker: FixedSizeChunking(chunk_size=1000)
-        - Extractor: auto-selected (MergedExtraction for open-schema, SchemaGuidedExtraction for ontology)
+        - Extractor: GraphExtraction with configured LLM
         - Resolver: ExactMatchResolution
 
         Args:
@@ -195,10 +196,16 @@ class GraphRAG:
         return result
 
     def _default_extractor(self) -> ExtractionStrategy:
-        """Pick extractor based on schema: MergedExtraction for open-schema, SchemaGuidedExtraction for ontology."""
-        if self.schema.entities or self.schema.relations:
-            return SchemaGuidedExtraction(llm=self.llm)
-        return MergedExtraction(llm=self.llm, embedder=self.embedder)
+        """Return default GraphExtraction with schema entity types if available."""
+        entity_types = (
+            [e.label for e in self.schema.entities]
+            if self.schema.entities
+            else None
+        )
+        return GraphExtraction(
+            llm=self.llm,
+            entity_types=entity_types,
+        )
 
     # ── Query ────────────────────────────────────────────────────
 
@@ -341,9 +348,9 @@ class GraphRAG:
             return 0
 
         # Group by (normalized name, label) to prevent cross-type merging.
-        # Type taxonomy resolution unifies types at extraction time;
-        # this catches residual duplicates from separate ingestion batches
-        # while preserving legitimately different entities that share a name
+        # The fixed ontology maps types at extraction time; this catches
+        # residual duplicates from separate ingestion batches while
+        # preserving legitimately different entities that share a name
         # (e.g. "Python" the language vs "Python" the snake).
         groups: dict[tuple[str, str], list[dict]] = {}
         for ent in entities:
@@ -498,10 +505,11 @@ class GraphRAG:
         """Run all post-ingestion steps after all documents are ingested.
 
         Bundles:
-        1. ``deduplicate_entities()`` — global exact-name dedup
-        2. ``backfill_entity_embeddings()`` — name-only embeddings
-        3. ``embed_relationships()`` — fact text embeddings on RELATES edges
-        4. ``ensure_indices()`` — all indexes
+        1. Remove NULL-name stub entities (legacy cleanup)
+        2. ``deduplicate_entities()`` — global exact-name dedup
+        3. ``backfill_entity_embeddings()`` — name-only embeddings
+        4. ``embed_relationships()`` — fact text embeddings on RELATES edges
+        5. ``ensure_indices()`` — all indexes
 
         Returns:
             Dict with counts from each step.
@@ -510,24 +518,33 @@ class GraphRAG:
 
         ctx_log("finalize: starting post-ingestion steps")
 
-        # Step 1: Global dedup
+        # Step 1: Remove NULL-name stub entities (created by legacy path-MERGE bugs)
+        r = await self.graph_store.query_raw(
+            "MATCH (e:__Entity__) WHERE e.name IS NULL DETACH DELETE e RETURN count(e)"
+        )
+        null_cleaned = r.result_set[0][0] if r.result_set else 0
+        if null_cleaned:
+            ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
+
+        # Step 2: Global dedup
         dedup_count = await self.deduplicate_entities()
         ctx_log(f"finalize: deduplicated {dedup_count} entities")
 
-        # Step 2: Entity embeddings (name-only)
+        # Step 3: Entity embeddings (name-only)
         entity_count = await self.vector_store.backfill_entity_embeddings()
         ctx_log(f"finalize: embedded {entity_count} entities")
 
-        # Step 3: Relationship embeddings (fact text on RELATES edges)
+        # Step 4: Relationship embeddings (fact text on RELATES edges)
         rel_count = await self.vector_store.embed_relationships()
         ctx_log(f"finalize: embedded {rel_count} relationships")
 
-        # Step 4: Ensure all indexes
+        # Step 5: Ensure all indexes
         self.vector_store._indices_ensured = False  # force re-check
         index_results = await self.vector_store.ensure_indices()
         ctx_log(f"finalize: indexes = {index_results}")
 
         return {
+            "null_stubs_removed": null_cleaned,
             "entities_deduplicated": dedup_count,
             "entities_embedded": entity_count,
             "relationships_embedded": rel_count,
