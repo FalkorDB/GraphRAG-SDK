@@ -22,8 +22,8 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
-    TwoStepExtraction,
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -149,7 +149,7 @@ class GraphRAG:
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
         - Chunker: FixedSizeChunking(chunk_size=1000)
-        - Extractor: TwoStepExtraction with configured LLM
+        - Extractor: GraphExtraction with configured LLM
         - Resolver: ExactMatchResolution
 
         Args:
@@ -196,13 +196,13 @@ class GraphRAG:
         return result
 
     def _default_extractor(self) -> ExtractionStrategy:
-        """Return default TwoStepExtraction with schema entity types if available."""
+        """Return default GraphExtraction with schema entity types if available."""
         entity_types = (
             [e.label for e in self.schema.entities]
             if self.schema.entities
             else None
         )
-        return TwoStepExtraction(
+        return GraphExtraction(
             llm=self.llm,
             entity_types=entity_types,
         )

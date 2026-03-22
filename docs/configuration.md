@@ -386,7 +386,7 @@ Larger chunks provide more context per extraction call but increase LLM token us
 
 ### Extraction Strategy Parameters
 
-**TwoStepExtraction** -- composable 2-step extraction (GLiNER NER + LLM relationship extraction):
+**GraphExtraction** -- composable 2-step extraction (GLiNER NER + LLM relationship extraction):
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
@@ -404,19 +404,19 @@ Larger chunks provide more context per extraction call but increase LLM token us
 | `LLMExtractor` | LLM-based NER via prompt | `llm` (required), `threshold=0.75` |
 
 ```python
-from graphrag_sdk import TwoStepExtraction, GLiNERExtractor, LLMExtractor
+from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
 
 # Default: GLiNER for entity NER, LLM for relationship extraction
-extractor = TwoStepExtraction(llm=my_llm)
+extractor = GraphExtraction(llm=my_llm)
 
 # Use LLM for step 1 instead of GLiNER
-extractor = TwoStepExtraction(
+extractor = GraphExtraction(
     llm=my_llm,
     entity_extractor=LLMExtractor(my_llm),
 )
 
 # GLiNER with lower confidence threshold
-extractor = TwoStepExtraction(
+extractor = GraphExtraction(
     llm=my_llm,
     entity_extractor=GLiNERExtractor(threshold=0.6),
 )
@@ -429,8 +429,8 @@ result = await rag.ingest("document.txt", extractor=extractor)
 Override the default 11 entity types with your own domain-specific ontology:
 
 ```python
-# Pass entity_types to TwoStepExtraction
-extractor = TwoStepExtraction(
+# Pass entity_types to GraphExtraction
+extractor = GraphExtraction(
     llm=my_llm,
     entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
 )
@@ -457,10 +457,10 @@ llm = LiteLLM(model="azure/gpt-4.1", api_key="...")
 llm.max_concurrency = 8  # limit to 8 parallel calls
 ```
 
-For `TwoStepExtraction`, you can also pass `max_concurrency` directly:
+For `GraphExtraction`, you can also pass `max_concurrency` directly:
 
 ```python
-extractor = TwoStepExtraction(llm=my_llm, max_concurrency=6)
+extractor = GraphExtraction(llm=my_llm, max_concurrency=6)
 ```
 
 ---

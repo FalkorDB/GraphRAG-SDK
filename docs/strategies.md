@@ -8,7 +8,7 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 |---|---------|-----|------------------------|
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader` |
 | 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` |
-| 3 | Extraction | `ExtractionStrategy` | `TwoStepExtraction` |
+| 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
@@ -187,7 +187,7 @@ class ExtractionStrategy(ABC):
         ...
 ```
 
-### Built-in: TwoStepExtraction
+### Built-in: GraphExtraction
 
 Composable 2-step extraction with pluggable entity NER and LLM relationship extraction.
 
@@ -204,24 +204,24 @@ The LLM receives the pre-extracted entities and original text, verifies entities
 **1. Use the defaults** (11 built-in types, good for general use):
 
 ```python
-from graphrag_sdk import TwoStepExtraction
+from graphrag_sdk import GraphExtraction
 
 # Uses: Person, Organization, Technology, Product, Location, Date,
 #       Event, Concept, Law, Dataset, Method
-extractor = TwoStepExtraction(llm=llm)
+extractor = GraphExtraction(llm=llm)
 ```
 
 **2. Pass `entity_types` directly** (overrides defaults completely):
 
 ```python
 # Biomedical domain
-extractor = TwoStepExtraction(
+extractor = GraphExtraction(
     llm=llm,
     entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
 )
 
 # Legal domain
-extractor = TwoStepExtraction(
+extractor = GraphExtraction(
     llm=llm,
     entity_types=["Person", "Organization", "Law", "Court", "Jurisdiction", "Date"],
 )
@@ -251,19 +251,19 @@ The priority order is: `schema.entities` > `entity_types` parameter > defaults.
 #### Choosing an Entity Extractor
 
 ```python
-from graphrag_sdk import TwoStepExtraction, GLiNERExtractor, LLMExtractor
+from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
 
 # Default: GLiNER for step 1, LLM for step 2
-extractor = TwoStepExtraction(llm=llm)
+extractor = GraphExtraction(llm=llm)
 
 # Use LLM for step 1 instead of GLiNER
-extractor = TwoStepExtraction(
+extractor = GraphExtraction(
     llm=llm,
     entity_extractor=LLMExtractor(llm),
 )
 
 # GLiNER with custom threshold
-extractor = TwoStepExtraction(
+extractor = GraphExtraction(
     llm=llm,
     entity_extractor=GLiNERExtractor(threshold=0.6),
 )
@@ -271,7 +271,7 @@ extractor = TwoStepExtraction(
 # With coreference resolution
 from graphrag_sdk import FastCorefResolver
 
-extractor = TwoStepExtraction(
+extractor = GraphExtraction(
     llm=llm,
     coref_resolver=FastCorefResolver(),  # pip install graphrag-sdk[fastcoref]
 )
@@ -298,7 +298,7 @@ All extractors share the same `threshold` behavior: entities with confidence bel
 Subclass `EntityExtractor` and implement `extract_entities()`:
 
 ```python
-from graphrag_sdk import EntityExtractor, TwoStepExtraction
+from graphrag_sdk import EntityExtractor, GraphExtraction
 from graphrag_sdk.core.models import ExtractedEntity
 
 class SpaCyExtractor(EntityExtractor):
@@ -321,7 +321,7 @@ class SpaCyExtractor(EntityExtractor):
         ]
 
 # Use it
-extractor = TwoStepExtraction(llm=llm, entity_extractor=SpaCyExtractor())
+extractor = GraphExtraction(llm=llm, entity_extractor=SpaCyExtractor())
 await rag.ingest("doc.txt", extractor=extractor)
 ```
 

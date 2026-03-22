@@ -103,9 +103,9 @@ class TestSubmoduleImports:
         from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
         assert FixedSizeChunking is not None
 
-    def test_two_step_extraction(self):
-        from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import TwoStepExtraction
-        assert TwoStepExtraction is not None
+    def test_graph_extraction(self):
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
+        assert GraphExtraction is not None
 
     def test_exact_match_resolution(self):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution

@@ -72,7 +72,7 @@ Build a knowledge graph from a source. Auto-detects loader from file extension.
 | `text` | `str \| None` | `None` | Raw text (skips loader if provided) |
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
 | `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (FixedSizeChunking(1000) if None) |
-| `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (TwoStepExtraction if None) |
+| `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None) |
 | `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None) |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
@@ -519,9 +519,9 @@ class ExtractionStrategy(ABC):
 ```
 
 **Built-in:**
-- `TwoStepExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, max_concurrency=None)`
+- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, max_concurrency=None)`
 
-**Entity Extractors** (step 1 backends for `TwoStepExtraction`):
+**Entity Extractors** (step 1 backends for `GraphExtraction`):
 - `GLiNERExtractor(threshold=0.75, model_name="urchade/gliner_medium-v2.1")` -- default, local NER
 - `LLMExtractor(llm, threshold=0.75)` -- LLM-based NER
 - Subclass `EntityExtractor` for custom backends

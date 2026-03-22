@@ -2,7 +2,7 @@
 # ABC + built-in implementations for step 1 entity NER.
 #
 # Also exports shared entity utilities (constants, ID computation,
-# name validation, type mapping) used by TwoStepExtraction.
+# name validation, type mapping) used by GraphExtraction.
 
 from __future__ import annotations
 
@@ -225,7 +225,7 @@ NER_PROMPT = (
 
 
 class EntityExtractor(ABC):
-    """Abstract base for entity extractors (step 1 of TwoStepExtraction).
+    """Abstract base for entity extractors (step 1 of GraphExtraction).
 
     Subclass this to build your own NER backend. Built-in implementations:
     ``GLiNERExtractor`` (default, local) and ``LLMExtractor`` (API-based).

@@ -1,6 +1,6 @@
 # GraphRAG SDK 2.0 — Extraction: Pluggable Coreference Resolvers
 # ABC + concrete implementations for coreference resolution
-# as an optional pre-processing step in TwoStepExtraction.
+# as an optional pre-processing step in GraphExtraction.
 
 from __future__ import annotations
 

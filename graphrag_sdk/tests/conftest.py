@@ -93,7 +93,7 @@ class MockLLMWithExtraction(MockLLM):
         super().__init__(responses=[extraction_response])
 
 
-class MockLLMWithTwoStepExtraction(MockLLM):
+class MockLLMWithGraphExtraction(MockLLM):
     """Mock LLM that returns step-1 NER JSON then step-2 verify+rels JSON."""
 
     def __init__(self) -> None:

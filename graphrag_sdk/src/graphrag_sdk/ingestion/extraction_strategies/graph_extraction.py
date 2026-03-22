@@ -94,7 +94,7 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
     return extra
 
 
-class TwoStepExtraction(ExtractionStrategy):
+class GraphExtraction(ExtractionStrategy):
     """Composable 2-step extraction with pluggable entity NER.
 
     **Step 1** — Entity extraction via a pluggable ``EntityExtractor``.

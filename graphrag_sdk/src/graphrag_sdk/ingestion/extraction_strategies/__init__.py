@@ -10,13 +10,13 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     GLiNERExtractor,
     LLMExtractor,
 )
-from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
-    TwoStepExtraction,
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    GraphExtraction,
 )
 
 __all__ = [
     "ExtractionStrategy",
-    "TwoStepExtraction",
+    "GraphExtraction",
     "EntityExtractor",
     "GLiNERExtractor",
     "LLMExtractor",

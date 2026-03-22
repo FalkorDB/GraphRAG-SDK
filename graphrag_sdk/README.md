@@ -124,21 +124,21 @@ Override any pipeline step by passing a strategy:
 
 ```python
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
-from graphrag_sdk import TwoStepExtraction, GLiNERExtractor, LLMExtractor
+from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
 
 # Default: GLiNER for entity NER (step 1), LLM for relationships (step 2)
 await rag.ingest(
     "document.txt",
     chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-    extractor=TwoStepExtraction(llm=llm),
+    extractor=GraphExtraction(llm=llm),
     resolver=DescriptionMergeResolution(llm=llm),
 )
 
 # Use LLM for step 1 instead of GLiNER
 await rag.ingest(
     "document.txt",
-    extractor=TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm)),
+    extractor=GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm)),
 )
 ```
 
@@ -165,7 +165,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 |---------|-----|-----------------|---------|
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by file extension |
 | **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` (1000 chars, 100 overlap) |
-| **Extraction** | `ExtractionStrategy` | `TwoStepExtraction` (GLiNER2 + LLM) | TwoStepExtraction |
+| **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | GraphExtraction |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
@@ -204,7 +204,7 @@ The default pipeline achieves **88.2% accuracy** (8.82/10) on a 100-question ben
 ### Winning Pipeline Configuration
 
 The benchmark-winning pipeline uses:
-- **Extraction**: `TwoStepExtraction` -- GLiNER2 local NER (step 1) + LLM verify & relationship extraction (step 2)
+- **Extraction**: `GraphExtraction` -- GLiNER2 local NER (step 1) + LLM verify & relationship extraction (step 2)
 - **Resolution**: `DescriptionMergeResolution` -- LLM-assisted entity deduplication with description merging
 - **Retrieval**: `MultiPathRetrieval` -- 5-path entity discovery, 2-hop relationship expansion, 5-path chunk retrieval, cosine reranking, fact retrieval
 - **Chunking**: 1500 chars / 200 overlap
@@ -227,7 +227,7 @@ graphrag_sdk/
 │   ├── pipeline.py                 # 9-step ingestion orchestrator
 │   ├── loaders/                    # TextLoader, PdfLoader
 │   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, CallableChunking
-│   ├── extraction_strategies/      # TwoStepExtraction (GLiNER2 + LLM)
+│   ├── extraction_strategies/      # GraphExtraction (GLiNER2 + LLM)
 │   └── resolution_strategies/      # ExactMatch, DescriptionMerge
 ├── retrieval/
 │   ├── strategies/                 # LocalRetrieval, MultiPathRetrieval

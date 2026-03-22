@@ -62,8 +62,8 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     GLiNERExtractor,
     LLMExtractor,
 )
-from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
-    TwoStepExtraction,
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -117,7 +117,7 @@ __all__ = [
     # Ingestion
     "ChunkingStrategy",
     "ExtractionStrategy",
-    "TwoStepExtraction",
+    "GraphExtraction",
     "EntityExtractor",
     "GLiNERExtractor",
     "LLMExtractor",

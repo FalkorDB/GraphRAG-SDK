@@ -1,4 +1,4 @@
-"""Tests for TwoStepExtraction strategy."""
+"""Tests for GraphExtraction strategy."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     EntityExtractor,
     LLMExtractor,
 )
-from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
-    TwoStepExtraction,
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    GraphExtraction,
 )
 
-from .conftest import MockLLM, MockLLMWithTwoStepExtraction
+from .conftest import MockLLM, MockLLMWithGraphExtraction
 
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -64,11 +64,11 @@ def _mock_hybrid_llm(
 # ── Tests ──────────────────────────────────────────────────────
 
 
-class TestTwoStepExtractionSmoke:
+class TestGraphExtractionSmoke:
     @pytest.fixture
     def extractor(self):
         llm = _mock_hybrid_llm()
-        return TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        return GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
 
     async def test_produces_nodes(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
@@ -117,19 +117,19 @@ class TestTwoStepExtractionSmoke:
             assert "description" in node.properties
 
 
-class TestTwoStepExtractionWithMock:
-    """Tests using the MockLLMWithTwoStepExtraction from conftest."""
+class TestGraphExtractionWithMock:
+    """Tests using the MockLLMWithGraphExtraction from conftest."""
 
     async def test_mock_llm_produces_output(self, ctx):
-        llm = MockLLMWithTwoStepExtraction()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        llm = MockLLMWithGraphExtraction()
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
         assert len(result.nodes) >= 2
         assert len(result.relationships) >= 1
 
 
-class TestTwoStepExtractionSchemaTypes:
+class TestGraphExtractionSchemaTypes:
     async def test_schema_entity_types_used(self, ctx):
         """Entity types from schema override defaults."""
         captured_prompts: list[str] = []
@@ -150,7 +150,7 @@ class TestTwoStepExtractionSchemaTypes:
                 EntityType(label="Road", description="A road"),
             ],
         )
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("The car drove down the highway.")
         await extractor.extract(chunks, schema, ctx)
 
@@ -160,10 +160,10 @@ class TestTwoStepExtractionSchemaTypes:
         assert "Road" in captured_prompts[0]
 
 
-class TestTwoStepExtractionBudget:
+class TestGraphExtractionBudget:
     async def test_budget_exceeded_stops_extraction(self):
         llm = _mock_hybrid_llm()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Text 1", "Text 2", "Text 3")
 
         ctx = Context(tenant_id="test", latency_budget_ms=0.0)
@@ -173,7 +173,7 @@ class TestTwoStepExtractionBudget:
         assert llm._call_index == 0 or len(result.nodes) == 0
 
 
-class TestTwoStepExtractionAggregation:
+class TestGraphExtractionAggregation:
     async def test_cross_chunk_entity_dedup(self, ctx):
         """Same entity from multiple chunks should be deduplicated."""
         step1 = json.dumps([{"name": "Alice", "type": "Person", "description": "An engineer"}])
@@ -182,7 +182,7 @@ class TestTwoStepExtractionAggregation:
             "relationships": [],
         })
         llm = MockLLM(responses=[step1, step1, step2, step2])
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
 
         chunks = _make_chunks("Alice is an engineer.", "Alice works hard.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
@@ -193,11 +193,11 @@ class TestTwoStepExtractionAggregation:
         assert "chunk-1" in alice_nodes[0].properties["source_chunk_ids"]
 
 
-class TestTwoStepExtractionGraphOutput:
+class TestGraphExtractionGraphOutput:
     async def test_node_ids_are_type_qualified(self, ctx):
         """Node IDs should include entity type for collision prevention."""
         llm = _mock_hybrid_llm()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
 
@@ -209,7 +209,7 @@ class TestTwoStepExtractionGraphOutput:
     async def test_relationship_edge_type_is_relates(self, ctx):
         """All relationships should use RELATES edge type."""
         llm = _mock_hybrid_llm()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
         result = await extractor.extract(chunks, GraphSchema(), ctx)
 
@@ -218,9 +218,9 @@ class TestTwoStepExtractionGraphOutput:
             assert rel.properties["rel_type"] == "WORKS_AT"
 
 
-class TestTwoStepExtractionPluggableExtractor:
+class TestGraphExtractionPluggableExtractor:
     async def test_custom_ner_model(self, ctx):
-        """TwoStepExtraction works with a custom NER model."""
+        """GraphExtraction works with a custom NER model."""
 
         class SimpleNERExtractor(EntityExtractor):
             async def extract_entities(self, text, entity_types, source_chunk_id):
@@ -244,7 +244,7 @@ class TestTwoStepExtractionPluggableExtractor:
         })
         llm = MockLLM(responses=[step2])
         custom_extractor = SimpleNERExtractor()
-        extractor = TwoStepExtraction(
+        extractor = GraphExtraction(
             llm=llm,
             entity_extractor=custom_extractor,
         )
@@ -258,10 +258,10 @@ class TestTwoStepExtractionPluggableExtractor:
         assert len(result.relationships) >= 1
 
 
-class TestTwoStepExtractionConcurrency:
+class TestGraphExtractionConcurrency:
     async def test_max_concurrency_stored(self, ctx):
         llm = _mock_hybrid_llm()
-        extractor = TwoStepExtraction(
+        extractor = GraphExtraction(
             llm=llm, entity_extractor=LLMExtractor(llm), max_concurrency=2,
         )
         assert extractor._max_concurrency == 2
@@ -271,17 +271,17 @@ class TestTwoStepExtractionConcurrency:
         assert len(result.nodes) > 0
 
 
-class TestTwoStepExtractionDefaults:
+class TestGraphExtractionDefaults:
     def test_default_entity_types(self):
         llm = MockLLM()
-        extractor = TwoStepExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         assert "Person" in extractor.entity_types
         assert "Organization" in extractor.entity_types
         assert "Location" in extractor.entity_types
 
     def test_custom_entity_types(self):
         llm = MockLLM()
-        extractor = TwoStepExtraction(
+        extractor = GraphExtraction(
             llm=llm,
             entity_extractor=LLMExtractor(llm),
             entity_types=["Vehicle", "Road"],
@@ -289,7 +289,7 @@ class TestTwoStepExtractionDefaults:
         assert extractor.entity_types == ["Vehicle", "Road"]
 
 
-class TestTwoStepExtractionStep2Parsing:
+class TestGraphExtractionStep2Parsing:
     def test_parse_valid_response(self):
         content = json.dumps({
             "entities": [
@@ -300,7 +300,7 @@ class TestTwoStepExtractionStep2Parsing:
                  "description": "Friends", "weight": 0.8},
             ],
         })
-        ents, rels = TwoStepExtraction._parse_step2_response(
+        ents, rels = GraphExtraction._parse_step2_response(
             content, ["Person"], "chunk-0"
         )
         assert len(ents) == 1
@@ -310,7 +310,7 @@ class TestTwoStepExtractionStep2Parsing:
         assert rels[0].target == "Bob"
 
     def test_parse_invalid_json(self):
-        ents, rels = TwoStepExtraction._parse_step2_response(
+        ents, rels = GraphExtraction._parse_step2_response(
             "not json", ["Person"], "chunk-0"
         )
         assert ents == []
@@ -326,7 +326,7 @@ class TestTwoStepExtractionStep2Parsing:
                  "description": "", "weight": 0.5},
             ],
         })
-        ents, rels = TwoStepExtraction._parse_step2_response(
+        ents, rels = GraphExtraction._parse_step2_response(
             content, ["Person"], "chunk-0"
         )
         assert len(rels) == 0  # "he" is in stoplist
@@ -339,7 +339,7 @@ class TestTwoStepExtractionStep2Parsing:
             ],
             "relationships": [],
         })
-        ents, rels = TwoStepExtraction._parse_step2_response(
+        ents, rels = GraphExtraction._parse_step2_response(
             content, ["Person", "Animal"], "chunk-0"
         )
         names = {e.name for e in ents}
@@ -348,7 +348,7 @@ class TestTwoStepExtractionStep2Parsing:
 
     def test_parse_markdown_fences(self):
         content = '```json\n{"entities": [{"name": "Alice", "type": "Person", "description": ""}], "relationships": []}\n```'
-        ents, rels = TwoStepExtraction._parse_step2_response(
+        ents, rels = GraphExtraction._parse_step2_response(
             content, ["Person"], "chunk-0"
         )
         assert len(ents) == 1
@@ -383,7 +383,7 @@ class TestSpansMerging:
                 source_chunk_ids=["chunk-0"],
             ),
         ]
-        TwoStepExtraction._merge_step1_metadata(verified, step1)
+        GraphExtraction._merge_step1_metadata(verified, step1)
 
         alice = next(e for e in verified if e.name == "Alice")
         assert hasattr(alice, "spans")
@@ -408,7 +408,7 @@ class TestSpansMerging:
             source_chunk_ids=["chunk-1"],
             spans={"chunk-1": [{"start": 10, "end": 15}]},
         )
-        merged = TwoStepExtraction._aggregate_entities([ent1, ent2])
+        merged = GraphExtraction._aggregate_entities([ent1, ent2])
         assert len(merged) == 1
         assert "chunk-0" in merged[0].spans
         assert "chunk-1" in merged[0].spans
@@ -425,7 +425,7 @@ class TestSpansMerging:
             name="Alice", type="Person", description="longer description",
             source_chunk_ids=["chunk-1"],
         )
-        merged = TwoStepExtraction._aggregate_entities([ent1, ent2])
+        merged = GraphExtraction._aggregate_entities([ent1, ent2])
         assert len(merged) == 1
         assert merged[0].description == "longer description"
         assert "chunk-0" in merged[0].source_chunk_ids
@@ -438,7 +438,7 @@ class TestSpansMerging:
             source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 0, "end": 5}]},
         )
-        nodes = TwoStepExtraction._entities_to_nodes([ent])
+        nodes = GraphExtraction._entities_to_nodes([ent])
         assert len(nodes) == 1
         assert "spans" in nodes[0].properties
         assert nodes[0].properties["spans"]["chunk-0"] == [{"start": 0, "end": 5}]
@@ -449,7 +449,7 @@ class TestSpansMerging:
             name="Alice", type="Person", description="",
             source_chunk_ids=["chunk-0"],
         )
-        nodes = TwoStepExtraction._entities_to_nodes([ent])
+        nodes = GraphExtraction._entities_to_nodes([ent])
         assert "spans" not in nodes[0].properties
 
     def test_relationship_spans_parsed(self):
@@ -465,7 +465,7 @@ class TestSpansMerging:
                  "weight": 0.9, "span_start": 10, "span_end": 35},
             ],
         })
-        ents, rels = TwoStepExtraction._parse_step2_response(
+        ents, rels = GraphExtraction._parse_step2_response(
             content, ["Person"], "chunk-5"
         )
         assert len(rels) == 1
@@ -483,7 +483,7 @@ class TestSpansMerging:
             weight=0.9, source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 10, "end": 35}]},
         )
-        rels = TwoStepExtraction._relations_to_relationships([rel])
+        rels = GraphExtraction._relations_to_relationships([rel])
         assert len(rels) == 1
         assert "spans" in rels[0].properties
         assert rels[0].properties["spans"]["chunk-0"] == [{"start": 10, "end": 35}]
@@ -497,7 +497,7 @@ class TestSpansMerging:
             keywords="", description="", weight=1.0,
             source_chunk_ids=["chunk-0"],
         )
-        rels = TwoStepExtraction._relations_to_relationships([rel])
+        rels = GraphExtraction._relations_to_relationships([rel])
         assert "spans" not in rels[0].properties
 
     def test_relationship_spans_merge_across_chunks(self):
@@ -516,7 +516,7 @@ class TestSpansMerging:
             weight=0.9, source_chunk_ids=["chunk-1"],
             spans={"chunk-1": [{"start": 5, "end": 40}]},
         )
-        merged = TwoStepExtraction._aggregate_relations([rel1, rel2])
+        merged = GraphExtraction._aggregate_relations([rel1, rel2])
         assert len(merged) == 1
         assert "chunk-0" in merged[0].spans
         assert "chunk-1" in merged[0].spans
