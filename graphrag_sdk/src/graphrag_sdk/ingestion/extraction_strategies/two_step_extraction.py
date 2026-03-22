@@ -82,6 +82,18 @@ VERIFY_EXTRACT_RELS_PROMPT = (
 )
 
 
+def _optional_extras(obj: Any) -> dict[str, Any]:
+    """Extract optional spans/confidence from a Pydantic extra-allow object."""
+    extra: dict[str, Any] = {}
+    spans = getattr(obj, "spans", None)
+    if spans:
+        extra["spans"] = dict(spans)
+    conf = getattr(obj, "confidence", None)
+    if conf is not None:
+        extra["confidence"] = conf
+    return extra
+
+
 class TwoStepExtraction(ExtractionStrategy):
     """Composable 2-step extraction with pluggable entity NER.
 
@@ -166,8 +178,16 @@ class TwoStepExtraction(ExtractionStrategy):
 
         # ── Step 1: Entity extraction (pluggable) ──
         chunk_entities: list[list[ExtractedEntity]] = []
+        sem = asyncio.Semaphore(self._max_concurrency or 12)
+
+        async def _step1(text: str, chunk_uid: str) -> list[ExtractedEntity]:
+            async with sem:
+                return await self.entity_extractor.extract_entities(
+                    text, entity_types, chunk_uid
+                )
+
         tasks = [
-            self.entity_extractor.extract_entities(text, entity_types, chunk.uid)
+            _step1(text, chunk.uid)
             for text, chunk in zip(chunk_texts, active_chunks)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -430,8 +450,7 @@ class TwoStepExtraction(ExtractionStrategy):
                     type=ent.type,
                     description=ent.description,
                     source_chunk_ids=list(ent.source_chunk_ids),
-                    **({"spans": dict(ent.spans)} if getattr(ent, "spans", None) else {}),
-                    **({"confidence": ent.confidence} if getattr(ent, "confidence", None) is not None else {}),
+                    **_optional_extras(ent),
                 )
         return list(seen.values())
 
@@ -473,7 +492,7 @@ class TwoStepExtraction(ExtractionStrategy):
                     description=rel.description,
                     weight=rel.weight,
                     source_chunk_ids=list(rel.source_chunk_ids),
-                    **({"spans": dict(rel.spans)} if getattr(rel, "spans", None) else {}),
+                    **_optional_extras(rel),
                 )
         return list(seen.values())
 

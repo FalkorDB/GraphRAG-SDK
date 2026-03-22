@@ -390,11 +390,11 @@ Larger chunks provide more context per extraction call but increase LLM token us
 
 | Parameter          | Type            | Default        | Description                                                |
 |--------------------|-----------------|----------------|------------------------------------------------------------|
+| `llm`              | `LLMInterface`  | required       | LLM provider for step 2 (verify + relationship extraction). |
 | `entity_extractor` | `EntityExtractor \| None` | `None` (`GLiNERExtractor()`) | Pluggable NER backend for step 1. |
 | `coref_resolver`   | `CorefResolver \| None` | `None` | Optional coreference resolution (e.g. `FastCorefResolver()`). |
-| `embedder`         | `Embedder \| None` | `None` | Embedder instance (reserved for future use). |
 | `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `schema.entities` if set. |
-| `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during extraction. |
+| `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during step 2. |
 
 **Built-in entity extractors:**
 

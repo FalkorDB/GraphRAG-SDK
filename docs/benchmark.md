@@ -240,7 +240,7 @@ async def main():
                 source_name,
                 text=text,
                 chunker=FixedSizeChunking(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP),
-                extractor=TwoStepExtraction(llm=llm, embedder=embedder),
+                extractor=TwoStepExtraction(llm=llm),
                 resolver=DescriptionMergeResolution(llm=llm),
                 ctx=Context(tenant_id="benchmark"),
             )
@@ -365,7 +365,7 @@ await rag.ingest(
     source_name,
     text=document_text,
     chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-    extractor=TwoStepExtraction(llm=llm, embedder=embedder),
+    extractor=TwoStepExtraction(llm=llm),
     resolver=DescriptionMergeResolution(llm=llm),
 )
 

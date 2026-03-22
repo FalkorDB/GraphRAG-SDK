@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,

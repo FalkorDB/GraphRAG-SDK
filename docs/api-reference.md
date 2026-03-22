@@ -519,7 +519,7 @@ class ExtractionStrategy(ABC):
 ```
 
 **Built-in:**
-- `TwoStepExtraction(llm, *, entity_extractor=None, coref_resolver=None, embedder=None, entity_types=None, max_concurrency=None)`
+- `TwoStepExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, max_concurrency=None)`
 
 **Entity Extractors** (step 1 backends for `TwoStepExtraction`):
 - `GLiNERExtractor(threshold=0.75, model_name="urchade/gliner_medium-v2.1")` -- default, local NER

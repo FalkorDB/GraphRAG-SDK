@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
-from unittest.mock import AsyncMock
+
 
 import pytest
 
@@ -13,7 +12,6 @@ from graphrag_sdk.core.models import (
     ExtractedEntity,
     GraphSchema,
     EntityType,
-    RelationType,
     TextChunk,
     TextChunks,
 )
@@ -25,7 +23,7 @@ from graphrag_sdk.ingestion.extraction_strategies.two_step_extraction import (
     TwoStepExtraction,
 )
 
-from .conftest import MockEmbedder, MockLLM, MockLLMWithTwoStepExtraction
+from .conftest import MockLLM, MockLLMWithTwoStepExtraction
 
 
 # ── Helpers ────────────────────────────────────────────────────
