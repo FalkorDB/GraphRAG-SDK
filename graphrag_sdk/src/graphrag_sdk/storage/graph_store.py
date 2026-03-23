@@ -267,7 +267,7 @@ class GraphStore:
             Dict with node_count, edge_count, entity_types,
             relationship_types, graph_density,
             embedded_relationship_count,
-            mention_edge_count.
+            mention_edge_count, relates_edge_count.
         """
         stats: dict[str, Any] = {}
 

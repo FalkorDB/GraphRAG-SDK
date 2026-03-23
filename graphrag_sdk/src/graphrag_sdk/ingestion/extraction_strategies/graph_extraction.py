@@ -194,7 +194,9 @@ class GraphExtraction(ExtractionStrategy):
             if self._max_concurrency is not None:
                 batch_kw["max_concurrency"] = self._max_concurrency
 
-            step1_results = await self.llm.abatch_invoke(ner_prompts, **batch_kw)
+            step1_results = await self.entity_extractor._llm.abatch_invoke(
+                ner_prompts, **batch_kw
+            )
             for item in step1_results:
                 chunk = active_chunks[item.index]
                 if not item.ok:
@@ -203,8 +205,13 @@ class GraphExtraction(ExtractionStrategy):
                         logging.WARNING,
                     )
                     chunk_entities.append([])
+                elif item.response is None:
+                    ctx.log(
+                        f"Step 1 NER returned no response for chunk {chunk.index}",
+                        logging.WARNING,
+                    )
+                    chunk_entities.append([])
                 else:
-                    assert item.response is not None
                     parsed = LLMExtractor._parse_response(
                         item.response.content,
                         entity_types,

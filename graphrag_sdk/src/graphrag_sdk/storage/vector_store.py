@@ -301,18 +301,21 @@ class VectorStore:
                 for rid, vector in zip(edge_ids, vectors)
                 if vector
             ]
-            if embed_data:
-                for item in embed_data:
-                    try:
-                        await self._conn.query(
-                            "MATCH ()-[r:RELATES]->() "
-                            "WHERE id(r) = $rid "
-                            "SET r.embedding = vecf32($vector)",
-                            item,
-                        )
-                        total_embedded += 1
-                    except Exception as inner_exc:
-                        logger.warning(f"Failed to embed edge {item['rid']}: {inner_exc}")
+            if not embed_data:
+                logger.warning("All vectors in batch were empty — stopping to avoid infinite loop")
+                break
+
+            for item in embed_data:
+                try:
+                    await self._conn.query(
+                        "MATCH ()-[r:RELATES]->() "
+                        "WHERE id(r) = $rid "
+                        "SET r.embedding = vecf32($vector)",
+                        item,
+                    )
+                    total_embedded += 1
+                except Exception as inner_exc:
+                    logger.warning(f"Failed to embed edge {item['rid']}: {inner_exc}")
 
         logger.info(f"Embedded {total_embedded} RELATES edges")
         return total_embedded
@@ -614,30 +617,33 @@ class VectorStore:
                 for eid, vector in zip(ids, vectors)
                 if vector
             ]
-            if backfill_data:
-                try:
-                    await self._conn.query(
-                        "UNWIND $batch AS item "
-                        "MATCH (e:__Entity__ {id: item.eid}) "
-                        "SET e.embedding = vecf32(item.vector)",
-                        {"batch": backfill_data},
-                    )
-                    total_backfilled += len(backfill_data)
-                except Exception as batch_exc:
-                    logger.warning(
-                        f"Batch entity backfill failed ({len(backfill_data)} entities), "
-                        f"falling back to individual: {batch_exc}"
-                    )
-                    for item in backfill_data:
-                        try:
-                            await self._conn.query(
-                                "MATCH (e:__Entity__ {id: $eid}) "
-                                "SET e.embedding = vecf32($vector)",
-                                item,
-                            )
-                            total_backfilled += 1
-                        except Exception:
-                            pass
+            if not backfill_data:
+                logger.warning("All vectors in batch were empty — stopping to avoid infinite loop")
+                break
+
+            try:
+                await self._conn.query(
+                    "UNWIND $batch AS item "
+                    "MATCH (e:__Entity__ {id: item.eid}) "
+                    "SET e.embedding = vecf32(item.vector)",
+                    {"batch": backfill_data},
+                )
+                total_backfilled += len(backfill_data)
+            except Exception as batch_exc:
+                logger.warning(
+                    f"Batch entity backfill failed ({len(backfill_data)} entities), "
+                    f"falling back to individual: {batch_exc}"
+                )
+                for item in backfill_data:
+                    try:
+                        await self._conn.query(
+                            "MATCH (e:__Entity__ {id: $eid}) "
+                            "SET e.embedding = vecf32($vector)",
+                            item,
+                        )
+                        total_backfilled += 1
+                    except Exception:
+                        pass
 
         logger.info(f"Backfilled {total_backfilled} entity embeddings")
         return total_backfilled
