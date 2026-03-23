@@ -28,7 +28,7 @@ from .conftest import MockEmbedder
 
 
 @pytest.fixture
-def pipeline_components(mock_graph_store, mock_vector_store, embedder):
+def pipeline_components(mock_graph_store, mock_vector_store):
     """Build a pipeline with mock strategies and stores."""
     loader = MagicMock()
     loader.load = AsyncMock(
@@ -107,7 +107,6 @@ def pipeline_components(mock_graph_store, mock_vector_store, embedder):
         "resolver": resolver,
         "graph_store": mock_graph_store,
         "vector_store": mock_vector_store,
-        "embedder": embedder,
         "extracted": extracted,
     }
 
@@ -121,7 +120,6 @@ def pipeline(pipeline_components):
         resolver=pipeline_components["resolver"],
         graph_store=pipeline_components["graph_store"],
         vector_store=pipeline_components["vector_store"],
-        embedder=pipeline_components["embedder"],
     )
 
 

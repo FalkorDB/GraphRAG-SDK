@@ -261,7 +261,7 @@ def mock_graph_store(mock_connection: MagicMock) -> MagicMock:
     store.get_statistics = AsyncMock(return_value={
         "node_count": 0, "edge_count": 0, "entity_types": [],
         "relationship_types": [], "graph_density": 0,
-        "synonym_edge_count": 0, "mention_edge_count": 0,
+        "mention_edge_count": 0,
     })
     return store
 

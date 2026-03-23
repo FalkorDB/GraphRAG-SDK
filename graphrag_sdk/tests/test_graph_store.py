@@ -193,18 +193,6 @@ class TestRelationshipLabelHints:
         assert "`Document`" in cypher
         assert "`Chunk`" in cypher
 
-    async def test_synonym_rel_uses_entity_labels(self, graph_store, mock_connection):
-        """SYNONYM rels should use __Entity__ label on both sides."""
-        rels = [
-            GraphRelationship(
-                start_node_id="e1", end_node_id="e2",
-                type="SYNONYM", properties={"similarity": 0.95},
-            )
-        ]
-        await graph_store.upsert_relationships(rels)
-        cypher = mock_connection.query.call_args[0][0]
-        assert "`__Entity__`" in cypher
-
     async def test_unknown_rel_type_defaults_to_entity(self, graph_store, mock_connection):
         """Unknown relationship types should default to __Entity__ labels."""
         rels = [

@@ -8,8 +8,7 @@ import logging
 from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
-from graphrag_sdk.core.models import GraphRelationship, TextChunks
+from graphrag_sdk.core.models import TextChunks
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
@@ -259,19 +258,20 @@ class VectorStore:
             return 0
 
         total_embedded = 0
-        offset = 0
 
         while True:
             try:
+                # No SKIP — embedded edges drop out of the IS NULL filter,
+                # so each query naturally returns the next un-embedded batch.
                 result = await self._conn.query(
                     "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
                     "WHERE r.embedding IS NULL AND r.fact IS NOT NULL "
                     "RETURN id(a) AS aid, id(b) AS bid, id(r) AS rid, r.fact AS fact "
-                    "SKIP $offset LIMIT $limit",
-                    {"offset": offset, "limit": batch_size},
+                    "LIMIT $limit",
+                    {"limit": batch_size},
                 )
             except Exception as exc:
-                logger.warning(f"RELATES edge query failed at offset {offset}: {exc}")
+                logger.warning(f"RELATES edge query failed: {exc}")
                 break
 
             if not result.result_set:
@@ -287,15 +287,13 @@ class VectorStore:
                     texts.append(fact)
 
             if not texts:
-                offset += batch_size
-                continue
+                break
 
             try:
                 vectors = await self._embedder.aembed_documents(texts)
             except Exception as exc:
-                logger.warning(f"Batch embedding failed at offset {offset}: {exc}")
-                offset += batch_size
-                continue
+                logger.warning(f"Batch embedding failed: {exc}")
+                break
 
             # Write embeddings back to edges using internal edge IDs
             embed_data = [
@@ -303,22 +301,21 @@ class VectorStore:
                 for rid, vector in zip(edge_ids, vectors)
                 if vector
             ]
-            if embed_data:
-                # FalkorDB doesn't support UNWIND SET on edges by internal ID easily,
-                # so we batch with individual queries grouped for efficiency
-                for item in embed_data:
-                    try:
-                        await self._conn.query(
-                            "MATCH ()-[r:RELATES]->() "
-                            "WHERE id(r) = $rid "
-                            "SET r.embedding = vecf32($vector)",
-                            item,
-                        )
-                        total_embedded += 1
-                    except Exception as inner_exc:
-                        logger.warning(f"Failed to embed edge {item['rid']}: {inner_exc}")
+            if not embed_data:
+                logger.warning("All vectors in batch were empty — stopping to avoid infinite loop")
+                break
 
-            offset += batch_size
+            for item in embed_data:
+                try:
+                    await self._conn.query(
+                        "MATCH ()-[r:RELATES]->() "
+                        "WHERE id(r) = $rid "
+                        "SET r.embedding = vecf32($vector)",
+                        item,
+                    )
+                    total_embedded += 1
+                except Exception as inner_exc:
+                    logger.warning(f"Failed to embed edge {item['rid']}: {inner_exc}")
 
         logger.info(f"Embedded {total_embedded} RELATES edges")
         return total_embedded
@@ -581,18 +578,19 @@ class VectorStore:
             return 0
 
         total_backfilled = 0
-        offset = 0
 
         while True:
             try:
+                # No SKIP — embedded entities drop out of the IS NULL filter,
+                # so each query naturally returns the next un-embedded batch.
                 result = await self._conn.query(
                     "MATCH (e:__Entity__) WHERE e.embedding IS NULL "
                     "RETURN e.id AS id, e.name AS name, e.description AS desc "
-                    "SKIP $offset LIMIT $limit",
-                    {"offset": offset, "limit": batch_size},
+                    "LIMIT $limit",
+                    {"limit": batch_size},
                 )
             except Exception as exc:
-                logger.warning(f"Entity query failed at offset {offset}: {exc}")
+                logger.warning(f"Entity query failed: {exc}")
                 break
 
             if not result.result_set:
@@ -610,9 +608,8 @@ class VectorStore:
             try:
                 vectors = await self._embedder.aembed_documents(texts)
             except Exception as exc:
-                logger.warning(f"Batch embedding failed at offset {offset}: {exc}")
-                offset += batch_size
-                continue
+                logger.warning(f"Batch embedding failed: {exc}")
+                break
 
             # Batch write using UNWIND
             backfill_data = [
@@ -620,32 +617,33 @@ class VectorStore:
                 for eid, vector in zip(ids, vectors)
                 if vector
             ]
-            if backfill_data:
-                try:
-                    await self._conn.query(
-                        "UNWIND $batch AS item "
-                        "MATCH (e:__Entity__ {id: item.eid}) "
-                        "SET e.embedding = vecf32(item.vector)",
-                        {"batch": backfill_data},
-                    )
-                    total_backfilled += len(backfill_data)
-                except Exception as batch_exc:
-                    logger.warning(
-                        f"Batch entity backfill failed ({len(backfill_data)} entities), "
-                        f"falling back to individual: {batch_exc}"
-                    )
-                    for item in backfill_data:
-                        try:
-                            await self._conn.query(
-                                "MATCH (e:__Entity__ {id: $eid}) "
-                                "SET e.embedding = vecf32($vector)",
-                                item,
-                            )
-                            total_backfilled += 1
-                        except Exception:
-                            pass
+            if not backfill_data:
+                logger.warning("All vectors in batch were empty — stopping to avoid infinite loop")
+                break
 
-            offset += batch_size
+            try:
+                await self._conn.query(
+                    "UNWIND $batch AS item "
+                    "MATCH (e:__Entity__ {id: item.eid}) "
+                    "SET e.embedding = vecf32(item.vector)",
+                    {"batch": backfill_data},
+                )
+                total_backfilled += len(backfill_data)
+            except Exception as batch_exc:
+                logger.warning(
+                    f"Batch entity backfill failed ({len(backfill_data)} entities), "
+                    f"falling back to individual: {batch_exc}"
+                )
+                for item in backfill_data:
+                    try:
+                        await self._conn.query(
+                            "MATCH (e:__Entity__ {id: $eid}) "
+                            "SET e.embedding = vecf32($vector)",
+                            item,
+                        )
+                        total_backfilled += 1
+                    except Exception:
+                        pass
 
         logger.info(f"Backfilled {total_backfilled} entity embeddings")
         return total_backfilled
