@@ -186,20 +186,20 @@ class OpenRouterEmbedder(Embedder):
 
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         client = self._get_client()
-        response = client.embeddings.create(model=self.model, input=text)
+        response = client.embeddings.create(model=self.model, input=text, **kwargs)
         return response.data[0].embedding
 
     def _raw_embed_sync(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Raw sync embed without retry — called by binary_split_retry_sync."""
         client = self._get_client()
-        response = client.embeddings.create(model=self.model, input=texts)
+        response = client.embeddings.create(model=self.model, input=texts, **kwargs)
         sorted_data = sorted(response.data, key=lambda x: x.index)
         return [d.embedding for d in sorted_data]
 
     async def _raw_embed_async(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Raw async embed without retry — called by binary_split_retry_async."""
         client = self._get_async_client()
-        response = await client.embeddings.create(model=self.model, input=texts)
+        response = await client.embeddings.create(model=self.model, input=texts, **kwargs)
         sorted_data = sorted(response.data, key=lambda x: x.index)
         return [d.embedding for d in sorted_data]
 
@@ -214,7 +214,7 @@ class OpenRouterEmbedder(Embedder):
 
     async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
         client = self._get_async_client()
-        response = await client.embeddings.create(model=self.model, input=text)
+        response = await client.embeddings.create(model=self.model, input=text, **kwargs)
         return response.data[0].embedding
 
     async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:

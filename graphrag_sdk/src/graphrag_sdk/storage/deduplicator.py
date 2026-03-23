@@ -95,7 +95,9 @@ class EntityDeduplicator:
             duplicates = group[1:]
 
             for dup in duplicates:
-                await self._remap_entity_edges(dup["id"], survivor["id"])
+                if not await self._remap_entity_edges(dup["id"], survivor["id"]):
+                    logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
+                    continue
                 try:
                     await self._graph.query_raw(
                         "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
@@ -115,14 +117,16 @@ class EntityDeduplicator:
     ) -> int:
         import numpy as np
 
-        # Re-fetch surviving entities
+        # Re-fetch surviving entities (with labels for cross-type guard)
         offset = 0
         all_ids: list[str] = []
         all_names: list[str] = []
+        all_labels: list[str] = []
         while True:
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
-                "RETURN e.id AS id, e.name AS name "
+                "RETURN e.id AS id, e.name AS name, "
+                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -131,6 +135,7 @@ class EntityDeduplicator:
             for row in result.result_set:
                 all_ids.append(row[0])
                 all_names.append(row[1] if len(row) > 1 and row[1] else str(row[0]))
+                all_labels.append(row[2] if len(row) > 2 and row[2] else "")
             offset += batch_size
 
         if len(all_ids) < 2:
@@ -138,15 +143,16 @@ class EntityDeduplicator:
 
         raw_vectors = await self._embedder.aembed_documents(all_names)
         valid = [
-            (eid, name, vec)
-            for eid, name, vec in zip(all_ids, all_names, raw_vectors)
+            (eid, name, label, vec)
+            for eid, name, label, vec in zip(all_ids, all_names, all_labels, raw_vectors)
             if vec
         ]
         if len(valid) < 2:
             return 0
 
-        v_ids, _v_names, vectors = zip(*valid)
+        v_ids, _v_names, v_labels, vectors = zip(*valid)
         v_ids = list(v_ids)
+        v_labels = list(v_labels)
 
         mat = np.array(vectors, dtype=np.float32)
         norms_arr = np.linalg.norm(mat, axis=1, keepdims=True)
@@ -167,12 +173,18 @@ class EntityDeduplicator:
             for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
                 gi = i_start + lr
                 gj = i_start + lc
-                if gj > gi and v_ids[gj] not in merged_set:
+                if (
+                    gj > gi
+                    and v_ids[gi] not in merged_set
+                    and v_ids[gj] not in merged_set
+                    and v_labels[gi] == v_labels[gj]  # prevent cross-type merging
+                ):
                     survivor_id = v_ids[gi]
                     dup_id = v_ids[gj]
                     merged_set.add(dup_id)
 
-                    await self._remap_entity_edges(dup_id, survivor_id)
+                    if not await self._remap_entity_edges(dup_id, survivor_id):
+                        continue
                     try:
                         await self._graph.query_raw(
                             "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
@@ -213,11 +225,18 @@ class EntityDeduplicator:
             offset += batch_size
         return entities
 
-    async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> None:
-        """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor."""
+    async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
+        """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.
+
+        Returns:
+            True if all remaps succeeded, False if any failed.
+        """
         params = {"dup_id": dup_id, "survivor_id": survivor_id}
+        ok = True
         for query in _REMAP_QUERIES:
             try:
                 await self._graph.query_raw(query, params)
             except Exception as exc:
                 logger.warning(f"Edge remap failed for {dup_id} -> {survivor_id}: {exc}")
+                ok = False
+        return ok

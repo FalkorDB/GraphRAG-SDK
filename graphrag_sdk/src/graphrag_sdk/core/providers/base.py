@@ -79,6 +79,8 @@ class LLMInterface(ABC):
         model_params: dict[str, Any] | None = None,
         max_concurrency: int = 12,
     ) -> None:
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
         self.model_name = model_name
         self.model_params = model_params or {}
         self.max_concurrency = max_concurrency
