@@ -129,7 +129,7 @@ class FalkorDBConnection:
         self._ensure_client()
         assert self._graph is not None  # for type-checkers
 
-        if not self._breaker.allow_request:
+        if not await self._breaker.allow_request():
             raise ConnectionError(
                 "Circuit breaker is open — FalkorDB connection is unhealthy. "
                 "Requests will resume after recovery timeout."
@@ -158,7 +158,7 @@ class FalkorDBConnection:
                     exc,
                 )
                 if attempt < self.config.retry_count - 1:
-                    if not self._breaker.allow_request:
+                    if not await self._breaker.allow_request():
                         break
                     base_delay = self.config.retry_delay * (2**attempt)
                     await asyncio.sleep(base_delay * (0.5 + random.random()))

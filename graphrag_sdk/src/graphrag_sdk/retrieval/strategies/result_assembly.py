@@ -46,7 +46,8 @@ async def rerank_chunks(
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
         return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
-    except Exception:
+    except Exception as exc:
+        logger.debug("Chunk reranking failed, returning unranked: %s", exc)
         return chunk_texts[:chunk_top_k]
 
 

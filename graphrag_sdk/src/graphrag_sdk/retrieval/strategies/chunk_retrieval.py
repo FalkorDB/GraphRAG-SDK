@@ -39,16 +39,16 @@ async def retrieve_chunks(
             results = await vector_store.fulltext_search(ft_q, top_k=5, label="Chunk")
             for c in results:
                 _add(c.get("id", ""), c.get("text", ""), "fulltext")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Chunk fulltext search failed for query: %s", exc)
 
     # Path B: Vector search
     try:
         results = await vector_store.search(query_vector, top_k=15, label="Chunk")
         for c in results:
             _add(c.get("id", ""), c.get("text", ""), "vector")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Chunk vector search failed: %s", exc)
 
     # Path C: MENTIONED_IN — 3 chunks per entity (batched UNWIND)
     eids_mention = [eid for eid, _ in entity_list[:15]]
@@ -66,8 +66,8 @@ async def retrieve_chunks(
                 cid = row[1]
                 text = row[2] if len(row) > 2 else ""
                 _add(cid, text, "mentioned_in")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("MENTIONED_IN chunk retrieval failed: %s", exc)
 
     # Path D: 2-hop entity→neighbor→chunk (batched UNWIND)
     eids_2hop_chunk = [eid for eid, _ in entity_list[:10]]
@@ -85,8 +85,8 @@ async def retrieve_chunks(
                 cid = row[0]
                 text = row[1] if len(row) > 1 else ""
                 _add(cid, text, "2hop_mentioned")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("2-hop chunk retrieval failed: %s", exc)
 
     return chunks, sources
 
@@ -117,5 +117,6 @@ async def fetch_chunk_documents(
                 name = path.rsplit("/", 1)[-1] if "/" in path else path
                 mapping[cid] = name
         return mapping
-    except Exception:
+    except Exception as exc:
+        logger.debug("Document name fetch failed: %s", exc)
         return {}

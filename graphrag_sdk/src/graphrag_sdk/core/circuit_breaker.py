@@ -55,7 +55,21 @@ class CircuitBreaker:
             if self._failure_count >= self.failure_threshold:
                 self._state = CircuitState.OPEN
 
-    @property
-    def allow_request(self) -> bool:
-        """Whether a request should be allowed through."""
-        return self.state in (CircuitState.CLOSED, CircuitState.HALF_OPEN)
+    async def allow_request(self) -> bool:
+        """Whether a request should be allowed through.
+
+        Atomic: in HALF_OPEN state, only the first caller gets permission
+        (transitions to HALF_OPEN internally so subsequent callers are
+        rejected until ``record_success()`` or ``record_failure()``).
+        """
+        async with self._lock:
+            if self._state == CircuitState.CLOSED:
+                return True
+            if (
+                self._state == CircuitState.OPEN
+                and time.monotonic() - self._last_failure_time >= self.recovery_timeout
+            ):
+                # Transition to HALF_OPEN — only this caller gets through
+                self._state = CircuitState.HALF_OPEN
+                return True
+            return False

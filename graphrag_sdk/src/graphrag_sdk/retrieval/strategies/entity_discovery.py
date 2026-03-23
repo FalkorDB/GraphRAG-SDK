@@ -46,8 +46,8 @@ async def search_relates_edges(
                 tgt_id = tgt.strip().lower().replace(" ", "_")
                 if tgt_id not in entities:
                     entities[tgt_id] = {"name": tgt, "description": ""}
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("RELATES edge vector search failed: %s", exc)
     return fact_strings, entities
 
 
@@ -92,8 +92,8 @@ async def discover_entities(
                     {"name": row[1] if len(row) > 1 else "", "description": row[2] if len(row) > 2 else ""},
                     "cypher_contains",
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Entity CONTAINS search failed: %s", exc)
 
     # Path b: Fulltext search on entity index
     for kw in all_keywords[:6]:
@@ -116,7 +116,7 @@ async def discover_entities(
                             }, "fulltext")
                     except Exception:
                         _add(eid, {"name": "", "description": ""}, "fulltext")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Entity fulltext search failed for '%s': %s", kw, exc)
 
     return found, sources

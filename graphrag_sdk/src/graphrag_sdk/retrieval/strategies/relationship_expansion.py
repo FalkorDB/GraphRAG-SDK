@@ -50,8 +50,8 @@ async def expand_relationships(
                     if fact:
                         line += f": {fact}"
                     relationship_strings.append(line)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Relationship expansion failed: %s", exc)
 
     # 2-hop relationships for top 5 entities (batched UNWIND)
     eids_2hop = [eid for eid, _ in entity_list[:5]]
@@ -77,7 +77,7 @@ async def expand_relationships(
                         seen.add(key)
                         line = f"{a_name} —[{r1_type}]→ {b_name} —[{r2_type}]→ {c_name}"
                         relationship_strings.append(line)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Relationship expansion failed: %s", exc)
 
     return relationship_strings[:max_relationships]

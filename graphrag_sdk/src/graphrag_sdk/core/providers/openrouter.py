@@ -85,9 +85,10 @@ class OpenRouterLLM(LLMInterface):
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": self._temperature,
+            **kwargs,
         }
         if self._max_tokens is not None:
-            create_kwargs["max_tokens"] = self._max_tokens
+            create_kwargs.setdefault("max_tokens", self._max_tokens)
         response = client.chat.completions.create(**create_kwargs)
         content = response.choices[0].message.content or ""
         return LLMResponse(content=content)
@@ -104,9 +105,10 @@ class OpenRouterLLM(LLMInterface):
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": self._temperature,
+            **kwargs,
         }
         if self._max_tokens is not None:
-            create_kwargs["max_tokens"] = self._max_tokens
+            create_kwargs.setdefault("max_tokens", self._max_tokens)
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
