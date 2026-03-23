@@ -305,9 +305,9 @@ class MultiPathRetrieval(RetrievalStrategy):
     ) -> list[str]:
         """1-hop + 2-hop relationship expansion from top entities.
 
-        Uses the single ``RELATES`` edge type — no need to filter out
-        SYNONYM or MENTIONED_IN edges. The ``rel_type`` property stores
-        the original relationship type, and ``fact`` stores the evidence.
+        Uses the single ``RELATES`` edge type. The ``rel_type`` property
+        stores the original relationship type, and ``fact`` stores the
+        evidence.
         """
         relationship_strings: list[str] = []
         seen: set[tuple] = set()

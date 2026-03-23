@@ -11,10 +11,10 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-import numpy as np
+
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import IngestionError, SchemaValidationError
+from graphrag_sdk.core.exceptions import IngestionError
 from graphrag_sdk.core.models import (
     DocumentInfo,
     DocumentOutput,
@@ -83,7 +83,6 @@ class IngestionPipeline:
         graph_store: Any,  # storage.GraphStore — import avoided for layering
         vector_store: Any,  # storage.VectorStore
         schema: GraphSchema | None = None,
-        embedder: Any | None = None,  # optional, for future use
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -92,7 +91,6 @@ class IngestionPipeline:
         self.graph_store = graph_store
         self.vector_store = vector_store
         self.schema = schema or GraphSchema()
-        self.embedder = embedder
 
     async def run(
         self,
@@ -352,75 +350,6 @@ class IngestionPipeline:
             extracted_relations=graph_data.extracted_relations,
         )
         return new_gd
-
-    async def _detect_synonymy_edges(
-        self,
-        nodes: list[GraphNode],
-        ctx: Context,
-        *,
-        similarity_threshold: float = 0.9,
-    ) -> list[GraphRelationship]:
-        """Detect semantically similar entities and create SYNONYM edges.
-
-        Uses numpy vectorized cosine similarity for performance.
-        """
-        if self.embedder is None:
-            return []
-
-        structural_labels = {"Document", "Chunk"}
-        entity_nodes = [n for n in nodes if n.label not in structural_labels]
-
-        if len(entity_nodes) < 2:
-            return []
-
-        names = [n.properties.get("name", n.id) for n in entity_nodes]
-        raw_vectors = await self.embedder.aembed_documents(names)
-
-        # Filter out entities whose embedding failed (None or empty list)
-        valid = [(node, vec) for node, vec in zip(entity_nodes, raw_vectors) if vec]
-        if len(valid) < 2:
-            return []
-        entity_nodes, vectors = zip(*valid)  # type: ignore[assignment]
-        entity_nodes = list(entity_nodes)
-
-        # Numpy vectorized pairwise cosine similarity (block-wise to limit memory)
-        mat = np.array(vectors, dtype=np.float32)
-        norms = np.linalg.norm(mat, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        mat_normed = mat / norms
-
-        # Block-wise computation avoids N×N allocation (7.4GB for 44K entities)
-        BLOCK_SIZE = 1000
-        n = len(entity_nodes)
-        rows_list: list[int] = []
-        cols_list: list[int] = []
-        for i_start in range(0, n, BLOCK_SIZE):
-            i_end = min(i_start + BLOCK_SIZE, n)
-            block = mat_normed[i_start:i_end]
-            remaining = mat_normed[i_start:]
-            sim_block = block @ remaining.T  # shape: (block_size, n - i_start)
-            local_rows, local_cols = np.where(sim_block >= similarity_threshold)
-            for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
-                global_i = i_start + lr
-                global_j = i_start + lc
-                if global_j > global_i:  # upper triangle only
-                    rows_list.append(global_i)
-                    cols_list.append(global_j)
-        rows = np.array(rows_list, dtype=np.intp)
-        cols = np.array(cols_list, dtype=np.intp)
-
-        synonym_edges: list[GraphRelationship] = []
-        for i, j in zip(rows, cols):
-            sim_val = float(mat_normed[i] @ mat_normed[j])
-            synonym_edges.append(GraphRelationship(
-                start_node_id=entity_nodes[i].id,
-                end_node_id=entity_nodes[j].id,
-                type="SYNONYM",
-                properties={"similarity": sim_val},
-            ))
-
-        ctx.log(f"Synonymy: {len(synonym_edges)} SYNONYM edges from {len(entity_nodes)} entities")
-        return synonym_edges
 
     async def _write_mentions(
         self, graph_data: GraphData, ctx: Context

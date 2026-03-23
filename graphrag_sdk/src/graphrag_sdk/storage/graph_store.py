@@ -50,7 +50,6 @@ class GraphStore:
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),
         "MENTIONED_IN": ("__Entity__", "Chunk"),
-        "SYNONYM": ("__Entity__", "__Entity__"),
         "RELATES": ("__Entity__", "__Entity__"),
     }
 
@@ -268,7 +267,7 @@ class GraphStore:
             Dict with node_count, edge_count, entity_types,
             relationship_types, graph_density,
             embedded_relationship_count,
-            synonym_edge_count, mention_edge_count.
+            mention_edge_count.
         """
         stats: dict[str, Any] = {}
 
@@ -297,7 +296,6 @@ class GraphStore:
             stats["embedded_relationship_count"] = 0
 
         for label, key in [
-            ("SYNONYM", "synonym_edge_count"),
             ("MENTIONED_IN", "mention_edge_count"),
             ("RELATES", "relates_edge_count"),
         ]:

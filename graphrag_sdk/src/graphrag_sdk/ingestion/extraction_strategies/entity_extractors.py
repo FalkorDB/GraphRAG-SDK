@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -260,6 +261,10 @@ class GLiNERExtractor(EntityExtractor):
     Default extractor — no API calls, fast. Returns entities with
     confidence scores and character spans.
 
+    The model is loaded lazily on first use and protected by a lock
+    so a single instance can be safely shared across concurrent
+    ``asyncio.to_thread`` calls (e.g. parallel doc ingestion).
+
     Args:
         threshold: Confidence threshold (0-1). Below this → "Unknown".
         model_name: HuggingFace model name for GLiNER.
@@ -273,23 +278,28 @@ class GLiNERExtractor(EntityExtractor):
         self._threshold = threshold
         self._model_name = model_name
         self._model: Any = None
+        self._lock = threading.Lock()
 
     def _load_model(self) -> Any:
         if self._model is None:
-            try:
-                from gliner import GLiNER
-            except ImportError:
-                raise ImportError(
-                    "GLiNER is required for GLiNERExtractor. "
-                    "Install with: pip install gliner"
-                )
-            self._model = GLiNER.from_pretrained(self._model_name)
+            with self._lock:
+                # Double-check after acquiring lock
+                if self._model is None:
+                    try:
+                        from gliner import GLiNER
+                    except ImportError:
+                        raise ImportError(
+                            "GLiNER is required for GLiNERExtractor. "
+                            "Install with: pip install gliner"
+                        )
+                    self._model = GLiNER.from_pretrained(self._model_name)
         return self._model
 
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
         model = self._load_model()
         labels = [t.lower() for t in entity_types]
-        return model.predict_entities(text, labels, threshold=self._threshold)
+        with self._lock:
+            return model.predict_entities(text, labels, threshold=self._threshold)
 
     async def extract_entities(
         self,

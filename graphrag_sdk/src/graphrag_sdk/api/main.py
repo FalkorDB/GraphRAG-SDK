@@ -6,13 +6,11 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Optional
+from typing import Any
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.core.models import (
-    GraphRelationship,
     GraphSchema,
     IngestionResult,
     RagResult,
@@ -105,6 +103,7 @@ class GraphRAG:
         embedder: Embedder,
         schema: GraphSchema | None = None,
         retrieval_strategy: RetrievalStrategy | None = None,
+        embedding_dimension: int = 1536,
     ) -> None:
         # Connection
         if isinstance(connection, ConnectionConfig):
@@ -121,6 +120,7 @@ class GraphRAG:
         self.vector_store = VectorStore(
             self._conn,
             embedder=self.embedder,
+            embedding_dimension=embedding_dimension,
         )
 
         # Default retrieval strategy

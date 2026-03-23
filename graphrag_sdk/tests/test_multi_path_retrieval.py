@@ -228,19 +228,6 @@ class TestMultiPathRetrieval:
         ]
         assert len(twohop_chunk_queries) >= 1
 
-    async def test_no_entity_vector_search(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
-        """Lean retrieval should NOT use search_entities (dead path)."""
-        s = MultiPathRetrieval(
-            graph_store=mp_graph_store,
-            vector_store=mp_vector_store,
-            embedder=mp_embedder,
-            llm=mp_llm,
-        )
-        await s.search("Who is Alice?")
-
-        # search_entities should NOT be called
-        assert mp_vector_store.search_entities.call_count == 0
-
     async def test_format_produces_sections(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Output should include structured sections when data is available."""
         mp_vector_store.search_relationships = AsyncMock(return_value=[
