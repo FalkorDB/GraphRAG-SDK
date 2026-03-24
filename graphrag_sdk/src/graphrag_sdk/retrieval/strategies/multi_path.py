@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -28,10 +29,14 @@ from graphrag_sdk.retrieval.strategies.entity_discovery import (
 from graphrag_sdk.retrieval.strategies.relationship_expansion import (
     expand_relationships,
 )
+from graphrag_sdk.retrieval.strategies.cypher_generation import (
+    execute_cypher_retrieval,
+)
 from graphrag_sdk.retrieval.strategies.result_assembly import (
     assemble_raw_result,
     cosine_sim,
     detect_question_type,
+    filter_facts_by_relevance,
     rerank_chunks,
 )
 
@@ -91,6 +96,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         max_relationships: int = 20,
         rel_top_k: int = 15,
         keyword_limit: int = 10,
+        enable_cypher: bool = False,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
@@ -100,6 +106,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._max_relationships = max_relationships
         self._rel_top_k = rel_top_k
         self._keyword_limit = keyword_limit
+        self._enable_cypher = enable_cypher
 
     # -- Template Method hook --
 
@@ -117,13 +124,38 @@ class MultiPathRetrieval(RetrievalStrategy):
         # 2. Embed question only
         query_vector = await self._embedder.aembed_query(query)
 
-        # 3. RELATES edge vector search
-        fact_strings, rel_entities = await search_relates_edges(
-            self._vector, query_vector, self._rel_top_k
-        )
-        ctx.log(f"MultiPath [3/9]: {len(fact_strings)} facts, {len(rel_entities)} rel-entities")
+        # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
+        if self._enable_cypher:
+            results = await asyncio.gather(
+                search_relates_edges(self._vector, query_vector, self._rel_top_k),
+                execute_cypher_retrieval(self._graph, self._llm, query),
+                return_exceptions=True,
+            )
+            # Unpack RELATES results
+            if isinstance(results[0], BaseException):
+                fact_strings_scored, rel_entities = [], {}
+            else:
+                fact_strings_scored, rel_entities = results[0]
+            # Unpack Cypher results
+            cypher_facts: list[str] = []
+            cypher_entities: dict[str, dict] = {}
+            if not isinstance(results[1], BaseException):
+                cypher_facts, cypher_entities = results[1]
+        else:
+            fact_strings_scored, rel_entities = await search_relates_edges(
+                self._vector, query_vector, self._rel_top_k
+            )
+            cypher_facts, cypher_entities = [], {}
 
-        # 4. Entity discovery (2 paths) + merge rel_entities
+        # Filter RELATES vector facts by relevance score
+        fact_strings = filter_facts_by_relevance(fact_strings_scored)
+        # Cypher results stay separate — they bypass the reranker and go
+        # directly to the final LLM context as their own section.
+        ctx.log(f"MultiPath [3/9]: {len(fact_strings_scored)} vector facts -> "
+                f"{len(fact_strings)} after filtering"
+                + (f", {len(cypher_facts)} cypher results" if cypher_facts else ""))
+
+        # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
         found_entities, entity_sources = await discover_entities(
             self._graph, self._vector, llm_kw, all_keywords
         )
@@ -131,6 +163,10 @@ class MultiPathRetrieval(RetrievalStrategy):
             if eid not in found_entities:
                 found_entities[eid] = einfo
                 entity_sources[eid] = "rel_vector"
+        for eid, einfo in cypher_entities.items():
+            if eid not in found_entities:
+                found_entities[eid] = einfo
+                entity_sources[eid] = "cypher"
         ctx.log(f"MultiPath [4/9]: {len(found_entities)} entities discovered")
 
         # 5. Relationship expansion
@@ -141,20 +177,22 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
 
         # 6. Chunk retrieval (4 paths)
-        candidate_chunks, chunk_sources = await retrieve_chunks(
+        candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
             self._vector, self._graph, query, query_vector,
             llm_kw, simple_kw, entity_list,
         )
-        ctx.log(f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks")
+        ctx.log(f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
+                f"({len(chunk_embeddings)} with stored embeddings)")
 
         # 7. Source document names
         chunk_doc_map = await fetch_chunk_documents(
             self._graph, list(candidate_chunks.keys())
         )
 
-        # 8. Cosine rerank
+        # 8. Cosine rerank (uses stored embeddings when available)
         source_passages = await rerank_chunks(
-            self._embedder, query_vector, candidate_chunks, self._chunk_top_k
+            self._embedder, query_vector, candidate_chunks, self._chunk_top_k,
+            stored_embeddings=chunk_embeddings,
         )
 
         # Tag with source docs
@@ -174,6 +212,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         return assemble_raw_result(
             entity_list, relationship_strings, fact_strings,
             source_passages, q_type_hint,
+            cypher_results=cypher_facts if cypher_facts else None,
         )
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
@@ -222,7 +261,7 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     async def _search_relates_edges(
         self, query_vector: list[float]
-    ) -> tuple[list[str], dict[str, dict]]:
+    ) -> tuple[list[tuple[str, float]], dict[str, dict]]:
         """Backward-compat wrapper — delegates to module function."""
         return await search_relates_edges(
             self._vector, query_vector, self._rel_top_k

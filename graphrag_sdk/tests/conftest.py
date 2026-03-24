@@ -1,19 +1,15 @@
 """Shared test fixtures for GraphRAG SDK v2 tests."""
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any, Type
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from pydantic import BaseModel
 
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
-    DocumentInfo,
-    DocumentOutput,
     EntityType,
     GraphData,
     GraphNode,
@@ -21,12 +17,7 @@ from graphrag_sdk.core.models import (
     GraphSchema,
     LLMResponse,
     RelationType,
-    ResolutionResult,
-    RetrieverResult,
-    RetrieverResultItem,
     SchemaPattern,
-    TextChunk,
-    TextChunks,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 
@@ -63,34 +54,6 @@ class MockLLM(LLMInterface):
         response = self._responses[min(self._call_index, len(self._responses) - 1)]
         self._call_index += 1
         return LLMResponse(content=response)
-
-
-class MockLLMWithExtraction(MockLLM):
-    """Mock LLM that returns a realistic extraction response."""
-
-    def __init__(self) -> None:
-        extraction_response = json.dumps({
-            "nodes": [
-                {"id": "alice", "label": "Person", "properties": {"name": "Alice"}},
-                {"id": "bob", "label": "Person", "properties": {"name": "Bob"}},
-                {"id": "acme", "label": "Company", "properties": {"name": "Acme Corp"}},
-            ],
-            "relationships": [
-                {
-                    "start_node_id": "alice",
-                    "end_node_id": "acme",
-                    "type": "WORKS_AT",
-                    "properties": {},
-                },
-                {
-                    "start_node_id": "bob",
-                    "end_node_id": "acme",
-                    "type": "WORKS_AT",
-                    "properties": {},
-                },
-            ],
-        })
-        super().__init__(responses=[extraction_response])
 
 
 class MockLLMWithGraphExtraction(MockLLM):
@@ -142,11 +105,6 @@ def llm() -> MockLLM:
 
 
 @pytest.fixture
-def llm_with_extraction() -> MockLLMWithExtraction:
-    return MockLLMWithExtraction()
-
-
-@pytest.fixture
 def sample_schema() -> GraphSchema:
     return GraphSchema(
         entities=[
@@ -161,31 +119,6 @@ def sample_schema() -> GraphSchema:
             SchemaPattern(source="Person", relationship="WORKS_AT", target="Company"),
             SchemaPattern(source="Person", relationship="KNOWS", target="Person"),
         ],
-    )
-
-
-@pytest.fixture
-def sample_text() -> str:
-    return (
-        "Alice is a software engineer at Acme Corp. "
-        "Bob is a product manager at Acme Corp. "
-        "Alice and Bob work together on the GraphRAG project. "
-        "They have been collaborating for about two years."
-    )
-
-
-@pytest.fixture
-def sample_chunks() -> TextChunks:
-    return TextChunks(
-        chunks=[
-            TextChunk(text="Alice is a software engineer at Acme Corp.", index=0, uid="chunk-0"),
-            TextChunk(text="Bob is a product manager at Acme Corp.", index=1, uid="chunk-1"),
-            TextChunk(
-                text="Alice and Bob work together on the GraphRAG project.",
-                index=2,
-                uid="chunk-2",
-            ),
-        ]
     )
 
 
@@ -273,7 +206,6 @@ def mock_vector_store(embedder: MockEmbedder) -> MagicMock:
 
     store = MagicMock(spec=VectorStore)
     store.index_chunks = AsyncMock(return_value=0)
-    store.index_relationship_embeddings = AsyncMock(return_value=0)
     store.search = AsyncMock(return_value=[])
     store.search_entities = AsyncMock(return_value=[])
     store.search_relationships = AsyncMock(return_value=[])

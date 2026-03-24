@@ -453,10 +453,12 @@ class TestSearchRelatesEdges:
         facts, entities = await s._search_relates_edges([0.1] * 8)
 
         assert len(facts) == 1
-        assert "Alice" in facts[0]
-        assert "WORKS_AT" in facts[0]
-        assert "Acme Corp" in facts[0]
-        assert "senior engineer" in facts[0]
+        fact_text, fact_score = facts[0]
+        assert "Alice" in fact_text
+        assert "WORKS_AT" in fact_text
+        assert "Acme Corp" in fact_text
+        assert "senior engineer" in fact_text
+        assert fact_score == 0.95
 
         assert "alice" in entities
         assert "acme_corp" in entities
@@ -484,10 +486,12 @@ class TestSearchRelatesEdges:
         facts, entities = await s._search_relates_edges([0.1] * 8)
 
         assert len(facts) == 1
-        assert "Bob" in facts[0]
-        assert "KNOWS" in facts[0]
-        assert "Carol" in facts[0]
-        assert ":" not in facts[0]  # no colon appended when fact is empty
+        fact_text, fact_score = facts[0]
+        assert "Bob" in fact_text
+        assert "KNOWS" in fact_text
+        assert "Carol" in fact_text
+        assert ":" not in fact_text  # no colon appended when fact is empty
+        assert fact_score == 0.8
 
     async def test_handles_search_failure(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Should gracefully handle search_relationships failure."""

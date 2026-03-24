@@ -17,12 +17,13 @@ async def retrieve_chunks(
     llm_kw: list[str],
     simple_kw: list[str],
     entity_list: list[tuple[str, dict]],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, list[float]]]:
     """4-path chunk retrieval: fulltext + vector + MENTIONED_IN + 2-hop.
 
     Returns:
         chunks: dict of chunk_id -> chunk_text
         sources: dict of chunk_id -> source path name
+        embeddings: dict of chunk_id -> stored embedding vector
     """
     chunks: dict[str, str] = {}
     sources: dict[str, str] = {}
@@ -88,7 +89,25 @@ async def retrieve_chunks(
         except Exception as exc:
             logger.debug("2-hop chunk retrieval failed: %s", exc)
 
-    return chunks, sources
+    # Batch-fetch stored embeddings for all collected chunks
+    embeddings: dict[str, list[float]] = {}
+    missing_ids = list(chunks.keys())
+    if missing_ids:
+        try:
+            result = await graph_store.query_raw(
+                "UNWIND $ids AS cid "
+                "MATCH (c:Chunk {id: cid}) "
+                "WHERE c.embedding IS NOT NULL "
+                "RETURN c.id, c.embedding",
+                {"ids": missing_ids},
+            )
+            for row in result.result_set:
+                if row[0] and row[1] is not None:
+                    embeddings[row[0]] = list(row[1])
+        except Exception as exc:
+            logger.debug("Stored embedding fetch failed: %s", exc)
+
+    return chunks, sources, embeddings
 
 
 async def fetch_chunk_documents(
