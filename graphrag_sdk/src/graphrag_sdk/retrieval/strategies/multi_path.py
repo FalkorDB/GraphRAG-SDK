@@ -70,19 +70,86 @@ class MultiPathRetrieval(RetrievalStrategy):
         max_relationships: Max relationships to keep (default: 20).
         rel_top_k: RELATES edge vector search results (default: 15).
         keyword_limit: Max keywords to extract (default: 10).
+        enable_cypher: Enable experimental text-to-Cypher retrieval path.
+            When True, generates and executes Cypher queries in addition to
+            vector-based retrieval. Can improve recall for graph-structured
+            questions at the cost of additional LLM calls. Not yet stable;
+            behavior may change in future versions. Default: False.
     """
 
-    _STOP_WORDS = frozenset({
-        "what", "who", "where", "when", "why", "how", "which", "whom",
-        "is", "are", "was", "were", "be", "been", "being",
-        "the", "a", "an", "in", "on", "at", "to", "for", "of", "and",
-        "or", "with", "by", "from", "as", "but", "not", "no", "nor",
-        "does", "did", "do", "has", "had", "have", "will", "would",
-        "could", "should", "may", "might", "shall", "can",
-        "this", "that", "these", "those", "it", "its", "they", "their",
-        "he", "she", "him", "her", "his", "about", "after", "before",
-        "between", "during", "through", "according", "described",
-    })
+    _STOP_WORDS = frozenset(
+        {
+            "what",
+            "who",
+            "where",
+            "when",
+            "why",
+            "how",
+            "which",
+            "whom",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "the",
+            "a",
+            "an",
+            "in",
+            "on",
+            "at",
+            "to",
+            "for",
+            "of",
+            "and",
+            "or",
+            "with",
+            "by",
+            "from",
+            "as",
+            "but",
+            "not",
+            "no",
+            "nor",
+            "does",
+            "did",
+            "do",
+            "has",
+            "had",
+            "have",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "shall",
+            "can",
+            "this",
+            "that",
+            "these",
+            "those",
+            "it",
+            "its",
+            "they",
+            "their",
+            "he",
+            "she",
+            "him",
+            "her",
+            "his",
+            "about",
+            "after",
+            "before",
+            "between",
+            "during",
+            "through",
+            "according",
+            "described",
+        }
+    )
 
     def __init__(
         self,
@@ -91,12 +158,12 @@ class MultiPathRetrieval(RetrievalStrategy):
         embedder: Embedder,
         llm: LLMInterface,
         *,
-        chunk_top_k: int = 15,
-        max_entities: int = 30,
-        max_relationships: int = 20,
-        rel_top_k: int = 15,
-        keyword_limit: int = 10,
-        enable_cypher: bool = False,
+        chunk_top_k: int = 15,  # Passage diversity without overwhelming LLM context
+        max_entities: int = 30,  # Upper bound before reranking; balances recall vs noise
+        max_relationships: int = 20,  # Cap on RELATES edges per query
+        rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
+        keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
+        enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
@@ -151,9 +218,11 @@ class MultiPathRetrieval(RetrievalStrategy):
         fact_strings = filter_facts_by_relevance(fact_strings_scored)
         # Cypher results stay separate — they bypass the reranker and go
         # directly to the final LLM context as their own section.
-        ctx.log(f"MultiPath [3/9]: {len(fact_strings_scored)} vector facts -> "
-                f"{len(fact_strings)} after filtering"
-                + (f", {len(cypher_facts)} cypher results" if cypher_facts else ""))
+        ctx.log(
+            f"MultiPath [3/9]: {len(fact_strings_scored)} vector facts -> "
+            f"{len(fact_strings)} after filtering"
+            + (f", {len(cypher_facts)} cypher results" if cypher_facts else "")
+        )
 
         # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
         found_entities, entity_sources = await discover_entities(
@@ -170,7 +239,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx.log(f"MultiPath [4/9]: {len(found_entities)} entities discovered")
 
         # 5. Relationship expansion
-        entity_list = list(found_entities.items())[:self._max_entities]
+        entity_list = list(found_entities.items())[: self._max_entities]
         relationship_strings = await expand_relationships(
             self._graph, entity_list, self._max_relationships
         )
@@ -178,20 +247,28 @@ class MultiPathRetrieval(RetrievalStrategy):
 
         # 6. Chunk retrieval (4 paths)
         candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
-            self._vector, self._graph, query, query_vector,
-            llm_kw, simple_kw, entity_list,
+            self._vector,
+            self._graph,
+            query,
+            query_vector,
+            llm_kw,
+            simple_kw,
+            entity_list,
         )
-        ctx.log(f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
-                f"({len(chunk_embeddings)} with stored embeddings)")
+        ctx.log(
+            f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
+            f"({len(chunk_embeddings)} with stored embeddings)"
+        )
 
         # 7. Source document names
-        chunk_doc_map = await fetch_chunk_documents(
-            self._graph, list(candidate_chunks.keys())
-        )
+        chunk_doc_map = await fetch_chunk_documents(self._graph, list(candidate_chunks.keys()))
 
         # 8. Cosine rerank (uses stored embeddings when available)
         source_passages = await rerank_chunks(
-            self._embedder, query_vector, candidate_chunks, self._chunk_top_k,
+            self._embedder,
+            query_vector,
+            candidate_chunks,
+            self._chunk_top_k,
             stored_embeddings=chunk_embeddings,
         )
 
@@ -202,16 +279,18 @@ class MultiPathRetrieval(RetrievalStrategy):
             if cid in candidate_chunks
         }
         source_passages = [
-            f"[Source: {text_to_doc[p]}]\n{p}" if p in text_to_doc else p
-            for p in source_passages
+            f"[Source: {text_to_doc[p]}]\n{p}" if p in text_to_doc else p for p in source_passages
         ]
         ctx.log(f"MultiPath [8/9]: {len(source_passages)} passages after rerank")
 
         # 9. Detect question type + assemble
         q_type_hint = detect_question_type(query)
         return assemble_raw_result(
-            entity_list, relationship_strings, fact_strings,
-            source_passages, q_type_hint,
+            entity_list,
+            relationship_strings,
+            fact_strings,
+            source_passages,
+            q_type_hint,
             cypher_results=cypher_facts if cypher_facts else None,
         )
 
@@ -232,9 +311,7 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     # -- Internal: keyword extraction (stays in orchestrator) --
 
-    async def _extract_keywords(
-        self, query: str
-    ) -> tuple[list[str], list[str]]:
+    async def _extract_keywords(self, query: str) -> tuple[list[str], list[str]]:
         """Extract simple + LLM-based keywords from the query."""
         words = re.sub(r"[?.!,;:'\"-]", " ", query.lower()).split()
         simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][:12]
@@ -263,9 +340,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         self, query_vector: list[float]
     ) -> tuple[list[tuple[str, float]], dict[str, dict]]:
         """Backward-compat wrapper — delegates to module function."""
-        return await search_relates_edges(
-            self._vector, query_vector, self._rel_top_k
-        )
+        return await search_relates_edges(self._vector, query_vector, self._rel_top_k)
 
     @staticmethod
     def _detect_question_type(query: str) -> str:

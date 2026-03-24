@@ -44,7 +44,8 @@ class IngestionPipeline:
     5. **Prune** — filter against schema (built-in, not a strategy)
     6. **Resolve** — deduplicate entities via ``ResolutionStrategy``
     7. **Write** — upsert to graph store (batched)
-    8. **Index** — embed and index chunks in vector store
+    8. **Mentions** — write MENTIONED_IN edges (parallel with step 9)
+    9. **Index Chunks** — embed and index chunks in vector store (parallel with step 8)
 
     The pipeline is intentionally *not* a generic DAG — the fixed sequence
     is debuggable, loggable, and understandable.
@@ -301,18 +302,14 @@ class IngestionPipeline:
         allowed_types = {r.label for r in schema.relations}
         if allowed_types:
             allowed_types.add("RELATES")
-            pruned_rels = [
-                r for r in graph_data.relationships if r.type in allowed_types
-            ]
+            pruned_rels = [r for r in graph_data.relationships if r.type in allowed_types]
         else:
             pruned_rels = graph_data.relationships
 
         # Ensure relationship endpoints exist
         valid_ids = {n.id for n in pruned_nodes}
         pruned_rels = [
-            r
-            for r in pruned_rels
-            if r.start_node_id in valid_ids and r.end_node_id in valid_ids
+            r for r in pruned_rels if r.start_node_id in valid_ids and r.end_node_id in valid_ids
         ]
 
         pruned_node_count = len(graph_data.nodes) - len(pruned_nodes)
@@ -337,7 +334,8 @@ class IngestionPipeline:
             logger.info(f"Quality filter removed {removed} invalid nodes")
         valid_ids = {n.id for n in valid_nodes}
         valid_rels = [
-            r for r in graph_data.relationships
+            r
+            for r in graph_data.relationships
             if r.start_node_id in valid_ids and r.end_node_id in valid_ids
         ]
         new_gd = GraphData(
@@ -349,9 +347,7 @@ class IngestionPipeline:
         )
         return new_gd
 
-    async def _write_mentions(
-        self, graph_data: GraphData, ctx: Context
-    ) -> int:
+    async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> int:
         """Write MENTIONED_IN edges linking entities to their source chunks.
 
         Every entity connects to every chunk it was extracted from (uncapped).

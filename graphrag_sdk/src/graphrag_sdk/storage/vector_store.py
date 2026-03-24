@@ -93,8 +93,7 @@ class VectorStore:
         try:
             await self._conn.query(query)
             logger.info(
-                f"Created vector index on {label}.{property} "
-                f"(dim={self.embedding_dimension})"
+                f"Created vector index on {label}.{property} (dim={self.embedding_dimension})"
             )
         except Exception as exc:
             if "already indexed" in str(exc).lower():
@@ -127,7 +126,9 @@ class VectorStore:
             if "already indexed" in str(exc).lower():
                 logger.debug(f"Relationship vector index on [{rel_type}] already exists")
             else:
-                logger.warning(f"Could not create relationship vector index for [{rel_type}]: {exc}")
+                logger.warning(
+                    f"Could not create relationship vector index for [{rel_type}]: {exc}"
+                )
 
     async def create_fulltext_index(
         self,
@@ -196,6 +197,7 @@ class VectorStore:
                     vec = await self._embedder.aembed_query(chunk.text)
                     vectors.append(vec)
                 except Exception:
+                    logger.debug("Single chunk embedding failed", exc_info=True)
                     vectors.append([])
 
         # Build batch data for UNWIND write
@@ -229,8 +231,7 @@ class VectorStore:
                 for item in batch:
                     try:
                         await self._conn.query(
-                            "MATCH (c:Chunk {id: $chunk_id}) "
-                            "SET c.embedding = vecf32($vector)",
+                            "MATCH (c:Chunk {id: $chunk_id}) SET c.embedding = vecf32($vector)",
                             item,
                         )
                         count += 1
@@ -297,9 +298,7 @@ class VectorStore:
 
             # Write embeddings back to edges using internal edge IDs
             embed_data = [
-                {"rid": rid, "vector": vector}
-                for rid, vector in zip(edge_ids, vectors)
-                if vector
+                {"rid": rid, "vector": vector} for rid, vector in zip(edge_ids, vectors) if vector
             ]
             if not embed_data:
                 logger.warning("All vectors in batch were empty — stopping to avoid infinite loop")
@@ -348,17 +347,22 @@ class VectorStore:
             f"ORDER BY score DESC"
         )
         try:
-            result = await self._conn.query(query, {
-                "top_k": top_k,
-                "vector": query_vector,
-            })
+            result = await self._conn.query(
+                query,
+                {
+                    "top_k": top_k,
+                    "vector": query_vector,
+                },
+            )
             results: list[dict[str, Any]] = []
             for row in result.result_set:
-                results.append({
-                    "id": row[0],
-                    "text": row[1] if len(row) > 1 else "",
-                    "score": row[2] if len(row) > 2 else 0.0,
-                })
+                results.append(
+                    {
+                        "id": row[0],
+                        "text": row[1] if len(row) > 1 else "",
+                        "score": row[2] if len(row) > 2 else 0.0,
+                    }
+                )
             return results
         except Exception as exc:
             logger.warning(f"Vector search failed: {exc}")
@@ -377,18 +381,23 @@ class VectorStore:
             "ORDER BY score DESC"
         )
         try:
-            result = await self._conn.query(query, {
-                "top_k": top_k,
-                "vector": query_vector,
-            })
+            result = await self._conn.query(
+                query,
+                {
+                    "top_k": top_k,
+                    "vector": query_vector,
+                },
+            )
             results: list[dict[str, Any]] = []
             for row in result.result_set:
-                results.append({
-                    "id": row[0],
-                    "name": row[1] if len(row) > 1 else "",
-                    "description": row[2] if len(row) > 2 else "",
-                    "score": row[3] if len(row) > 3 else 0.0,
-                })
+                results.append(
+                    {
+                        "id": row[0],
+                        "name": row[1] if len(row) > 1 else "",
+                        "description": row[2] if len(row) > 2 else "",
+                        "score": row[3] if len(row) > 3 else 0.0,
+                    }
+                )
             return results
         except Exception as exc:
             logger.warning(f"Entity vector search failed: {exc}")
@@ -421,10 +430,13 @@ class VectorStore:
             "ORDER BY score DESC"
         )
         try:
-            result = await self._conn.query(query, {
-                "top_k": top_k,
-                "vector": query_vector,
-            })
+            result = await self._conn.query(
+                query,
+                {
+                    "top_k": top_k,
+                    "vector": query_vector,
+                },
+            )
             return [
                 {
                     "src_name": row[0] if row[0] else "",
@@ -448,10 +460,13 @@ class VectorStore:
             "ORDER BY dist ASC LIMIT $top_k"
         )
         try:
-            result = await self._conn.query(fallback_query, {
-                "top_k": top_k,
-                "vector": query_vector,
-            })
+            result = await self._conn.query(
+                fallback_query,
+                {
+                    "top_k": top_k,
+                    "vector": query_vector,
+                },
+            )
             return [
                 {
                     "src_name": row[0] if row[0] else "",
@@ -491,17 +506,22 @@ class VectorStore:
             f"ORDER BY score DESC LIMIT $top_k"
         )
         try:
-            result = await self._conn.query(query, {
-                "query_text": escaped_text,
-                "top_k": top_k,
-            })
+            result = await self._conn.query(
+                query,
+                {
+                    "query_text": escaped_text,
+                    "top_k": top_k,
+                },
+            )
             results: list[dict[str, Any]] = []
             for row in result.result_set:
-                results.append({
-                    "id": row[0],
-                    "text": row[1] if len(row) > 1 else "",
-                    "score": row[2] if len(row) > 2 else 0.0,
-                })
+                results.append(
+                    {
+                        "id": row[0],
+                        "text": row[1] if len(row) > 1 else "",
+                        "score": row[2] if len(row) > 2 else 0.0,
+                    }
+                )
             return results
         except Exception as exc:
             logger.warning(f"Fulltext search failed: {exc}")
@@ -536,6 +556,7 @@ class VectorStore:
                 await self.create_vector_index(label=label, property=prop)
                 results[key] = True
             except Exception:
+                logger.debug("Vector index creation failed for %s", key, exc_info=True)
                 results[key] = False
 
         # RELATES edge vector index
@@ -543,6 +564,7 @@ class VectorStore:
             await self.create_relationship_vector_index("RELATES")
             results["vector_RELATES"] = True
         except Exception:
+            logger.debug("RELATES vector index creation failed", exc_info=True)
             results["vector_RELATES"] = False
 
         for label, props in [
@@ -554,6 +576,7 @@ class VectorStore:
                 await self.create_fulltext_index(label, *props)
                 results[key] = True
             except Exception:
+                logger.debug("Fulltext index creation failed for %s", key, exc_info=True)
                 results[key] = False
 
         self._indices_ensured = True
@@ -601,7 +624,6 @@ class VectorStore:
             for row in result.result_set:
                 eid = row[0]
                 name = row[1] if len(row) > 1 and row[1] else str(eid)
-                desc = row[2] if len(row) > 2 and row[2] else ""
                 ids.append(eid)
                 texts.append(str(name))
 
@@ -613,9 +635,7 @@ class VectorStore:
 
             # Batch write using UNWIND
             backfill_data = [
-                {"eid": eid, "vector": vector}
-                for eid, vector in zip(ids, vectors)
-                if vector
+                {"eid": eid, "vector": vector} for eid, vector in zip(ids, vectors) if vector
             ]
             if not backfill_data:
                 logger.warning("All vectors in batch were empty — stopping to avoid infinite loop")
@@ -637,13 +657,14 @@ class VectorStore:
                 for item in backfill_data:
                     try:
                         await self._conn.query(
-                            "MATCH (e:__Entity__ {id: $eid}) "
-                            "SET e.embedding = vecf32($vector)",
+                            "MATCH (e:__Entity__ {id: $eid}) SET e.embedding = vecf32($vector)",
                             item,
                         )
                         total_backfilled += 1
                     except Exception:
-                        pass
+                        logger.debug(
+                            "Single entity backfill failed for %s", item.get("eid"), exc_info=True
+                        )
 
         logger.info(f"Backfilled {total_backfilled} entity embeddings")
         return total_backfilled

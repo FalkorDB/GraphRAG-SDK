@@ -199,11 +199,7 @@ class GraphRAG:
 
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with schema entity types if available."""
-        entity_types = (
-            [e.label for e in self.schema.entities]
-            if self.schema.entities
-            else None
-        )
+        entity_types = [e.label for e in self.schema.entities] if self.schema.entities else None
         return GraphExtraction(
             llm=self.llm,
             entity_types=entity_types,

@@ -16,10 +16,21 @@ logger = logging.getLogger(__name__)
 
 # ── Valid labels for our graph schema ────────────────────────────
 
-_ENTITY_LABELS = frozenset({
-    "Person", "Organization", "Technology", "Product", "Location",
-    "Date", "Event", "Concept", "Law", "Dataset", "Method",
-})
+_ENTITY_LABELS = frozenset(
+    {
+        "Person",
+        "Organization",
+        "Technology",
+        "Product",
+        "Location",
+        "Date",
+        "Event",
+        "Concept",
+        "Law",
+        "Dataset",
+        "Method",
+    }
+)
 
 _STRUCTURAL_LABELS = frozenset({"Chunk", "Document", "__Entity__"})
 
@@ -126,6 +137,7 @@ Question: {question}
 
 # ── Cypher extraction ────────────────────────────────────────────
 
+
 def extract_cypher(text: str) -> str:
     """Extract Cypher from LLM response, handling markdown code blocks."""
     if not text or not text.strip():
@@ -141,6 +153,7 @@ def extract_cypher(text: str) -> str:
 
 
 # ── Cypher sanitization ─────────────────────────────────────────
+
 
 def _sanitize_cypher(cypher: str) -> str:
     """Fix common LLM-generated Cypher issues before execution.
@@ -166,6 +179,7 @@ def _sanitize_cypher(cypher: str) -> str:
 
 # ── Cypher validation ────────────────────────────────────────────
 
+
 def validate_cypher(cypher: str) -> list[str]:
     """Validate generated Cypher for safety and correctness.
 
@@ -189,12 +203,8 @@ def validate_cypher(cypher: str) -> list[str]:
         return errors
 
     # Allowlist: must start with a read-only keyword
-    if not re.match(
-        r"^(MATCH|OPTIONAL\s+MATCH|UNWIND|WITH)\b", cypher_norm, re.IGNORECASE
-    ):
-        errors.append(
-            "Query must start with MATCH, OPTIONAL MATCH, UNWIND, or WITH"
-        )
+    if not re.match(r"^(MATCH|OPTIONAL\s+MATCH|UNWIND|WITH)\b", cypher_norm, re.IGNORECASE):
+        errors.append("Query must start with MATCH, OPTIONAL MATCH, UNWIND, or WITH")
 
     # Reject multi-statement queries
     if ";" in cypher_norm:
@@ -225,6 +235,7 @@ def validate_cypher(cypher: str) -> list[str]:
 
 # ── Text-to-Cypher execution ────────────────────────────────────
 
+
 async def generate_cypher(
     llm: Any,
     question: str,
@@ -242,8 +253,7 @@ async def generate_cypher(
         try:
             if attempt > 0 and last_error:
                 prompt_with_feedback = (
-                    prompt
-                    + f"\n\nPrevious attempt failed with error: {last_error}\n"
+                    prompt + f"\n\nPrevious attempt failed with error: {last_error}\n"
                     "Remember: no shortestPath, every RETURN column must have a "
                     "unique alias, add LIMIT, keep it simple."
                 )
@@ -338,6 +348,8 @@ async def execute_cypher_retrieval(
 
     logger.debug(
         "Cypher retrieval: %d facts, %d entities from: %s",
-        len(fact_strings), len(entities), cypher[:120],
+        len(fact_strings),
+        len(entities),
+        cypher[:120],
     )
     return fact_strings, entities

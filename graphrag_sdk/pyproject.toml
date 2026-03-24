@@ -9,7 +9,7 @@ description = "GraphRAG SDK 2.0 — A modular, async-first Graph RAG framework f
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "FalkorDB" }]
+authors = [{ name = "FalkorDB", email = "support@falkordb.com" }]
 keywords = ["graphrag", "rag", "falkordb", "knowledge-graph", "llm"]
 classifiers = [
     "Development Status :: 3 - Alpha",

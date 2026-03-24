@@ -20,7 +20,11 @@ class FixedSizeChunking(ChunkingStrategy):
         result = await chunker.chunk(long_text, ctx)
     """
 
-    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 100) -> None:
+    def __init__(
+        self,
+        chunk_size: int = 1000,  # Default 1000 chars; benchmark uses 1500 for richer context
+        chunk_overlap: int = 100,  # ~10% overlap prevents entity loss at chunk boundaries
+    ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
         self.chunk_size = chunk_size

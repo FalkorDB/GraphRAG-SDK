@@ -106,10 +106,7 @@ class GraphStore:
                     # Per-item fallback
                     for node in batch:
                         safe_node_label = sanitize_cypher_label(node.label)
-                        q = (
-                            f"MERGE (n:`{safe_node_label}` {{id: $id}}) "
-                            f"SET n += $properties"
-                        )
+                        q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) SET n += $properties"
                         if is_entity:
                             q += " SET n:__Entity__"
                         params = {
@@ -240,11 +237,13 @@ class GraphStore:
             result = await self._conn.query(query, {"chunk_id": chunk_id})
             entities: list[dict[str, Any]] = []
             for row in result.result_set:
-                entities.append({
-                    "id": row[0],
-                    "labels": row[1],
-                    "properties": row[2] if len(row) > 2 else {},
-                })
+                entities.append(
+                    {
+                        "id": row[0],
+                        "labels": row[1],
+                        "properties": row[2] if len(row) > 2 else {},
+                    }
+                )
             return entities
         except Exception as exc:
             logger.warning(f"Failed to get entities for chunk {chunk_id}: {exc}")
@@ -293,6 +292,7 @@ class GraphStore:
             )
             stats["embedded_relationship_count"] = r.result_set[0][0] if r.result_set else 0
         except Exception:
+            logger.debug("Failed to count embedded relationships", exc_info=True)
             stats["embedded_relationship_count"] = 0
 
         for label, key in [
@@ -300,11 +300,10 @@ class GraphStore:
             ("RELATES", "relates_edge_count"),
         ]:
             try:
-                r = await self._conn.query(
-                    f"MATCH ()-[r:{label}]->() RETURN count(r)"
-                )
+                r = await self._conn.query(f"MATCH ()-[r:{label}]->() RETURN count(r)")
                 stats[key] = r.result_set[0][0] if r.result_set else 0
             except Exception:
+                logger.debug("Failed to count %s edges", label, exc_info=True)
                 stats[key] = 0
 
         return stats
@@ -321,6 +320,7 @@ class GraphStore:
         try:
             await self._conn.delete_graph()
         except Exception:
+            logger.debug("GRAPH.DELETE failed, falling back to DETACH DELETE", exc_info=True)
             await self._conn.query("MATCH (n) DETACH DELETE n")
         logger.info("Deleted all graph data")
 
@@ -341,10 +341,7 @@ class GraphStore:
                 cleaned[key] = value
             elif isinstance(value, list):
                 # FalkorDB supports lists of primitives — filter items
-                filtered = [
-                    item for item in value
-                    if isinstance(item, (str, int, float, bool))
-                ]
+                filtered = [item for item in value if isinstance(item, (str, int, float, bool))]
                 if filtered:
                     cleaned[key] = filtered
             elif isinstance(value, dict):

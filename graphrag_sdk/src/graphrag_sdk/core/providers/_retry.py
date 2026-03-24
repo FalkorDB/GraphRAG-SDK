@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,15 @@ def is_transient_embedding_error(exc: Exception) -> bool:
     single texts.
     """
     msg = str(exc).lower()
-    non_transient = ("401", "403", "invalid api key", "authentication",
-                     "unauthorized", "permission denied", "invalid_api_key")
+    non_transient = (
+        "401",
+        "403",
+        "invalid api key",
+        "authentication",
+        "unauthorized",
+        "permission denied",
+        "invalid_api_key",
+    )
     return not any(marker in msg for marker in non_transient)
 
 

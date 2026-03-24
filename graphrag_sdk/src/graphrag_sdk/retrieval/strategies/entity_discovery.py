@@ -24,9 +24,7 @@ async def search_relates_edges(
     fact_strings: list[tuple[str, float]] = []
     entities: dict[str, dict] = {}
     try:
-        results = await vector_store.search_relationships(
-            query_vector, top_k=rel_top_k
-        )
+        results = await vector_store.search_relationships(query_vector, top_k=rel_top_k)
         for rel in results:
             src = rel.get("src_name", "")
             tgt = rel.get("tgt_name", "")
@@ -90,7 +88,10 @@ async def discover_entities(
             for row in result.result_set:
                 _add(
                     row[0],
-                    {"name": row[1] if len(row) > 1 else "", "description": row[2] if len(row) > 2 else ""},
+                    {
+                        "name": row[1] if len(row) > 1 else "",
+                        "description": row[2] if len(row) > 2 else "",
+                    },
                     "cypher_contains",
                 )
         except Exception as exc:
@@ -111,11 +112,16 @@ async def discover_entities(
                         )
                         if detail.result_set:
                             row = detail.result_set[0]
-                            _add(eid, {
-                                "name": row[0] if row[0] else "",
-                                "description": row[1] if len(row) > 1 and row[1] else "",
-                            }, "fulltext")
+                            _add(
+                                eid,
+                                {
+                                    "name": row[0] if row[0] else "",
+                                    "description": row[1] if len(row) > 1 and row[1] else "",
+                                },
+                                "fulltext",
+                            )
                     except Exception:
+                        logger.debug("Entity detail fetch failed for %s", eid, exc_info=True)
                         _add(eid, {"name": "", "description": ""}, "fulltext")
         except Exception as exc:
             logger.debug("Entity fulltext search failed for '%s': %s", kw, exc)

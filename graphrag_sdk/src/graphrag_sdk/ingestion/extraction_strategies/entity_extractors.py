@@ -38,27 +38,75 @@ DEFAULT_ENTITY_TYPES: list[str] = [
 
 UNKNOWN_LABEL = "Unknown"
 
-MIN_NAME_LEN = 2   # single-char names are noise
+MIN_NAME_LEN = 2  # single-char names are noise
 MAX_NAME_LEN = 80  # descriptions masquerading as names
 
 # Pronouns and generic references that should never become entities
 _PRONOUNS: set[str] = {
-    "he", "she", "they", "it", "him", "her", "his", "them", "who", "whom",
-    "i", "we", "you", "one", "me", "us", "my", "our", "your", "their",
-    "hers", "its",
+    "he",
+    "she",
+    "they",
+    "it",
+    "him",
+    "her",
+    "his",
+    "them",
+    "who",
+    "whom",
+    "i",
+    "we",
+    "you",
+    "one",
+    "me",
+    "us",
+    "my",
+    "our",
+    "your",
+    "their",
+    "hers",
+    "its",
 }
 
 _ENTITY_STOPLIST: set[str] = _PRONOUNS | {
     # Generic/anonymous references
-    "narrator", "the narrator", "author", "the author", "reader", "the reader",
-    "speaker", "the speaker", "listener", "the listener",
-    "the man", "the woman", "the boy", "the girl", "the child",
-    "man", "woman", "boy", "girl", "child",
-    "people", "person", "someone", "somebody", "everyone", "everybody",
-    "mistress", "master",
+    "narrator",
+    "the narrator",
+    "author",
+    "the author",
+    "reader",
+    "the reader",
+    "speaker",
+    "the speaker",
+    "listener",
+    "the listener",
+    "the man",
+    "the woman",
+    "the boy",
+    "the girl",
+    "the child",
+    "man",
+    "woman",
+    "boy",
+    "girl",
+    "child",
+    "people",
+    "person",
+    "someone",
+    "somebody",
+    "everyone",
+    "everybody",
+    "mistress",
+    "master",
     # Meta-textual
-    "story", "chapter", "passage", "book", "text", "narrative",
-    "paragraph", "section", "document",
+    "story",
+    "chapter",
+    "passage",
+    "book",
+    "text",
+    "narrative",
+    "paragraph",
+    "section",
+    "document",
 }
 
 
