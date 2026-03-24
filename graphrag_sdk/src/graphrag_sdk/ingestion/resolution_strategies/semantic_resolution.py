@@ -60,12 +60,14 @@ class SemanticResolution(ResolutionStrategy):
         similarity_threshold: float = 0.95,
         force_summary_threshold: int = 3,
         max_summary_tokens: int = 500,
+        ann_top_k: int = 50,
     ) -> None:
         self.llm = llm
         self.embedder = embedder
         self.similarity_threshold = similarity_threshold
         self.force_summary_threshold = force_summary_threshold
         self.max_summary_tokens = max_summary_tokens
+        self.ann_top_k = ann_top_k
 
     async def resolve(
         self,
@@ -254,7 +256,7 @@ class SemanticResolution(ResolutionStrategy):
             norms[norms == 0] = 1.0
             mat_normed = mat / norms
 
-            # Find pairs above threshold (upper triangle only)
+            # Find pairs above threshold using FAISS HNSW (O(N log N))
             # Use Union-Find to cluster
             parent: dict[int, int] = {i: i for i in range(len(valid_nodes))}
 
@@ -270,18 +272,38 @@ class SemanticResolution(ResolutionStrategy):
                     parent[py] = px
 
             n = len(valid_nodes)
-            BLOCK_SIZE = 500
-            for i_start in range(0, n, BLOCK_SIZE):
-                i_end = min(i_start + BLOCK_SIZE, n)
-                block = mat_normed[i_start:i_end]
-                remaining = mat_normed[i_start:]
-                sim_block = block @ remaining.T
-                local_rows, local_cols = np.where(sim_block >= self.similarity_threshold)
-                for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
-                    gi = i_start + lr
-                    gj = i_start + lc
-                    if gj > gi:
-                        union(gi, gj)
+            top_k = min(self.ann_top_k, n - 1)
+
+            try:
+                import faiss
+                dim = mat_normed.shape[1]
+                index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
+                index.hnsw.efSearch = 64
+                index.add(mat_normed)
+                sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self
+                for i in range(n):
+                    for rank in range(1, top_k + 1):
+                        j = int(nbrs[i, rank])
+                        if j < 0 or j <= i:
+                            continue
+                        sim_val = float(sims[i, rank])
+                        if sim_val >= self.similarity_threshold:
+                            union(i, j)
+            except ImportError:
+                # Fallback: O(N²) blocked matmul when faiss is not installed
+                ctx.log("faiss not installed — falling back to O(N²) scan. Install faiss-cpu for scale.", logging.WARNING)
+                BLOCK_SIZE = 500
+                for i_start in range(0, n, BLOCK_SIZE):
+                    i_end = min(i_start + BLOCK_SIZE, n)
+                    block = mat_normed[i_start:i_end]
+                    remaining = mat_normed[i_start:]
+                    sim_block = block @ remaining.T
+                    local_rows, local_cols = np.where(sim_block >= self.similarity_threshold)
+                    for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
+                        gi = i_start + lr
+                        gj = i_start + lc
+                        if gj > gi:
+                            union(gi, gj)
 
             # Build clusters
             clusters: dict[int, list[int]] = defaultdict(list)
