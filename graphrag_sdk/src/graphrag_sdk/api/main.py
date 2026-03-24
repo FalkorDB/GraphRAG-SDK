@@ -33,6 +33,7 @@ from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
 from graphrag_sdk.storage.vector_store import VectorStore
 
@@ -122,6 +123,9 @@ class GraphRAG:
             embedder=self.embedder,
             embedding_dimension=embedding_dimension,
         )
+
+        # Deduplication engine
+        self._deduplicator = EntityDeduplicator(self.graph_store, self.embedder)
 
         # Default retrieval strategy
         self._retrieval_strategy = retrieval_strategy or MultiPathRetrieval(
@@ -318,188 +322,11 @@ class GraphRAG:
         Returns:
             Total number of duplicate entities merged.
         """
-        total_merged = 0
-
-        # ── Phase 1: Exact name match ──
-        # Query all entities (include label to prevent cross-type merging)
-        offset = 0
-        entities: list[dict] = []
-        while True:
-            result = await self.graph_store.query_raw(
-                "MATCH (e:__Entity__) "
-                "RETURN e.id AS id, e.name AS name, e.description AS desc, "
-                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label "
-                "SKIP $offset LIMIT $limit",
-                {"offset": offset, "limit": batch_size},
-            )
-            if not result.result_set:
-                break
-            for row in result.result_set:
-                entities.append({
-                    "id": row[0],
-                    "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
-                    "description": row[2] if len(row) > 2 and row[2] else "",
-                    "label": row[3] if len(row) > 3 and row[3] else "",
-                })
-            offset += batch_size
-
-        if len(entities) < 2:
-            logger.info("deduplicate_entities: fewer than 2 entities, nothing to dedup")
-            return 0
-
-        # Group by (normalized name, label) to prevent cross-type merging.
-        # The fixed ontology maps types at extraction time; this catches
-        # residual duplicates from separate ingestion batches while
-        # preserving legitimately different entities that share a name
-        # (e.g. "Python" the language vs "Python" the snake).
-        groups: dict[tuple[str, str], list[dict]] = {}
-        for ent in entities:
-            norm = ent["name"].strip().lower()
-            label = ent.get("label", "").strip().lower()
-            groups.setdefault((norm, label), []).append(ent)
-
-        # Merge duplicates
-        for (norm_name, _label), group in groups.items():
-            if len(group) < 2:
-                continue
-
-            # Survivor: longest description
-            group.sort(key=lambda e: len(e["description"]), reverse=True)
-            survivor = group[0]
-            duplicates = group[1:]
-
-            for dup in duplicates:
-                # Remap RELATES edges (both directions)
-                for direction_query in [
-                    # Outgoing RELATES from duplicate
-                    "MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__) "
-                    "WHERE b.id <> $survivor_id "
-                    "MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b) "
-                    "SET nr += properties(r) "
-                    "DELETE r",
-                    # Incoming RELATES to duplicate
-                    "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
-                    "WHERE a.id <> $survivor_id "
-                    "MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id}) "
-                    "SET nr += properties(r) "
-                    "DELETE r",
-                    # Remap MENTIONED_IN edges
-                    "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "
-                    "MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c) "
-                    "DELETE r",
-                ]:
-                    try:
-                        await self.graph_store.query_raw(
-                            direction_query,
-                            {"dup_id": dup["id"], "survivor_id": survivor["id"]},
-                        )
-                    except Exception as exc:
-                        logger.warning(f"Edge remap failed for {dup['id']} -> {survivor['id']}: {exc}")
-
-                # Delete duplicate node
-                try:
-                    await self.graph_store.query_raw(
-                        "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
-                        {"dup_id": dup["id"]},
-                    )
-                    total_merged += 1
-                except Exception as exc:
-                    logger.warning(f"Failed to delete duplicate entity {dup['id']}: {exc}")
-
-        logger.info(f"deduplicate_entities phase 1 (exact): merged {total_merged} duplicates")
-
-        # ── Phase 2: Fuzzy embedding match (optional) ──
-        if fuzzy:
-            import numpy as np
-
-            # Re-fetch surviving entities
-            offset = 0
-            all_ids: list[str] = []
-            all_names: list[str] = []
-            while True:
-                result = await self.graph_store.query_raw(
-                    "MATCH (e:__Entity__) "
-                    "RETURN e.id AS id, e.name AS name "
-                    "SKIP $offset LIMIT $limit",
-                    {"offset": offset, "limit": batch_size},
-                )
-                if not result.result_set:
-                    break
-                for row in result.result_set:
-                    all_ids.append(row[0])
-                    all_names.append(row[1] if len(row) > 1 and row[1] else str(row[0]))
-                offset += batch_size
-
-            if len(all_ids) < 2:
-                return total_merged
-
-            raw_vectors = await self.embedder.aembed_documents(all_names)
-            valid = [
-                (eid, name, vec)
-                for eid, name, vec in zip(all_ids, all_names, raw_vectors)
-                if vec
-            ]
-            if len(valid) < 2:
-                return total_merged
-
-            v_ids, v_names, vectors = zip(*valid)
-            v_ids = list(v_ids)
-
-            mat = np.array(vectors, dtype=np.float32)
-            norms_arr = np.linalg.norm(mat, axis=1, keepdims=True)
-            norms_arr[norms_arr == 0] = 1.0
-            mat_normed = mat / norms_arr
-
-            # Find pairs above threshold
-            BLOCK_SIZE = 1000
-            n = len(v_ids)
-            merged_set: set[str] = set()
-
-            for i_start in range(0, n, BLOCK_SIZE):
-                block = mat_normed[i_start:min(i_start + BLOCK_SIZE, n)]
-                remaining = mat_normed[i_start:]
-                sim_block = block @ remaining.T
-                local_rows, local_cols = np.where(sim_block >= similarity_threshold)
-                for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
-                    gi = i_start + lr
-                    gj = i_start + lc
-                    if gj > gi and v_ids[gj] not in merged_set:
-                        # Merge gj into gi
-                        survivor_id = v_ids[gi]
-                        dup_id = v_ids[gj]
-                        merged_set.add(dup_id)
-
-                        for q in [
-                            "MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__) "
-                            "WHERE b.id <> $survivor_id "
-                            "MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b) "
-                            "SET nr += properties(r) DELETE r",
-                            "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
-                            "WHERE a.id <> $survivor_id "
-                            "MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id}) "
-                            "SET nr += properties(r) DELETE r",
-                            "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "
-                            "MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c) "
-                            "DELETE r",
-                        ]:
-                            try:
-                                await self.graph_store.query_raw(q, {"dup_id": dup_id, "survivor_id": survivor_id})
-                            except Exception:
-                                pass
-
-                        try:
-                            await self.graph_store.query_raw(
-                                "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
-                                {"dup_id": dup_id},
-                            )
-                            total_merged += 1
-                        except Exception:
-                            pass
-
-            logger.info(f"deduplicate_entities phase 2 (fuzzy): merged {len(merged_set)} additional duplicates")
-
-        logger.info(f"deduplicate_entities total: {total_merged} duplicates merged")
-        return total_merged
+        return await self._deduplicator.deduplicate(
+            fuzzy=fuzzy,
+            similarity_threshold=similarity_threshold,
+            batch_size=batch_size,
+        )
 
     async def finalize(self) -> dict[str, Any]:
         """Run all post-ingestion steps after all documents are ingested.

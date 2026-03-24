@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -61,10 +62,13 @@ class FalkorDBConnection:
     """
 
     def __init__(self, config: ConnectionConfig | None = None) -> None:
+        from graphrag_sdk.core.circuit_breaker import CircuitBreaker
+
         self.config = config or ConnectionConfig()
         self._pool: Any | None = None
         self._driver: Any | None = None
         self._graph: Any | None = None
+        self._breaker = CircuitBreaker()
 
     def _ensure_client(self) -> None:
         """Lazy-init the async FalkorDB driver and graph handle."""
@@ -125,19 +129,28 @@ class FalkorDBConnection:
         self._ensure_client()
         assert self._graph is not None  # for type-checkers
 
+        if not await self._breaker.allow_request():
+            raise ConnectionError(
+                "Circuit breaker is open — FalkorDB connection is unhealthy. "
+                "Requests will resume after recovery timeout."
+            )
+
         effective_timeout = timeout if timeout is not None else self.config.query_timeout_ms
 
         last_exc: Exception | None = None
         for attempt in range(self.config.retry_count):
             try:
-                return await self._graph.query(
+                result = await self._graph.query(
                     cypher, params=params, timeout=effective_timeout
                 )
+                await self._breaker.record_success()
+                return result
             except Exception as exc:
                 last_exc = exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
                     raise
+                await self._breaker.record_failure()
                 logger.warning(
                     "Query attempt %d/%d failed: %s",
                     attempt + 1,
@@ -145,9 +158,10 @@ class FalkorDBConnection:
                     exc,
                 )
                 if attempt < self.config.retry_count - 1:
-                    await asyncio.sleep(
-                        self.config.retry_delay * (attempt + 1)
-                    )
+                    if not await self._breaker.allow_request():
+                        break
+                    base_delay = self.config.retry_delay * (2**attempt)
+                    await asyncio.sleep(base_delay * (0.5 + random.random()))
         raise last_exc  # type: ignore[misc]
 
     # Substrings that indicate a non-transient (permanent) error —
