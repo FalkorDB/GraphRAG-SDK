@@ -8,6 +8,11 @@ from collections import defaultdict
 
 import numpy as np
 
+try:
+    import faiss as _faiss
+except ImportError:
+    _faiss = None  # type: ignore[assignment]
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
@@ -271,9 +276,13 @@ class SemanticResolution(ResolutionStrategy):
             n = len(valid_nodes)
             top_k = min(self.ann_top_k, n - 1)
 
-            import faiss
+            if _faiss is None:
+                ctx.log(
+                    f"faiss not installed; skipping ANN fuzzy merge for label '{label}'"
+                )
+                continue
             dim = mat_normed.shape[1]
-            index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
+            index = _faiss.index_factory(dim, "HNSW32", _faiss.METRIC_INNER_PRODUCT)
             index.hnsw.efSearch = 64
             index.add(mat_normed)
             sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self

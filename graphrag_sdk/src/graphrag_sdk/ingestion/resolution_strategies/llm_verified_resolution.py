@@ -16,6 +16,16 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+try:
+    import faiss as _faiss
+except ImportError:
+    _faiss = None  # type: ignore[assignment]
+
+try:
+    import networkx as nx
+except ImportError:
+    nx = None  # type: ignore[assignment]
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
@@ -220,7 +230,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 id_remap[duplicate.id] = survivor.id
                 merged_count += 1
 
-        ctx.log(f"Phase 1 (exact-match): {merged_count} merged, {len(deduplicated_nodes)} surviving")
+        ctx.log(
+            f"Phase 1 (exact-match): {merged_count} merged, "
+            f"{len(deduplicated_nodes)} surviving"
+        )
 
         # ── Phase 2-5: Embedding + three-tier classification ──────────────────
         if self.embedder and len(deduplicated_nodes) >= 2:
@@ -362,9 +375,14 @@ class LLMVerifiedResolution(ResolutionStrategy):
 
             top_k = min(self.ann_top_k, n_nodes - 1)
 
-            import faiss
+            if _faiss is None:
+                ctx.log(
+                    f"faiss not installed; skipping ANN embedding merge for label '{label}'",
+                    logging.WARNING,
+                )
+                continue
             dim = mat_normed.shape[1]
-            index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
+            index = _faiss.index_factory(dim, "HNSW32", _faiss.METRIC_INNER_PRODUCT)
             index.hnsw.efSearch = 64
             index.add(mat_normed)
             sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self
@@ -388,7 +406,14 @@ class LLMVerifiedResolution(ResolutionStrategy):
             if ambiguous_pairs and self.llm is not None:
                 # Community detection: only send cluster boundary pairs to LLM (Gap 2)
                 # Intra-community pairs are treated as additional hard merges (cheap consensus)
-                import networkx as nx
+                if nx is None:
+                    ctx.log(
+                        "networkx not installed; skipping Louvain community detection",
+                        logging.WARNING,
+                    )
+                    for gi, gj, _ in ambiguous_pairs:
+                        union(gi, gj)
+                    continue
                 G = nx.Graph()
                 G.add_nodes_from(range(n_nodes))
                 for gi, gj, sim_val in ambiguous_pairs:

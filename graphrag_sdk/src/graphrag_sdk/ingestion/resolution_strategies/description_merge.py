@@ -157,7 +157,10 @@ class DescriptionMergeResolution(ResolutionStrategy):
                 for key, value in duplicate.properties.items():
                     if key not in survivor.properties:
                         survivor.properties[key] = value
-                    elif key not in ("description", "source_chunk_ids", "name") and survivor.properties[key] != value:
+                    elif (
+                        key not in ("description", "source_chunk_ids", "name")
+                        and survivor.properties[key] != value
+                    ):
                         logger.debug(
                             "Property conflict on '%s' for entity '%s': "
                             "keeping %r, discarding %r",
