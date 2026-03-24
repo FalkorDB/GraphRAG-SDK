@@ -125,17 +125,30 @@ Override any pipeline step by passing a strategy:
 ```python
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk import GraphExtraction, GLiNERExtractor, LLMExtractor
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
-
-# Default: GLiNER for entity NER (step 1), LLM for relationships (step 2)
-await rag.ingest(
-    "document.txt",
-    chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
-    extractor=GraphExtraction(llm=llm),
-    resolver=DescriptionMergeResolution(llm=llm),
+from graphrag_sdk.ingestion.resolution_strategies import (
+    ExactMatchResolution,
+    DescriptionMergeResolution,
+    SemanticResolution,
+    LLMVerifiedResolution,
 )
+from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 
-# Use LLM for step 1 instead of GLiNER
+# Full 4-stage deduplication pipeline
+async def ingest_with_full_resolution(rag, path):
+    data = await rag.ingest(path, chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200))
+    ctx = data.context
+    gd = data.graph_data
+    for resolver in [
+        ExactMatchResolution(resolve_property="name"),
+        DescriptionMergeResolution(llm=llm),
+        SemanticResolution(llm=llm, embedder=embedder, similarity_threshold=0.85),
+        LLMVerifiedResolution(llm=llm, embedder=embedder, hard_threshold=0.95, soft_threshold=0.60),
+    ]:
+        result = await resolver.resolve(gd, ctx)
+        gd.nodes = result.nodes
+        gd.relationships = result.relationships
+
+# Use LLM for entity extraction instead of GLiNER
 await rag.ingest(
     "document.txt",
     extractor=GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm)),
@@ -166,7 +179,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by file extension |
 | **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` (1000 chars, 100 overlap) |
 | **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | GraphExtraction |
-| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
+| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution`, `SemanticResolution`, `LLMVerifiedResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
 
@@ -205,7 +218,7 @@ The default pipeline achieves **88.2% accuracy** (8.82/10) on a 100-question ben
 
 The benchmark-winning pipeline uses:
 - **Extraction**: `GraphExtraction` -- GLiNER2 local NER (step 1) + LLM verify & relationship extraction (step 2)
-- **Resolution**: `DescriptionMergeResolution` -- LLM-assisted entity deduplication with description merging
+- **Resolution**: `ExactMatchResolution` → `DescriptionMergeResolution` → `SemanticResolution` → `LLMVerifiedResolution` -- 4-stage pipeline: exact match, normalized-name merge, FAISS HNSW semantic clustering, Louvain community detection + batched LLM verification
 - **Retrieval**: `MultiPathRetrieval` -- 5-path entity discovery, 2-hop relationship expansion, 5-path chunk retrieval, cosine reranking, fact retrieval
 - **Chunking**: 1500 chars / 200 overlap
 - **LLM**: GPT-4.1 (Azure OpenAI), **Embeddings**: text-embedding-ada-002 (1536 dim)
@@ -228,7 +241,7 @@ graphrag_sdk/
 │   ├── loaders/                    # TextLoader, PdfLoader
 │   ├── chunking_strategies/        # FixedSizeChunking, SentenceTokenCapChunking, ContextualChunking, CallableChunking
 │   ├── extraction_strategies/      # GraphExtraction (GLiNER2 + LLM)
-│   └── resolution_strategies/      # ExactMatch, DescriptionMerge
+│   └── resolution_strategies/      # ExactMatch, DescriptionMerge, Semantic, LLMVerified
 ├── retrieval/
 │   ├── strategies/                 # LocalRetrieval, MultiPathRetrieval
 │   └── reranking_strategies/       # CosineReranker
