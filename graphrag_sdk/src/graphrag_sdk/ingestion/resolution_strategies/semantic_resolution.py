@@ -230,13 +230,21 @@ class SemanticResolution(ResolutionStrategy):
 
             remap_before = len(remap)
 
+            emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
+
             names = [n.properties.get("name", n.id) for n in label_nodes]
+            miss_nodes = [n for n in label_nodes if n.id not in emb_cache]
+            miss_names = [str(n.properties.get("name", n.id)) for n in miss_nodes]
             try:
-                vectors = await self.embedder.aembed_documents(
-                    [str(name) for name in names]
-                )
+                if miss_names:
+                    miss_vecs = await self.embedder.aembed_documents(miss_names)
+                    for node, vec in zip(miss_nodes, miss_vecs):
+                        if vec:
+                            emb_cache[node.id] = vec
             except Exception:
                 continue
+
+            vectors = [emb_cache.get(n.id, []) for n in label_nodes]
 
             # Filter out failed embeddings
             valid = [
