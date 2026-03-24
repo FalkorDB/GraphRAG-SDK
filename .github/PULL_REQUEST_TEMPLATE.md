@@ -11,8 +11,7 @@ Brief description of what this PR does and why.
 
 - [ ] All existing tests pass (`pytest tests/ -q`)
 - [ ] New tests added for new functionality (if applicable)
-- [ ] Lint passes (`ruff check src/ tests/`)
-- [ ] Type check passes (`mypy --strict src/`)
+- [ ] Lint passes (`ruff check src/`)
 
 ## Notes
 

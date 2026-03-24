@@ -47,4 +47,4 @@ When using GraphRAG SDK:
 - **Never commit API keys**: Use environment variables or a `.env` file (see `.env.example`).
 - **Use network isolation**: Run FalkorDB behind a firewall or private network in production.
 - **Enable authentication**: Configure FalkorDB with username/password via `ConnectionConfig`.
-- **Review Cypher queries**: The SDK sanitizes generated Cypher queries, but review any custom queries you add.
+- **Review Cypher queries**: The SDK applies label escaping and blocks write operations in generated Cypher, but this is not comprehensive injection prevention. Review any custom queries you add.
