@@ -32,9 +32,9 @@ async def rerank_chunks(
 ) -> list[str]:
     """Rank candidates by cosine similarity, take top_k.
 
-    When ``stored_embeddings`` is provided, uses pre-computed vectors
-    from the graph (zero API calls).  Falls back to re-embedding via
-    the embedder when stored vectors are unavailable.
+    When ``stored_embeddings`` covers >=90% of candidates, uses
+    pre-computed vectors from the graph (zero API calls).  Falls back
+    to re-embedding via the embedder when coverage is insufficient.
 
     Returns:
         Top-k chunk texts ranked by cosine similarity to query.
@@ -45,17 +45,20 @@ async def rerank_chunks(
     chunk_ids = list(candidate_chunks.keys())
     chunk_texts = list(candidate_chunks.values())
 
-    # Fast path: use stored embeddings (no API call)
-    if stored_embeddings and len(stored_embeddings) >= len(chunk_ids) * 0.5:
+    # Fast path: use stored embeddings only when coverage is near-complete
+    if stored_embeddings and len(stored_embeddings) >= len(chunk_ids) * 0.9:
         scored = []
         for i, cid in enumerate(chunk_ids):
             vec = stored_embeddings.get(cid)
-            sim = cosine_sim(query_vector, vec) if vec else 0.0
-            scored.append((i, sim))
+            if vec:
+                scored.append((i, cosine_sim(query_vector, vec)))
+            else:
+                # No stored vector — place at end rather than penalizing
+                scored.append((i, -1.0))
         scored.sort(key=lambda x: x[1], reverse=True)
         return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
 
-    # Fallback: re-embed all candidates
+    # Fallback: re-embed all candidates (coverage too low for fast path)
     try:
         chunk_vectors = await embedder.aembed_documents(chunk_texts)
         scored = [

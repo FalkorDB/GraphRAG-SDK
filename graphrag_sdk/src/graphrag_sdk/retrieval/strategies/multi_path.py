@@ -96,7 +96,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         max_relationships: int = 20,
         rel_top_k: int = 15,
         keyword_limit: int = 10,
-        enable_cypher: bool = True,
+        enable_cypher: bool = False,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder

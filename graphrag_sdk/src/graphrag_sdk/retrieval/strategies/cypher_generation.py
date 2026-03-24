@@ -169,6 +169,9 @@ def _sanitize_cypher(cypher: str) -> str:
 def validate_cypher(cypher: str) -> list[str]:
     """Validate generated Cypher for safety and correctness.
 
+    Uses an allowlist approach: the query must start with a read-only
+    keyword, and dangerous constructs are explicitly rejected.
+
     Returns list of error strings; empty list means valid.
     """
     errors: list[str] = []
@@ -176,16 +179,43 @@ def validate_cypher(cypher: str) -> list[str]:
         errors.append("Empty Cypher query")
         return errors
 
+    # Normalize: strip comments and trailing semicolons
+    cypher_norm = re.sub(r"//.*?$", "", cypher, flags=re.MULTILINE)
+    cypher_norm = re.sub(r"/\*.*?\*/", "", cypher_norm, flags=re.DOTALL)
+    cypher_norm = re.sub(r";\s*$", "", cypher_norm).strip()
+
+    if not cypher_norm:
+        errors.append("Cypher query is empty after removing comments")
+        return errors
+
+    # Allowlist: must start with a read-only keyword
+    if not re.match(
+        r"^(MATCH|OPTIONAL\s+MATCH|UNWIND|WITH)\b", cypher_norm, re.IGNORECASE
+    ):
+        errors.append(
+            "Query must start with MATCH, OPTIONAL MATCH, UNWIND, or WITH"
+        )
+
+    # Reject multi-statement queries
+    if ";" in cypher_norm:
+        errors.append("Multiple Cypher statements are not allowed")
+
+    # Reject procedures and bulk import
+    if re.search(r"\bCALL\b", cypher_norm, re.IGNORECASE):
+        errors.append("CALL procedures are not allowed in generated queries")
+    if re.search(r"\bLOAD\s+CSV\b", cypher_norm, re.IGNORECASE):
+        errors.append("LOAD CSV is not allowed in generated queries")
+
     # No write operations
-    if _WRITE_KEYWORDS.search(cypher):
+    if _WRITE_KEYWORDS.search(cypher_norm):
         errors.append("Write operation detected — query must be read-only")
 
     # Must have RETURN
-    if not re.search(r"\bRETURN\b", cypher, re.IGNORECASE):
+    if not re.search(r"\bRETURN\b", cypher_norm, re.IGNORECASE):
         errors.append("Missing RETURN clause")
 
     # Check referenced labels exist in schema
-    label_pattern = re.findall(r"\((?:\w+)?:(\w+)", cypher)
+    label_pattern = re.findall(r"\((?:\w+)?:(\w+)", cypher_norm)
     for label in label_pattern:
         if label not in _ALL_LABELS:
             errors.append(f"Unknown label: {label}")
