@@ -314,16 +314,25 @@ class LLMVerifiedResolution(ResolutionStrategy):
         total_hard = 0
         total_llm = 0
 
+        emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
+
         for label, label_nodes in by_label.items():
             if len(label_nodes) < 2:
                 continue
 
-            names = [str(n.properties.get("name", n.id)) for n in label_nodes]
+            miss_nodes = [n for n in label_nodes if n.id not in emb_cache]
+            miss_names = [str(n.properties.get("name", n.id)) for n in miss_nodes]
             try:
-                vectors = await self.embedder.aembed_documents(names)
+                if miss_names:
+                    miss_vecs = await self.embedder.aembed_documents(miss_names)
+                    for node, vec in zip(miss_nodes, miss_vecs):
+                        if vec:
+                            emb_cache[node.id] = vec
             except Exception as exc:
                 ctx.log(f"Embedding failed for label '{label}': {exc}", logging.WARNING)
                 continue
+
+            vectors = [emb_cache.get(n.id, []) for n in label_nodes]
 
             # Filter failed embeddings
             valid = [
