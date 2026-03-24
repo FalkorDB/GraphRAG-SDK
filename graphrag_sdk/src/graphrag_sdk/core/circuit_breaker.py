@@ -10,8 +10,8 @@ from enum import Enum
 
 
 class CircuitState(Enum):
-    CLOSED = "closed"        # Normal operation
-    OPEN = "open"            # Failing — reject immediately
+    CLOSED = "closed"  # Normal operation
+    OPEN = "open"  # Failing — reject immediately
     HALF_OPEN = "half_open"  # Probing with one request
 
 

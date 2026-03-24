@@ -45,17 +45,13 @@ class GraphVisualizer:
             result = await self._conn.query(
                 "MATCH (n) RETURN DISTINCT labels(n) AS lbl, count(n) AS cnt"
             )
-            stats["labels"] = {
-                str(row[0]): row[1] for row in (result.result_set or [])
-            }
+            stats["labels"] = {str(row[0]): row[1] for row in (result.result_set or [])}
 
             # Relationship types
             result = await self._conn.query(
                 "MATCH ()-[r]->() RETURN DISTINCT type(r) AS t, count(r) AS cnt"
             )
-            stats["relationship_types"] = {
-                row[0]: row[1] for row in (result.result_set or [])
-            }
+            stats["relationship_types"] = {row[0]: row[1] for row in (result.result_set or [])}
 
         except Exception as exc:
             logger.warning(f"Failed to get graph stats: {exc}")

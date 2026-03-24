@@ -70,6 +70,11 @@ class MultiPathRetrieval(RetrievalStrategy):
         max_relationships: Max relationships to keep (default: 20).
         rel_top_k: RELATES edge vector search results (default: 15).
         keyword_limit: Max keywords to extract (default: 10).
+        enable_cypher: Enable experimental text-to-Cypher retrieval path.
+            When True, generates and executes Cypher queries in addition to
+            vector-based retrieval. Can improve recall for graph-structured
+            questions at the cost of additional LLM calls. Not yet stable;
+            behavior may change in future versions. Default: False.
     """
 
     _STOP_WORDS = frozenset(

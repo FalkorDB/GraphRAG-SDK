@@ -8,7 +8,8 @@ import logging
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Type
+from typing import Any
+from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
@@ -125,7 +126,7 @@ class LLMInterface(ABC):
     def invoke_with_model(
         self,
         prompt: str,
-        response_model: Type[BaseModel],
+        response_model: type[BaseModel],
         **kwargs: Any,
     ) -> BaseModel:
         """Invoke LLM requesting structured output validated against a Pydantic model.
@@ -139,7 +140,7 @@ class LLMInterface(ABC):
     async def ainvoke_with_model(
         self,
         prompt: str,
-        response_model: Type[BaseModel],
+        response_model: type[BaseModel],
         *,
         max_retries: int = 3,
         **kwargs: Any,
@@ -180,6 +181,4 @@ class LLMInterface(ABC):
                 except Exception as exc:
                     return LLMBatchItem(index=i, error=exc)
 
-        return list(
-            await asyncio.gather(*[_call(i, p) for i, p in enumerate(prompts)])
-        )
+        return list(await asyncio.gather(*[_call(i, p) for i, p in enumerate(prompts)]))

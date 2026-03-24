@@ -29,8 +29,7 @@ class PdfLoader(LoaderStrategy):
             from pypdf import PdfReader
         except ImportError:
             raise ImportError(
-                "pypdf is required for PDF loading. "
-                "Install with: pip install graphrag-sdk[pdf]"
+                "pypdf is required for PDF loading. Install with: pip install graphrag-sdk[pdf]"
             )
 
         path = Path(source)

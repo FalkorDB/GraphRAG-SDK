@@ -624,7 +624,6 @@ class VectorStore:
             for row in result.result_set:
                 eid = row[0]
                 name = row[1] if len(row) > 1 and row[1] else str(eid)
-                desc = row[2] if len(row) > 2 and row[2] else ""
                 ids.append(eid)
                 texts.append(str(name))
 

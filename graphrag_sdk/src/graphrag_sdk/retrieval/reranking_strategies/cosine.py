@@ -44,9 +44,7 @@ class CosineReranker(RerankingStrategy):
         query_vec = np.array(vectors[0])
         q_norm = np.linalg.norm(query_vec)
         if q_norm == 0:
-            return RetrieverResult(
-                items=result.items[: self._top_k], metadata=result.metadata
-            )
+            return RetrieverResult(items=result.items[: self._top_k], metadata=result.metadata)
 
         scored: list[tuple[int, float]] = []
         for i, vec in enumerate(vectors[1:]):

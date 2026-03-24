@@ -143,9 +143,7 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: schema overrides instance default
         entity_types = (
-            [e.label for e in schema.entities]
-            if schema.entities
-            else list(self.entity_types)
+            [e.label for e in schema.entities] if schema.entities else list(self.entity_types)
         )
 
         ctx.log(
@@ -194,9 +192,7 @@ class GraphExtraction(ExtractionStrategy):
             if self._max_concurrency is not None:
                 batch_kw["max_concurrency"] = self._max_concurrency
 
-            step1_results = await self.entity_extractor._llm.abatch_invoke(
-                ner_prompts, **batch_kw
-            )
+            step1_results = await self.entity_extractor._llm.abatch_invoke(ner_prompts, **batch_kw)
             for item in step1_results:
                 chunk = active_chunks[item.index]
                 if not item.ok:
@@ -229,10 +225,7 @@ class GraphExtraction(ExtractionStrategy):
                         text, entity_types, chunk_uid
                     )
 
-            tasks = [
-                _step1(text, chunk.uid)
-                for text, chunk in zip(chunk_texts, active_chunks)
-            ]
+            tasks = [_step1(text, chunk.uid) for text, chunk in zip(chunk_texts, active_chunks)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
@@ -375,9 +368,7 @@ class GraphExtraction(ExtractionStrategy):
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            logger.warning(
-                "Step 2 returned invalid JSON for chunk %s", source_chunk_id
-            )
+            logger.warning("Step 2 returned invalid JSON for chunk %s", source_chunk_id)
             return [], []
 
         if not isinstance(data, dict):

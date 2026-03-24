@@ -96,9 +96,7 @@ class LiteLLM(LLMInterface):
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await litellm.acompletion(
-                    **self._completion_kwargs(prompt, **kwargs)
-                )
+                response = await litellm.acompletion(**self._completion_kwargs(prompt, **kwargs))
                 content = response.choices[0].message.content or ""
                 return LLMResponse(content=content)
             except Exception as exc:
@@ -160,6 +158,7 @@ class LiteLLMEmbedder(Embedder):
     def _import_litellm(self):
         try:
             import litellm
+
             return litellm
         except ImportError:
             raise ImportError(

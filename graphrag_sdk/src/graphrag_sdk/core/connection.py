@@ -30,7 +30,7 @@ class ConnectionConfig:
     query_timeout_ms: int | None = 10_000
 
     @classmethod
-    def from_url(cls, url: str, **kwargs: Any) -> "ConnectionConfig":
+    def from_url(cls, url: str, **kwargs: Any) -> ConnectionConfig:
         """Create a ConnectionConfig from a ``redis://`` URL.
 
         Supports ``redis://[user:pass@]host[:port][/db]``.

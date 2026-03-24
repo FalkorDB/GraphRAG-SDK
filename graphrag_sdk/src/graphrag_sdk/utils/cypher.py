@@ -1,8 +1,6 @@
 # GraphRAG SDK 2.0 — Utils: Cypher Sanitization
 # Prevents Cypher injection via label/type interpolation.
 
-import re
-
 
 def sanitize_cypher_label(label: str) -> str:
     """Strip backticks to prevent Cypher injection in label/type positions.

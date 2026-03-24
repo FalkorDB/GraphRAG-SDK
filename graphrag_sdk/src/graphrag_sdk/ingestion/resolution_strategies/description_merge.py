@@ -111,9 +111,7 @@ class DescriptionMergeResolution(ResolutionStrategy):
                 and self.llm is not None
             ):
                 entity_name = str(survivor.properties.get("name", survivor.id))
-                summary_requests.append(
-                    (len(group_data) - 1, entity_name, descriptions)
-                )
+                summary_requests.append((len(group_data) - 1, entity_name, descriptions))
 
         # Batch all LLM summary calls at once
         summary_results: dict[int, str] = {}
@@ -157,11 +155,16 @@ class DescriptionMergeResolution(ResolutionStrategy):
                 for key, value in duplicate.properties.items():
                     if key not in survivor.properties:
                         survivor.properties[key] = value
-                    elif key not in ("description", "source_chunk_ids", "name") and survivor.properties[key] != value:
+                    elif (
+                        key not in ("description", "source_chunk_ids", "name")
+                        and survivor.properties[key] != value
+                    ):
                         logger.debug(
-                            "Property conflict on '%s' for entity '%s': "
-                            "keeping %r, discarding %r",
-                            key, survivor.id, survivor.properties[key], value,
+                            "Property conflict on '%s' for entity '%s': keeping %r, discarding %r",
+                            key,
+                            survivor.id,
+                            survivor.properties[key],
+                            value,
                         )
                 id_remap[duplicate.id] = survivor.id
                 merged_count += 1

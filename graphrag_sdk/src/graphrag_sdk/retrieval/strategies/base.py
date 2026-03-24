@@ -94,9 +94,7 @@ class RetrievalStrategy(ABC):
         except RetrieverError:
             raise
         except Exception as exc:
-            raise RetrieverError(
-                f"Retrieval [{self.__class__.__name__}] failed: {exc}"
-            ) from exc
+            raise RetrieverError(f"Retrieval [{self.__class__.__name__}] failed: {exc}") from exc
 
     @abstractmethod
     async def _execute(
