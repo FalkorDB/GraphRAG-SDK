@@ -79,9 +79,7 @@ class FalkorDBConnection:
             from falkordb.asyncio import FalkorDB
             from redis.asyncio import BlockingConnectionPool
         except ImportError:
-            raise ImportError(
-                "falkordb package is required. Install with: pip install falkordb"
-            )
+            raise ImportError("falkordb package is required. Install with: pip install falkordb")
 
         self._pool = BlockingConnectionPool(
             host=self.config.host,
@@ -140,9 +138,7 @@ class FalkorDBConnection:
         last_exc: Exception | None = None
         for attempt in range(self.config.retry_count):
             try:
-                result = await self._graph.query(
-                    cypher, params=params, timeout=effective_timeout
-                )
+                result = await self._graph.query(cypher, params=params, timeout=effective_timeout)
                 await self._breaker.record_success()
                 return result
             except Exception as exc:
@@ -184,9 +180,11 @@ class FalkorDBConnection:
         self._ensure_client()
         try:
             from redis.asyncio import Redis
+
             redis: Redis = Redis(connection_pool=self._pool)
             return await redis.ping()
         except Exception:
+            logger.debug("Ping failed", exc_info=True)
             return False
 
     async def delete_graph(self) -> None:
@@ -197,6 +195,7 @@ class FalkorDBConnection:
         """
         self._ensure_client()
         from redis.asyncio import Redis
+
         redis: Redis = Redis(connection_pool=self._pool)
         try:
             await redis.execute_command("GRAPH.DELETE", self.config.graph_name)

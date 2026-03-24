@@ -6,10 +6,10 @@ GraphRAG SDK v2 is a production-grade Python SDK for building and querying knowl
 
 - **Single RELATES edge architecture**: All extracted relationships are unified under one edge type (`RELATES`) with a `rel_type` property, eliminating the explosion of per-type edge indexes.
 - **9-step ingestion pipeline**: 7 sequential steps followed by 2 parallel steps (Load, Chunk, Lexical Graph, Extract, Prune, Resolve, Write, then Mentions and Chunk Indexing in parallel).
-- **4-path multi-path retrieval**: Combines vector search, full-text search, entity-based graph traversal, and chunk-level retrieval for comprehensive answer generation.
+- **Multi-path retrieval**: Combines entity discovery (vector + fulltext), relationship expansion, chunk-level retrieval, and cosine reranking for comprehensive answer generation.
 - **Entity deduplication**: Semantic resolution strategy merges duplicate entities based on embedding similarity and description overlap.
 - **Full provenance chain**: Every answer traces back through entities, relationships, and source chunks to the original document.
-- **Benchmark-validated**: 87.9% accuracy (8.79/10) on a 100-question literary benchmark across fact retrieval, complex reasoning, contextual summarization, and creative question types.
+- **Benchmark-validated**: 84.8% accuracy (8.48/10) on a 100-question literary benchmark across fact retrieval, complex reasoning, contextual summarization, and creative question types.
 
 ## Quick Start
 
@@ -78,7 +78,7 @@ The SDK supports any LLM and embedder provider via LiteLLM. For Azure OpenAI, se
 ```bash
 export AZURE_OPENAI_API_KEY="your-api-key"
 export AZURE_OPENAI_ENDPOINT="https://your-endpoint.openai.azure.com/"
-export AZURE_OPENAI_API_VERSION="2024-02-15-preview"
+export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
 ```
 
 Then configure the providers:

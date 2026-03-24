@@ -112,9 +112,7 @@ class EntityDeduplicator:
 
     # ── Phase 2: Fuzzy embedding match ──
 
-    async def _deduplicate_fuzzy(
-        self, batch_size: int, similarity_threshold: float
-    ) -> int:
+    async def _deduplicate_fuzzy(self, batch_size: int, similarity_threshold: float) -> int:
         import numpy as np
 
         # Re-fetch surviving entities (with labels for cross-type guard)
@@ -166,7 +164,7 @@ class EntityDeduplicator:
         merged_count = 0
 
         for i_start in range(0, n, BLOCK_SIZE):
-            block = mat_normed[i_start:min(i_start + BLOCK_SIZE, n)]
+            block = mat_normed[i_start : min(i_start + BLOCK_SIZE, n)]
             remaining = mat_normed[i_start:]
             sim_block = block @ remaining.T
             local_rows, local_cols = np.where(sim_block >= similarity_threshold)
@@ -192,7 +190,7 @@ class EntityDeduplicator:
                         )
                         merged_count += 1
                     except Exception:
-                        pass
+                        logger.debug("Failed to delete duplicate entity %s", dup_id, exc_info=True)
 
         logger.info(
             f"EntityDeduplicator phase 2 (fuzzy): merged {merged_count} additional duplicates"
@@ -216,12 +214,14 @@ class EntityDeduplicator:
             if not result.result_set:
                 break
             for row in result.result_set:
-                entities.append({
-                    "id": row[0],
-                    "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
-                    "description": row[2] if len(row) > 2 and row[2] else "",
-                    "label": row[3] if len(row) > 3 and row[3] else "",
-                })
+                entities.append(
+                    {
+                        "id": row[0],
+                        "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
+                        "description": row[2] if len(row) > 2 and row[2] else "",
+                        "label": row[3] if len(row) > 3 and row[3] else "",
+                    }
+                )
             offset += batch_size
         return entities
 

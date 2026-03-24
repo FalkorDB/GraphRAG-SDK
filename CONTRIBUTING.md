@@ -39,7 +39,7 @@ Run the full test suite with:
 python -m pytest graphrag_sdk/tests/ -q
 ```
 
-There are approximately 390 tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
+There are 490+ tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
 
 ---
 
@@ -70,7 +70,7 @@ docs/                        -- documentation
 Key entry points:
 
 - `graphrag_sdk/src/graphrag_sdk/api/main.py` -- the `GraphRAG` class that serves as the primary facade for ingestion and querying.
-- `graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py` -- the 10-step ingestion pipeline (Load, Chunk, Lexical, Extract, Prune, Resolve, Write, Synonymy, Mentions, Index Chunks).
+- `graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py` -- the 9-step ingestion pipeline (Load, Chunk, Lexical Graph, Extract, Prune, Resolve, Write, Mentions, Index Chunks).
 - `graphrag_sdk/src/graphrag_sdk/retrieval/` -- retrieval strategies including multi-path retrieval.
 - `graphrag_sdk/src/graphrag_sdk/storage/` -- graph store (FalkorDB) and vector store abstractions.
 
@@ -98,31 +98,30 @@ The SDK is designed to be extended via an Abstract Base Class (ABC) pattern. The
 ### Example: Custom Extraction Strategy
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies import ExtractionStrategy
-from graphrag_sdk.core.models import ExtractionOutput
+from graphrag_sdk import ExtractionStrategy, GraphData, TextChunks, Context
 
 
 class MyCustomExtraction(ExtractionStrategy):
     """A custom extraction strategy that implements domain-specific entity/relation extraction."""
 
-    async def extract(self, chunks, context) -> ExtractionOutput:
+    async def extract(self, chunks: TextChunks, ctx: Context) -> GraphData:
         # Your extraction logic here.
-        # Process the input chunks and return an ExtractionOutput containing
-        # ExtractedEntity and ExtractedRelation objects.
-        entities = []
-        relations = []
-        # ... populate entities and relations ...
-        return ExtractionOutput(entities=entities, relations=relations)
+        # Process the input chunks and return a GraphData containing
+        # GraphNode and GraphRelationship objects.
+        ...
 ```
 
 Then use it during ingestion:
 
 ```python
-graphrag = GraphRAG(config=my_config)
-await graphrag.ingest(
-    sources=["path/to/documents/"],
-    extraction_strategy=MyCustomExtraction(),
+from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
+
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=LiteLLM(model="azure/gpt-4.1"),
+    embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002"),
 )
+await rag.ingest("document.txt", extractor=MyCustomExtraction())
 ```
 
 The same pattern applies to resolution strategies (subclass `ResolutionStrategy`) and retrieval strategies (subclass `RetrievalStrategy` and pass it to the `GraphRAG` constructor or query method).

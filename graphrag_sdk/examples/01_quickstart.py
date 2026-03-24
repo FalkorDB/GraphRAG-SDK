@@ -9,6 +9,12 @@ Prerequisites:
     pip install graphrag-sdk[litellm]
     export AZURE_OPENAI_API_KEY="..."
     export AZURE_OPENAI_ENDPOINT="..."
+
+Alternative providers (replace the LiteLLM(...) calls below):
+    OpenAI direct:   LiteLLM(model="gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
+    Anthropic:       LiteLLM(model="anthropic/claude-sonnet-4-20250514", api_key=...)
+    OpenRouter:      OpenRouterLLM(model="openai/gpt-4o", api_key=...)
+    See docs/providers.md for the full configuration guide.
 """
 
 import asyncio

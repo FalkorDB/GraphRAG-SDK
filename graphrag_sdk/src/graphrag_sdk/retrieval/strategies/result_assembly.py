@@ -61,10 +61,7 @@ async def rerank_chunks(
     # Fallback: re-embed all candidates (coverage too low for fast path)
     try:
         chunk_vectors = await embedder.aembed_documents(chunk_texts)
-        scored = [
-            (i, cosine_sim(query_vector, cvec))
-            for i, cvec in enumerate(chunk_vectors)
-        ]
+        scored = [(i, cosine_sim(query_vector, cvec)) for i, cvec in enumerate(chunk_vectors)]
         scored.sort(key=lambda x: x[1], reverse=True)
         return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
     except Exception as exc:
@@ -74,9 +71,9 @@ async def rerank_chunks(
 
 def filter_facts_by_relevance(
     fact_strings_with_scores: list[tuple[str, float]],
-    min_score: float = 0.25,
-    max_facts: int = 12,
-    min_keep: int = 3,
+    min_score: float = 0.25,  # Facts below this cosine similarity are noise
+    max_facts: int = 12,  # Keeps LLM context focused; ~2K tokens of fact text
+    min_keep: int = 3,  # Always keep top-3 regardless of threshold for recall
 ) -> list[str]:
     """Filter facts by vector similarity score, keeping the most relevant.
 
@@ -108,10 +105,28 @@ def filter_facts_by_relevance(
 def detect_question_type(query: str) -> str:
     """Detect question type and return an answer-format hint."""
     q = query.strip().lower()
-    if q.startswith(("is ", "are ", "was ", "were ", "did ", "does ",
-                     "do ", "has ", "had ", "have ", "can ", "could ",
-                     "will ", "would ", "should ")):
-        return "Answer format: This is a yes/no question — start with Yes or No, then explain briefly."
+    if q.startswith(
+        (
+            "is ",
+            "are ",
+            "was ",
+            "were ",
+            "did ",
+            "does ",
+            "do ",
+            "has ",
+            "had ",
+            "have ",
+            "can ",
+            "could ",
+            "will ",
+            "would ",
+            "should ",
+        )
+    ):
+        return (
+            "Answer format: This is a yes/no question — start with Yes or No, then explain briefly."
+        )
     if q.startswith("who "):
         return "Answer format: Name the specific person(s) or character(s)."
     if q.startswith("where "):
@@ -140,18 +155,22 @@ def assemble_raw_result(
 
     # Question-type hint (prepended so LLM sees it first)
     if q_type_hint:
-        records.append({
-            "section": "hint",
-            "content": q_type_hint,
-        })
+        records.append(
+            {
+                "section": "hint",
+                "content": q_type_hint,
+            }
+        )
 
     # Cypher Query Results (direct to LLM — not reranked)
     if cypher_results:
-        records.append({
-            "section": "cypher_results",
-            "content": "## Graph Query Results\n"
-            + "\n".join(f"- {r}" for r in cypher_results[:20]),
-        })
+        records.append(
+            {
+                "section": "cypher_results",
+                "content": "## Graph Query Results\n"
+                + "\n".join(f"- {r}" for r in cypher_results[:20]),
+            }
+        )
 
     # Entity section
     seen_names: set[str] = set()
@@ -163,34 +182,41 @@ def assemble_raw_result(
             desc = einfo.get("description", "")
             entity_lines.append(f"- {name}: {desc}" if desc else f"- {name}")
     if entity_lines:
-        records.append({
-            "section": "entities",
-            "content": "## Key Entities\n" + "\n".join(entity_lines[:25]),
-        })
+        records.append(
+            {
+                "section": "entities",
+                "content": "## Key Entities\n" + "\n".join(entity_lines[:25]),
+            }
+        )
 
     # Relationship section
     if relationship_strings:
-        records.append({
-            "section": "relationships",
-            "content": "## Entity Relationships\n"
-            + "\n".join(f"- {r}" for r in relationship_strings[:20]),
-        })
+        records.append(
+            {
+                "section": "relationships",
+                "content": "## Entity Relationships\n"
+                + "\n".join(f"- {r}" for r in relationship_strings[:20]),
+            }
+        )
 
     # Knowledge Graph Facts section (from RELATES edge vector search)
     if fact_strings:
-        records.append({
-            "section": "facts",
-            "content": "## Knowledge Graph Facts\n"
-            + "\n".join(f"- {f}" for f in fact_strings[:15]),
-        })
+        records.append(
+            {
+                "section": "facts",
+                "content": "## Knowledge Graph Facts\n"
+                + "\n".join(f"- {f}" for f in fact_strings[:15]),
+            }
+        )
 
     # Passages section
     if source_passages:
-        records.append({
-            "section": "passages",
-            "content": "## Source Document Passages\n"
-            + "\n---\n".join(source_passages[:15]),
-        })
+        records.append(
+            {
+                "section": "passages",
+                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages[:15]),
+            }
+        )
 
     return RawSearchResult(
         records=records,

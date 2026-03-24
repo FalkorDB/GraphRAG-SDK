@@ -5,6 +5,7 @@ __pycache__/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 
 # IDE / editor
 .vscode/
@@ -17,9 +18,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Local dev tooling
-.pre-commit-config.yaml
-.github/
+# Local dev tooling (keep .github/ and .pre-commit-config.yaml tracked)
 
 # Local planning / review docs (not part of the SDK)
 GraphRAG-SDK Planning*
