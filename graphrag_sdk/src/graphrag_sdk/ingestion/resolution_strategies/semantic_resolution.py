@@ -123,7 +123,9 @@ class SemanticResolution(ResolutionStrategy):
                 and self.llm is not None
             ):
                 entity_name = str(survivor.properties.get("name", survivor.id))
-                summary_requests.append((len(group_data) - 1, entity_name, descriptions))
+                summary_requests.append(
+                    (len(group_data) - 1, entity_name, descriptions)
+                )
 
         # Batch LLM summaries
         summary_results: dict[int, str] = {}
@@ -231,48 +233,19 @@ class SemanticResolution(ResolutionStrategy):
 
             remap_before = len(remap)
 
-            emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
-
-            miss_nodes = [n for n in label_nodes if n.id not in emb_cache]
-            miss_names = [str(n.properties.get("name", n.id)) for n in miss_nodes]
+            names = [n.properties.get("name", n.id) for n in label_nodes]
             try:
-                if miss_names:
-                    logger.info(
-                        "SemanticResolution: embedding %d '%s' nodes: %s",
-                        len(miss_names),
-                        label,
-                        miss_names,
-                    )
-                    import asyncio as _asyncio
-
-                    miss_vecs = await _asyncio.wait_for(
-                        self.embedder.aembed_documents(miss_names),
-                        timeout=20.0,
-                    )
-                    for node, vec in zip(miss_nodes, miss_vecs):
-                        if vec:
-                            emb_cache[node.id] = vec
-                    logger.info(
-                        "SemanticResolution: embeddings done for '%s' (%d/%d cached)",
-                        label,
-                        len([n for n in label_nodes if n.id in emb_cache]),
-                        len(label_nodes),
-                    )
-            except _asyncio.TimeoutError:
-                logger.warning(
-                    "SemanticResolution: TIMEOUT embedding '%s' nodes after 20s — skipping label",
-                    label,
+                vectors = await self.embedder.aembed_documents(
+                    [str(name) for name in names]
                 )
+            except Exception:
                 continue
-            except Exception as _e:
-                logger.warning("SemanticResolution: skipping '%s' embeddings: %s", label, _e)
-                continue
-
-            vectors = [emb_cache.get(n.id, []) for n in label_nodes]
 
             # Filter out failed embeddings
             valid = [
-                (i, node, vec) for i, (node, vec) in enumerate(zip(label_nodes, vectors)) if vec
+                (i, node, vec)
+                for i, (node, vec) in enumerate(zip(label_nodes, vectors))
+                if vec
             ]
             if len(valid) < 2:
                 continue
@@ -283,13 +256,9 @@ class SemanticResolution(ResolutionStrategy):
             norms[norms == 0] = 1.0
             mat_normed = mat / norms
 
-            # Brute-force cosine similarity via numpy (no FAISS — avoids OpenMP
-            # thread-pool conflicts with PyTorch on macOS).
-            # O(N²) is fine for the small per-label groups typical here.
-            n = len(valid_nodes)
-
+            # Find pairs above threshold using FAISS HNSW (O(N log N))
             # Use Union-Find to cluster
-            parent: dict[int, int] = {i: i for i in range(n)}
+            parent: dict[int, int] = {i: i for i in range(len(valid_nodes))}
 
             def find(x: int) -> int:
                 while parent[x] != x:
@@ -302,18 +271,39 @@ class SemanticResolution(ResolutionStrategy):
                 if px != py:
                     parent[py] = px
 
-            logger.info(
-                "SemanticResolution: cosine similarity for '%s' (n=%d)",
-                label,
-                n,
-            )
-            # mat_normed rows are already unit-normed — dot product == cosine sim
-            sim_matrix = mat_normed @ mat_normed.T  # shape (n, n)
-            for i in range(n):
-                for j in range(i + 1, n):
-                    if float(sim_matrix[i, j]) >= self.similarity_threshold:
-                        union(i, j)
-            logger.info("SemanticResolution: similarity done for '%s'", label)
+            n = len(valid_nodes)
+            top_k = min(self.ann_top_k, n - 1)
+
+            try:
+                import faiss
+                dim = mat_normed.shape[1]
+                index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
+                index.hnsw.efSearch = 64
+                index.add(mat_normed)
+                sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self
+                for i in range(n):
+                    for rank in range(1, top_k + 1):
+                        j = int(nbrs[i, rank])
+                        if j < 0 or j <= i:
+                            continue
+                        sim_val = float(sims[i, rank])
+                        if sim_val >= self.similarity_threshold:
+                            union(i, j)
+            except ImportError:
+                # Fallback: O(N²) blocked matmul when faiss is not installed
+                ctx.log("faiss not installed — falling back to O(N²) scan. Install faiss-cpu for scale.", logging.WARNING)
+                BLOCK_SIZE = 500
+                for i_start in range(0, n, BLOCK_SIZE):
+                    i_end = min(i_start + BLOCK_SIZE, n)
+                    block = mat_normed[i_start:i_end]
+                    remaining = mat_normed[i_start:]
+                    sim_block = block @ remaining.T
+                    local_rows, local_cols = np.where(sim_block >= self.similarity_threshold)
+                    for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
+                        gi = i_start + lr
+                        gj = i_start + lc
+                        if gj > gi:
+                            union(gi, gj)
 
             # Build clusters
             clusters: dict[int, list[int]] = defaultdict(list)
@@ -334,6 +324,9 @@ class SemanticResolution(ResolutionStrategy):
 
             label_merges = len(remap) - remap_before
             if label_merges:
-                ctx.log(f"Fuzzy merge on label '{label}': {label_merges} duplicates found")
+                ctx.log(
+                    f"Fuzzy merge on label '{label}': "
+                    f"{label_merges} duplicates found"
+                )
 
         return remap
