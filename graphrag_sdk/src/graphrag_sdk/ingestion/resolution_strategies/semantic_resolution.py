@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
 
 import numpy as np
@@ -18,8 +17,6 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-
-logger = logging.getLogger(__name__)
 
 _SUMMARY_PROMPT = (
     "Summarise the following descriptions of the entity '{entity_name}' "
@@ -274,36 +271,20 @@ class SemanticResolution(ResolutionStrategy):
             n = len(valid_nodes)
             top_k = min(self.ann_top_k, n - 1)
 
-            try:
-                import faiss
-                dim = mat_normed.shape[1]
-                index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
-                index.hnsw.efSearch = 64
-                index.add(mat_normed)
-                sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self
-                for i in range(n):
-                    for rank in range(1, top_k + 1):
-                        j = int(nbrs[i, rank])
-                        if j < 0 or j <= i:
-                            continue
-                        sim_val = float(sims[i, rank])
-                        if sim_val >= self.similarity_threshold:
-                            union(i, j)
-            except ImportError:
-                # Fallback: O(N²) blocked matmul when faiss is not installed
-                ctx.log("faiss not installed — falling back to O(N²) scan. Install faiss-cpu for scale.", logging.WARNING)
-                BLOCK_SIZE = 500
-                for i_start in range(0, n, BLOCK_SIZE):
-                    i_end = min(i_start + BLOCK_SIZE, n)
-                    block = mat_normed[i_start:i_end]
-                    remaining = mat_normed[i_start:]
-                    sim_block = block @ remaining.T
-                    local_rows, local_cols = np.where(sim_block >= self.similarity_threshold)
-                    for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
-                        gi = i_start + lr
-                        gj = i_start + lc
-                        if gj > gi:
-                            union(gi, gj)
+            import faiss
+            dim = mat_normed.shape[1]
+            index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
+            index.hnsw.efSearch = 64
+            index.add(mat_normed)
+            sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self
+            for i in range(n):
+                for rank in range(1, top_k + 1):
+                    j = int(nbrs[i, rank])
+                    if j < 0 or j <= i:
+                        continue
+                    sim_val = float(sims[i, rank])
+                    if sim_val >= self.similarity_threshold:
+                        union(i, j)
 
             # Build clusters
             clusters: dict[int, list[int]] = defaultdict(list)
