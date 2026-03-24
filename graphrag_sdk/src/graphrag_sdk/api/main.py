@@ -14,7 +14,6 @@ from graphrag_sdk.core.models import (
     GraphSchema,
     IngestionResult,
     RagResult,
-    RetrieverResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
@@ -31,7 +30,6 @@ from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
-from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
@@ -78,7 +76,7 @@ class GraphRAG:
         llm: LLM provider for extraction and generation.
         embedder: Embedding provider for vector operations.
         schema: Optional graph schema for extraction constraints.
-        retrieval_strategy: Default retrieval strategy (uses LocalRetrieval if None).
+        retrieval_strategy: Default retrieval strategy (uses MultiPathRetrieval if None).
 
     Example::
 

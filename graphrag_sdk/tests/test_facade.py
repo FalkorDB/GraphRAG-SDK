@@ -20,7 +20,7 @@ from graphrag_sdk.core.models import (
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.core.models import RawSearchResult
 
-from .conftest import MockEmbedder, MockLLM, MockLLMWithExtraction
+from .conftest import MockEmbedder, MockLLM
 
 
 # ── Fixtures ────────────────────────────────────────────────────

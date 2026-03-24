@@ -28,8 +28,13 @@ async def rerank_chunks(
     query_vector: list[float],
     candidate_chunks: dict[str, str],
     chunk_top_k: int = 15,
+    stored_embeddings: dict[str, list[float]] | None = None,
 ) -> list[str]:
-    """Batch embed candidates and cosine-sort, take top_k.
+    """Rank candidates by cosine similarity, take top_k.
+
+    When ``stored_embeddings`` is provided, uses pre-computed vectors
+    from the graph (zero API calls).  Falls back to re-embedding via
+    the embedder when stored vectors are unavailable.
 
     Returns:
         Top-k chunk texts ranked by cosine similarity to query.
@@ -37,7 +42,20 @@ async def rerank_chunks(
     if not candidate_chunks:
         return []
 
+    chunk_ids = list(candidate_chunks.keys())
     chunk_texts = list(candidate_chunks.values())
+
+    # Fast path: use stored embeddings (no API call)
+    if stored_embeddings and len(stored_embeddings) >= len(chunk_ids) * 0.5:
+        scored = []
+        for i, cid in enumerate(chunk_ids):
+            vec = stored_embeddings.get(cid)
+            sim = cosine_sim(query_vector, vec) if vec else 0.0
+            scored.append((i, sim))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
+
+    # Fallback: re-embed all candidates
     try:
         chunk_vectors = await embedder.aembed_documents(chunk_texts)
         scored = [
@@ -49,6 +67,39 @@ async def rerank_chunks(
     except Exception as exc:
         logger.debug("Chunk reranking failed, returning unranked: %s", exc)
         return chunk_texts[:chunk_top_k]
+
+
+def filter_facts_by_relevance(
+    fact_strings_with_scores: list[tuple[str, float]],
+    min_score: float = 0.25,
+    max_facts: int = 12,
+    min_keep: int = 3,
+) -> list[str]:
+    """Filter facts by vector similarity score, keeping the most relevant.
+
+    Short structured facts ("A —[REL]→ B: evidence") have higher cosine
+    variance than long passages.  A higher threshold filters noise while
+    keeping truly relevant graph knowledge.
+
+    Args:
+        fact_strings_with_scores: (fact_text, score) pairs from RELATES search.
+        min_score: Minimum vector similarity score to keep.
+        max_facts: Maximum facts to return.
+        min_keep: Always keep at least this many top facts regardless of threshold.
+
+    Returns:
+        Filtered and ranked list of fact strings.
+    """
+    if not fact_strings_with_scores:
+        return []
+    # Sort by score descending
+    ranked = sorted(fact_strings_with_scores, key=lambda x: x[1], reverse=True)
+    # Always keep min_keep, then apply threshold for the rest
+    result: list[str] = []
+    for fact, score in ranked[:max_facts]:
+        if len(result) < min_keep or score >= min_score:
+            result.append(fact)
+    return result
 
 
 def detect_question_type(query: str) -> str:
@@ -75,8 +126,13 @@ def assemble_raw_result(
     fact_strings: list[str],
     source_passages: list[str],
     q_type_hint: str = "",
+    cypher_results: list[str] | None = None,
 ) -> RawSearchResult:
-    """Build structured RawSearchResult with section records."""
+    """Build structured RawSearchResult with section records.
+
+    ``cypher_results`` are placed in their own section and are NOT
+    subject to cosine reranking — they go directly to the final LLM.
+    """
     records: list[dict[str, Any]] = []
 
     # Question-type hint (prepended so LLM sees it first)
@@ -84,6 +140,14 @@ def assemble_raw_result(
         records.append({
             "section": "hint",
             "content": q_type_hint,
+        })
+
+    # Cypher Query Results (direct to LLM — not reranked)
+    if cypher_results:
+        records.append({
+            "section": "cypher_results",
+            "content": "## Graph Query Results\n"
+            + "\n".join(f"- {r}" for r in cypher_results[:20]),
         })
 
     # Entity section

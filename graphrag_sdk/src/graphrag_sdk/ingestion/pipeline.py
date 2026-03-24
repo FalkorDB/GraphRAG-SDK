@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
-
-
+from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import IngestionError

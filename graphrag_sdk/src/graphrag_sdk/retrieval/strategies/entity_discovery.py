@@ -13,15 +13,15 @@ async def search_relates_edges(
     vector_store: Any,
     query_vector: list[float],
     rel_top_k: int = 15,
-) -> tuple[list[str], dict[str, dict]]:
+) -> tuple[list[tuple[str, float]], dict[str, dict]]:
     """Search RELATES edges by vector similarity.
 
     Returns:
-        fact_strings: ["src -[type]-> tgt: fact_text", ...]
+        fact_strings_with_scores: [("src -[type]-> tgt: fact_text", score), ...]
         entities: dict of entity_id -> {name, description} discovered
                   from matched edge endpoints.
     """
-    fact_strings: list[str] = []
+    fact_strings: list[tuple[str, float]] = []
     entities: dict[str, dict] = {}
     try:
         results = await vector_store.search_relationships(
@@ -32,11 +32,12 @@ async def search_relates_edges(
             tgt = rel.get("tgt_name", "")
             rel_type = rel.get("type", "")
             fact = rel.get("fact", "")
+            score = float(rel.get("score", 0.0))
             if src and rel_type and tgt:
                 line = f"{src} —[{rel_type}]→ {tgt}"
                 if fact:
                     line += f": {fact}"
-                fact_strings.append(line)
+                fact_strings.append((line, score))
             # Add entities as graph entry points
             if src:
                 src_id = src.strip().lower().replace(" ", "_")

@@ -57,7 +57,7 @@ class GraphStore:
         """Batch upsert nodes using UNWIND, grouped by label.
 
         Extracted entity nodes get ``__Entity__`` as an additional label.
-        Structural nodes (Chunk, Document, Fact) do NOT get ``__Entity__``.
+        Structural nodes (Chunk, Document) do NOT get ``__Entity__``.
 
         Args:
             nodes: List of nodes to upsert.
@@ -286,7 +286,7 @@ class GraphStore:
         n = stats["node_count"]
         stats["graph_density"] = stats["edge_count"] / n if n > 0 else 0
 
-        # Count RELATES edges with embeddings (replaces legacy __Fact__ count)
+        # Count RELATES edges with embeddings
         try:
             r = await self._conn.query(
                 "MATCH ()-[r:RELATES]->() WHERE r.embedding IS NOT NULL RETURN count(r)"
