@@ -92,7 +92,7 @@ llm = LiteLLM(
     model="azure/gpt-4.1",
     api_key="your-azure-key",
     api_base="https://your-resource.openai.azure.com/",
-    api_version="2024-06-01",
+    api_version="2024-12-01-preview",
     temperature=0.0,
     max_tokens=4096,
 )
@@ -144,7 +144,7 @@ When using LiteLLM with Azure, the following environment variables are recognize
 ```bash
 export AZURE_OPENAI_API_KEY="your-key"
 export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
-export AZURE_OPENAI_API_VERSION="2024-06-01"
+export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
 ```
 
 Then configure the LLM:
@@ -201,7 +201,7 @@ embedder = LiteLLMEmbedder(
     model="azure/text-embedding-ada-002",
     api_key="your-key",
     api_base="https://your-resource.openai.azure.com/",
-    api_version="2024-06-01",
+    api_version="2024-12-01-preview",
     batch_size=500,
 )
 

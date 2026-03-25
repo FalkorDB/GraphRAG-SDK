@@ -14,7 +14,7 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import TextChunk, TextChunks
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 
-_SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
 class SentenceTokenCapChunking(ChunkingStrategy):
@@ -51,7 +51,8 @@ class SentenceTokenCapChunking(ChunkingStrategy):
     async def chunk(self, text: str, ctx: Context) -> TextChunks:
         ctx.log(
             f"Chunking text ({len(text)} chars) with "
-            f"SentenceTokenCapChunking(max_tokens={self.max_tokens}, overlap={self.overlap_sentences})"
+            f"SentenceTokenCapChunking(max_tokens={self.max_tokens}, "
+            f"overlap={self.overlap_sentences})"
         )
 
         enc = tiktoken.get_encoding(self.encoding_name)
@@ -84,18 +85,20 @@ class SentenceTokenCapChunking(ChunkingStrategy):
                 j = start + 1
 
             chunk_text = " ".join(buf)
-            chunks.append(TextChunk(
-                text=chunk_text,
-                index=index,
-                metadata={
-                    "strategy": "sentence_token_cap",
-                    "max_tokens": self.max_tokens,
-                    "overlap_sentences": self.overlap_sentences,
-                    "token_count": buf_tokens,
-                    "sentence_count": len(buf),
-                    "char_count": len(chunk_text),
-                },
-            ))
+            chunks.append(
+                TextChunk(
+                    text=chunk_text,
+                    index=index,
+                    metadata={
+                        "strategy": "sentence_token_cap",
+                        "max_tokens": self.max_tokens,
+                        "overlap_sentences": self.overlap_sentences,
+                        "token_count": buf_tokens,
+                        "sentence_count": len(buf),
+                        "char_count": len(chunk_text),
+                    },
+                )
+            )
             index += 1
 
             if j >= len(sentences):

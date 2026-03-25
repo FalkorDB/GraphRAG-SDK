@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Union
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import TextChunk, TextChunks
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 
 # Accepted signatures: sync or async, returning list of strings.
-ChunkFn = Union[Callable[[str], list[str]], Callable[[str], Awaitable[list[str]]]]
+ChunkFn = Callable[[str], list[str]] | Callable[[str], Awaitable[list[str]]]
 
 
 class CallableChunking(ChunkingStrategy):

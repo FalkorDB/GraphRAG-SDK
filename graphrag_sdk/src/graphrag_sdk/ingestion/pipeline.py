@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
-
-import numpy as np
+from typing import Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import IngestionError, SchemaValidationError
+from graphrag_sdk.core.exceptions import IngestionError
 from graphrag_sdk.core.models import (
     DocumentInfo,
     DocumentOutput,
@@ -46,7 +44,8 @@ class IngestionPipeline:
     5. **Prune** — filter against schema (built-in, not a strategy)
     6. **Resolve** — deduplicate entities via ``ResolutionStrategy``
     7. **Write** — upsert to graph store (batched)
-    8. **Index** — embed and index chunks in vector store
+    8. **Mentions** — write MENTIONED_IN edges (parallel with step 9)
+    9. **Index Chunks** — embed and index chunks in vector store (parallel with step 8)
 
     The pipeline is intentionally *not* a generic DAG — the fixed sequence
     is debuggable, loggable, and understandable.
@@ -83,7 +82,6 @@ class IngestionPipeline:
         graph_store: Any,  # storage.GraphStore — import avoided for layering
         vector_store: Any,  # storage.VectorStore
         schema: GraphSchema | None = None,
-        embedder: Any | None = None,  # optional, for future use
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -92,7 +90,6 @@ class IngestionPipeline:
         self.graph_store = graph_store
         self.vector_store = vector_store
         self.schema = schema or GraphSchema()
-        self.embedder = embedder
 
     async def run(
         self,
@@ -305,18 +302,14 @@ class IngestionPipeline:
         allowed_types = {r.label for r in schema.relations}
         if allowed_types:
             allowed_types.add("RELATES")
-            pruned_rels = [
-                r for r in graph_data.relationships if r.type in allowed_types
-            ]
+            pruned_rels = [r for r in graph_data.relationships if r.type in allowed_types]
         else:
             pruned_rels = graph_data.relationships
 
         # Ensure relationship endpoints exist
         valid_ids = {n.id for n in pruned_nodes}
         pruned_rels = [
-            r
-            for r in pruned_rels
-            if r.start_node_id in valid_ids and r.end_node_id in valid_ids
+            r for r in pruned_rels if r.start_node_id in valid_ids and r.end_node_id in valid_ids
         ]
 
         pruned_node_count = len(graph_data.nodes) - len(pruned_nodes)
@@ -341,7 +334,8 @@ class IngestionPipeline:
             logger.info(f"Quality filter removed {removed} invalid nodes")
         valid_ids = {n.id for n in valid_nodes}
         valid_rels = [
-            r for r in graph_data.relationships
+            r
+            for r in graph_data.relationships
             if r.start_node_id in valid_ids and r.end_node_id in valid_ids
         ]
         new_gd = GraphData(
@@ -353,78 +347,7 @@ class IngestionPipeline:
         )
         return new_gd
 
-    async def _detect_synonymy_edges(
-        self,
-        nodes: list[GraphNode],
-        ctx: Context,
-        *,
-        similarity_threshold: float = 0.9,
-    ) -> list[GraphRelationship]:
-        """Detect semantically similar entities and create SYNONYM edges.
-
-        Uses numpy vectorized cosine similarity for performance.
-        """
-        if self.embedder is None:
-            return []
-
-        structural_labels = {"Document", "Chunk"}
-        entity_nodes = [n for n in nodes if n.label not in structural_labels]
-
-        if len(entity_nodes) < 2:
-            return []
-
-        names = [n.properties.get("name", n.id) for n in entity_nodes]
-        raw_vectors = await self.embedder.aembed_documents(names)
-
-        # Filter out entities whose embedding failed (None or empty list)
-        valid = [(node, vec) for node, vec in zip(entity_nodes, raw_vectors) if vec]
-        if len(valid) < 2:
-            return []
-        entity_nodes, vectors = zip(*valid)  # type: ignore[assignment]
-        entity_nodes = list(entity_nodes)
-
-        # Numpy vectorized pairwise cosine similarity (block-wise to limit memory)
-        mat = np.array(vectors, dtype=np.float32)
-        norms = np.linalg.norm(mat, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        mat_normed = mat / norms
-
-        # Block-wise computation avoids N×N allocation (7.4GB for 44K entities)
-        BLOCK_SIZE = 1000
-        n = len(entity_nodes)
-        rows_list: list[int] = []
-        cols_list: list[int] = []
-        for i_start in range(0, n, BLOCK_SIZE):
-            i_end = min(i_start + BLOCK_SIZE, n)
-            block = mat_normed[i_start:i_end]
-            remaining = mat_normed[i_start:]
-            sim_block = block @ remaining.T  # shape: (block_size, n - i_start)
-            local_rows, local_cols = np.where(sim_block >= similarity_threshold)
-            for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
-                global_i = i_start + lr
-                global_j = i_start + lc
-                if global_j > global_i:  # upper triangle only
-                    rows_list.append(global_i)
-                    cols_list.append(global_j)
-        rows = np.array(rows_list, dtype=np.intp)
-        cols = np.array(cols_list, dtype=np.intp)
-
-        synonym_edges: list[GraphRelationship] = []
-        for i, j in zip(rows, cols):
-            sim_val = float(mat_normed[i] @ mat_normed[j])
-            synonym_edges.append(GraphRelationship(
-                start_node_id=entity_nodes[i].id,
-                end_node_id=entity_nodes[j].id,
-                type="SYNONYM",
-                properties={"similarity": sim_val},
-            ))
-
-        ctx.log(f"Synonymy: {len(synonym_edges)} SYNONYM edges from {len(entity_nodes)} entities")
-        return synonym_edges
-
-    async def _write_mentions(
-        self, graph_data: GraphData, ctx: Context
-    ) -> int:
+    async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> int:
         """Write MENTIONED_IN edges linking entities to their source chunks.
 
         Every entity connects to every chunk it was extracted from (uncapped).

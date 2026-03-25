@@ -25,8 +25,10 @@ from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
+    NER_PROMPT,
     EntityExtractor,
     GLiNERExtractor,
+    LLMExtractor,
     _build_spans,
     _strip_markdown_fences,
     compute_entity_id,
@@ -141,9 +143,7 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: schema overrides instance default
         entity_types = (
-            [e.label for e in schema.entities]
-            if schema.entities
-            else list(self.entity_types)
+            [e.label for e in schema.entities] if schema.entities else list(self.entity_types)
         )
 
         ctx.log(
@@ -178,28 +178,64 @@ class GraphExtraction(ExtractionStrategy):
 
         # ── Step 1: Entity extraction (pluggable) ──
         chunk_entities: list[list[ExtractedEntity]] = []
-        sem = asyncio.Semaphore(self._max_concurrency or 12)
 
-        async def _step1(text: str, chunk_uid: str) -> list[ExtractedEntity]:
-            async with sem:
-                return await self.entity_extractor.extract_entities(
-                    text, entity_types, chunk_uid
+        if isinstance(self.entity_extractor, LLMExtractor):
+            # LLM mode: batch all NER prompts via abatch_invoke
+            ner_prompts = [
+                NER_PROMPT.format(
+                    entity_types=", ".join(entity_types),
+                    text=text,
                 )
+                for text in chunk_texts
+            ]
+            batch_kw: dict[str, Any] = {}
+            if self._max_concurrency is not None:
+                batch_kw["max_concurrency"] = self._max_concurrency
 
-        tasks = [
-            _step1(text, chunk.uid)
-            for text, chunk in zip(chunk_texts, active_chunks)
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                ctx.log(
-                    f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
-                    logging.WARNING,
-                )
-                chunk_entities.append([])
-            else:
-                chunk_entities.append(result)
+            step1_results = await self.entity_extractor._llm.abatch_invoke(ner_prompts, **batch_kw)
+            for item in step1_results:
+                chunk = active_chunks[item.index]
+                if not item.ok:
+                    ctx.log(
+                        f"Step 1 NER failed for chunk {chunk.index}: {item.error}",
+                        logging.WARNING,
+                    )
+                    chunk_entities.append([])
+                elif item.response is None:
+                    ctx.log(
+                        f"Step 1 NER returned no response for chunk {chunk.index}",
+                        logging.WARNING,
+                    )
+                    chunk_entities.append([])
+                else:
+                    parsed = LLMExtractor._parse_response(
+                        item.response.content,
+                        entity_types,
+                        chunk.uid,
+                        self.entity_extractor._threshold,
+                    )
+                    chunk_entities.append(parsed)
+        else:
+            # Local extractors (GLiNER, custom): use asyncio.gather
+            sem = asyncio.Semaphore(self._max_concurrency or 12)
+
+            async def _step1(text: str, chunk_uid: str) -> list[ExtractedEntity]:
+                async with sem:
+                    return await self.entity_extractor.extract_entities(
+                        text, entity_types, chunk_uid
+                    )
+
+            tasks = [_step1(text, chunk.uid) for text, chunk in zip(chunk_texts, active_chunks)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    ctx.log(
+                        f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
+                        logging.WARNING,
+                    )
+                    chunk_entities.append([])
+                else:
+                    chunk_entities.append(result)
 
         # ── Step 2: LLM verify + relationship extraction ──
         step2_prompts: list[str] = []
@@ -332,9 +368,7 @@ class GraphExtraction(ExtractionStrategy):
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            logger.warning(
-                "Step 2 returned invalid JSON for chunk %s", source_chunk_id
-            )
+            logger.warning("Step 2 returned invalid JSON for chunk %s", source_chunk_id)
             return [], []
 
         if not isinstance(data, dict):

@@ -1,7 +1,7 @@
 """
 GraphRAG SDK v2 -- Custom Strategies (Benchmark-Winning Pipeline)
 ==================================================================
-Demonstrates the full pipeline configuration that achieved 88.2% accuracy
+Demonstrates the full pipeline configuration that achieved 84.8% accuracy
 on the 20-document novel benchmark. Uses:
   - GraphExtraction (GLiNER2 NER + LLM relationship extraction)
   - DescriptionMergeResolution (LLM-assisted entity dedup)

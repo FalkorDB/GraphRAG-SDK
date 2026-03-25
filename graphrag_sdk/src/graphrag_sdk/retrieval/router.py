@@ -92,6 +92,7 @@ class SemanticRouter:
                 if callable(condition) and condition(query):
                     return name, strategy
             except Exception:
+                logger.debug("Route condition failed for %s", name, exc_info=True)
                 continue
 
         return "default", self._default

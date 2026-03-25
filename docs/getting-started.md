@@ -112,7 +112,7 @@ print(f"Indexed {result.chunks_indexed} chunks")
 ### From raw text
 
 ```python
-result = await rag.ingest(text="Acme Corp was founded in 1985 by Jane Doe in Austin, Texas.")
+result = await rag.ingest("acme_doc", text="Acme Corp was founded in 1985 by Jane Doe in Austin, Texas.")
 print(f"Created {result.nodes_created} nodes, {result.relationships_created} relationships")
 print(f"Indexed {result.chunks_indexed} chunks")
 ```

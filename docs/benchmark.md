@@ -1,6 +1,6 @@
-# Benchmark: Reproducing the 88.2% Accuracy Result
+# Benchmark: Reproducing the 84.8% Accuracy Result
 
-This document explains how to reproduce the GraphRAG SDK v2 benchmark that achieves **8.82/10 (88.2%)** accuracy on a 100-question evaluation over 20 Project Gutenberg novels.
+This document explains how to reproduce the GraphRAG SDK v2 benchmark that achieves **8.48/10 (84.8%)** accuracy on a 100-question evaluation over 20 Project Gutenberg novels.
 
 ## Overview
 
@@ -61,7 +61,7 @@ Below is a complete, self-contained script that reproduces the benchmark using o
 
 ```python
 """
-Reproduce the GraphRAG SDK v2 benchmark (88.2% accuracy).
+Reproduce the GraphRAG SDK v2 benchmark (84.8% accuracy).
 
 Usage:
     python reproduce_benchmark.py                   # Full: index + evaluate
@@ -391,19 +391,17 @@ print(result.retriever_result.items)  # See retrieved entities, facts, passages
 
 | Metric | Value |
 |--------|-------|
-| **Overall** | **8.82/10 (88.2%)** |
+| **Overall** | **8.48/10 (84.8%)** |
 | Questions | 100 |
-| Perfect scores (10) | ~60% |
-| Failures (< 7) | ~9% |
 
-### By Question Type
+### How the Benchmark Was Run
 
-| Question Type | Count | Mean Score |
-|---------------|-------|-----------|
-| Complex Reasoning | 37 | 8.95/10 |
-| Fact Retrieval | 42 | 8.83/10 |
-| Contextual Summarization | 18 | 8.61/10 |
-| Creative Generation | 3 | 8.33/10 |
+1. **Ingestion**: All 20 Project Gutenberg novel excerpts were ingested using `GraphExtraction` (GLiNER2 NER + LLM relationship extraction) with `DescriptionMergeResolution` and `FixedSizeChunking(1500, 200)`.
+2. **Finalize**: `rag.finalize()` was called to deduplicate entities, backfill embeddings, and create all vector/fulltext indexes.
+3. **Evaluation**: Each of the 100 questions was queried via `rag.query()` using the default `MultiPathRetrieval` strategy. The generated answer was scored against the ground-truth reference by GPT-4.1 as an LLM-as-Judge (0-10 scale).
+4. **Scoring**: The final accuracy is the mean of all 100 individual scores.
+
+Results may vary slightly between runs (~2-3% variance) due to LLM non-determinism, even with `temperature=0`.
 
 ### Graph Statistics
 
@@ -412,9 +410,7 @@ print(result.retriever_result.items)  # See retrieved entities, facts, passages
 | Total nodes | ~43,100 |
 | Total edges | ~89,003 |
 | Mention edges | ~7,400 |
-| Edge type | Single `RELATES` (original types in `rel_type` property) |
-
-**Note:** The single `RELATES` edge architecture significantly reduces graph complexity compared to per-type edges. Benchmark score context: 81.7% on single-edge architecture, pending re-validation with latest retrieval improvements.
+| Edge type | Single `RELATES` (original types stored in `rel_type` property) |
 
 ### Performance
 
@@ -444,7 +440,7 @@ Criteria: factual correctness, completeness, and relevance to the question.
 
 ### Variance
 
-Approximately 52% of questions show score variance between runs due to LLM generation non-determinism (even with temperature=0). The ~88% accuracy represents a practical ceiling for single-pass RAG with GPT-4.1 on this corpus.
+Approximately 52% of questions show score variance between runs due to LLM generation non-determinism (even with temperature=0). The ~85% accuracy represents a practical ceiling for single-pass RAG with GPT-4.1 on this corpus.
 
 ## Available Datasets
 

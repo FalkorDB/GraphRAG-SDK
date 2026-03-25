@@ -5,14 +5,14 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Version: 2.0.0a1](https://img.shields.io/badge/version-2.0.0a1-orange.svg)](pyproject.toml)
-[![Tests: 341 passing](https://img.shields.io/badge/tests-341%20passing-brightgreen.svg)](tests/)
+[![Tests: 491 passing](https://img.shields.io/badge/tests-491%20passing-brightgreen.svg)](tests/)
 
-GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **88.2% accuracy** on a 20-document novel benchmark using GPT-4.1.
+GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **84.8% accuracy** on a 20-document novel benchmark using GPT-4.1.
 
 ```
 Document --> [Load] --> [Chunk] --> [Extract] --> [Resolve] --> [Write] --> Knowledge Graph
                                                                                 |
-Question --> [Retrieve (5-path)] --> [Rerank] --> [Generate] ---------> Answer
+Question --> [Retrieve (multi-path)] --> [Rerank] --> [Generate] -----> Answer
 ```
 
 ## Quick Start
@@ -181,6 +181,8 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | GraphExtraction |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution`, `SemanticResolution`, `LLMVerifiedResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
+| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
+| **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
 
 ### LLM & Embedding Providers
@@ -193,26 +195,16 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 ## Benchmark
 
-The default pipeline achieves **88.2% accuracy** (8.82/10) on a 100-question benchmark over 20 Project Gutenberg novels.
+The default pipeline achieves **84.8% accuracy** (8.48/10) on a 100-question benchmark over 20 Project Gutenberg novels.
 
 | Metric | Value |
 |--------|-------|
-| **Accuracy** | 8.82/10 (88.2%) |
+| **Accuracy** | 8.48/10 (84.8%) |
 | **Questions tested** | 100 (fact retrieval, complex reasoning, summarization) |
 | **Documents** | 20 novels (Project Gutenberg) |
-| **Graph size** | 114K nodes, 155K edges, 71K facts |
 | **Indexing time** | ~47 min (20 docs) |
 | **Query latency P50** | 5.4s |
 | **Query latency P95** | 9.2s |
-
-### Accuracy by Question Type
-
-| Question Type | Count | Mean Score |
-|---------------|-------|-----------|
-| Complex Reasoning | 37 | 8.95/10 |
-| Fact Retrieval | 42 | 8.83/10 |
-| Contextual Summarization | 18 | 8.61/10 |
-| Creative Generation | 3 | 8.33/10 |
 
 ### Winning Pipeline Configuration
 
@@ -220,6 +212,8 @@ The benchmark-winning pipeline uses:
 - **Extraction**: `GraphExtraction` -- GLiNER2 local NER (step 1) + LLM verify & relationship extraction (step 2)
 - **Resolution**: `ExactMatchResolution` → `DescriptionMergeResolution` → `SemanticResolution` → `LLMVerifiedResolution` -- 4-stage pipeline: exact match, normalized-name merge, FAISS HNSW semantic clustering, Louvain community detection + batched LLM verification
 - **Retrieval**: `MultiPathRetrieval` -- 5-path entity discovery, 2-hop relationship expansion, 5-path chunk retrieval, cosine reranking, fact retrieval
+- **Resolution**: `DescriptionMergeResolution` -- LLM-assisted entity deduplication with description merging
+- **Retrieval**: `MultiPathRetrieval` -- entity discovery, relationship expansion, chunk retrieval, cosine reranking
 - **Chunking**: 1500 chars / 200 overlap
 - **LLM**: GPT-4.1 (Azure OpenAI), **Embeddings**: text-embedding-ada-002 (1536 dim)
 
@@ -264,7 +258,7 @@ graphrag_sdk/
 - [Architecture](docs/architecture.md) -- How the pipeline works
 - [Strategy Reference](docs/strategies.md) -- All ABCs and built-in implementations
 - [Providers](docs/providers.md) -- LLM & Embedder configuration
-- [Benchmark](docs/benchmark.md) -- Reproducing the 88.2% accuracy result
+- [Benchmark](docs/benchmark.md) -- Reproducing the 84.8% accuracy result
 - [API Reference](docs/api-reference.md) -- Full API documentation
 
 ## Core Principles

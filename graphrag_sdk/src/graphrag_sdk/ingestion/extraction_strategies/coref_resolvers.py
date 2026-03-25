@@ -30,16 +30,42 @@ class CorefResolver(ABC):
 
 # Pronouns eligible for replacement
 _COREF_PRONOUNS: set[str] = {
-    "he", "she", "it", "they", "we", "i",
-    "me", "him", "her", "us", "them",
-    "his", "hers", "its", "their", "our", "my",
-    "this", "that", "these", "those",
-    "which", "who", "whom", "what",
+    "he",
+    "she",
+    "it",
+    "they",
+    "we",
+    "i",
+    "me",
+    "him",
+    "her",
+    "us",
+    "them",
+    "his",
+    "hers",
+    "its",
+    "their",
+    "our",
+    "my",
+    "this",
+    "that",
+    "these",
+    "those",
+    "which",
+    "who",
+    "whom",
+    "what",
 }
 
 # Possessive pronouns that need 's appended to replacement
 _POSSESSIVE_PRONOUNS: set[str] = {
-    "his", "her", "its", "their", "our", "my", "hers",
+    "his",
+    "her",
+    "its",
+    "their",
+    "our",
+    "my",
+    "hers",
 }
 
 
@@ -72,16 +98,16 @@ class FastCorefResolver(CorefResolver):
         # Longformer compatibility patch for transformers >= 5.0
         try:
             import transformers
+
             _orig_sdpa = getattr(transformers.LongformerModel, "_sdpa_can_dispatch", None)
             if _orig_sdpa is not None:
-                transformers.LongformerModel._sdpa_can_dispatch = (
-                    lambda self, *a, **k: False
-                )
+                transformers.LongformerModel._sdpa_can_dispatch = lambda self, *a, **k: False
             self._model = LingMessCoref(self._model_name)
             if _orig_sdpa is not None:
                 transformers.LongformerModel._sdpa_can_dispatch = _orig_sdpa
         except Exception:
-            # Fallback without patching
+            # Fallback without patching (SDPA dispatch override not supported)
+            logger.debug("LongformerModel SDPA patch failed, loading without patch", exc_info=True)
             self._model = LingMessCoref(self._model_name)
 
         return self._model
@@ -109,7 +135,7 @@ class FastCorefResolver(CorefResolver):
             if canonical is None:
                 continue
 
-            canonical_text = text[canonical[0]:canonical[1]]
+            canonical_text = text[canonical[0] : canonical[1]]
 
             for start, end in cluster:
                 mention = text[start:end]

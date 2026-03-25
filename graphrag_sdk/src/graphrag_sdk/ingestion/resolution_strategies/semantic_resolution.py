@@ -120,9 +120,7 @@ class SemanticResolution(ResolutionStrategy):
                 and self.llm is not None
             ):
                 entity_name = str(survivor.properties.get("name", survivor.id))
-                summary_requests.append(
-                    (len(group_data) - 1, entity_name, descriptions)
-                )
+                summary_requests.append((len(group_data) - 1, entity_name, descriptions))
 
         # Batch LLM summaries
         summary_results: dict[int, str] = {}
@@ -242,15 +240,14 @@ class SemanticResolution(ResolutionStrategy):
                         if vec:
                             emb_cache[node.id] = vec
             except Exception:
+                logger.debug("Embedding failed for label %s, skipping", label, exc_info=True)
                 continue
 
             vectors = [emb_cache.get(n.id, []) for n in label_nodes]
 
             # Filter out failed embeddings
             valid = [
-                (i, node, vec)
-                for i, (node, vec) in enumerate(zip(label_nodes, vectors))
-                if vec
+                (i, node, vec) for i, (node, vec) in enumerate(zip(label_nodes, vectors)) if vec
             ]
             if len(valid) < 2:
                 continue
@@ -313,9 +310,6 @@ class SemanticResolution(ResolutionStrategy):
 
             label_merges = len(remap) - remap_before
             if label_merges:
-                ctx.log(
-                    f"Fuzzy merge on label '{label}': "
-                    f"{label_merges} duplicates found"
-                )
+                ctx.log(f"Fuzzy merge on label '{label}': {label_merges} duplicates found")
 
         return remap

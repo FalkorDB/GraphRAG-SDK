@@ -22,7 +22,7 @@ from graphrag_sdk.core.models import TextChunk, TextChunks
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 
-_SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 _CONTEXT_PROMPT = (
     "Here is a document:\n"
@@ -137,7 +137,9 @@ class ContextualChunking(ChunkingStrategy):
             document_ref = text
 
         prompts = [
-            _CONTEXT_PROMPT.replace("{full_document}", document_ref).replace("{chunk_text}", chunk_text)
+            _CONTEXT_PROMPT.replace("{full_document}", document_ref).replace(
+                "{chunk_text}", chunk_text
+            )
             for chunk_text, _ in raw_chunks
         ]
 

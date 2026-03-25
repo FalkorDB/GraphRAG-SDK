@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ class Context:
 
     tenant_id: str = "default"
     trace_id: str = field(default_factory=lambda: str(uuid4()))
-    latency_budget_ms: Optional[float] = None
+    latency_budget_ms: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     _start_time: float = field(default_factory=time.monotonic, repr=False)
 
@@ -40,7 +40,7 @@ class Context:
         return (time.monotonic() - self._start_time) * 1000
 
     @property
-    def remaining_budget_ms(self) -> Optional[float]:
+    def remaining_budget_ms(self) -> float | None:
         """Remaining latency budget in ms, or None if no budget set."""
         if self.latency_budget_ms is None:
             return None

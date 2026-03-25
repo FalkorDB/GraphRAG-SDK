@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -36,7 +36,7 @@ class GraphNode(DataModel):
     id: str
     label: str
     properties: dict[str, Any] = Field(default_factory=dict)
-    embedding_properties: Optional[dict[str, list[float]]] = None
+    embedding_properties: dict[str, list[float]] | None = None
 
     def __hash__(self) -> int:
         return hash(self.id)
@@ -54,7 +54,7 @@ class GraphRelationship(DataModel):
     end_node_id: str
     type: str
     properties: dict[str, Any] = Field(default_factory=dict)
-    embedding_properties: Optional[dict[str, list[float]]] = None
+    embedding_properties: dict[str, list[float]] | None = None
 
     def to_fact_text(self) -> str:
         """Return a human-readable fact string for embedding on this edge.
@@ -94,7 +94,7 @@ class TextChunks(DataModel):
 class DocumentInfo(DataModel):
     """Metadata about the source document."""
 
-    path: Optional[str] = None
+    path: str | None = None
     uid: str = Field(default_factory=lambda: str(uuid4()))
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -114,7 +114,7 @@ class PropertyType(DataModel):
 
     name: str
     type: str = "STRING"  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
-    description: Optional[str] = None
+    description: str | None = None
     required: bool = False
 
 
@@ -122,7 +122,7 @@ class EntityType(DataModel):
     """Definition of a node/entity type in the graph schema."""
 
     label: str
-    description: Optional[str] = None
+    description: str | None = None
     properties: list[PropertyType] = Field(default_factory=list)
 
     def __hash__(self) -> int:
@@ -138,7 +138,7 @@ class RelationType(DataModel):
     """Definition of a relationship type in the graph schema."""
 
     label: str
-    description: Optional[str] = None
+    description: str | None = None
     properties: list[PropertyType] = Field(default_factory=list)
 
     def __hash__(self) -> int:
@@ -178,9 +178,9 @@ class GraphData(DataModel):
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
-    mentions: list["EntityMention"] = Field(default_factory=list)
-    extracted_entities: list["ExtractedEntity"] = Field(default_factory=list)
-    extracted_relations: list["ExtractedRelation"] = Field(default_factory=list)
+    mentions: list[EntityMention] = Field(default_factory=list)
+    extracted_entities: list[ExtractedEntity] = Field(default_factory=list)
+    extracted_relations: list[ExtractedRelation] = Field(default_factory=list)
 
 
 class ExtractedEntity(DataModel):
@@ -235,7 +235,7 @@ class RetrieverResultItem(DataModel):
 
     content: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-    score: Optional[float] = None
+    score: float | None = None
 
 
 class RetrieverResult(DataModel):
@@ -266,7 +266,7 @@ class LLMResponse(DataModel):
     """Response from an LLM provider."""
 
     content: str
-    tool_calls: Optional[list[dict[str, Any]]] = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 # ── RAG Types ────────────────────────────────────────────────────
@@ -276,7 +276,7 @@ class RagResult(DataModel):
     """Result from a GraphRAG query operation."""
 
     answer: str
-    retriever_result: Optional[RetrieverResult] = None
+    retriever_result: RetrieverResult | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
