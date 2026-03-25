@@ -131,8 +131,6 @@ from graphrag_sdk.ingestion.resolution_strategies import (
     SemanticResolution,
     LLMVerifiedResolution,
 )
-from graphrag_sdk.ingestion.pipeline import IngestionPipeline
-
 # Full 4-stage deduplication pipeline
 async def ingest_with_full_resolution(rag, path):
     data = await rag.ingest(path, chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200))

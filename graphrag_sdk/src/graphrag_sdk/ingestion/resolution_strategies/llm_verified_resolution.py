@@ -196,7 +196,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
             ]
             batch_results = await self.llm.abatch_invoke(prompts)
             for item in batch_results:
-                group_idx, entity_name, descs = summary_requests[item.index]
+                group_idx, _, descs = summary_requests[item.index]
                 if item.ok:
                     summary_results[group_idx] = item.response.content.strip()
                 else:
@@ -220,7 +220,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 id_remap[duplicate.id] = survivor.id
                 merged_count += 1
 
-        ctx.log(f"Phase 1 (exact-match): {merged_count} merged, {len(deduplicated_nodes)} surviving")
+        ctx.log(
+            f"Phase 1 (exact-match): {merged_count} merged, "
+            f"{len(deduplicated_nodes)} surviving"
+        )
 
         # ── Phase 2-5: Embedding + three-tier classification ──────────────────
         if self.embedder and len(deduplicated_nodes) >= 2:
@@ -343,7 +346,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
             if len(valid) < 2:
                 continue
 
-            indices, valid_nodes, vecs = zip(*valid)
+            _, valid_nodes, vecs = zip(*valid)
             valid_nodes = list(valid_nodes)
             mat = np.array(vecs, dtype=np.float32)
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
