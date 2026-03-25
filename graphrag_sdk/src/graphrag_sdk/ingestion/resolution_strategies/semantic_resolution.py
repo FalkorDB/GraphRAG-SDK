@@ -232,7 +232,6 @@ class SemanticResolution(ResolutionStrategy):
 
             emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
 
-            names = [n.properties.get("name", n.id) for n in label_nodes]
             miss_nodes = [n for n in label_nodes if n.id not in emb_cache]
             miss_names = [str(n.properties.get("name", n.id)) for n in miss_nodes]
             try:
