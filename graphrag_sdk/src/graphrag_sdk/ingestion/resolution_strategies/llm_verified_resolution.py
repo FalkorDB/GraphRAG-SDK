@@ -59,9 +59,10 @@ _VERIFY_PROMPT = (
 @dataclass
 class _VerificationRequest:
     """One ambiguous pair waiting for LLM confirmation."""
+
     node_a: GraphNode
     node_b: GraphNode
-    idx_a: int          # index within the label group's valid_nodes list
+    idx_a: int  # index within the label group's valid_nodes list
     idx_b: int
     similarity: float
     label: str
@@ -208,8 +209,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 continue
             if descriptions:
                 survivor.properties["description"] = (
-                    summary_results[gi] if gi in summary_results
-                    else " | ".join(descriptions)
+                    summary_results[gi] if gi in summary_results else " | ".join(descriptions)
                 )
             if all_source_ids:
                 survivor.properties["source_chunk_ids"] = all_source_ids
@@ -221,8 +221,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 merged_count += 1
 
         ctx.log(
-            f"Phase 1 (exact-match): {merged_count} merged, "
-            f"{len(deduplicated_nodes)} surviving"
+            f"Phase 1 (exact-match): {merged_count} merged, {len(deduplicated_nodes)} surviving"
         )
 
         # ── Phase 2-5: Embedding + three-tier classification ──────────────────
@@ -285,14 +284,13 @@ class LLMVerifiedResolution(ResolutionStrategy):
         Returns:
             (id_remap, hard_merge_count, llm_merge_count)
         """
+
         # Build adjacency using remapped IDs (Issue 3: use post-phase-1 IDs)
         # node_id → canonical survivor id after phase 1
         def _canonical(nid: str) -> str:
             return phase1_remap.get(nid, nid)
 
-        node_id_to_name: dict[str, str] = {
-            n.id: str(n.properties.get("name", n.id)) for n in nodes
-        }
+        node_id_to_name: dict[str, str] = {n.id: str(n.properties.get("name", n.id)) for n in nodes}
         adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for rel in relationships:
             src = _canonical(rel.start_node_id)
@@ -339,9 +337,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
 
             # Filter failed embeddings
             valid = [
-                (i, node, vec)
-                for i, (node, vec) in enumerate(zip(label_nodes, vectors))
-                if vec
+                (i, node, vec) for i, (node, vec) in enumerate(zip(label_nodes, vectors)) if vec
             ]
             if len(valid) < 2:
                 continue
@@ -375,6 +371,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
             top_k = min(self.ann_top_k, n_nodes - 1)
 
             import faiss
+
             dim = mat_normed.shape[1]
             index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
             index.hnsw.efSearch = 64
@@ -401,6 +398,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 # Community detection: only send cluster boundary pairs to LLM (Gap 2)
                 # Intra-community pairs are treated as additional hard merges (cheap consensus)
                 import networkx as nx
+
                 G = nx.Graph()
                 G.add_nodes_from(range(n_nodes))
                 for gi, gj, sim_val in ambiguous_pairs:

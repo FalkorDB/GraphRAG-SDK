@@ -275,6 +275,7 @@ class SemanticResolution(ResolutionStrategy):
             top_k = min(self.ann_top_k, n - 1)
 
             import faiss
+
             dim = mat_normed.shape[1]
             index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
             index.hnsw.efSearch = 64
