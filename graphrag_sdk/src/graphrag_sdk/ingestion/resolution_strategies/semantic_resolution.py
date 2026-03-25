@@ -230,7 +230,6 @@ class SemanticResolution(ResolutionStrategy):
 
             emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
 
-            names = [n.properties.get("name", n.id) for n in label_nodes]
             miss_nodes = [n for n in label_nodes if n.id not in emb_cache]
             miss_names = [str(n.properties.get("name", n.id)) for n in miss_nodes]
             try:
@@ -240,7 +239,6 @@ class SemanticResolution(ResolutionStrategy):
                         if vec:
                             emb_cache[node.id] = vec
             except Exception:
-                logger.debug("Embedding failed for label %s, skipping", label, exc_info=True)
                 continue
 
             vectors = [emb_cache.get(n.id, []) for n in label_nodes]
