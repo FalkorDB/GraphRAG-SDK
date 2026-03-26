@@ -51,7 +51,7 @@ export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
 export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
 ```
 
-If you use a `.env` file, the SDK will load it automatically via `python-dotenv`.
+If you use a `.env` file, load it yourself before importing the SDK (e.g., via `python-dotenv` or `export` commands). The SDK reads environment variables but does not auto-load `.env` files.
 
 ---
 
