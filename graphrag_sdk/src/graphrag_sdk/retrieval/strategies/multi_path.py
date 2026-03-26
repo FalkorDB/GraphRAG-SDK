@@ -313,7 +313,7 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     async def _extract_keywords(self, query: str) -> tuple[list[str], list[str]]:
         """Extract simple + LLM-based keywords from the query."""
-        words = re.sub(r"[?.!,;:'\"-]", " ", query.lower()).split()
+        words = re.sub(r"[?.!,;:'\"\-()\[\]]", " ", query.lower()).split()
         simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][:12]
 
         llm_kw: list[str] = []
@@ -325,7 +325,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 f"Question: {query}\n\nNames: "
             )
             llm_kw = [
-                k.strip().strip("'\"")
+                k.strip().strip("'\"").rstrip("()").strip()
                 for k in response.content.split(",")
                 if k.strip() and len(k.strip()) > 1
             ]
