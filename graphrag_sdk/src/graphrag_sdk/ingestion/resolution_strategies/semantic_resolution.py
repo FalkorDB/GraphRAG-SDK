@@ -244,6 +244,7 @@ class SemanticResolution(ResolutionStrategy):
                         miss_names,
                     )
                     import asyncio as _asyncio
+
                     miss_vecs = await _asyncio.wait_for(
                         self.embedder.aembed_documents(miss_names),
                         timeout=20.0,
@@ -264,9 +265,7 @@ class SemanticResolution(ResolutionStrategy):
                 )
                 continue
             except Exception as _e:
-                logger.warning(
-                    "SemanticResolution: skipping '%s' embeddings: %s", label, _e
-                )
+                logger.warning("SemanticResolution: skipping '%s' embeddings: %s", label, _e)
                 continue
 
             vectors = [emb_cache.get(n.id, []) for n in label_nodes]
@@ -305,7 +304,8 @@ class SemanticResolution(ResolutionStrategy):
 
             logger.info(
                 "SemanticResolution: cosine similarity for '%s' (n=%d)",
-                label, n,
+                label,
+                n,
             )
             # mat_normed rows are already unit-normed — dot product == cosine sim
             sim_matrix = mat_normed @ mat_normed.T  # shape (n, n)
