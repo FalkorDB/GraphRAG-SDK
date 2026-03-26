@@ -242,9 +242,7 @@ class MultiPathRetrieval(RetrievalStrategy):
 
         # 4b. Sibling expansion for enumeration queries
         if is_enumeration_query(query):
-            n_siblings = await expand_sibling_entities(
-                self._graph, found_entities, entity_sources
-            )
+            n_siblings = await expand_sibling_entities(self._graph, found_entities, entity_sources)
             if n_siblings:
                 ctx.log(
                     f"MultiPath [4b/9]: +{n_siblings} sibling entities "

@@ -11,8 +11,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _ENUMERATION_RE = re.compile(
-    r"\b(all|every|each|complete list|full list|list all|list of all"
-    r"|enumerate|name all|name every)\b",
+    r"\b(every|each|complete list|full list|list all|list of all"
+    r"|enumerate|name all|name every|all the|all of the)\b",
     re.IGNORECASE,
 )
 
@@ -150,11 +150,11 @@ async def expand_sibling_entities(
 ) -> int:
     """Expand discovered entities by finding graph siblings.
 
-    A sibling is an entity that shares both a non-__Entity__ label AND a
-    1-hop graph neighbor with at least 2 already-discovered entities.
-    This catches structurally related entities (e.g. ``list.remove`` when
-    ``list.dedup``, ``list.insert``, ``list.sort`` are already found)
-    that may have been missed by vector similarity.
+    Finds hub entities (``__Entity__`` nodes connected to 2+ already-
+    discovered entities), then returns their other ``__Entity__``
+    neighbours.  This catches structurally related entities (e.g.
+    ``list.remove`` when ``list.dedup``, ``list.insert``, ``list.sort``
+    are already found) that may have been missed by vector similarity.
 
     Mutates *found_entities* and *found_sources* in place.
     Returns the number of new entities added.
@@ -168,12 +168,14 @@ async def expand_sibling_entities(
     try:
         result = await graph_store.query_raw(
             "MATCH (e:__Entity__) WHERE e.id IN $found_ids "
-            "MATCH (e)-[]-(hub)-[]-(sibling:__Entity__) "
-            "WHERE NOT sibling.id IN $found_ids "
-            "WITH sibling, collect(DISTINCT e.id) AS via "
+            "MATCH (e)-[]-(hub:__Entity__) "
+            "WITH hub, collect(DISTINCT e.id) AS via "
             "WHERE size(via) >= 2 "
+            "MATCH (hub)-[]-(sibling:__Entity__) "
+            "WHERE NOT sibling.id IN $found_ids "
             "RETURN DISTINCT sibling.id AS id, sibling.name AS name, "
             "sibling.description AS desc "
+            "ORDER BY sibling.name "
             "LIMIT $limit",
             {"found_ids": found_ids, "limit": max_siblings},
         )
