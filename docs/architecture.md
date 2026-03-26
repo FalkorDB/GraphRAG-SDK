@@ -57,7 +57,7 @@ The knowledge graph contains these node types and edge types:
 | `Document` | Source document metadata | No |
 | `Chunk` | Text chunk (fragment of a document) | Yes |
 | `__Entity__` | Secondary label on all extracted entities | Yes (after backfill) |
-| `Person`, `Place`, etc. | Primary entity labels (schema-defined) | Via `__Entity__` |
+| `Person`, `Organization`, etc. | Primary entity labels — 11 defaults: Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method | Via `__Entity__` |
 
 ### Edge Types
 
@@ -167,3 +167,13 @@ await rag.ingest("doc.txt", chunker=SemanticChunking())
 ```
 
 The same pattern applies to all 6 strategy ABCs: `LoaderStrategy`, `ChunkingStrategy`, `ExtractionStrategy`, `ResolutionStrategy`, `RetrievalStrategy`, `RerankingStrategy`.
+
+## Deep Dives
+
+Each subsystem has a dedicated document with step-by-step explanations:
+
+- [Ingestion Pipeline](ingestion.md) — the 9-step pipeline from document to knowledge graph
+- [Extraction](extraction.md) — the 2-step hybrid extraction process (NER + LLM)
+- [Graph Schema](graph-schema.md) — how the knowledge graph is structured in FalkorDB
+- [Storage](storage.md) — GraphStore, VectorStore, and EntityDeduplicator internals
+- [Retrieval](retrieval.md) — the multi-path retrieval system that answers questions

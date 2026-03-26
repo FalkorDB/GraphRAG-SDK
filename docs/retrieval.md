@@ -270,22 +270,22 @@ Each retrieval path was tested **in isolation** (only that path, no others) to m
 ```python
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
-# With text-to-cypher (default)
+# Without text-to-cypher (default)
 strategy = MultiPathRetrieval(
     graph_store=rag.graph_store,
     vector_store=rag.vector_store,
     embedder=embedder,
     llm=llm,
-    enable_cypher=True,  # default
+    enable_cypher=False,  # default
 )
 
-# Without text-to-cypher (lower latency)
+# With text-to-cypher (opt-in, adds ~1.5s latency)
 strategy = MultiPathRetrieval(
     graph_store=rag.graph_store,
     vector_store=rag.vector_store,
     embedder=embedder,
     llm=llm,
-    enable_cypher=False,
+    enable_cypher=True,
 )
 
 result = await rag.query("Your question", strategy=strategy)
@@ -299,7 +299,7 @@ result = await rag.query("Your question", strategy=strategy)
 | `max_entities` | 30 | Maximum entities to keep from discovery |
 | `max_relationships` | 20 | Maximum relationships to include |
 | `rel_top_k` | 15 | RELATES edge vector search results |
-| `enable_cypher` | True | Toggle text-to-cypher path |
+| `enable_cypher` | False | Toggle text-to-cypher path (opt-in) |
 
 ### Using the External Reranker
 
