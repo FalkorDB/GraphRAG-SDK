@@ -24,6 +24,8 @@ from graphrag_sdk.retrieval.strategies.chunk_retrieval import (
 )
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
     discover_entities,
+    expand_sibling_entities,
+    is_enumeration_query,
     search_relates_edges,
 )
 from graphrag_sdk.retrieval.strategies.relationship_expansion import (
@@ -237,6 +239,17 @@ class MultiPathRetrieval(RetrievalStrategy):
                 found_entities[eid] = einfo
                 entity_sources[eid] = "cypher"
         ctx.log(f"MultiPath [4/9]: {len(found_entities)} entities discovered")
+
+        # 4b. Sibling expansion for enumeration queries
+        if is_enumeration_query(query):
+            n_siblings = await expand_sibling_entities(
+                self._graph, found_entities, entity_sources
+            )
+            if n_siblings:
+                ctx.log(
+                    f"MultiPath [4b/9]: +{n_siblings} sibling entities "
+                    f"({len(found_entities)} total)"
+                )
 
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[: self._max_entities]
