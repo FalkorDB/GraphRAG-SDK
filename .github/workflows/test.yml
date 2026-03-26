@@ -30,26 +30,26 @@ jobs:
         model: [openai/gpt-4.1] # List of models
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: 3.11.0 # Update with desired Python version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
       - id: "auth"
-        uses: "google-github-actions/auth@v3"
+        uses: "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3"
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: "Set up Cloud SDK"
-        uses: "google-github-actions/setup-gcloud@v3"
+        uses: "google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3"
         with:
           version: ">= 363.0.0"
 
