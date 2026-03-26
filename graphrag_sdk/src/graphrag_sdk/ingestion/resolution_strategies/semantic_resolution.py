@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
@@ -234,11 +237,36 @@ class SemanticResolution(ResolutionStrategy):
             miss_names = [str(n.properties.get("name", n.id)) for n in miss_nodes]
             try:
                 if miss_names:
-                    miss_vecs = await self.embedder.aembed_documents(miss_names)
+                    logger.info(
+                        "SemanticResolution: embedding %d '%s' nodes: %s",
+                        len(miss_names),
+                        label,
+                        miss_names,
+                    )
+                    import asyncio as _asyncio
+                    miss_vecs = await _asyncio.wait_for(
+                        self.embedder.aembed_documents(miss_names),
+                        timeout=20.0,
+                    )
                     for node, vec in zip(miss_nodes, miss_vecs):
                         if vec:
                             emb_cache[node.id] = vec
-            except Exception:
+                    logger.info(
+                        "SemanticResolution: embeddings done for '%s' (%d/%d cached)",
+                        label,
+                        len([n for n in label_nodes if n.id in emb_cache]),
+                        len(label_nodes),
+                    )
+            except _asyncio.TimeoutError:
+                logger.warning(
+                    "SemanticResolution: TIMEOUT embedding '%s' nodes after 20s — skipping label",
+                    label,
+                )
+                continue
+            except Exception as _e:
+                logger.warning(
+                    "SemanticResolution: skipping '%s' embeddings: %s", label, _e
+                )
                 continue
 
             vectors = [emb_cache.get(n.id, []) for n in label_nodes]
@@ -256,9 +284,13 @@ class SemanticResolution(ResolutionStrategy):
             norms[norms == 0] = 1.0
             mat_normed = mat / norms
 
-            # Find pairs above threshold using FAISS HNSW (O(N log N))
+            # Brute-force cosine similarity via numpy (no FAISS — avoids OpenMP
+            # thread-pool conflicts with PyTorch on macOS).
+            # O(N²) is fine for the small per-label groups typical here.
+            n = len(valid_nodes)
+
             # Use Union-Find to cluster
-            parent: dict[int, int] = {i: i for i in range(len(valid_nodes))}
+            parent: dict[int, int] = {i: i for i in range(n)}
 
             def find(x: int) -> int:
                 while parent[x] != x:
@@ -271,24 +303,17 @@ class SemanticResolution(ResolutionStrategy):
                 if px != py:
                     parent[py] = px
 
-            n = len(valid_nodes)
-            top_k = min(self.ann_top_k, n - 1)
-
-            import faiss
-
-            dim = mat_normed.shape[1]
-            index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
-            index.hnsw.efSearch = 64
-            index.add(mat_normed)
-            sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self
+            logger.info(
+                "SemanticResolution: cosine similarity for '%s' (n=%d)",
+                label, n,
+            )
+            # mat_normed rows are already unit-normed — dot product == cosine sim
+            sim_matrix = mat_normed @ mat_normed.T  # shape (n, n)
             for i in range(n):
-                for rank in range(1, top_k + 1):
-                    j = int(nbrs[i, rank])
-                    if j < 0 or j <= i:
-                        continue
-                    sim_val = float(sims[i, rank])
-                    if sim_val >= self.similarity_threshold:
+                for j in range(i + 1, n):
+                    if float(sim_matrix[i, j]) >= self.similarity_threshold:
                         union(i, j)
+            logger.info("SemanticResolution: similarity done for '%s'", label)
 
             # Build clusters
             clusters: dict[int, list[int]] = defaultdict(list)

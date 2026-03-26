@@ -368,21 +368,12 @@ class LLMVerifiedResolution(ResolutionStrategy):
             hard_pairs: list[tuple[int, int]] = []
             ambiguous_pairs: list[tuple[int, int, float]] = []
 
-            top_k = min(self.ann_top_k, n_nodes - 1)
-
-            import faiss
-
-            dim = mat_normed.shape[1]
-            index = faiss.index_factory(dim, "HNSW32", faiss.METRIC_INNER_PRODUCT)
-            index.hnsw.efSearch = 64
-            index.add(mat_normed)
-            sims, nbrs = index.search(mat_normed, top_k + 1)  # +1 includes self
+            # Brute-force cosine similarity via numpy (avoids FAISS OpenMP
+            # thread-pool conflicts with PyTorch on macOS and Windows).
+            sim_matrix = mat_normed @ mat_normed.T  # (n, n), rows are unit-normed
             for i in range(n_nodes):
-                for rank in range(1, top_k + 1):
-                    j = int(nbrs[i, rank])
-                    if j < 0 or j <= i:
-                        continue
-                    sim_val = float(sims[i, rank])
+                for j in range(i + 1, n_nodes):
+                    sim_val = float(sim_matrix[i, j])
                     if sim_val >= self.hard_threshold:
                         hard_pairs.append((i, j))
                     elif sim_val >= self.soft_threshold:
