@@ -64,7 +64,7 @@ Unknown edge types default to `(__Entity__, __Entity__)`.
 
 ### Per-Item Fallback
 
-If a batch upsert fails (e.g., a single malformed property causes the whole batch to error), GraphStore falls back to **per-item upserts** — it retries each node or relationship individually, logging warnings for any that still fail. This ensures one bad item doesn't block the rest.
+If a batch upsert fails (e.g., a single malformed property causes the whole batch to error), GraphStore falls back to **per-item upserts**. The behavior differs slightly: for **nodes**, the first per-item failure raises a `DatabaseError` (remaining items in that batch are not attempted); for **relationships**, failures are logged as warnings and processing continues through the batch.
 
 ### None-ID Guard
 
@@ -84,7 +84,7 @@ All properties go through `_clean_properties()` before writing:
 
 ### Cypher Safety
 
-All node labels, relationship types, and property names are sanitized via `sanitize_cypher_label()` to prevent Cypher injection. All values are passed as parameters (never interpolated into the query string).
+Node labels and relationship types are sanitized via `sanitize_cypher_label()` to prevent Cypher injection. Properties are applied via parameter maps (e.g., `SET n += item.properties`), so property keys and values are never interpolated into the Cypher string.
 
 ---
 
@@ -121,7 +121,7 @@ All index creation is idempotent — if the index already exists, the error is s
 
 When chunks are ingested, their text is embedded and stored:
 
-1. **Batch embed:** All chunk texts are sent to the embedder in one call (`aembed_documents`). For Azure OpenAI, this is one API call for up to 500 texts.
+1. **Batch embed:** All chunk texts are passed to the embedder via a single `aembed_documents` call. The underlying provider controls how these are internally batched (e.g., via a configurable `batch_size`) and may split them across multiple API requests.
 2. **Batch write:** Vectors are written to Chunk nodes using UNWIND (500 per batch):
    ```cypher
    UNWIND $batch AS item
@@ -286,7 +286,7 @@ This is much faster than `MATCH (n) DETACH DELETE n` on large graphs.
 
 ### Retry Behavior
 
-The connection layer retries transient query failures up to 3 times with linear backoff. Non-transient errors (containing "already indexed", "already exists", or "unknown index") are raised immediately.
+The connection layer retries transient query failures up to 3 times using exponential backoff with jitter (`retry_delay * 2^attempt * random(0.5, 1.5)`) and employs a circuit breaker to short-circuit repeated failures. Non-transient errors (containing "already indexed", "already exists", or "unknown index") are raised immediately.
 
 ---
 
