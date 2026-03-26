@@ -9,8 +9,6 @@ from collections import defaultdict
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
@@ -20,6 +18,8 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+
+logger = logging.getLogger(__name__)
 
 _SUMMARY_PROMPT = (
     "Summarise the following descriptions of the entity '{entity_name}' "
