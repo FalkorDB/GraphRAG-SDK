@@ -106,6 +106,12 @@ class TestIngestionPipeline:
         result = await pipeline.run("ignored.txt", ctx, text="Direct text input.")
         assert result.chunks_indexed >= 1
 
+    async def test_run_with_text_preserves_source_as_path(self, ctx, mock_graph_store, mock_vector_store):
+        """When text= is passed without document_info, source is used as the path."""
+        pipeline = self._make_pipeline(mock_graph_store, mock_vector_store)
+        result = await pipeline.run("my_doc", ctx, text="Direct text input.")
+        assert result.document_info.path == "my_doc"
+
     async def test_run_creates_lexical_graph(self, ctx, mock_graph_store, mock_vector_store):
         """Mandatory lexical graph creates Document + Chunk nodes + PART_OF rels."""
         pipeline = self._make_pipeline(mock_graph_store, mock_vector_store)
