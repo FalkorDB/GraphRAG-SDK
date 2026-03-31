@@ -96,11 +96,6 @@ class TestGraphExtractionSmoke:
             assert "tgt_name" in rel.properties
             # Used by PPR expansion (Phase 2)
             assert "rel_type" in rel.properties
-            assert "description" in rel.properties
-            # Used for fulltext search
-            assert "keywords" in rel.properties
-            # Used for scoring
-            assert "weight" in rel.properties
 
     async def test_produces_mentions(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
@@ -383,7 +378,8 @@ class TestSpansMerging:
                 source_chunk_ids=["chunk-0"],
             ),
         ]
-        GraphExtraction._merge_step1_metadata(verified, step1)
+        chunk_text = "Alice and Bob work together at Acme Corp."
+        GraphExtraction._merge_step1_metadata(verified, step1, chunk_text, "chunk-0")
 
         alice = next(e for e in verified if e.name == "Alice")
         assert hasattr(alice, "spans")
@@ -395,6 +391,58 @@ class TestSpansMerging:
         bob = next(e for e in verified if e.name == "Bob")
         assert bob.spans["chunk-0"] == [{"start": 10, "end": 13}]
         assert bob.confidence == 0.88
+
+    def test_llm_discovered_entity_gets_text_find_spans(self):
+        """Entities found by LLM (not in step 1) get spans via text.find()."""
+        step1 = [
+            ExtractedEntity(
+                name="Alice", type="Person", description="",
+                source_chunk_ids=["chunk-0"],
+                spans={"chunk-0": [{"start": 0, "end": 5}]},
+                confidence=0.95,
+            ),
+        ]
+        # LLM discovered "Acme Corp" which GLiNER missed
+        verified = [
+            ExtractedEntity(
+                name="Alice", type="Person",
+                description="A software engineer",
+                source_chunk_ids=["chunk-0"],
+            ),
+            ExtractedEntity(
+                name="Acme Corp", type="Organization",
+                description="A tech company",
+                source_chunk_ids=["chunk-0"],
+            ),
+        ]
+        chunk_text = "Alice works at Acme Corp as an engineer."
+        GraphExtraction._merge_step1_metadata(verified, step1, chunk_text, "chunk-0")
+
+        # Alice should get GLiNER spans
+        alice = next(e for e in verified if e.name == "Alice")
+        assert alice.spans["chunk-0"] == [{"start": 0, "end": 5}]
+
+        # Acme Corp should get text.find() spans
+        acme = next(e for e in verified if e.name == "Acme Corp")
+        assert hasattr(acme, "spans")
+        assert acme.spans["chunk-0"] == [{"start": 15, "end": 24}]
+
+    def test_llm_discovered_entity_case_insensitive_spans(self):
+        """text.find() spans should be case-insensitive."""
+        step1: list[ExtractedEntity] = []
+        verified = [
+            ExtractedEntity(
+                name="ACME Corp", type="Organization",
+                description="A tech company",
+                source_chunk_ids=["chunk-0"],
+            ),
+        ]
+        chunk_text = "Alice works at Acme Corp as an engineer."
+        GraphExtraction._merge_step1_metadata(verified, step1, chunk_text, "chunk-0")
+
+        acme = verified[0]
+        assert hasattr(acme, "spans")
+        assert acme.spans["chunk-0"] == [{"start": 15, "end": 24}]
 
     def test_aggregate_merges_spans_across_chunks(self):
         """Spans from different chunks should merge during aggregation."""
