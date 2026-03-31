@@ -427,6 +427,23 @@ class TestSpansMerging:
         assert hasattr(acme, "spans")
         assert acme.spans["chunk-0"] == [{"start": 15, "end": 24}]
 
+    def test_llm_discovered_entity_case_insensitive_spans(self):
+        """text.find() spans should be case-insensitive."""
+        step1: list[ExtractedEntity] = []
+        verified = [
+            ExtractedEntity(
+                name="ACME Corp", type="Organization",
+                description="A tech company",
+                source_chunk_ids=["chunk-0"],
+            ),
+        ]
+        chunk_text = "Alice works at Acme Corp as an engineer."
+        GraphExtraction._merge_step1_metadata(verified, step1, chunk_text, "chunk-0")
+
+        acme = verified[0]
+        assert hasattr(acme, "spans")
+        assert acme.spans["chunk-0"] == [{"start": 15, "end": 24}]
+
     def test_aggregate_merges_spans_across_chunks(self):
         """Spans from different chunks should merge during aggregation."""
         ent1 = ExtractedEntity(

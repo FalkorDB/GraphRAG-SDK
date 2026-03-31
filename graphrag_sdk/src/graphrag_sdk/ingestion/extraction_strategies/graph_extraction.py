@@ -273,8 +273,10 @@ class GraphExtraction(ExtractionStrategy):
                     # Carry over spans/confidence from step 1 entities
                     step1_ents = chunk_entities[chunk_idx]
                     self._merge_step1_metadata(
-                        verified_ents, step1_ents,
-                        chunk_texts[chunk_idx], chunk.uid,
+                        verified_ents,
+                        step1_ents,
+                        chunk_texts[chunk_idx],
+                        chunk.uid,
                     )
                     all_entities.extend(verified_ents)
                 else:
@@ -347,10 +349,12 @@ class GraphExtraction(ExtractionStrategy):
                 if s1_conf is not None:
                     ent.confidence = s1_conf  # type: ignore[attr-defined]
             else:
-                # Entity is new from step 2 — compute spans via text.find()
-                idx = chunk_text.find(ent.name)
+                # Entity is new from step 2 — compute spans via case-insensitive search
+                idx = chunk_text.lower().find(ent.name.lower())
                 if idx >= 0:
-                    ent.spans = {source_chunk_id: [{"start": idx, "end": idx + len(ent.name)}]}  # type: ignore[attr-defined]
+                    ent.spans = {  # type: ignore[attr-defined]
+                        source_chunk_id: [{"start": idx, "end": idx + len(ent.name)}]
+                    }
 
     # ── Step 2 Response Parsing ──────────────────────────────────
 
