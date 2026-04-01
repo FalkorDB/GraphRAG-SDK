@@ -28,7 +28,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "tiktoken>=0.5",
     "gliner>=0.2",
-    "faiss-cpu>=1.7",
+    "hnswlib>=0.8",
     "networkx>=3.0",
 ]
 
