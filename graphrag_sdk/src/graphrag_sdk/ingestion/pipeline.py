@@ -124,7 +124,7 @@ class IngestionPipeline:
             if text is not None:
                 document = DocumentOutput(
                     text=text,
-                    document_info=document_info or DocumentInfo(),
+                    document_info=document_info or DocumentInfo(path=source),
                 )
                 ctx.log("Using provided text (loader skipped)")
             else:

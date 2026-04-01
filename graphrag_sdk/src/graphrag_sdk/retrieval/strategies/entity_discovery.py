@@ -1,12 +1,25 @@
 # GraphRAG SDK 2.0 — Retrieval: Entity Discovery
-# 2-path entity discovery: Cypher CONTAINS + fulltext search.
+# 2-path entity discovery: Cypher CONTAINS + fulltext search,
+# with optional sibling expansion for enumeration queries.
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_ENUMERATION_RE = re.compile(
+    r"\b(every|each|complete list|full list|list all|list of all"
+    r"|enumerate|name all|name every|all the|all of the)\b",
+    re.IGNORECASE,
+)
+
+
+def is_enumeration_query(query: str) -> bool:
+    """Return True if the query asks to list/enumerate all items."""
+    return bool(_ENUMERATION_RE.search(query))
 
 
 async def search_relates_edges(
@@ -127,3 +140,55 @@ async def discover_entities(
             logger.debug("Entity fulltext search failed for '%s': %s", kw, exc)
 
     return found, sources
+
+
+async def expand_sibling_entities(
+    graph_store: Any,
+    found_entities: dict[str, dict],
+    found_sources: dict[str, str],
+    max_siblings: int = 20,
+) -> int:
+    """Expand discovered entities by finding graph siblings.
+
+    Finds hub entities (``__Entity__`` nodes connected to 2+ already-
+    discovered entities), then returns their other ``__Entity__``
+    neighbours.  This catches structurally related entities (e.g.
+    ``list.remove`` when ``list.dedup``, ``list.insert``, ``list.sort``
+    are already found) that may have been missed by vector similarity.
+
+    Mutates *found_entities* and *found_sources* in place.
+    Returns the number of new entities added.
+    """
+    if len(found_entities) < 2:
+        return 0
+
+    found_ids = list(found_entities.keys())
+    added = 0
+
+    try:
+        result = await graph_store.query_raw(
+            "MATCH (e:__Entity__) WHERE e.id IN $found_ids "
+            "MATCH (e)-[]-(hub:__Entity__) "
+            "WITH hub, collect(DISTINCT e.id) AS via "
+            "WHERE size(via) >= 2 "
+            "MATCH (hub)-[]-(sibling:__Entity__) "
+            "WHERE NOT sibling.id IN $found_ids "
+            "RETURN DISTINCT sibling.id AS id, sibling.name AS name, "
+            "sibling.description AS desc "
+            "ORDER BY sibling.name "
+            "LIMIT $limit",
+            {"found_ids": found_ids, "limit": max_siblings},
+        )
+        for row in result.result_set:
+            eid = row[0]
+            if eid and eid not in found_entities:
+                found_entities[eid] = {
+                    "name": row[1] if len(row) > 1 else "",
+                    "description": row[2] if len(row) > 2 else "",
+                }
+                found_sources[eid] = "sibling_expansion"
+                added += 1
+    except Exception as exc:
+        logger.debug("Sibling entity expansion failed: %s", exc)
+
+    return added

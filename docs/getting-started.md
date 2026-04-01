@@ -17,10 +17,16 @@ A step-by-step tutorial for building a knowledge graph from documents and queryi
 
 ## 2. Installation
 
-Install the SDK in editable mode with all optional dependencies:
+Install the SDK with all optional dependencies:
 
 ```bash
-pip install -e "graphrag_sdk[all]"
+pip install "graphrag-sdk[all]"
+```
+
+For a local editable install from a cloned repo:
+
+```bash
+pip install -e "./graphrag_sdk[all]"
 ```
 
 ---
@@ -51,7 +57,7 @@ export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
 export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
 ```
 
-If you use a `.env` file, the SDK will load it automatically via `python-dotenv`.
+If you use a `.env` file, load it yourself before importing the SDK (e.g., via `python-dotenv` or `export` commands). The SDK reads environment variables but does not auto-load `.env` files.
 
 ---
 
@@ -92,10 +98,15 @@ rag = GraphRAG(
     llm=LiteLLM(model="azure/gpt-4.1"),
     embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002"),
     schema=schema,
+    embedding_dimension=1536,  # must match your embedding model's output dimension
 )
 ```
 
+If your embedding model produces vectors with a different dimensionality (e.g., `text-embedding-3-large` at 256 or 1024 dimensions), set `embedding_dimension` accordingly. The default is `1536`.
+
 `ConnectionConfig` accepts additional parameters such as `port`, `username`, `password`, and `query_timeout_ms`. See [docs/configuration.md](configuration.md) for the full list.
+
+> **Alternative providers:** The SDK also exports `OpenRouterLLM` and `OpenRouterEmbedder` for use with OpenRouter. See [docs/configuration.md](configuration.md) for details.
 
 ---
 
@@ -117,7 +128,7 @@ print(f"Created {result.nodes_created} nodes, {result.relationships_created} rel
 print(f"Indexed {result.chunks_indexed} chunks")
 ```
 
-The ingestion pipeline runs a 9-step process: Load, Chunk, Lexical Graph, Extract, Quality Filter, Prune, Resolve, Write, then Mentions and Chunk Indexing in parallel.
+The ingestion pipeline runs a 9-step process: Load, Chunk, Lexical Graph, Extract (includes quality filtering), Prune, Resolve, Write, then Mentions and Chunk Indexing in parallel.
 
 ---
 
@@ -157,7 +168,7 @@ You can also run raw Cypher queries against the graph:
 
 ```python
 results = await rag.graph_store.query_raw("MATCH (p:Person)-[:WORKS_AT]->(o:Organization) RETURN p.name, o.name LIMIT 10")
-for row in results:
+for row in results.result_set:
     print(row)
 ```
 
@@ -182,3 +193,17 @@ This step is important for query accuracy. It merges duplicate entities (e.g., "
 - [docs/configuration.md](configuration.md) -- Tuning connection settings, chunking parameters, and retrieval options.
 - [docs/strategies.md](strategies.md) -- Custom extraction and resolution strategies.
 - [docs/benchmark.md](benchmark.md) -- Reproducing benchmark results on the 100-question novel corpus.
+
+---
+
+## Synchronous API
+
+If you are not in an async context, use the synchronous convenience methods:
+
+```python
+result = rag.ingest_sync("path/to/document.txt")
+result = rag.query_sync("Who works at Acme Corp?")
+results = rag.finalize_sync()
+```
+
+These wrap the async methods in `asyncio.run()` and are useful for scripts and notebooks.

@@ -52,34 +52,24 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "{text}\n\n"
     "## Instructions\n\n"
     "### Entities\n"
-    "- For each verified entity provide a rich description that captures "
-    "key attributes, roles, and context from the text. This description is "
-    "used for search and retrieval — make it informative.\n"
-    "- span_start: the character offset in the text where the entity name "
-    "first appears.\n"
-    "- span_end: the character offset where the entity name ends.\n\n"
+    "- For each verified entity provide a concise 1-2 sentence description "
+    "capturing key attributes and roles from the text. This description is "
+    "embedded for semantic search.\n\n"
     "### Relationships\n"
     "- Extract ALL factual connections stated or implied in the text.\n"
     "- source and target must be entity names from the verified entity list.\n"
     "- type: a descriptive relationship label in UPPER_SNAKE_CASE "
     "(e.g. WORKS_AT, MARRIED_TO, LOCATED_IN, CREATED_BY, PART_OF).\n"
-    "- description: a concise sentence describing the relationship as a "
+    "- description: one sentence describing the relationship as a "
     "standalone fact. This is embedded for semantic search — it must be "
     "self-contained and understandable without the original text.\n"
-    "- keywords: comma-separated terms that characterize this relationship "
-    "(e.g. 'employment, career' or 'family, parentage'). Used for "
-    "fulltext search.\n"
-    "- weight: a float 0-1 indicating confidence (1.0 = explicitly stated, "
-    "0.5 = implied, 0.2 = weak inference).\n"
     "- span_start: the character offset in the text where the evidence "
     "sentence for this relationship starts.\n"
     "- span_end: the character offset where the evidence sentence ends.\n\n"
     "Return ONLY a JSON object with two arrays:\n"
-    '{{"entities": [{{"name": "...", "type": "...", "description": "...", '
-    '"span_start": 0, "span_end": 5}}], '
+    '{{"entities": [{{"name": "...", "type": "...", "description": "..."}}], '
     '"relationships": [{{"source": "...", "target": "...", "type": "...", '
-    '"description": "...", "keywords": "...", "weight": 0.9, '
-    '"span_start": 0, "span_end": 50}}]}}\n\n'
+    '"description": "...", "span_start": 0, "span_end": 50}}]}}\n\n'
     "Return ONLY valid JSON, nothing else."
 )
 
@@ -282,7 +272,12 @@ class GraphExtraction(ExtractionStrategy):
                 if verified_ents:
                     # Carry over spans/confidence from step 1 entities
                     step1_ents = chunk_entities[chunk_idx]
-                    self._merge_step1_metadata(verified_ents, step1_ents)
+                    self._merge_step1_metadata(
+                        verified_ents,
+                        step1_ents,
+                        chunk_texts[chunk_idx],
+                        chunk.uid,
+                    )
                     all_entities.extend(verified_ents)
                 else:
                     # LLM returned no entities — use step 1 entities
@@ -327,13 +322,14 @@ class GraphExtraction(ExtractionStrategy):
     def _merge_step1_metadata(
         verified: list[ExtractedEntity],
         step1: list[ExtractedEntity],
+        chunk_text: str,
+        source_chunk_id: str,
     ) -> None:
         """Carry over spans and confidence from step 1 entities into step 2 verified entities.
 
-        Matches by normalized name. Step 1 spans (from GLiNER2) take
-        priority over step 2 spans (from LLM) since GLiNER2 character
-        offsets are more precise. Step 2 spans are kept for entities
-        that GLiNER2 didn't find.
+        Matches by normalized name. Step 1 spans (from GLiNER2) are used
+        directly. For entities the LLM discovered (not in step 1), spans
+        are computed via ``str.find()`` on the chunk text.
         """
         # Build lookup: normalized name → step 1 entity
         s1_lookup: dict[str, ExtractedEntity] = {}
@@ -352,7 +348,13 @@ class GraphExtraction(ExtractionStrategy):
                 s1_conf = getattr(s1, "confidence", None)
                 if s1_conf is not None:
                     ent.confidence = s1_conf  # type: ignore[attr-defined]
-            # else: entity is new from step 2 — keep its own spans if present
+            else:
+                # Entity is new from step 2 — compute spans via case-insensitive search
+                idx = chunk_text.lower().find(ent.name.lower())
+                if idx >= 0:
+                    ent.spans = {  # type: ignore[attr-defined]
+                        source_chunk_id: [{"start": idx, "end": idx + len(ent.name)}]
+                    }
 
     # ── Step 2 Response Parsing ──────────────────────────────────
 
@@ -388,18 +390,12 @@ class GraphExtraction(ExtractionStrategy):
             etype = label_for_type(raw_type, entity_types)
             description = str(item.get("description", "")).strip()
 
-            extra: dict[str, Any] = {}
-            spans = _build_spans(item, source_chunk_id, "span_start", "span_end")
-            if spans:
-                extra["spans"] = spans
-
             entities.append(
                 ExtractedEntity(
                     name=name,
                     type=etype,
                     description=description,
                     source_chunk_ids=[source_chunk_id],
-                    **extra,
                 )
             )
 
@@ -416,14 +412,7 @@ class GraphExtraction(ExtractionStrategy):
             if not is_valid_entity_name(source) or not is_valid_entity_name(target):
                 continue
 
-            weight = 1.0
-            try:
-                weight = float(item.get("weight", 1.0))
-            except (ValueError, TypeError):
-                weight = 1.0
-
             description = str(item.get("description", "")).strip()
-            keywords = str(item.get("keywords", "")).strip()
 
             extra: dict[str, Any] = {}
             spans = _build_spans(item, source_chunk_id, "span_start", "span_end")
@@ -435,9 +424,7 @@ class GraphExtraction(ExtractionStrategy):
                     source=source,
                     target=target,
                     type=rel_type,
-                    keywords=keywords,
                     description=description,
-                    weight=weight,
                     source_chunk_ids=[source_chunk_id],
                     **extra,
                 )
@@ -522,9 +509,7 @@ class GraphExtraction(ExtractionStrategy):
                     source=rel.source,
                     target=rel.target,
                     type=rel.type,
-                    keywords=rel.keywords,
                     description=rel.description,
-                    weight=rel.weight,
                     source_chunk_ids=list(rel.source_chunk_ids),
                     **_optional_extras(rel),
                 )
@@ -577,9 +562,6 @@ class GraphExtraction(ExtractionStrategy):
             props: dict[str, Any] = {
                 "rel_type": rel.type,
                 "fact": fact,
-                "keywords": rel.keywords,
-                "description": rel.description,
-                "weight": rel.weight,
                 "source_chunk_ids": rel.source_chunk_ids,
                 "src_name": rel.source,
                 "tgt_name": rel.target,

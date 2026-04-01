@@ -11,6 +11,10 @@ from graphrag_sdk.core.models import (
     RawSearchResult,
     RetrieverResult,
 )
+from graphrag_sdk.retrieval.strategies.entity_discovery import (
+    expand_sibling_entities,
+    is_enumeration_query,
+)
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
 from .conftest import MockEmbedder, MockLLM
@@ -527,3 +531,173 @@ class TestSearchRelatesEdges:
         # "alice" should appear only once in entities
         alice_count = sum(1 for eid in entities if eid == "alice")
         assert alice_count == 1
+
+
+class TestIsEnumerationQuery:
+    """Tests for is_enumeration_query heuristic."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "What are ALL the FalkorDB-specific list functions?",
+            "List every function in the API",
+            "Name all the sorting algorithms",
+            "Give me the complete list of endpoints",
+            "Enumerate each parameter",
+            "What are all the methods?",
+            "Show me all of the supported types",
+        ],
+    )
+    def test_positive(self, query):
+        assert is_enumeration_query(query)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "What is the default parameter for list.remove?",
+            "How does FalkorDB handle indexing?",
+            "Tell me all about Alice",
+            "Who is Alice?",
+            "Where is Acme located?",
+        ],
+    )
+    def test_negative(self, query):
+        assert not is_enumeration_query(query)
+
+
+class TestExpandSiblingEntities:
+    """Tests for expand_sibling_entities."""
+
+    async def test_expands_siblings_via_shared_hub(self):
+        """Should find sibling entities through a shared hub entity."""
+        graph_store = MagicMock()
+        graph_store.query_raw = AsyncMock(
+            return_value=MagicMock(
+                result_set=[
+                    ["id_remove", "list.remove", "Removes elements from a list"],
+                ]
+            )
+        )
+
+        found = {
+            "id_dedup": {"name": "list.dedup", "description": ""},
+            "id_insert": {"name": "list.insert", "description": ""},
+            "id_sort": {"name": "list.sort", "description": ""},
+        }
+        sources: dict[str, str] = {}
+
+        added = await expand_sibling_entities(graph_store, found, sources)
+
+        assert added == 1
+        assert "id_remove" in found
+        assert found["id_remove"]["name"] == "list.remove"
+        assert sources["id_remove"] == "sibling_expansion"
+
+    async def test_skips_when_fewer_than_2_entities(self):
+        """Should not query the graph when fewer than 2 entities are found."""
+        graph_store = MagicMock()
+        graph_store.query_raw = AsyncMock()
+
+        found = {"id_only": {"name": "only_entity", "description": ""}}
+        sources: dict[str, str] = {}
+
+        added = await expand_sibling_entities(graph_store, found, sources)
+
+        assert added == 0
+        graph_store.query_raw.assert_not_called()
+
+    async def test_handles_query_failure(self):
+        """Should return 0 and not raise on graph query failure."""
+        graph_store = MagicMock()
+        graph_store.query_raw = AsyncMock(side_effect=Exception("connection error"))
+
+        found = {
+            "id_a": {"name": "A", "description": ""},
+            "id_b": {"name": "B", "description": ""},
+        }
+        sources: dict[str, str] = {}
+
+        added = await expand_sibling_entities(graph_store, found, sources)
+        assert added == 0
+
+    async def test_does_not_duplicate_found_entities(self):
+        """Should not re-add entities already in the found set."""
+        graph_store = MagicMock()
+        graph_store.query_raw = AsyncMock(
+            return_value=MagicMock(
+                result_set=[
+                    ["id_dedup", "list.dedup", "Already found"],
+                    ["id_new", "list.new", "New entity"],
+                ]
+            )
+        )
+
+        found = {
+            "id_dedup": {"name": "list.dedup", "description": ""},
+            "id_insert": {"name": "list.insert", "description": ""},
+        }
+        sources: dict[str, str] = {}
+
+        added = await expand_sibling_entities(graph_store, found, sources)
+        assert added == 1
+        assert "id_new" in found
+
+
+class TestSiblingExpansionIntegration:
+    """Integration: sibling expansion triggers only for enumeration queries."""
+
+    async def test_enumeration_query_triggers_expansion(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
+        """An enumeration query should issue a sibling-expansion Cypher query."""
+        queries_seen = []
+
+        async def capture_query(cypher, params=None):
+            queries_seen.append(cypher)
+            result = MagicMock()
+            result.result_set = []
+            return result
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=capture_query)
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {"src_name": "list.dedup", "type": "BELONGS_TO", "tgt_name": "FalkorDB", "fact": "", "score": 0.9},
+                {"src_name": "list.insert", "type": "BELONGS_TO", "tgt_name": "FalkorDB", "fact": "", "score": 0.85},
+            ]
+        )
+
+        s = MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=mp_llm,
+        )
+        await s.search("What are all the FalkorDB list functions?")
+
+        sibling_queries = [q for q in queries_seen if "hub" in q.lower() and "sibling" in q.lower()]
+        assert len(sibling_queries) >= 1
+
+    async def test_non_enumeration_query_skips_expansion(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
+        """A non-enumeration query should NOT issue a sibling-expansion query."""
+        queries_seen = []
+
+        async def capture_query(cypher, params=None):
+            queries_seen.append(cypher)
+            result = MagicMock()
+            result.result_set = []
+            return result
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=capture_query)
+
+        s = MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=mp_llm,
+        )
+        await s.search("What is the default parameter for list.remove?")
+
+        sibling_queries = [q for q in queries_seen if "hub" in q.lower() and "sibling" in q.lower()]
+        assert len(sibling_queries) == 0

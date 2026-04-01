@@ -24,6 +24,8 @@ from graphrag_sdk.retrieval.strategies.chunk_retrieval import (
 )
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
     discover_entities,
+    expand_sibling_entities,
+    is_enumeration_query,
     search_relates_edges,
 )
 from graphrag_sdk.retrieval.strategies.relationship_expansion import (
@@ -238,6 +240,15 @@ class MultiPathRetrieval(RetrievalStrategy):
                 entity_sources[eid] = "cypher"
         ctx.log(f"MultiPath [4/9]: {len(found_entities)} entities discovered")
 
+        # 4b. Sibling expansion for enumeration queries
+        if is_enumeration_query(query):
+            n_siblings = await expand_sibling_entities(self._graph, found_entities, entity_sources)
+            if n_siblings:
+                ctx.log(
+                    f"MultiPath [4b/9]: +{n_siblings} sibling entities "
+                    f"({len(found_entities)} total)"
+                )
+
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[: self._max_entities]
         relationship_strings = await expand_relationships(
@@ -313,7 +324,7 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     async def _extract_keywords(self, query: str) -> tuple[list[str], list[str]]:
         """Extract simple + LLM-based keywords from the query."""
-        words = re.sub(r"[?.!,;:'\"-]", " ", query.lower()).split()
+        words = re.sub(r"[?.!,;:'\"\-()\[\]]", " ", query.lower()).split()
         simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][:12]
 
         llm_kw: list[str] = []
@@ -325,7 +336,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 f"Question: {query}\n\nNames: "
             )
             llm_kw = [
-                k.strip().strip("'\"")
+                k.strip().strip("'\"").rstrip("()").strip()
                 for k in response.content.split(",")
                 if k.strip() and len(k.strip()) > 1
             ]
