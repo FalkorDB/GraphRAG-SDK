@@ -287,8 +287,10 @@ class SemanticResolution(ResolutionStrategy):
             norms[norms == 0] = 1.0
             mat_normed = mat / norms
 
-            # Use Union-Find to cluster near-duplicates
             n = len(valid_nodes)
+            top_k = min(self.ann_top_k, n - 1)
+
+            # Use Union-Find to cluster
             parent: dict[int, int] = {i: i for i in range(n)}
 
             def find(x: int) -> int:
@@ -303,17 +305,29 @@ class SemanticResolution(ResolutionStrategy):
                     parent[py] = px
 
             logger.info(
-                "SemanticResolution: cosine similarity for '%s' (n=%d)",
+                "SemanticResolution: hnswlib ANN for '%s' (n=%d, top_k=%d)",
                 label,
                 n,
+                top_k,
             )
-            # mat_normed rows are already unit-normed — dot product == cosine sim
-            sim_matrix = mat_normed @ mat_normed.T  # shape (n, n)
+            import hnswlib
 
+            dim = mat_normed.shape[1]
+            hnsw_index = hnswlib.Index(space="ip", dim=dim)
+            hnsw_index.init_index(max_elements=n, ef_construction=200, M=32)
+            hnsw_index.set_ef(max(top_k + 1, 64))
+            hnsw_index.add_items(mat_normed, list(range(n)))
+            # knn_query for "ip" space returns (1 - dot_product) as distance
+            nbrs, dists = hnsw_index.knn_query(mat_normed, k=top_k + 1)
             for i in range(n):
-                for j in range(i + 1, n):
-                    if sim_matrix[i, j] >= self.similarity_threshold:
+                for rank in range(1, top_k + 1):
+                    j = int(nbrs[i, rank])
+                    if j <= i:
+                        continue
+                    sim_val = 1.0 - float(dists[i, rank])
+                    if sim_val >= self.similarity_threshold:
                         union(i, j)
+            logger.info("SemanticResolution: ANN done for '%s'", label)
 
             # Build clusters
             clusters: dict[int, list[int]] = defaultdict(list)
