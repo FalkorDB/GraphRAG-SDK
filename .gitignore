@@ -40,10 +40,18 @@ UI_FEEDBACK.md
 *.pptx
 *.pdf
 
+# Local bug reproduction scripts
+bugs/
+
 # Local example / debug scripts (not part of the SDK package)
 example.py
 example_*.py
 debug_*.py
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
 
 # Build / dist
 dist/
