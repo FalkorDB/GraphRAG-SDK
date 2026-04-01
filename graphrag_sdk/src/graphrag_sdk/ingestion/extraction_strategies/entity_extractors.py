@@ -333,10 +333,6 @@ class GLiNERExtractor(EntityExtractor):
             with self._lock:
                 # Double-check after acquiring lock
                 if self._model is None:
-                    import os
-                    # Must be set before HuggingFace tokenizers initialise to
-                    # prevent deadlocks when asyncio.to_thread is used later.
-                    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
                     try:
                         from gliner import GLiNER
                     except ImportError:
@@ -344,35 +340,14 @@ class GLiNERExtractor(EntityExtractor):
                             "GLiNER is required for GLiNERExtractor. "
                             "Install with: pip install gliner"
                         )
-                    logger.info("Loading GLiNER model '%s'…", self._model_name)
                     self._model = GLiNER.from_pretrained(self._model_name)
-                    logger.info("GLiNER model loaded.")
         return self._model
 
-    def warm_up(self) -> None:
-        """Pre-load the GLiNER model on the calling thread.
-
-        Call this once on the main thread before launching concurrent
-        ``extract_entities`` tasks so that model loading never races with
-        HuggingFace tokenizer parallelism inside worker threads.
-        """
-        self._load_model()
-
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
-        import time as _time
         model = self._load_model()
         labels = [t.lower() for t in entity_types]
-        logger.debug("GLiNER predict start (text_len=%d)", len(text))
-        t0 = _time.monotonic()
         with self._lock:
-            result = model.predict_entities(text, labels, threshold=self._threshold)
-        logger.debug(
-            "GLiNER predict done (text_len=%d, entities=%d, elapsed=%.1fs)",
-            len(text),
-            len(result),
-            _time.monotonic() - t0,
-        )
-        return result
+            return model.predict_entities(text, labels, threshold=self._threshold)
 
     async def extract_entities(
         self,
@@ -380,13 +355,8 @@ class GLiNERExtractor(EntityExtractor):
         entity_types: list[str],
         source_chunk_id: str,
     ) -> list[ExtractedEntity]:
-        logger.info("GLiNER NER → chunk %s (text_len=%d)", source_chunk_id, len(text))
         raw = await asyncio.to_thread(self._predict_sync, text, entity_types)
-        entities = _parse_predictions(raw, entity_types, source_chunk_id, self._threshold)
-        logger.info(
-            "GLiNER NER ✓ chunk %s → %d entities", source_chunk_id, len(entities)
-        )
-        return entities
+        return _parse_predictions(raw, entity_types, source_chunk_id, self._threshold)
 
 
 # ── LLM Extractor ────────────────────────────────────────────────

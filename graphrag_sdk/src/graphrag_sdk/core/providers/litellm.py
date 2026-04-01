@@ -131,7 +131,6 @@ class LiteLLMEmbedder(Embedder):
         api_base: str | None = None,
         api_version: str | None = None,
         batch_size: int = 2048,
-        request_timeout: float = 25.0,
         **kwargs: Any,
     ) -> None:
         self.model = model
@@ -139,14 +138,12 @@ class LiteLLMEmbedder(Embedder):
         self._api_base = api_base
         self._api_version = api_version
         self.batch_size = batch_size
-        self._request_timeout = request_timeout
         self._extra = kwargs
 
     def _embedding_kwargs(self, input_: str | list[str], **kwargs: Any) -> dict[str, Any]:
         kw: dict[str, Any] = {
             "model": self.model,
             "input": input_,
-            "request_timeout": self._request_timeout,
             **self._extra,
             **kwargs,
         }
