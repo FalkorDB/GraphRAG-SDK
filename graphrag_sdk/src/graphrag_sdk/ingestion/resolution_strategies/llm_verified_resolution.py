@@ -368,12 +368,23 @@ class LLMVerifiedResolution(ResolutionStrategy):
             hard_pairs: list[tuple[int, int]] = []
             ambiguous_pairs: list[tuple[int, int, float]] = []
 
-            # Brute-force cosine similarity via numpy (avoids FAISS OpenMP
-            # thread-pool conflicts with PyTorch on macOS and Windows).
-            sim_matrix = mat_normed @ mat_normed.T  # (n, n), rows are unit-normed
+            # ANN via hnswlib HNSW (O(N log N)) — no OpenMP, no macOS deadlock.
+            import hnswlib
+
+            top_k = min(self.ann_top_k, n_nodes - 1)
+            dim = mat_normed.shape[1]
+            hnsw_index = hnswlib.Index(space="ip", dim=dim)
+            hnsw_index.init_index(max_elements=n_nodes, ef_construction=200, M=32)
+            hnsw_index.set_ef(max(top_k + 1, 64))
+            hnsw_index.add_items(mat_normed, list(range(n_nodes)))
+            # "ip" space with unit-normed vectors: distance = 1 - cosine_similarity
+            nbrs, dists = hnsw_index.knn_query(mat_normed, k=top_k + 1)
             for i in range(n_nodes):
-                for j in range(i + 1, n_nodes):
-                    sim_val = float(sim_matrix[i, j])
+                for rank in range(1, top_k + 1):
+                    j = int(nbrs[i, rank])
+                    if j <= i:
+                        continue
+                    sim_val = 1.0 - float(dists[i, rank])
                     if sim_val >= self.hard_threshold:
                         hard_pairs.append((i, j))
                     elif sim_val >= self.soft_threshold:
