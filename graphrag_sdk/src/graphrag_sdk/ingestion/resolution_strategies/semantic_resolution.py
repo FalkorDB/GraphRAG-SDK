@@ -9,6 +9,11 @@ from collections import defaultdict
 
 import numpy as np
 
+try:
+    import hnswlib as _hnswlib
+except ImportError:  # pragma: no cover
+    _hnswlib = None  # type: ignore[assignment]
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
@@ -216,10 +221,8 @@ class SemanticResolution(ResolutionStrategy):
                 n,
                 top_k,
             )
-            import hnswlib
-
             dim = mat_normed.shape[1]
-            hnsw_index = hnswlib.Index(space="ip", dim=dim)
+            hnsw_index = _hnswlib.Index(space="ip", dim=dim)
             hnsw_index.init_index(max_elements=n, ef_construction=200, M=32)
             hnsw_index.set_ef(max(top_k + 1, 64))
             hnsw_index.add_items(mat_normed, list(range(n)))
