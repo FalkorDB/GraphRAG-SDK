@@ -15,6 +15,13 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 import numpy as np
+import scipy.cluster.hierarchy as sch
+import scipy.spatial.distance as ssd
+
+try:
+    import hnswlib as _hnswlib
+except ImportError:  # pragma: no cover
+    _hnswlib = None  # type: ignore[assignment]
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
@@ -279,11 +286,9 @@ class LLMVerifiedResolution(ResolutionStrategy):
             ambiguous_pairs: list[tuple[int, int, float]] = []
 
             # ANN via hnswlib HNSW (O(N log N)) — no OpenMP, no macOS deadlock.
-            import hnswlib
-
             top_k = min(self.ann_top_k, n_nodes - 1)
             dim = mat_normed.shape[1]
-            hnsw_index = hnswlib.Index(space="ip", dim=dim)
+            hnsw_index = _hnswlib.Index(space="ip", dim=dim)
             hnsw_index.init_index(max_elements=n_nodes, ef_construction=200, M=32)
             hnsw_index.set_ef(max(top_k + 1, 64))
             hnsw_index.add_items(mat_normed, list(range(n_nodes)))
@@ -311,9 +316,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 # Build a distance matrix (1 - sim) for nodes involved in ambiguous pairs,
                 # then use average-linkage fcluster to find tight groups.
                 # Intra-cluster pairs → hard merge; cross-cluster pairs → LLM.
-                import scipy.cluster.hierarchy as sch
-                import scipy.spatial.distance as ssd
-
                 amb_set = {i for i, j, _ in ambiguous_pairs} | {j for i, j, _ in ambiguous_pairs}
                 amb_indices = sorted(amb_set)
                 idx_map = {v: k for k, v in enumerate(amb_indices)}
