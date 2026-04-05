@@ -100,6 +100,9 @@ class LLMVerifiedResolution(ResolutionStrategy):
         force_summary_threshold: Number of descriptions that triggers LLM
             summarisation in Phase 1 (default: 3).
         max_summary_tokens: Token budget hint for description summaries.
+        ann_top_k: Number of nearest neighbours to retrieve per node from the
+            hnswlib HNSW index (default: 50). Higher values improve recall at
+            the cost of speed.
     """
 
     def __init__(

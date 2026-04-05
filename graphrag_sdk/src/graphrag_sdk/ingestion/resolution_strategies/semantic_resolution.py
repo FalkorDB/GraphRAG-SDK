@@ -50,6 +50,10 @@ class SemanticResolution(ResolutionStrategy):
         force_summary_threshold: Number of descriptions that triggers LLM
             summary instead of simple concatenation.
         max_summary_tokens: Token budget hint for the LLM prompt.
+        ann_top_k: Number of nearest neighbours to retrieve per node from the
+            hnswlib HNSW index (default: 50). Higher values improve recall at
+            the cost of speed; 50 is sufficient for typical per-label group
+            sizes.
     """
 
     def __init__(
@@ -240,10 +244,15 @@ class SemanticResolution(ResolutionStrategy):
             try:
                 if miss_names:
                     logger.info(
-                        "SemanticResolution: embedding %d '%s' nodes: %s",
+                        "SemanticResolution: embedding %d '%s' nodes",
                         len(miss_names),
                         label,
-                        miss_names,
+                    )
+                    logger.debug(
+                        "SemanticResolution: '%s' node sample (up to 5 of %d): %s",
+                        label,
+                        len(miss_names),
+                        miss_names[:5],
                     )
                     miss_vecs = await _asyncio.wait_for(
                         self.embedder.aembed_documents(miss_names),
@@ -277,7 +286,7 @@ class SemanticResolution(ResolutionStrategy):
             if len(valid) < 2:
                 continue
 
-            indices, valid_nodes, vecs = zip(*valid)
+            _, valid_nodes, vecs = zip(*valid)
             mat = np.array(vecs, dtype=np.float32)
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
             norms[norms == 0] = 1.0

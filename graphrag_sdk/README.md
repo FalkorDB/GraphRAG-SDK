@@ -179,8 +179,6 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | GraphExtraction |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution`, `SemanticResolution`, `LLMVerifiedResolution` | ExactMatch |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath (5-path) |
-| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` | ExactMatch |
-| **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | MultiPath |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine (built into MultiPath) |
 
 ### LLM & Embedding Providers
@@ -210,8 +208,6 @@ The benchmark-winning pipeline uses:
 - **Extraction**: `GraphExtraction` -- GLiNER2 local NER (step 1) + LLM verify & relationship extraction (step 2)
 - **Resolution**: `ExactMatchResolution` → `DescriptionMergeResolution` → `SemanticResolution` → `LLMVerifiedResolution` -- 4-stage pipeline: exact match, normalized-name merge, hnswlib HNSW semantic clustering, Louvain community detection + batched LLM verification
 - **Retrieval**: `MultiPathRetrieval` -- 5-path entity discovery, 2-hop relationship expansion, 5-path chunk retrieval, cosine reranking, fact retrieval
-- **Resolution**: `DescriptionMergeResolution` -- LLM-assisted entity deduplication with description merging
-- **Retrieval**: `MultiPathRetrieval` -- entity discovery, relationship expansion, chunk retrieval, cosine reranking
 - **Chunking**: 1500 chars / 200 overlap
 - **LLM**: GPT-4.1 (Azure OpenAI), **Embeddings**: text-embedding-ada-002 (1536 dim)
 
