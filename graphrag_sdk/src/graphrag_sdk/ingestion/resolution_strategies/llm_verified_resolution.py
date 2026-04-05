@@ -307,32 +307,39 @@ class LLMVerifiedResolution(ResolutionStrategy):
 
             # Ambiguous zone — LLM verification
             if ambiguous_pairs and self.llm is not None:
-                # Community detection: only send cluster boundary pairs to LLM (Gap 2)
-                # Intra-community pairs are treated as additional hard merges (cheap consensus)
-                import networkx as nx
+                # Cluster ambiguous pairs using scipy agglomerative clustering.
+                # Build a distance matrix (1 - sim) for nodes involved in ambiguous pairs,
+                # then use average-linkage fcluster to find tight groups.
+                # Intra-cluster pairs → hard merge; cross-cluster pairs → LLM.
+                import scipy.cluster.hierarchy as sch
+                import scipy.spatial.distance as ssd
 
-                G = nx.Graph()
-                G.add_nodes_from(range(n_nodes))
+                amb_set = {i for i, j, _ in ambiguous_pairs} | {j for i, j, _ in ambiguous_pairs}
+                amb_indices = sorted(amb_set)
+                idx_map = {v: k for k, v in enumerate(amb_indices)}
+                n_amb = len(amb_indices)
+
+                # Condensed distance matrix for scipy
+                dist_matrix = np.ones((n_amb, n_amb), dtype=np.float32)
+                np.fill_diagonal(dist_matrix, 0.0)
                 for gi, gj, sim_val in ambiguous_pairs:
-                    G.add_edge(gi, gj, weight=sim_val)
-                try:
-                    communities = list(nx.algorithms.community.louvain_communities(G, seed=42))
-                except AttributeError:
-                    communities = list(nx.algorithms.community.greedy_modularity_communities(G))
+                    ai, aj = idx_map[gi], idx_map[gj]
+                    dist_matrix[ai, aj] = 1.0 - sim_val
+                    dist_matrix[aj, ai] = 1.0 - sim_val
 
-                # node → community id (use .get with distinct defaults for safety)
-                node_to_comm: dict[int, int] = {}
-                for cid, members in enumerate(communities):
-                    for m in members:
-                        node_to_comm[m] = cid
+                condensed = ssd.squareform(dist_matrix)
+                linkage = sch.linkage(condensed, method="average")
+                # Cut at distance = 1 - soft_threshold to cluster pairs above soft_threshold
+                cut = 1.0 - self.soft_threshold
+                cluster_labels = sch.fcluster(linkage, t=cut, criterion="distance")
+                node_to_comm = {amb_indices[k]: int(cluster_labels[k]) for k in range(n_amb)}
 
-                # Intra-community pairs → hard merge (no LLM needed)
+                # Intra-cluster pairs → hard merge (no LLM needed)
                 for gi, gj, _ in ambiguous_pairs:
-                    # Use -1 and -2 as distinct defaults so unindexed nodes go to LLM (safe)
                     if node_to_comm.get(gi, -1) == node_to_comm.get(gj, -2):
                         union(gi, gj)
 
-                # Cross-community pairs → LLM (the genuinely ambiguous ones)
+                # Cross-cluster pairs → LLM (the genuinely ambiguous ones)
                 boundary_pairs = [
                     (gi, gj, sim_val)
                     for gi, gj, sim_val in ambiguous_pairs

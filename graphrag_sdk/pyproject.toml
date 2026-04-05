@@ -29,7 +29,7 @@ dependencies = [
     "tiktoken>=0.5",
     "gliner>=0.2",
     "hnswlib>=0.8",
-    "networkx>=3.0",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]
