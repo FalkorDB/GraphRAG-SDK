@@ -336,16 +336,23 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 cluster_labels = sch.fcluster(linkage, t=cut, criterion="distance")
                 node_to_comm = {amb_indices[k]: int(cluster_labels[k]) for k in range(n_amb)}
 
+                def _same_cluster(gi: int, gj: int) -> bool:
+                    return (
+                        gi in node_to_comm
+                        and gj in node_to_comm
+                        and node_to_comm[gi] == node_to_comm[gj]
+                    )
+
                 # Intra-cluster pairs → hard merge (no LLM needed)
                 for gi, gj, _ in ambiguous_pairs:
-                    if node_to_comm.get(gi, -1) == node_to_comm.get(gj, -2):
+                    if _same_cluster(gi, gj):
                         union(gi, gj)
 
                 # Cross-cluster pairs → LLM (the genuinely ambiguous ones)
                 boundary_pairs = [
                     (gi, gj, sim_val)
                     for gi, gj, sim_val in ambiguous_pairs
-                    if node_to_comm.get(gi, -1) != node_to_comm.get(gj, -2)
+                    if not _same_cluster(gi, gj)
                 ]
                 boundary_pairs.sort(key=lambda t: t[2], reverse=True)
                 capped = boundary_pairs[: self.max_llm_pairs]
