@@ -344,9 +344,16 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     )
 
                 # Intra-cluster pairs → hard merge (no LLM needed)
-                for gi, gj, _ in ambiguous_pairs:
+                for gi, gj, sim_val in ambiguous_pairs:
                     if _same_cluster(gi, gj):
                         union(gi, gj)
+                        logger.debug(
+                            "Intra-cluster auto-merge '%s' + '%s' (sim=%.3f, label=%s)",
+                            valid_nodes[gi].properties.get("name", valid_nodes[gi].id),
+                            valid_nodes[gj].properties.get("name", valid_nodes[gj].id),
+                            sim_val,
+                            label,
+                        )
 
                 # Cross-cluster pairs → LLM (the genuinely ambiguous ones)
                 boundary_pairs = [
