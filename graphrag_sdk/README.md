@@ -206,7 +206,7 @@ The default pipeline achieves **84.8% accuracy** (8.48/10) on a 100-question ben
 
 The benchmark-winning pipeline uses:
 - **Extraction**: `GraphExtraction` -- GLiNER2 local NER (step 1) + LLM verify & relationship extraction (step 2)
-- **Resolution**: `ExactMatchResolution` → `DescriptionMergeResolution` → `SemanticResolution` → `LLMVerifiedResolution` -- 4-stage pipeline: exact match, normalized-name merge, hnswlib HNSW semantic clustering, Louvain community detection + batched LLM verification
+- **Resolution**: `ExactMatchResolution` → `DescriptionMergeResolution` → `SemanticResolution` → `LLMVerifiedResolution` -- 4-stage pipeline: exact match, normalized-name merge, hnswlib HNSW semantic clustering, scipy agglomerative clustering + batched LLM verification
 - **Retrieval**: `MultiPathRetrieval` -- 5-path entity discovery, 2-hop relationship expansion, 5-path chunk retrieval, cosine reranking, fact retrieval
 - **Chunking**: 1500 chars / 200 overlap
 - **LLM**: GPT-4.1 (Azure OpenAI), **Embeddings**: text-embedding-ada-002 (1536 dim)
