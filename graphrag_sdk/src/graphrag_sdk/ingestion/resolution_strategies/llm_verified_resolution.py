@@ -331,8 +331,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
 
                 condensed = ssd.squareform(dist_matrix)
                 linkage = sch.linkage(condensed, method="average")
-                # Cut at distance = 1 - soft_threshold to cluster pairs above soft_threshold
-                cut = 1.0 - self.soft_threshold
+                # Cut at distance = 1 - hard_threshold: only cluster nodes that are
+                # very similar (near the hard-merge boundary). Nodes in the wider
+                # soft..hard ambiguous zone but spanning multiple tight groups go to LLM.
+                cut = 1.0 - self.hard_threshold
                 cluster_labels = sch.fcluster(linkage, t=cut, criterion="distance")
                 node_to_comm = {amb_indices[k]: int(cluster_labels[k]) for k in range(n_amb)}
 
