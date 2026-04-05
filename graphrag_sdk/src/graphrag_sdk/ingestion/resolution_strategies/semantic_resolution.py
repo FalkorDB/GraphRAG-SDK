@@ -128,8 +128,6 @@ class SemanticResolution(ResolutionStrategy):
 
         Returns a remap dict: duplicate_id → survivor_id.
         """
-        import asyncio as _asyncio
-
         # Group by label
         by_label: dict[str, list[GraphNode]] = defaultdict(list)
         for n in nodes:
@@ -160,10 +158,7 @@ class SemanticResolution(ResolutionStrategy):
                         len(miss_names),
                         miss_names[:5],
                     )
-                    miss_vecs = await _asyncio.wait_for(
-                        self.embedder.aembed_documents(miss_names),
-                        timeout=20.0,
-                    )
+                    miss_vecs = await self.embedder.aembed_documents(miss_names)
                     for node, vec in zip(miss_nodes, miss_vecs):
                         if vec:
                             emb_cache[node.id] = vec
@@ -173,12 +168,6 @@ class SemanticResolution(ResolutionStrategy):
                         len([n for n in label_nodes if n.id in emb_cache]),
                         len(label_nodes),
                     )
-            except _asyncio.TimeoutError:
-                logger.warning(
-                    "SemanticResolution: TIMEOUT embedding '%s' nodes after 20s — skipping label",
-                    label,
-                )
-                continue
             except Exception as _e:
                 logger.warning("SemanticResolution: skipping '%s' embeddings: %s", label, _e)
                 continue
