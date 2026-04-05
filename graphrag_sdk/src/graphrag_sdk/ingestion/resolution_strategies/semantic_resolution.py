@@ -13,20 +13,16 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
-    GraphRelationship,
     ResolutionResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
-from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+from graphrag_sdk.ingestion.resolution_strategies.base import (
+    ResolutionStrategy,
+    exact_match_merge,
+    remap_relationships,
+)
 
 logger = logging.getLogger(__name__)
-
-_SUMMARY_PROMPT = (
-    "Summarise the following descriptions of the entity '{entity_name}' "
-    "into a single concise description (max {max_tokens} tokens).\n\n"
-    "Descriptions:\n{descriptions}\n\n"
-    "Summary:"
-)
 
 
 class SemanticResolution(ResolutionStrategy):
@@ -83,91 +79,13 @@ class SemanticResolution(ResolutionStrategy):
             f"{len(graph_data.relationships)} rels"
         )
 
-        # Phase 1: Group by (normalized_name, label) — prevents cross-type merges
-        groups: dict[tuple[str, str], list[GraphNode]] = defaultdict(list)
-        for node in graph_data.nodes:
-            name = node.properties.get("name", node.id)
-            key = (str(name).strip().lower(), node.label)
-            groups[key].append(node)
-
-        # Phase 2: Build ID remap from exact-name groups
-        id_remap: dict[str, str] = {}
-        deduplicated_nodes: list[GraphNode] = []
-        merged_count = 0
-
-        # Collect groups needing LLM summary
-        summary_requests: list[tuple[int, str, list[str]]] = []
-        group_data: list[tuple[GraphNode, list[GraphNode], list[str], list[str]]] = []
-
-        for _key, nodes in groups.items():
-            survivor = nodes[0]
-            deduplicated_nodes.append(survivor)
-
-            if len(nodes) == 1:
-                group_data.append((survivor, nodes, [], []))
-                continue
-
-            descriptions: list[str] = []
-            all_source_ids: list[str] = []
-            for n in nodes:
-                desc = n.properties.get("description", "")
-                if desc:
-                    descriptions.append(str(desc))
-                src_ids = n.properties.get("source_chunk_ids", [])
-                if isinstance(src_ids, list):
-                    for sid in src_ids:
-                        if sid not in all_source_ids:
-                            all_source_ids.append(sid)
-
-            group_data.append((survivor, nodes, descriptions, all_source_ids))
-
-            if (
-                descriptions
-                and len(descriptions) >= self.force_summary_threshold
-                and self.llm is not None
-            ):
-                entity_name = str(survivor.properties.get("name", survivor.id))
-                summary_requests.append((len(group_data) - 1, entity_name, descriptions))
-
-        # Batch LLM summaries
-        summary_results: dict[int, str] = {}
-        if summary_requests and self.llm is not None:
-            prompts = [
-                _SUMMARY_PROMPT.format(
-                    entity_name=entity_name,
-                    max_tokens=self.max_summary_tokens,
-                    descriptions="\n".join(f"- {d}" for d in descs),
-                )
-                for _, entity_name, descs in summary_requests
-            ]
-            batch_results = await self.llm.abatch_invoke(prompts)
-            for item in batch_results:
-                group_idx, entity_name, descs = summary_requests[item.index]
-                if item.ok:
-                    summary_results[group_idx] = item.response.content.strip()
-                else:
-                    summary_results[group_idx] = " | ".join(descs)
-
-        # Apply merges
-        for gi, (survivor, nodes, descriptions, all_source_ids) in enumerate(group_data):
-            if len(nodes) == 1:
-                continue
-
-            if descriptions:
-                if gi in summary_results:
-                    survivor.properties["description"] = summary_results[gi]
-                else:
-                    survivor.properties["description"] = " | ".join(descriptions)
-
-            if all_source_ids:
-                survivor.properties["source_chunk_ids"] = all_source_ids
-
-            for duplicate in nodes[1:]:
-                for key, value in duplicate.properties.items():
-                    if key not in survivor.properties:
-                        survivor.properties[key] = value
-                id_remap[duplicate.id] = survivor.id
-                merged_count += 1
+        # Phase 1: exact-match merge by (normalized_name, label)
+        deduplicated_nodes, id_remap, merged_count = await exact_match_merge(
+            graph_data.nodes,
+            self.llm,
+            force_summary_threshold=self.force_summary_threshold,
+            max_summary_tokens=self.max_summary_tokens,
+        )
 
         # Phase 3: Optional embedding-based fuzzy merge within same label
         if self.embedder and len(deduplicated_nodes) >= 2:
@@ -184,24 +102,7 @@ class SemanticResolution(ResolutionStrategy):
                 deduplicated_nodes = final_nodes
 
         # Remap relationship endpoints and deduplicate
-        deduplicated_rels: list[GraphRelationship] = []
-        seen_rels: set[tuple[str, str, str]] = set()
-
-        for rel in graph_data.relationships:
-            start = id_remap.get(rel.start_node_id, rel.start_node_id)
-            end = id_remap.get(rel.end_node_id, rel.end_node_id)
-            rel_key = (start, rel.type, end)
-
-            if rel_key not in seen_rels:
-                seen_rels.add(rel_key)
-                deduplicated_rels.append(
-                    GraphRelationship(
-                        start_node_id=start,
-                        end_node_id=end,
-                        type=rel.type,
-                        properties=rel.properties,
-                    )
-                )
+        deduplicated_rels = remap_relationships(graph_data.relationships, id_remap)
 
         ctx.log(
             f"SemanticResolution complete: {len(deduplicated_nodes)} nodes "
