@@ -9,24 +9,25 @@ from collections import defaultdict
 
 import numpy as np
 
+try:
+    import hnswlib as _hnswlib
+except ImportError:  # pragma: no cover
+    _hnswlib = None  # type: ignore[assignment]
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
-    GraphRelationship,
     ResolutionResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
-from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+from graphrag_sdk.ingestion.resolution_strategies.base import (
+    ResolutionStrategy,
+    exact_match_merge,
+    remap_relationships,
+)
 
 logger = logging.getLogger(__name__)
-
-_SUMMARY_PROMPT = (
-    "Summarise the following descriptions of the entity '{entity_name}' "
-    "into a single concise description (max {max_tokens} tokens).\n\n"
-    "Descriptions:\n{descriptions}\n\n"
-    "Summary:"
-)
 
 
 class SemanticResolution(ResolutionStrategy):
@@ -50,6 +51,10 @@ class SemanticResolution(ResolutionStrategy):
         force_summary_threshold: Number of descriptions that triggers LLM
             summary instead of simple concatenation.
         max_summary_tokens: Token budget hint for the LLM prompt.
+        ann_top_k: Number of nearest neighbours to retrieve per node from the
+            hnswlib HNSW index (default: 50). Higher values improve recall at
+            the cost of speed; 50 is sufficient for typical per-label group
+            sizes.
     """
 
     def __init__(
@@ -60,12 +65,14 @@ class SemanticResolution(ResolutionStrategy):
         similarity_threshold: float = 0.95,
         force_summary_threshold: int = 3,
         max_summary_tokens: int = 500,
+        ann_top_k: int = 50,
     ) -> None:
         self.llm = llm
         self.embedder = embedder
         self.similarity_threshold = similarity_threshold
         self.force_summary_threshold = force_summary_threshold
         self.max_summary_tokens = max_summary_tokens
+        self.ann_top_k = ann_top_k
 
     async def resolve(
         self,
@@ -77,91 +84,13 @@ class SemanticResolution(ResolutionStrategy):
             f"{len(graph_data.relationships)} rels"
         )
 
-        # Phase 1: Group by (normalized_name, label) — prevents cross-type merges
-        groups: dict[tuple[str, str], list[GraphNode]] = defaultdict(list)
-        for node in graph_data.nodes:
-            name = node.properties.get("name", node.id)
-            key = (str(name).strip().lower(), node.label)
-            groups[key].append(node)
-
-        # Phase 2: Build ID remap from exact-name groups
-        id_remap: dict[str, str] = {}
-        deduplicated_nodes: list[GraphNode] = []
-        merged_count = 0
-
-        # Collect groups needing LLM summary
-        summary_requests: list[tuple[int, str, list[str]]] = []
-        group_data: list[tuple[GraphNode, list[GraphNode], list[str], list[str]]] = []
-
-        for _key, nodes in groups.items():
-            survivor = nodes[0]
-            deduplicated_nodes.append(survivor)
-
-            if len(nodes) == 1:
-                group_data.append((survivor, nodes, [], []))
-                continue
-
-            descriptions: list[str] = []
-            all_source_ids: list[str] = []
-            for n in nodes:
-                desc = n.properties.get("description", "")
-                if desc:
-                    descriptions.append(str(desc))
-                src_ids = n.properties.get("source_chunk_ids", [])
-                if isinstance(src_ids, list):
-                    for sid in src_ids:
-                        if sid not in all_source_ids:
-                            all_source_ids.append(sid)
-
-            group_data.append((survivor, nodes, descriptions, all_source_ids))
-
-            if (
-                descriptions
-                and len(descriptions) >= self.force_summary_threshold
-                and self.llm is not None
-            ):
-                entity_name = str(survivor.properties.get("name", survivor.id))
-                summary_requests.append((len(group_data) - 1, entity_name, descriptions))
-
-        # Batch LLM summaries
-        summary_results: dict[int, str] = {}
-        if summary_requests and self.llm is not None:
-            prompts = [
-                _SUMMARY_PROMPT.format(
-                    entity_name=entity_name,
-                    max_tokens=self.max_summary_tokens,
-                    descriptions="\n".join(f"- {d}" for d in descs),
-                )
-                for _, entity_name, descs in summary_requests
-            ]
-            batch_results = await self.llm.abatch_invoke(prompts)
-            for item in batch_results:
-                group_idx, entity_name, descs = summary_requests[item.index]
-                if item.ok:
-                    summary_results[group_idx] = item.response.content.strip()
-                else:
-                    summary_results[group_idx] = " | ".join(descs)
-
-        # Apply merges
-        for gi, (survivor, nodes, descriptions, all_source_ids) in enumerate(group_data):
-            if len(nodes) == 1:
-                continue
-
-            if descriptions:
-                if gi in summary_results:
-                    survivor.properties["description"] = summary_results[gi]
-                else:
-                    survivor.properties["description"] = " | ".join(descriptions)
-
-            if all_source_ids:
-                survivor.properties["source_chunk_ids"] = all_source_ids
-
-            for duplicate in nodes[1:]:
-                for key, value in duplicate.properties.items():
-                    if key not in survivor.properties:
-                        survivor.properties[key] = value
-                id_remap[duplicate.id] = survivor.id
-                merged_count += 1
+        # Phase 1: exact-match merge by (normalized_name, label)
+        deduplicated_nodes, id_remap, merged_count = await exact_match_merge(
+            graph_data.nodes,
+            self.llm,
+            force_summary_threshold=self.force_summary_threshold,
+            max_summary_tokens=self.max_summary_tokens,
+        )
 
         # Phase 3: Optional embedding-based fuzzy merge within same label
         if self.embedder and len(deduplicated_nodes) >= 2:
@@ -178,24 +107,7 @@ class SemanticResolution(ResolutionStrategy):
                 deduplicated_nodes = final_nodes
 
         # Remap relationship endpoints and deduplicate
-        deduplicated_rels: list[GraphRelationship] = []
-        seen_rels: set[tuple[str, str, str]] = set()
-
-        for rel in graph_data.relationships:
-            start = id_remap.get(rel.start_node_id, rel.start_node_id)
-            end = id_remap.get(rel.end_node_id, rel.end_node_id)
-            rel_key = (start, rel.type, end)
-
-            if rel_key not in seen_rels:
-                seen_rels.add(rel_key)
-                deduplicated_rels.append(
-                    GraphRelationship(
-                        start_node_id=start,
-                        end_node_id=end,
-                        type=rel.type,
-                        properties=rel.properties,
-                    )
-                )
+        deduplicated_rels = remap_relationships(graph_data.relationships, id_remap)
 
         ctx.log(
             f"SemanticResolution complete: {len(deduplicated_nodes)} nodes "
@@ -229,12 +141,38 @@ class SemanticResolution(ResolutionStrategy):
 
             remap_before = len(remap)
 
-            names = [n.properties.get("name", n.id) for n in label_nodes]
+            emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
+
+            miss_nodes = [n for n in label_nodes if n.id not in emb_cache]
+            miss_names = [str(n.properties.get("name", n.id)) for n in miss_nodes]
             try:
-                vectors = await self.embedder.aembed_documents([str(name) for name in names])
-            except Exception:
-                logger.debug("Embedding failed for label %s, skipping", label, exc_info=True)
+                if miss_names:
+                    logger.info(
+                        "SemanticResolution: embedding %d '%s' nodes",
+                        len(miss_names),
+                        label,
+                    )
+                    logger.debug(
+                        "SemanticResolution: '%s' node sample (up to 5 of %d): %s",
+                        label,
+                        len(miss_names),
+                        miss_names[:5],
+                    )
+                    miss_vecs = await self.embedder.aembed_documents(miss_names)
+                    for node, vec in zip(miss_nodes, miss_vecs):
+                        if vec:
+                            emb_cache[node.id] = vec
+                    logger.info(
+                        "SemanticResolution: embeddings done for '%s' (%d/%d cached)",
+                        label,
+                        len([n for n in label_nodes if n.id in emb_cache]),
+                        len(label_nodes),
+                    )
+            except Exception as _e:
+                logger.warning("SemanticResolution: skipping '%s' embeddings: %s", label, _e)
                 continue
+
+            vectors = [emb_cache.get(n.id, []) for n in label_nodes]
 
             # Filter out failed embeddings
             valid = [
@@ -243,15 +181,17 @@ class SemanticResolution(ResolutionStrategy):
             if len(valid) < 2:
                 continue
 
-            indices, valid_nodes, vecs = zip(*valid)
+            _, valid_nodes, vecs = zip(*valid)
             mat = np.array(vecs, dtype=np.float32)
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             mat_normed = mat / norms
 
-            # Find pairs above threshold (upper triangle only)
+            n = len(valid_nodes)
+            top_k = min(self.ann_top_k, n - 1)
+
             # Use Union-Find to cluster
-            parent: dict[int, int] = {i: i for i in range(len(valid_nodes))}
+            parent: dict[int, int] = {i: i for i in range(n)}
 
             def find(x: int) -> int:
                 while parent[x] != x:
@@ -264,19 +204,28 @@ class SemanticResolution(ResolutionStrategy):
                 if px != py:
                     parent[py] = px
 
-            n = len(valid_nodes)
-            BLOCK_SIZE = 500
-            for i_start in range(0, n, BLOCK_SIZE):
-                i_end = min(i_start + BLOCK_SIZE, n)
-                block = mat_normed[i_start:i_end]
-                remaining = mat_normed[i_start:]
-                sim_block = block @ remaining.T
-                local_rows, local_cols = np.where(sim_block >= self.similarity_threshold)
-                for lr, lc in zip(local_rows.tolist(), local_cols.tolist()):
-                    gi = i_start + lr
-                    gj = i_start + lc
-                    if gj > gi:
-                        union(gi, gj)
+            logger.info(
+                "SemanticResolution: hnswlib ANN for '%s' (n=%d, top_k=%d)",
+                label,
+                n,
+                top_k,
+            )
+            dim = mat_normed.shape[1]
+            hnsw_index = _hnswlib.Index(space="ip", dim=dim)
+            hnsw_index.init_index(max_elements=n, ef_construction=200, M=32)
+            hnsw_index.set_ef(max(top_k + 1, 64))
+            hnsw_index.add_items(mat_normed, list(range(n)))
+            # knn_query for "ip" space returns (1 - dot_product) as distance
+            nbrs, dists = hnsw_index.knn_query(mat_normed, k=top_k + 1)
+            for i in range(n):
+                for rank in range(1, top_k + 1):
+                    j = int(nbrs[i, rank])
+                    if j <= i:
+                        continue
+                    sim_val = 1.0 - float(dists[i, rank])
+                    if sim_val >= self.similarity_threshold:
+                        union(i, j)
+            logger.info("SemanticResolution: ANN done for '%s'", label)
 
             # Build clusters
             clusters: dict[int, list[int]] = defaultdict(list)
