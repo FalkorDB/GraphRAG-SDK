@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Semantic Router
+# GraphRAG SDK — Retrieval: Semantic Router
 # Classifies query intent and selects the appropriate retrieval strategy.
 # Origin: User design — absent in Neo4j (which forces a single retriever at init).
 #

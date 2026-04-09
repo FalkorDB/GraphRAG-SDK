@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: LLM-Verified Resolution
+# GraphRAG SDK — Ingestion: LLM-Verified Resolution
 # Three-tier deduplication:
 #   Phase 1: normalized name exact-match merge (free)
 #   Phase 2: embedding cosine similarity
@@ -288,6 +288,11 @@ class LLMVerifiedResolution(ResolutionStrategy):
             # ANN via hnswlib HNSW (O(N log N)) — no OpenMP, no macOS deadlock.
             top_k = min(self.ann_top_k, n_nodes - 1)
             dim = mat_normed.shape[1]
+            if _hnswlib is None:
+                raise ImportError(
+                    "hnswlib is required for LLMVerifiedResolution embedding merge. "
+                    "Install with: pip install hnswlib"
+                )
             hnsw_index = _hnswlib.Index(space="ip", dim=dim)
             hnsw_index.init_index(max_elements=n_nodes, ef_construction=200, M=32)
             hnsw_index.set_ef(max(top_k + 1, 64))

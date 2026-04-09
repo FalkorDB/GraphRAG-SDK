@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Text-to-Cypher Generation
+# GraphRAG SDK — Retrieval: Text-to-Cypher Generation
 # Adapted from FalkorDB/GraphRAG-SDK upstream for the unified RELATES schema.
 # Generates read-only Cypher queries from natural language questions.
 #
@@ -63,8 +63,11 @@ Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, 
 - NEXT_CHUNK: connects Chunk to next sequential Chunk
 
 ## FalkorDB-specific rules (CRITICAL — violating these causes execution errors):
-1. Do NOT use shortestPath() or allShortestPaths() — FalkorDB returns Path objects that cause "Type mismatch: expected List or Null but was Path".
-2. Every column in RETURN must have a UNIQUE name. Use aliases: `RETURN a.name AS a_name, b.name AS b_name` — NEVER `RETURN a.name, b.name` without aliases when both are `.name`.
+1. Do NOT use shortestPath() or allShortestPaths() — FalkorDB returns
+   Path objects that cause "Type mismatch: expected List or Null but was Path".
+2. Every column in RETURN must have a UNIQUE name. Use aliases:
+   `RETURN a.name AS a_name, b.name AS b_name` — NEVER return
+   columns without aliases when both are `.name`.
 3. Do NOT use the `path =` variable syntax. Instead use explicit node/edge variables.
 4. Keep queries simple: 1-2 MATCH clauses maximum. Add LIMIT 25 to prevent huge result sets.
 5. Use CONTAINS for fuzzy name matching: `WHERE e.name CONTAINS 'keyword'`
@@ -100,7 +103,8 @@ Question: "How are Alice and the castle connected?"
 ```cypher
 MATCH (a:__Entity__)-[r1:RELATES]-(mid:__Entity__)-[r2:RELATES]-(b:__Entity__)
 WHERE a.name CONTAINS 'Alice' AND b.name CONTAINS 'castle'
-RETURN a.name AS from_entity, r1.rel_type AS rel1, mid.name AS via_entity, r2.rel_type AS rel2, b.name AS to_entity
+RETURN a.name AS from_entity, r1.rel_type AS rel1,
+  mid.name AS via_entity, r2.rel_type AS rel2, b.name AS to_entity
 LIMIT 15
 ```
 

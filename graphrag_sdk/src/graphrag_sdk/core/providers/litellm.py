@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — LiteLLM Provider
+# GraphRAG SDK — LiteLLM Provider
 # LLM and Embedder backed by LiteLLM (100+ providers via unified interface).
 # Requires: pip install graphrag-sdk[litellm]
 
@@ -9,11 +9,11 @@ import logging
 from typing import Any
 
 from graphrag_sdk.core.models import LLMResponse
-from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
 )
+from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,11 @@ class LiteLLMEmbedder(Embedder):
         self._api_version = api_version
         self.batch_size = batch_size
         self._extra = kwargs
+
+    @property
+    def model_name(self) -> str:
+        """Identifier of the embedding model."""
+        return self.model
 
     def _embedding_kwargs(self, input_: str | list[str], **kwargs: Any) -> dict[str, Any]:
         kw: dict[str, Any] = {

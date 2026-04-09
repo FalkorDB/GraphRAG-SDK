@@ -1,11 +1,11 @@
-# GraphRAG SDK v2.0
+# GraphRAG SDK
 
 **A modular, async-first Graph RAG framework for FalkorDB.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Version: 2.0.0a1](https://img.shields.io/badge/version-2.0.0a1-orange.svg)](pyproject.toml)
-[![Tests: 491 passing](https://img.shields.io/badge/tests-491%20passing-brightgreen.svg)](tests/)
+[![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-orange.svg)](pyproject.toml)
+[![Tests: 547 passing](https://img.shields.io/badge/tests-547%20passing-brightgreen.svg)](tests/)
 
 GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **84.8% accuracy** on a 20-document novel benchmark using GPT-4.1.
 
@@ -32,8 +32,11 @@ async def main():
     result = await rag.ingest("my_document.txt")
     print(f"Created {result.nodes_created} nodes, {result.relationships_created} edges")
 
-    # Query the knowledge graph
-    answer = await rag.query("What is the main theme?")
+    # Retrieve context only
+    context = await rag.retrieve("What is the main theme?")
+
+    # Full RAG: retrieve + generate answer
+    answer = await rag.completion("What is the main theme?")
     print(answer.answer)
 
 asyncio.run(main())

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Utils: Graph Visualization
+# GraphRAG SDK — Utils: Graph Visualization
 # Debugging and visualization utilities for the knowledge graph.
 
 from __future__ import annotations

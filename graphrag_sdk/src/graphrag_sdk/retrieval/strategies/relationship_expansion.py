@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Relationship Expansion
+# GraphRAG SDK — Retrieval: Relationship Expansion
 # 1-hop + 2-hop relationship traversal from top entities.
 
 from __future__ import annotations

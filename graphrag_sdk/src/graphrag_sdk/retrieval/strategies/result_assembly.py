@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Result Assembly
+# GraphRAG SDK — Retrieval: Result Assembly
 # Cosine reranking, question-type detection, and structured result assembly.
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core: Exception Hierarchy
+# GraphRAG SDK — Core: Exception Hierarchy
 # Centralized exceptions for the entire SDK.
 
 from __future__ import annotations

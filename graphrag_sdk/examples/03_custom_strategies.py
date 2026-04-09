@@ -155,7 +155,7 @@ async def main():
     ]
 
     for q in questions:
-        result = await rag.query(q)
+        result = await rag.completion(q)
         print(f"\nQ: {q}")
         print(f"A: {result.answer}")
 

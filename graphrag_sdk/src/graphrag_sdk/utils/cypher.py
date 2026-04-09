@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Utils: Cypher Sanitization
+# GraphRAG SDK — Utils: Cypher Sanitization
 # Prevents Cypher injection via label/type interpolation.
 
 

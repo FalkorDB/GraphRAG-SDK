@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Storage: Graph Store
+# GraphRAG SDK — Storage: Graph Store
 # Pattern: Repository — all Cypher operations behind clean methods.
 # Origin: Neo4j batched upserts + User design for storage separation.
 #

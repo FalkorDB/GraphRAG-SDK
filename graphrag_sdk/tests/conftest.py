@@ -32,6 +32,10 @@ class MockEmbedder(Embedder):
         self.dimension = dimension
         self.call_count = 0
 
+    @property
+    def model_name(self) -> str:
+        return "mock-embedder"
+
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         self.call_count += 1
         h = hash(text) % (10**9)

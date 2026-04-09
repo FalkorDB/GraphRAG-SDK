@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Extraction Strategy ABC
+# GraphRAG SDK — Ingestion: Extraction Strategy ABC
 # Pattern: Strategy — different extraction approaches implement this interface.
 
 from __future__ import annotations

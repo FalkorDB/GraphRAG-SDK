@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Reranking Strategy ABC
+# GraphRAG SDK — Retrieval: Reranking Strategy ABC
 # Pattern: Strategy — composable result quality layer.
 # Origin: User design — absent in Neo4j.
 

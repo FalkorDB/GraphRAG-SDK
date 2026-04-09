@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Two-Step Extraction Strategy
+# GraphRAG SDK — Ingestion: Two-Step Extraction Strategy
 # Composable 2-step extraction: pluggable entity NER (step 1) +
 # LLM verify/enrich/relationship extraction (step 2).
 

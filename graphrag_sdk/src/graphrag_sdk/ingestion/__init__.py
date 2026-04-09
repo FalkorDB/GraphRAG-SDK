@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion
+# GraphRAG SDK — Ingestion
 # Knowledge graph construction: loaders, chunkers, extractors, resolvers, pipeline.
 
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy

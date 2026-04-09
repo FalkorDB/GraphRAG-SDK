@@ -1,5 +1,5 @@
 """
-GraphRAG SDK v2 -- Quick Start
+GraphRAG SDK -- Quick Start
 ===============================
 Minimal example: ingest a short text and query it.
 No external files needed -- just an LLM API key and FalkorDB.
@@ -56,13 +56,17 @@ async def main():
     result = await rag.ingest("quickstart_doc", text=TEXT)
     print(f"Ingested: {result.nodes_created} nodes, {result.relationships_created} edges")
 
-    # 4. Query
+    # 4. Retrieve context only (no LLM answer generation)
+    context = await rag.retrieve("Where does Alice work?")
+    print(f"\nRetrieved {len(context.items)} context items")
+
+    # 5. Full RAG: retrieve + generate answer
     for question in [
         "Where does Alice work?",
         "Who is the CTO of Acme Corp?",
         "When was Acme Corp founded?",
     ]:
-        answer = await rag.query(question)
+        answer = await rag.completion(question)
         print(f"\nQ: {question}")
         print(f"A: {answer.answer}")
 

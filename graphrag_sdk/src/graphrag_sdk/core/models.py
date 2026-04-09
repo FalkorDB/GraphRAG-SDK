@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core: Data Models
+# GraphRAG SDK — Core: Data Models
 # Pydantic v2 schemas used across the entire SDK.
 # Origin: Shared types + Neo4j DataModel pattern + schema types.
 
@@ -9,7 +9,6 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
-
 
 # ── Base ─────────────────────────────────────────────────────────
 

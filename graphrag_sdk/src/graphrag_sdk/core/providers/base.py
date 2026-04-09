@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core: Provider ABCs
+# GraphRAG SDK — Core: Provider ABCs
 # Thin abstract interfaces for Embedders and LLMs.
 
 from __future__ import annotations
@@ -7,9 +7,9 @@ import asyncio
 import logging
 import random
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
-from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
@@ -34,16 +34,23 @@ class LLMBatchItem:
 class Embedder(ABC):
     """Abstract base class for all embedding providers.
 
-    Subclasses must implement ``embed_query``.  The async variant
-    defaults to running the sync method in a thread pool — override
-    ``aembed_query`` for true async providers.
+    Subclasses must implement ``embed_query`` and expose a
+    ``model_name`` property identifying the model (used for
+    graph config validation).
 
     Example::
 
         class OpenAIEmbedder(Embedder):
+            model_name = "text-embedding-ada-002"
             def embed_query(self, text: str, **kw) -> list[float]:
                 return openai.embed(text)
     """
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str:
+        """Identifier of the embedding model (e.g. ``"text-embedding-ada-002"``)."""
+        ...
 
     @abstractmethod
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:

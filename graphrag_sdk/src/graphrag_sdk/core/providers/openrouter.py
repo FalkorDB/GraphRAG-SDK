@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — OpenRouter Provider
+# GraphRAG SDK — OpenRouter Provider
 # LLM and Embedder backed by OpenRouter (uses the OpenAI SDK).
 # Requires: pip install graphrag-sdk[openrouter]
 
@@ -10,11 +10,11 @@ import os
 from typing import Any
 
 from graphrag_sdk.core.models import LLMResponse
-from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
 )
+from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,11 @@ class OpenRouterEmbedder(Embedder):
         self._extra_headers = extra_headers or {}
         self._client = None
         self._async_client = None
+
+    @property
+    def model_name(self) -> str:
+        """Identifier of the embedding model."""
+        return self.model
 
     def _get_client(self):
         if self._client is None:

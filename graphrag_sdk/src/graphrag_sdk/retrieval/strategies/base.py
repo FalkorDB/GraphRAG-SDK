@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Strategy ABC (Template Method)
+# GraphRAG SDK — Retrieval: Strategy ABC (Template Method)
 # Pattern: Template Method — base handles telemetry/validation/formatting,
 #          subclasses implement only ``_execute()``.
 # Origin: Neo4j Retriever.search() → get_search_results() pattern, upgraded

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Pipeline Orchestrator
+# GraphRAG SDK — Ingestion: Pipeline Orchestrator
 # Pattern: Sequential Pipeline — domain-specific linear orchestrator.
 # Flow: Load → Chunk → Lexical Graph (MANDATORY) → Extract → Prune → Resolve → Write + Index
 #

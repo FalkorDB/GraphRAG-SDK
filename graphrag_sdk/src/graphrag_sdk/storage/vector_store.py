@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Storage: Vector Store
+# GraphRAG SDK — Storage: Vector Store
 # Native vector index management + search for FalkorDB.
 # Pattern: Repository — abstracts all vector operations.
 
@@ -423,7 +423,8 @@ class VectorStore:
         """
         # Try edge vector index query first (FalkorDB >= 4.2)
         query = (
-            "CALL db.idx.vector.queryRelationships('RELATES', 'embedding', $top_k, vecf32($vector)) "
+            "CALL db.idx.vector.queryRelationships("
+            "'RELATES', 'embedding', $top_k, vecf32($vector)) "
             "YIELD relationship AS r, score "
             "RETURN r.src_name AS src, r.rel_type AS type, "
             "r.tgt_name AS tgt, r.fact AS fact, score "

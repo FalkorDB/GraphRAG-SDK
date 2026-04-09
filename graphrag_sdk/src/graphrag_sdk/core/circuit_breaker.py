@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core: Circuit Breaker
+# GraphRAG SDK — Core: Circuit Breaker
 # Async-safe circuit breaker for database connections.
 
 from __future__ import annotations

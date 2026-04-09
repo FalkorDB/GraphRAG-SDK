@@ -1,9 +1,10 @@
-# GraphRAG SDK 2.0 — Retrieval: Cosine Reranker
+# GraphRAG SDK — Retrieval: Cosine Reranker
 # Embedding-based reranking using cosine similarity.
 
 from __future__ import annotations
 
 import logging
+
 import numpy as np
 
 from graphrag_sdk.core.context import Context

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0
+# GraphRAG SDK
 # A modular, async-first Graph RAG framework for FalkorDB.
 #
 # Core Principles:
@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "2.0.0a1"
+__version__ = "1.0.0"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG
@@ -42,10 +42,10 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import (
     Embedder,
-    LLMBatchItem,
-    LLMInterface,
     LiteLLM,
     LiteLLMEmbedder,
+    LLMBatchItem,
+    LLMInterface,
     OpenRouterEmbedder,
     OpenRouterLLM,
 )

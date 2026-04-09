@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Multi-Path Strategy (Lean)
+# GraphRAG SDK — Retrieval: Multi-Path Strategy (Lean)
 # Thin orchestrator combining RELATES edge vector search for facts +
 # entity entry points, 2-path entity discovery, 4-path chunk retrieval,
 # and cosine reranking.  Phase logic lives in sub-modules.
@@ -22,6 +22,9 @@ from graphrag_sdk.retrieval.strategies.chunk_retrieval import (
     fetch_chunk_documents,
     retrieve_chunks,
 )
+from graphrag_sdk.retrieval.strategies.cypher_generation import (
+    execute_cypher_retrieval,
+)
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
     discover_entities,
     expand_sibling_entities,
@@ -30,9 +33,6 @@ from graphrag_sdk.retrieval.strategies.entity_discovery import (
 )
 from graphrag_sdk.retrieval.strategies.relationship_expansion import (
     expand_relationships,
-)
-from graphrag_sdk.retrieval.strategies.cypher_generation import (
-    execute_cypher_retrieval,
 )
 from graphrag_sdk.retrieval.strategies.result_assembly import (
     assemble_raw_result,

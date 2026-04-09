@@ -98,7 +98,7 @@ async def main():
     question = "What are the main topics discussed in this document?"
     print(f"\nQ: {question}")
 
-    answer = await rag.query(question, return_context=True)
+    answer = await rag.completion(question, return_context=True)
     print(f"A: {answer.answer}")
 
     # Show what was retrieved

@@ -64,6 +64,10 @@ class MyCustomEmbedder(Embedder):
         # Initialize your embedding model here, e.g.:
         # self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
+    @property
+    def model_name(self) -> str:
+        return "my-custom-embedder"
+
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         # Replace with your actual embedding call:
         # return self.model.encode(text).tolist()
@@ -98,7 +102,7 @@ async def main():
     print(f"Ingested: {result.nodes_created} nodes")
 
     # Query
-    answer = await rag.query("What did the fox do?")
+    answer = await rag.completion("What did the fox do?")
     print(f"Answer: {answer.answer}")
 
 

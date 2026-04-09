@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Chunking Strategy ABC
+# GraphRAG SDK — Ingestion: Chunking Strategy ABC
 # Pattern: Strategy — every text splitting approach implements this interface.
 
 from __future__ import annotations

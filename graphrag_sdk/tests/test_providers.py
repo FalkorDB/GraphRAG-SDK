@@ -25,6 +25,10 @@ from graphrag_sdk.core.providers import (
 
 
 class SimpleEmbedder(Embedder):
+    @property
+    def model_name(self) -> str:
+        return "simple-test-embedder"
+
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         return [float(len(text)), 0.5, 0.1]
 
