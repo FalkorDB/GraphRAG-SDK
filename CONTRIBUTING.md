@@ -9,8 +9,8 @@ Thank you for your interest in contributing to the GraphRAG SDK v2. This guide c
 Clone the repository and create a virtual environment:
 
 ```bash
-git clone <repo-url>
-cd GraphRAG-SDKv2-DEMO
+git clone https://github.com/FalkorDB/GraphRAG-SDK.git
+cd GraphRAG-SDK
 python -m venv .venv
 source .venv/bin/activate
 ```
@@ -127,5 +127,15 @@ await rag.ingest("document.txt", extractor=MyCustomExtraction())
 The same pattern applies to resolution strategies (subclass `ResolutionStrategy`) and retrieval strategies (subclass `RetrievalStrategy` and pass it to the `GraphRAG` constructor or query method).
 
 ---
+
+---
+
+## 7. Community
+
+- [GitHub Discussions](https://github.com/FalkorDB/GraphRAG-SDK/discussions) -- Questions, ideas, and general conversation
+- [Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues) -- Bug reports and feature requests
+<!-- - [Discord](https://discord.gg/INVITE_CODE) -- Real-time chat with the team -->
+
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 If you have questions or run into issues, open an issue in the repository or reach out to the maintainers.

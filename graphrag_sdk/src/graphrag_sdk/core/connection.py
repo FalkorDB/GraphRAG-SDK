@@ -206,6 +206,14 @@ class FalkorDBConnection:
             else:
                 raise
 
+    # ── Async context manager ──────────────────────────────────
+
+    async def __aenter__(self) -> "FalkorDBConnection":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
+
     # ── Lifecycle ────────────────────────────────────────────────
 
     async def close(self) -> None:

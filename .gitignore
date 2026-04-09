@@ -20,6 +20,12 @@ Thumbs.db
 
 # Local dev tooling (keep .github/ and .pre-commit-config.yaml tracked)
 
+# Marketing / launch materials (local only)
+marketing/
+
+# Internal presentation
+docs/architecture-slides.html
+
 # Local planning / review docs (not part of the SDK)
 GraphRAG-SDK Planning*
 Architecture-Review-Suggestions.md

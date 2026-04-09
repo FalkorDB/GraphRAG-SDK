@@ -133,6 +133,14 @@ class GraphRAG:
             llm=self.llm,
         )
 
+    # -- Async context manager -------------------------------------------
+
+    async def __aenter__(self) -> "GraphRAG":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self._conn.close()
+
     # ── Ingestion ────────────────────────────────────────────────
 
     async def ingest(

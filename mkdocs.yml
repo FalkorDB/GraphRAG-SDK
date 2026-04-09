@@ -1,0 +1,54 @@
+site_name: GraphRAG SDK
+site_description: The most accurate Graph RAG framework. Built on FalkorDB.
+site_url: https://falkordb.github.io/GraphRAG-SDK/
+repo_url: https://github.com/FalkorDB/GraphRAG-SDK
+repo_name: FalkorDB/GraphRAG-SDK
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Architecture: architecture.md
+  - Configuration: configuration.md
+  - Strategies: strategies.md
+  - Providers: providers.md
+  - Extraction: extraction.md
+  - Retrieval: retrieval.md
+  - Storage: storage.md
+  - Graph Schema: graph-schema.md
+  - Benchmark: benchmark.md
+  - API Reference: api-reference.md

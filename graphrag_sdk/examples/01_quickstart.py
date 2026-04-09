@@ -7,14 +7,16 @@ No external files needed -- just an LLM API key and FalkorDB.
 Prerequisites:
     docker run -p 6379:6379 falkordb/falkordb
     pip install graphrag-sdk[litellm]
-    export AZURE_OPENAI_API_KEY="..."
-    export AZURE_OPENAI_ENDPOINT="..."
 
-Alternative providers (replace the LiteLLM(...) calls below):
-    OpenAI direct:   LiteLLM(model="gpt-4o", api_key=os.getenv("OPENAI_API_KEY"))
-    Anthropic:       LiteLLM(model="anthropic/claude-sonnet-4-20250514", api_key=...)
-    OpenRouter:      OpenRouterLLM(model="openai/gpt-4o", api_key=...)
-    See docs/providers.md for the full configuration guide.
+Option A -- OpenAI (simplest, 1 env var):
+    export OPENAI_API_KEY="sk-..."
+
+Option B -- Azure OpenAI:
+    export AZURE_OPENAI_API_KEY="..."
+    export AZURE_OPENAI_ENDPOINT="https://your-endpoint.openai.azure.com/"
+    export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
+
+More providers: see docs/providers.md
 """
 
 import asyncio
@@ -30,41 +32,54 @@ TEXT = (
 )
 
 
-async def main():
-    # 1. Configure providers
-    llm = LiteLLM(
-        model=f"azure/{os.getenv('AZURE_OPENAI_DEPLOYMENT', 'gpt-4.1')}",
-        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-    )
-    embedder = LiteLLMEmbedder(
-        model=f"azure/{os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT', 'text-embedding-ada-002')}",
-        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-    )
+def get_providers():
+    """Configure LLM and embedder providers.
 
-    # 2. Create GraphRAG instance
-    rag = GraphRAG(
+    Uncomment the section matching your provider.
+    """
+
+    # ── Option A: OpenAI (default) ──────────────────────────────
+    llm = LiteLLM(model="openai/gpt-4o")
+    embedder = LiteLLMEmbedder(model="openai/text-embedding-3-small")
+
+    # ── Option B: Azure OpenAI ──────────────────────────────────
+    # llm = LiteLLM(
+    #     model=f"azure/{os.getenv('AZURE_OPENAI_DEPLOYMENT', 'gpt-4.1')}",
+    #     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    #     api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    #     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+    # )
+    # embedder = LiteLLMEmbedder(
+    #     model=f"azure/{os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT', 'text-embedding-ada-002')}",
+    #     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    #     api_base=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    #     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+    # )
+
+    return llm, embedder
+
+
+async def main():
+    llm, embedder = get_providers()
+
+    async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="quickstart"),
         llm=llm,
         embedder=embedder,
-    )
+    ) as rag:
+        # Ingest text
+        result = await rag.ingest("quickstart_doc", text=TEXT)
+        print(f"Ingested: {result.nodes_created} nodes, {result.relationships_created} edges")
 
-    # 3. Ingest text
-    result = await rag.ingest("quickstart_doc", text=TEXT)
-    print(f"Ingested: {result.nodes_created} nodes, {result.relationships_created} edges")
-
-    # 4. Query
-    for question in [
-        "Where does Alice work?",
-        "Who is the CTO of Acme Corp?",
-        "When was Acme Corp founded?",
-    ]:
-        answer = await rag.query(question)
-        print(f"\nQ: {question}")
-        print(f"A: {answer.answer}")
+        # Query
+        for question in [
+            "Where does Alice work?",
+            "Who is the CTO of Acme Corp?",
+            "When was Acme Corp founded?",
+        ]:
+            answer = await rag.query(question)
+            print(f"\nQ: {question}")
+            print(f"A: {answer.answer}")
 
 
 if __name__ == "__main__":
