@@ -38,7 +38,7 @@ anthropic = ["anthropic>=0.20"]
 cohere = ["cohere>=5.0"]
 sentence-transformers = ["sentence-transformers>=2.0"]
 pdf = ["pypdf>=5.0"]
-litellm = ["litellm>=1.40"]
+litellm = ["litellm>=1.83.0"]
 openrouter = ["openai>=1.0"]
 fastcoref = ["fastcoref>=2.0"]
 spacy = ["spacy>=3.0"]
@@ -48,7 +48,7 @@ all = [
     "cohere>=5.0",
     "sentence-transformers>=2.0",
     "pypdf>=5.0",
-    "litellm>=1.40",
+    "litellm>=1.83.0",
 ]
 dev = [
     "pytest>=8.0",
