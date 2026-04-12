@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graphrag-sdk"
-version = "2.0.0a1"
+version = "1.0.0"
 description = "The most accurate Graph RAG framework. Build knowledge graphs and query them with natural language. Built on FalkorDB."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "FalkorDB", email = "support@falkordb.com" }]
 keywords = ["graphrag", "rag", "falkordb", "knowledge-graph", "llm", "graph-database", "retrieval-augmented-generation", "nlp", "ai"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -23,13 +23,13 @@ classifiers = [
 
 dependencies = [
     "pydantic>=2.0,<3.0",
-    "falkordb>=1.0",
-    "numpy>=1.24",
+    "falkordb>=1.0,<2",
+    "numpy>=1.24,<3",
     "python-dotenv>=1.0",
     "tiktoken>=0.5",
-    "gliner>=0.2",
+    "gliner>=0.2,<1",
     "hnswlib>=0.8",
-    "scipy>=1.11",
+    "scipy>=1.11,<2",
 ]
 
 [project.optional-dependencies]
@@ -37,8 +37,8 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.20"]
 cohere = ["cohere>=5.0"]
 sentence-transformers = ["sentence-transformers>=2.0"]
-pdf = ["pypdf>=5.0"]
-litellm = ["litellm>=1.40"]
+pdf = ["pypdf>=6.9.2"]
+litellm = ["litellm>=1.83.0"]
 openrouter = ["openai>=1.0"]
 fastcoref = ["fastcoref>=2.0"]
 spacy = ["spacy>=3.0"]
@@ -47,8 +47,8 @@ all = [
     "anthropic>=0.20",
     "cohere>=5.0",
     "sentence-transformers>=2.0",
-    "pypdf>=5.0",
-    "litellm>=1.40",
+    "pypdf>=6.9.2",
+    "litellm>=1.83.0",
 ]
 dev = [
     "pytest>=8.0",

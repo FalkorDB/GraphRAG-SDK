@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Extraction: Entity Extractors
+# GraphRAG SDK — Extraction: Entity Extractors
 # ABC + built-in implementations for step 1 entity NER.
 #
 # Also exports shared entity utilities (constants, ID computation,

@@ -138,9 +138,28 @@ class MyLLM(LLMInterface):
 | Method | Default Behavior | Override When |
 |--------|-----------------|--------------|
 | `ainvoke(prompt, max_retries=3)` | Runs `invoke()` in a thread pool with retry | You have a native async client |
+| `ainvoke_messages(messages, max_retries=3)` | Concatenates messages into a single prompt and calls `ainvoke()` | You have a native multi-turn chat API |
 | `invoke_with_model(prompt, response_model)` | Calls `invoke()` and parses JSON into Pydantic model | Your provider has native structured output |
 | `ainvoke_with_model(prompt, response_model)` | Calls `ainvoke()` and parses JSON | Same, async version |
 | `abatch_invoke(prompts, max_concurrency)` | Concurrent `ainvoke()` with semaphore | You have a native batch API |
+
+`ainvoke_messages()` is called by `completion()` when conversation history is provided. Override it to pass messages natively to your LLM's chat API for proper multi-turn handling:
+
+```python
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
+
+class MyLLM(LLMInterface):
+    def invoke(self, prompt: str, **kwargs) -> LLMResponse:
+        response = my_client.generate(prompt)
+        return LLMResponse(content=response.text)
+
+    async def ainvoke_messages(self, messages: list[ChatMessage], *, max_retries=3, **kwargs) -> LLMResponse:
+        """Native multi-turn — pass messages directly to your chat API."""
+        response = await my_client.chat(
+            messages=[m.to_dict() for m in messages],
+        )
+        return LLMResponse(content=response.text)
+```
 
 ### Constructor Parameters
 
@@ -154,16 +173,23 @@ LLMInterface.__init__(
 
 ## Embedder ABC
 
-### Required Method
+### Required Methods
 
 ```python
 from graphrag_sdk import Embedder
 
 class MyEmbedder(Embedder):
+    @property
+    def model_name(self) -> str:
+        """Identifier for the embedding model. REQUIRED."""
+        return "my-embedding-model"
+
     def embed_query(self, text: str, **kwargs) -> list[float]:
         """Embed a single text. REQUIRED."""
         return my_model.encode(text).tolist()
 ```
+
+The `model_name` property is used by the graph config node to validate that the same embedding model is used for ingestion and retrieval.
 
 ### Optional Overrides
 

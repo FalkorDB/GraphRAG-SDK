@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
       - run: pip install ruff
       - name: Ruff check (src)
-        run: ruff check src/ --ignore I001,E501
+        run: ruff check src/
       - name: Ruff format check (src)
         run: ruff format --check src/
 

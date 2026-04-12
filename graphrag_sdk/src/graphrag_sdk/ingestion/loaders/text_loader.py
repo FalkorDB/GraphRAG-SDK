@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Text File Loader
+# GraphRAG SDK — Ingestion: Text File Loader
 
 from __future__ import annotations
 

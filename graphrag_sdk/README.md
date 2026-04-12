@@ -4,8 +4,8 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Version: 2.0.0a1](https://img.shields.io/badge/version-2.0.0a1-orange.svg)](pyproject.toml)
-[![Tests: 533 passing](https://img.shields.io/badge/tests-533%20passing-brightgreen.svg)](tests/)
+[![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-orange.svg)](pyproject.toml)
+[![Tests: 558 passing](https://img.shields.io/badge/tests-558%20passing-brightgreen.svg)](tests/)
 
 GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **~85% accuracy** on a 100-question benchmark using GPT-4.1.
 
@@ -24,7 +24,7 @@ async def main():
         result = await rag.ingest("my_document.txt")
         print(f"Created {result.nodes_created} nodes, {result.relationships_created} edges")
 
-        answer = await rag.query("What is the main theme?")
+        answer = await rag.completion("What is the main theme?")
         print(answer.answer)
 
 asyncio.run(main())
@@ -59,12 +59,35 @@ async with GraphRAG(
     await rag.ingest("source_id", text="Alice works at Acme.")  # Raw text
     await rag.finalize()                                         # Dedup + index
 
-    result = await rag.query("Where does Alice work?")
+    # Retrieve context only
+    context = await rag.retrieve("Where does Alice work?")
+
+    # Full RAG: retrieve + generate answer
+    result = await rag.completion("Where does Alice work?")
     print(result.answer)
 
-    result = await rag.query("Where does Alice work?", return_context=True)
-    print(result.retriever_result.items)  # See what was retrieved
+    # With context inspection
+    result = await rag.completion("Where does Alice work?", return_context=True)
+    print(result.retriever_result.items)
 ```
+
+### Multi-Turn Conversations
+
+`completion()` supports multi-turn conversations. With the built-in providers (`LiteLLM`, `OpenRouterLLM`), messages are passed natively to the LLM's chat API. Custom providers that only implement `invoke()` get automatic fallback via message concatenation.
+
+```python
+from graphrag_sdk import ChatMessage
+
+answer = await rag.completion(
+    "What happened next?",
+    history=[
+        ChatMessage(role="user", content="Who is Alice?"),
+        ChatMessage(role="assistant", content="Alice is an engineer at Acme Corp."),
+    ],
+)
+```
+
+Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `ValueError`.
 
 ### Schema Definition
 
@@ -134,8 +157,6 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Questions** | 100 (fact retrieval, complex reasoning, summarization) |
 | **Documents** | 20 novels (Project Gutenberg) |
 | **Query P50** | 5.4s |
-
-<!-- TODO: Add comparison table with final benchmark numbers -->
 
 See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
 

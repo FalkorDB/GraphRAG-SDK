@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Loaders
+# GraphRAG SDK — Ingestion: Loaders
 
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Contextual Chunking
+# GraphRAG SDK — Ingestion: Contextual Chunking
 #
 # Anthropic's approach: for each chunk, ask the LLM to generate a
 # short context summary ("This chunk is from Chapter 3, describing

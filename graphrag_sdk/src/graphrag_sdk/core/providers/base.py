@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core: Provider ABCs
+# GraphRAG SDK — Core: Provider ABCs
 # Thin abstract interfaces for Embedders and LLMs.
 
 from __future__ import annotations
@@ -7,13 +7,13 @@ import asyncio
 import logging
 import random
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
-from collections.abc import AsyncIterator
 
 from pydantic import BaseModel
 
-from graphrag_sdk.core.models import LLMResponse
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +34,25 @@ class LLMBatchItem:
 class Embedder(ABC):
     """Abstract base class for all embedding providers.
 
-    Subclasses must implement ``embed_query``.  The async variant
-    defaults to running the sync method in a thread pool — override
-    ``aembed_query`` for true async providers.
+    Subclasses must implement ``embed_query`` and expose a
+    ``model_name`` property identifying the model (used for
+    graph config validation).
 
     Example::
 
         class OpenAIEmbedder(Embedder):
+            @property
+            def model_name(self) -> str:
+                return "text-embedding-ada-002"
             def embed_query(self, text: str, **kw) -> list[float]:
                 return openai.embed(text)
     """
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str:
+        """Identifier of the embedding model (e.g. ``"text-embedding-ada-002"``)."""
+        ...
 
     @abstractmethod
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
@@ -117,6 +126,36 @@ class LLMInterface(ABC):
                     )
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
+
+    async def ainvoke_messages(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_retries: int = 3,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Invoke the LLM with a list of structured chat messages.
+
+        Override this in provider subclasses to pass messages natively
+        to the LLM API (OpenAI, Anthropic, etc.).  The default
+        implementation concatenates messages into a single prompt
+        string and delegates to ``ainvoke()``, so custom providers
+        that only implement ``invoke()`` still work.
+
+        Args:
+            messages: Ordered list of ``ChatMessage`` objects.
+            max_retries: Retry count forwarded to ``ainvoke``.
+            **kwargs: Extra arguments forwarded to the underlying call.
+
+        Returns:
+            LLMResponse with the model's reply.
+        """
+        # Default fallback: flatten messages into a single prompt string.
+        parts: list[str] = []
+        for msg in messages:
+            parts.append(f"{msg.role.capitalize()}: {msg.content}")
+        prompt = "\n\n".join(parts)
+        return await self.ainvoke(prompt, max_retries=max_retries, **kwargs)
 
     async def astream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
         """Async streaming — default yields the full response as one chunk."""

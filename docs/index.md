@@ -6,8 +6,8 @@ GraphRAG SDK builds knowledge graphs from documents and answers questions over t
 
 ## Key Highlights
 
-- **~85% accuracy** on a 100-question benchmark (highest across 10 GraphRAG frameworks tested)
-- **2-line usage** -- `ingest()` + `query()` with sensible defaults
+- **~85% accuracy** on a 100-question benchmark
+- **Simple API** -- `ingest()` + `completion()` with sensible defaults
 - **100+ LLM providers** via LiteLLM (OpenAI, Azure, Anthropic, Cohere, Ollama, and more)
 - **Fully modular** -- swap chunking, extraction, resolution, retrieval, and reranking strategies
 - **Production-ready** -- async-first, connection pooling, circuit breaker, batched writes
@@ -32,7 +32,7 @@ async def main():
     ) as rag:
         await rag.ingest("my_document.pdf")
         await rag.finalize()
-        answer = await rag.query("What is the main topic?")
+        answer = await rag.completion("What is the main topic?")
         print(answer.answer)
 
 asyncio.run(main())

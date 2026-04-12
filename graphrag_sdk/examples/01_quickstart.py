@@ -1,5 +1,5 @@
 """
-GraphRAG SDK v2 -- Quick Start
+GraphRAG SDK -- Quick Start
 ===============================
 Minimal example: ingest a short text and query it.
 No external files needed -- just an LLM API key and FalkorDB.
@@ -67,19 +67,36 @@ async def main():
         llm=llm,
         embedder=embedder,
     ) as rag:
-        # Ingest text
+        # 1. Ingest text
         result = await rag.ingest("quickstart_doc", text=TEXT)
         print(f"Ingested: {result.nodes_created} nodes, {result.relationships_created} edges")
 
-        # Query
+        # 2. Retrieve context only (no LLM answer generation)
+        context = await rag.retrieve("Where does Alice work?")
+        print(f"\nRetrieved {len(context.items)} context items")
+
+        # 3. Full RAG: retrieve + generate answer
         for question in [
             "Where does Alice work?",
             "Who is the CTO of Acme Corp?",
             "When was Acme Corp founded?",
         ]:
-            answer = await rag.query(question)
+            answer = await rag.completion(question)
             print(f"\nQ: {question}")
             print(f"A: {answer.answer}")
+
+        # 4. Multi-turn conversation (native messages to LLM)
+        from graphrag_sdk import ChatMessage
+
+        followup = await rag.completion(
+            "What is her role there?",
+            history=[
+                ChatMessage(role="user", content="Where does Alice work?"),
+                ChatMessage(role="assistant", content="Alice works at Acme Corp in London."),
+            ],
+        )
+        print(f"\nQ: What is her role there?")
+        print(f"A: {followup.answer}")
 
 
 if __name__ == "__main__":

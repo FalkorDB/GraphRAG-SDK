@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval
+# GraphRAG SDK — Retrieval
 # Intelligent search: strategies, routing, reranking.
 
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy

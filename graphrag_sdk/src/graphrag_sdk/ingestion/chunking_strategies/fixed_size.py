@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Fixed-Size Chunking
+# GraphRAG SDK — Ingestion: Fixed-Size Chunking
 
 from __future__ import annotations
 

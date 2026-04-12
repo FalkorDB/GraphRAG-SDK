@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Entity Discovery
+# GraphRAG SDK — Retrieval: Entity Discovery
 # 2-path entity discovery: Cypher CONTAINS + fulltext search,
 # with optional sibling expansion for enumeration queries.
 

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Chunking Strategies
+# GraphRAG SDK — Ingestion: Chunking Strategies
 
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import CallableChunking

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Exact Match Resolution
+# GraphRAG SDK — Ingestion: Exact Match Resolution
 # Origin: Neo4j SinglePropertyExactMatchResolver — simplified.
 
 from __future__ import annotations

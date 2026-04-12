@@ -14,7 +14,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
   <!-- <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg" alt="PyPI version"></a> -->
-  <a href="graphrag_sdk/tests/"><img src="https://img.shields.io/badge/tests-533%20passing-brightgreen.svg" alt="Tests: 533 passing"></a>
+  <a href="graphrag_sdk/tests/"><img src="https://img.shields.io/badge/tests-558%20passing-brightgreen.svg" alt="Tests: 558 passing"></a>
   <a href="https://github.com/FalkorDB/GraphRAG-SDK/actions"><img src="https://img.shields.io/github/actions/workflow/status/FalkorDB/GraphRAG-SDK/ci.yml?label=CI" alt="CI"></a>
   <!-- <a href="https://discord.gg/INVITE_CODE"><img src="https://img.shields.io/discord/SERVER_ID?label=Discord&logo=discord" alt="Discord"></a> -->
   <a href="https://github.com/FalkorDB/GraphRAG-SDK"><img src="https://img.shields.io/github/stars/FalkorDB/GraphRAG-SDK?style=social" alt="GitHub Stars"></a>
@@ -43,7 +43,7 @@ async def main():
     ) as rag:
         await rag.ingest("my_document.pdf")
         await rag.finalize()
-        answer = await rag.query("What is the main topic?")
+        answer = await rag.completion("What is the main topic?")
         print(answer.answer)
 
 asyncio.run(main())
@@ -66,7 +66,7 @@ async def main():
     ) as rag:
         await rag.ingest("my_document.pdf")
         await rag.finalize()
-        answer = await rag.query("What is the main topic?")
+        answer = await rag.completion("What is the main topic?")
         print(answer.answer)
 
 asyncio.run(main())
@@ -95,16 +95,6 @@ export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
 | Complex Reasoning | 8.5 / 10 | 37 |
 | Creative Generation | 8.3 / 10 | 3 |
 | **Overall** | **8.5 / 10** | **100** |
-
-<!-- TODO: Add 10-framework comparison table with final benchmark numbers.
-| Framework | Accuracy | vs GraphRAG SDK |
-|-----------|----------|-----------------|
-| **GraphRAG SDK v2** | **~85%** | — |
-| LightRAG | ... | ... |
-| Microsoft GraphRAG | ... | ... |
-| HippoRAG | ... | ... |
-| Neo4j GraphRAG | ... | ... |
--->
 
 See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
 
@@ -140,7 +130,8 @@ graph LR
 ## Why GraphRAG SDK?
 
 - **Highest accuracy** -- ~85% on standardized benchmark, outperforming leading GraphRAG frameworks
-- **2-line usage** -- `ingest()` + `query()`. Sensible defaults, no pipeline configuration needed
+- **Simple API** -- `ingest()` + `completion()`. Sensible defaults, no pipeline configuration needed
+- **Multi-turn conversations** -- Native chat history support via `ChatMessage` with built-in provider support
 - **100+ LLM providers** -- OpenAI, Azure, Anthropic, Cohere, Ollama, and more via [LiteLLM](https://github.com/BerriAI/litellm)
 - **Fully modular** -- Every pipeline step (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an ABC
 - **Production-ready** -- Async-first, connection pooling, circuit breaker, batched writes, retry logic
@@ -207,14 +198,31 @@ async def main():
         # Finalize: deduplicate entities, backfill embeddings, create indexes
         await rag.finalize()
 
-        # Query with full provenance
-        answer = await rag.query("Who are the main characters?")
+        # Retrieve context only
+        context = await rag.retrieve("Who are the main characters?")
+
+        # Full RAG: retrieve + generate answer
+        answer = await rag.completion("Who are the main characters?")
         print(answer.answer)
 
 asyncio.run(main())
 ```
 
-### 3. Define a schema (optional)
+### 3. Multi-turn conversations
+
+```python
+from graphrag_sdk import ChatMessage
+
+answer = await rag.completion(
+    "What happened to her after that?",
+    history=[
+        ChatMessage(role="user", content="Who is Alice?"),
+        ChatMessage(role="assistant", content="Alice is a software engineer at Acme Corp."),
+    ],
+)
+```
+
+### 4. Define a schema (optional)
 
 ```python
 from graphrag_sdk import GraphSchema, EntityType, RelationType, SchemaPattern

@@ -1,5 +1,5 @@
 """
-GraphRAG SDK v2 -- Custom Strategies (Benchmark-Winning Pipeline)
+GraphRAG SDK -- Custom Strategies (Benchmark-Winning Pipeline)
 ==================================================================
 Demonstrates the full pipeline configuration that achieved 84.8% accuracy
 on the 20-document novel benchmark. Uses:
@@ -155,7 +155,7 @@ async def main():
     ]
 
     for q in questions:
-        result = await rag.query(q)
+        result = await rag.completion(q)
         print(f"\nQ: {q}")
         print(f"A: {result.answer}")
 

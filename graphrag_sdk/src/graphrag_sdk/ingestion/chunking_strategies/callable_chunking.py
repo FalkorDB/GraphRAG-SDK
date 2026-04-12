@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Callable Chunking Adapter
+# GraphRAG SDK — Ingestion: Callable Chunking Adapter
 #
 # Adapts any user-supplied function into the SDK's ChunkingStrategy interface.
 # This lets users plug in any chunking framework (LlamaIndex, LangChain,

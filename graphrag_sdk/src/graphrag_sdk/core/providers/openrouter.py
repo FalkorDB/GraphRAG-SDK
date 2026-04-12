@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — OpenRouter Provider
+# GraphRAG SDK — OpenRouter Provider
 # LLM and Embedder backed by OpenRouter (uses the OpenAI SDK).
 # Requires: pip install graphrag-sdk[openrouter]
 
@@ -9,12 +9,12 @@ import logging
 import os
 from typing import Any
 
-from graphrag_sdk.core.models import LLMResponse
-from graphrag_sdk.core.providers.base import Embedder, LLMInterface
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
 )
+from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,42 @@ class OpenRouterLLM(LLMInterface):
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
+    async def ainvoke_messages(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_retries: int = 3,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Native multi-turn completion via OpenRouter."""
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
+        client = self._get_async_client()
+        create_kwargs: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [m.to_dict() for m in messages],
+            "temperature": self._temperature,
+            **kwargs,
+        }
+        if self._max_tokens is not None:
+            create_kwargs.setdefault("max_tokens", self._max_tokens)
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                response = await client.chat.completions.create(**create_kwargs)
+                content = response.choices[0].message.content or ""
+                return LLMResponse(content=content)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    delay = 2**attempt
+                    logger.warning(
+                        f"OpenRouter call failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {delay}s: {exc}"
+                    )
+                    await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
 
 class OpenRouterEmbedder(Embedder):
     """Embedding provider backed by OpenRouter (uses the OpenAI SDK).
@@ -151,6 +187,11 @@ class OpenRouterEmbedder(Embedder):
         self._extra_headers = extra_headers or {}
         self._client = None
         self._async_client = None
+
+    @property
+    def model_name(self) -> str:
+        """Identifier of the embedding model."""
+        return self.model
 
     def _get_client(self):
         if self._client is None:

@@ -22,6 +22,10 @@ class ControlledEmbedder(Embedder):
         self._vectors = vectors
         self._default_dim = default_dim
 
+    @property
+    def model_name(self) -> str:
+        return "controlled-test-embedder"
+
     def embed_query(self, text: str, **kwargs) -> list[float]:
         return self._vectors.get(text, [1.0] + [0.0] * (self._default_dim - 1))
 

@@ -1,6 +1,6 @@
-# Contributing to GraphRAG SDK v2
+# Contributing to GraphRAG SDK
 
-Thank you for your interest in contributing to the GraphRAG SDK v2. This guide covers setup, testing, code conventions, and how to extend the SDK with custom strategies.
+Thank you for your interest in contributing to GraphRAG SDK. This guide covers setup, testing, code conventions, and how to extend the SDK with custom strategies.
 
 ---
 
@@ -39,7 +39,7 @@ Run the full test suite with:
 python -m pytest graphrag_sdk/tests/ -q
 ```
 
-There are 490+ tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
+There are 558 tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
 
 ---
 

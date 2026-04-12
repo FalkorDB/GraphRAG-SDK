@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Utils
+# GraphRAG SDK — Utils
 
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 from graphrag_sdk.utils.graph_viz import GraphVisualizer

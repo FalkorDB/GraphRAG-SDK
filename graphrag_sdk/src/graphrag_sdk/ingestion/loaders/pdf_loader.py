@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: PDF Loader
+# GraphRAG SDK — Ingestion: PDF Loader
 
 from __future__ import annotations
 

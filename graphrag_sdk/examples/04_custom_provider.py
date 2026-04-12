@@ -1,5 +1,5 @@
 """
-GraphRAG SDK v2 -- Custom LLM & Embedder Providers
+GraphRAG SDK -- Custom LLM & Embedder Providers
 ====================================================
 Shows how to implement your own LLM and Embedder by subclassing the ABCs.
 Use this pattern to integrate local models, custom APIs, or any provider
@@ -47,6 +47,13 @@ class MyCustomLLM(LLMInterface):
     #     response = await self.client.agenerate(prompt)
     #     return LLMResponse(content=response.text)
 
+    # Optional: override for native multi-turn conversations
+    # async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs) -> LLMResponse:
+    #     response = await self.client.chat(
+    #         messages=[m.to_dict() for m in messages],
+    #     )
+    #     return LLMResponse(content=response.text)
+
 
 # --- Custom Embedder Provider ---
 
@@ -63,6 +70,10 @@ class MyCustomEmbedder(Embedder):
         self.dimension = dimension
         # Initialize your embedding model here, e.g.:
         # self.model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    @property
+    def model_name(self) -> str:
+        return "my-custom-embedder"
 
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         # Replace with your actual embedding call:
@@ -98,7 +109,7 @@ async def main():
     print(f"Ingested: {result.nodes_created} nodes")
 
     # Query
-    answer = await rag.query("What did the fox do?")
+    answer = await rag.completion("What did the fox do?")
     print(f"Answer: {answer.answer}")
 
 

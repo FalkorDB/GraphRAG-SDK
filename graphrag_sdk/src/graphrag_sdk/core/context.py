@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core: Context Object
+# GraphRAG SDK — Core: Context Object
 # Threaded through every strategy call for tracing, tenancy, and budgeting.
 # Origin: User design (TenantID, TraceID, Latency Budget) + Neo4j RunContext (simplified).
 

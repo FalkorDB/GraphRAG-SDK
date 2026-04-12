@@ -1,11 +1,11 @@
-# GraphRAG SDK 2.0 — Embedding retry utilities
+# GraphRAG SDK — Embedding retry utilities
 # Binary-split recovery for transient batch embedding failures.
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

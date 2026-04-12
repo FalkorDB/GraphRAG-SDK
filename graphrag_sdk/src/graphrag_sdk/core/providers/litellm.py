@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — LiteLLM Provider
+# GraphRAG SDK — LiteLLM Provider
 # LLM and Embedder backed by LiteLLM (100+ providers via unified interface).
 # Requires: pip install graphrag-sdk[litellm]
 
@@ -8,12 +8,12 @@ import asyncio
 import logging
 from typing import Any
 
-from graphrag_sdk.core.models import LLMResponse
-from graphrag_sdk.core.providers.base import Embedder, LLMInterface
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
 )
+from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,62 @@ class LiteLLM(LLMInterface):
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
+    def _messages_completion_kwargs(
+        self, messages: list[ChatMessage], **kwargs: Any
+    ) -> dict[str, Any]:
+        kw: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [m.to_dict() for m in messages],
+            "temperature": self._temperature,
+            **self._extra,
+            **kwargs,
+        }
+        if self._api_key is not None:
+            kw["api_key"] = self._api_key
+        if self._api_base is not None:
+            kw["api_base"] = self._api_base
+        if self._api_version is not None:
+            kw["api_version"] = self._api_version
+        if self._max_tokens is not None:
+            kw["max_tokens"] = self._max_tokens
+        return kw
+
+    async def ainvoke_messages(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_retries: int = 3,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Native multi-turn completion via LiteLLM."""
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
+        try:
+            import litellm
+        except ImportError:
+            raise ImportError(
+                "LiteLLM is required for the LiteLLM provider. "
+                "Install with: pip install graphrag-sdk[litellm]"
+            )
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                response = await litellm.acompletion(
+                    **self._messages_completion_kwargs(messages, **kwargs)
+                )
+                content = response.choices[0].message.content or ""
+                return LLMResponse(content=content)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    delay = 2**attempt
+                    logger.warning(
+                        f"LiteLLM call failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {delay}s: {exc}"
+                    )
+                    await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
 
 class LiteLLMEmbedder(Embedder):
     """Embedding provider backed by LiteLLM.
@@ -139,6 +195,11 @@ class LiteLLMEmbedder(Embedder):
         self._api_version = api_version
         self.batch_size = batch_size
         self._extra = kwargs
+
+    @property
+    def model_name(self) -> str:
+        """Identifier of the embedding model."""
+        return self.model
 
     def _embedding_kwargs(self, input_: str | list[str], **kwargs: Any) -> dict[str, Any]:
         kw: dict[str, Any] = {

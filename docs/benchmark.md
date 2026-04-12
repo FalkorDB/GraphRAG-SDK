@@ -275,7 +275,7 @@ async def main():
 
     for i, q in enumerate(questions):
         t0 = time.time()
-        result = await rag.query(q["question"])
+        result = await rag.completion(q["question"])
         latency = time.time() - t0
 
         # LLM-as-Judge scoring
@@ -377,11 +377,11 @@ await rag.finalize()  # dedup + entity embeddings + relationship embeddings + in
 
 ```python
 # Query uses the default MultiPathRetrieval (configured automatically)
-result = await rag.query("What happened to character X?")
+result = await rag.completion("What happened to character X?")
 print(result.answer)
 
 # With context inspection:
-result = await rag.query("What happened to character X?", return_context=True)
+result = await rag.completion("What happened to character X?", return_context=True)
 print(result.retriever_result.items)  # See retrieved entities, facts, passages
 ```
 
@@ -398,7 +398,7 @@ print(result.retriever_result.items)  # See retrieved entities, facts, passages
 
 1. **Ingestion**: All 20 Project Gutenberg novel excerpts were ingested using `GraphExtraction` (GLiNER2 NER + LLM relationship extraction) with `DescriptionMergeResolution` and `FixedSizeChunking(1500, 200)`.
 2. **Finalize**: `rag.finalize()` was called to deduplicate entities, backfill embeddings, and create all vector/fulltext indexes.
-3. **Evaluation**: Each of the 100 questions was queried via `rag.query()` using the default `MultiPathRetrieval` strategy. The generated answer was scored against the ground-truth reference by GPT-4.1 as an LLM-as-Judge (0-10 scale).
+3. **Evaluation**: Each of the 100 questions was queried via `rag.completion()` using the default `MultiPathRetrieval` strategy. The generated answer was scored against the ground-truth reference by GPT-4.1 as an LLM-as-Judge (0-10 scale).
 4. **Scoring**: The final accuracy is the mean of all 100 individual scores.
 
 Results may vary slightly between runs (~2-3% variance) due to LLM non-determinism, even with `temperature=0`.
