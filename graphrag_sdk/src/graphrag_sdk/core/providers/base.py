@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from graphrag_sdk.core.models import LLMResponse
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,36 @@ class LLMInterface(ABC):
                     )
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
+
+    async def ainvoke_messages(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_retries: int = 3,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Invoke the LLM with a list of structured chat messages.
+
+        Override this in provider subclasses to pass messages natively
+        to the LLM API (OpenAI, Anthropic, etc.).  The default
+        implementation concatenates messages into a single prompt
+        string and delegates to ``ainvoke()``, so custom providers
+        that only implement ``invoke()`` still work.
+
+        Args:
+            messages: Ordered list of ``ChatMessage`` objects.
+            max_retries: Retry count forwarded to ``ainvoke``.
+            **kwargs: Extra arguments forwarded to the underlying call.
+
+        Returns:
+            LLMResponse with the model's reply.
+        """
+        # Default fallback: flatten messages into a single prompt string.
+        parts: list[str] = []
+        for msg in messages:
+            parts.append(f"{msg.role.capitalize()}: {msg.content}")
+        prompt = "\n\n".join(parts)
+        return await self.ainvoke(prompt, max_retries=max_retries, **kwargs)
 
     async def astream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
         """Async streaming — default yields the full response as one chunk."""

@@ -1,5 +1,5 @@
 """
-GraphRAG SDK v2 -- Custom LLM & Embedder Providers
+GraphRAG SDK -- Custom LLM & Embedder Providers
 ====================================================
 Shows how to implement your own LLM and Embedder by subclassing the ABCs.
 Use this pattern to integrate local models, custom APIs, or any provider
@@ -45,6 +45,13 @@ class MyCustomLLM(LLMInterface):
     # Optional: override for native async support
     # async def ainvoke(self, prompt, *, max_retries=3, **kwargs) -> LLMResponse:
     #     response = await self.client.agenerate(prompt)
+    #     return LLMResponse(content=response.text)
+
+    # Optional: override for native multi-turn conversations
+    # async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs) -> LLMResponse:
+    #     response = await self.client.chat(
+    #         messages=[m.to_dict() for m in messages],
+    #     )
     #     return LLMResponse(content=response.text)
 
 

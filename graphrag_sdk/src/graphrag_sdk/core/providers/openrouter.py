@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Any
 
-from graphrag_sdk.core.models import LLMResponse
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
@@ -104,6 +104,40 @@ class OpenRouterLLM(LLMInterface):
         create_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
+            "temperature": self._temperature,
+            **kwargs,
+        }
+        if self._max_tokens is not None:
+            create_kwargs.setdefault("max_tokens", self._max_tokens)
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                response = await client.chat.completions.create(**create_kwargs)
+                content = response.choices[0].message.content or ""
+                return LLMResponse(content=content)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    delay = 2**attempt
+                    logger.warning(
+                        f"OpenRouter call failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {delay}s: {exc}"
+                    )
+                    await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
+    async def ainvoke_messages(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_retries: int = 3,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Native multi-turn completion via OpenRouter."""
+        client = self._get_async_client()
+        create_kwargs: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [m.to_dict() for m in messages],
             "temperature": self._temperature,
             **kwargs,
         }

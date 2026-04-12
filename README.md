@@ -114,8 +114,40 @@ await rag.finalize()
 ### Querying the Graph
 
 ```python
+# Retrieve context only (no LLM call)
+context = await rag.retrieve("Who are the main characters?")
+
+# Full RAG: retrieve + generate answer
 answer = await rag.completion("Who are the main characters in the story?")
 print(answer.answer)
+```
+
+### Multi-Turn Conversations
+
+`completion()` supports native multi-turn conversations. History messages are passed directly to the LLM provider's chat API as structured messages, not concatenated into a single prompt.
+
+```python
+from graphrag_sdk import ChatMessage
+
+answer = await rag.completion(
+    "What happened to her after that?",
+    history=[
+        ChatMessage(role="user", content="Who is Alice?"),
+        ChatMessage(role="assistant", content="Alice is a software engineer at Acme Corp."),
+    ],
+)
+```
+
+You can also pass history as plain dicts — roles are validated automatically:
+
+```python
+answer = await rag.completion(
+    "Tell me more about that.",
+    history=[
+        {"role": "user", "content": "What is Acme Corp?"},
+        {"role": "assistant", "content": "Acme Corp is a tech company."},
+    ],
+)
 ```
 
 ## Architecture Overview

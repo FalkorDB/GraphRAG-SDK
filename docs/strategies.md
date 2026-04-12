@@ -512,7 +512,7 @@ reranker = CosineReranker(
     top_k=15,          # keep top N results (default: 15)
 )
 
-result = await rag.query("question", reranker=reranker)
+result = await rag.completion("question", reranker=reranker)
 ```
 
 **Note:** `MultiPathRetrieval` already includes cosine reranking internally. The standalone `CosineReranker` is useful when using `LocalRetrieval` or a custom strategy.

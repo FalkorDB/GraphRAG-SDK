@@ -21,6 +21,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import GraphRAGError
 from graphrag_sdk.core.models import (
+    ChatMessage,
     DataModel,
     DocumentInfo,
     DocumentOutput,
@@ -85,6 +86,7 @@ __all__ = [
     # API
     "GraphRAG",
     # Core
+    "ChatMessage",
     "ConnectionConfig",
     "Context",
     "DataModel",

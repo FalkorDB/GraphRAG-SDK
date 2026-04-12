@@ -12,6 +12,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import ConfigError
 from graphrag_sdk.core.models import (
+    ChatMessage,
     GraphSchema,
     IngestionResult,
     LLMResponse,
@@ -395,7 +396,8 @@ class TestGraphRAGCompletion:
         assert result.metadata["num_context_items"] == 1
         assert result.metadata["has_history"] is False
 
-    async def test_completion_with_history(self, mock_conn, embedder):
+    async def test_completion_with_history_dicts(self, mock_conn, embedder):
+        """History as dicts should use ainvoke_messages natively."""
         llm = MockLLM(responses=["Continued answer."])
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
         mock_strategy = MagicMock(spec=RetrievalStrategy)
@@ -415,6 +417,99 @@ class TestGraphRAGCompletion:
         )
         assert result.answer == "Continued answer."
         assert result.metadata["has_history"] is True
+        # Should have used ainvoke_messages, not ainvoke
+        assert llm.last_messages is not None
+        assert len(llm.last_messages) == 4  # system + 2 history + user question
+        assert llm.last_messages[0].role == "system"
+        assert llm.last_messages[1].role == "user"
+        assert llm.last_messages[1].content == "First question"
+        assert llm.last_messages[2].role == "assistant"
+        assert llm.last_messages[3].role == "user"
+        assert llm.last_messages[3].content == "Follow up question"
+
+    async def test_completion_with_history_chatmessage_objects(self, mock_conn, embedder):
+        """History as ChatMessage objects should work."""
+        llm = MockLLM(responses=["ChatMessage answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion(
+            "Follow up",
+            history=[
+                ChatMessage(role="system", content="You are helpful."),
+                ChatMessage(role="user", content="Hi"),
+                ChatMessage(role="assistant", content="Hello!"),
+            ],
+        )
+        assert result.answer == "ChatMessage answer."
+        assert llm.last_messages is not None
+        # system (RAG prompt) + system (from history) + user + assistant + user question
+        assert len(llm.last_messages) == 5
+
+    async def test_completion_history_invalid_role_raises(self, mock_conn, embedder):
+        """Invalid role in history should raise ValueError."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(ValueError, match="invalid role 'robot'"):
+            await g.completion(
+                "test?",
+                history=[{"role": "robot", "content": "beep boop"}],
+            )
+
+    async def test_completion_history_missing_keys_raises(self, mock_conn, embedder):
+        """History dict missing 'content' should raise ValueError."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(ValueError, match="must have 'role' and 'content'"):
+            await g.completion(
+                "test?",
+                history=[{"role": "user"}],
+            )
+
+    async def test_completion_history_wrong_type_raises(self, mock_conn, embedder):
+        """Non-dict, non-ChatMessage in history should raise TypeError."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(TypeError, match="expected ChatMessage or dict"):
+            await g.completion("test?", history=["not a dict"])
+
+    async def test_completion_no_history_uses_ainvoke(self, mock_conn, embedder):
+        """Without history, completion should use ainvoke (not ainvoke_messages)."""
+        llm = MockLLM(responses=["Single-turn answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion("test?")
+        assert result.answer == "Single-turn answer."
+        assert llm.last_messages is None  # ainvoke_messages was NOT called
 
     async def test_completion_return_context(self, mock_conn, embedder):
         llm = MockLLM(responses=["Answer."])

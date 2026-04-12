@@ -8,7 +8,7 @@ import asyncio
 import logging
 from typing import Any
 
-from graphrag_sdk.core.models import LLMResponse
+from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
@@ -97,6 +97,60 @@ class LiteLLM(LLMInterface):
         for attempt in range(max_retries):
             try:
                 response = await litellm.acompletion(**self._completion_kwargs(prompt, **kwargs))
+                content = response.choices[0].message.content or ""
+                return LLMResponse(content=content)
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    delay = 2**attempt
+                    logger.warning(
+                        f"LiteLLM call failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {delay}s: {exc}"
+                    )
+                    await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
+    def _messages_completion_kwargs(
+        self, messages: list[ChatMessage], **kwargs: Any
+    ) -> dict[str, Any]:
+        kw: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [m.to_dict() for m in messages],
+            "temperature": self._temperature,
+            **self._extra,
+            **kwargs,
+        }
+        if self._api_key is not None:
+            kw["api_key"] = self._api_key
+        if self._api_base is not None:
+            kw["api_base"] = self._api_base
+        if self._api_version is not None:
+            kw["api_version"] = self._api_version
+        if self._max_tokens is not None:
+            kw["max_tokens"] = self._max_tokens
+        return kw
+
+    async def ainvoke_messages(
+        self,
+        messages: list[ChatMessage],
+        *,
+        max_retries: int = 3,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Native multi-turn completion via LiteLLM."""
+        try:
+            import litellm
+        except ImportError:
+            raise ImportError(
+                "LiteLLM is required for the LiteLLM provider. "
+                "Install with: pip install graphrag-sdk[litellm]"
+            )
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                response = await litellm.acompletion(
+                    **self._messages_completion_kwargs(messages, **kwargs)
+                )
                 content = response.choices[0].message.content or ""
                 return LLMResponse(content=content)
             except Exception as exc:

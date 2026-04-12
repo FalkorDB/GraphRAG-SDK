@@ -1,5 +1,5 @@
 """
-GraphRAG SDK v2 -- Custom Strategies (Benchmark-Winning Pipeline)
+GraphRAG SDK -- Custom Strategies (Benchmark-Winning Pipeline)
 ==================================================================
 Demonstrates the full pipeline configuration that achieved 84.8% accuracy
 on the 20-document novel benchmark. Uses:

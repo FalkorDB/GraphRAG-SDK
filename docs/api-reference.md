@@ -21,7 +21,7 @@ Complete reference for all public classes and methods exported by `graphrag_sdk`
 
 ## GraphRAG (Facade)
 
-The main entry point. Two primary operations: `ingest()` and `query()`.
+The main entry point. Three primary operations: `ingest()`, `retrieve()`, and `completion()`.
 
 ```python
 from graphrag_sdk import GraphRAG
@@ -53,37 +53,63 @@ GraphRAG(
 
 ```python
 async def ingest(
-    source: str,
+    source: str | list[str],
     *,
     text: str | None = None,
     loader: LoaderStrategy | None = None,
     chunker: ChunkingStrategy | None = None,
     extractor: ExtractionStrategy | None = None,
     resolver: ResolutionStrategy | None = None,
+    max_concurrent: int = 3,
     ctx: Context | None = None,
-) -> IngestionResult
+) -> IngestionResult | list[IngestionResult]
 ```
 
-Build a knowledge graph from a source. Auto-detects loader from file extension.
+Build a knowledge graph from one or more sources. Auto-detects loader from file extension. When a list of sources is provided, documents are ingested in parallel with bounded concurrency.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `source` | `str` | required | File path, URL, or source identifier |
-| `text` | `str \| None` | `None` | Raw text (skips loader if provided) |
+| `source` | `str \| list[str]` | required | File path (or list of paths) for ingestion |
+| `text` | `str \| None` | `None` | Raw text (single source only; skips loader) |
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
 | `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (FixedSizeChunking(1000) if None) |
 | `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None) |
 | `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None) |
+| `max_concurrent` | `int` | `3` | Max parallel ingestions (list input only) |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
-**Returns:** `IngestionResult`
+**Returns:** `IngestionResult` for a single source, `list[IngestionResult]` for multiple sources.
 
-### query()
+### retrieve()
 
 ```python
-async def query(
+async def retrieve(
     question: str,
     *,
+    strategy: RetrievalStrategy | None = None,
+    reranker: RerankingStrategy | None = None,
+    ctx: Context | None = None,
+) -> RetrieverResult
+```
+
+Retrieve context from the knowledge graph without generating an answer. Use this to inspect retrieved context or pass it to your own LLM.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `question` | `str` | required | The user's question |
+| `strategy` | `RetrievalStrategy \| None` | `None` | Override retrieval strategy |
+| `reranker` | `RerankingStrategy \| None` | `None` | Optional reranking after retrieval |
+| `ctx` | `Context \| None` | `None` | Execution context |
+
+**Returns:** `RetrieverResult`
+
+### completion()
+
+```python
+async def completion(
+    question: str,
+    *,
+    history: list[ChatMessage | dict[str, str]] | None = None,
     strategy: RetrievalStrategy | None = None,
     reranker: RerankingStrategy | None = None,
     prompt_template: str | None = None,
@@ -92,11 +118,12 @@ async def query(
 ) -> RagResult
 ```
 
-Query the knowledge graph and generate an answer.
+Full RAG pipeline: retrieve context and generate an answer. When `history` is provided, messages are passed natively to the LLM provider's multi-turn chat API.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `question` | `str` | required | The user's question |
+| `history` | `list[ChatMessage \| dict] \| None` | `None` | Conversation history (see below) |
 | `strategy` | `RetrievalStrategy \| None` | `None` | Override retrieval strategy |
 | `reranker` | `RerankingStrategy \| None` | `None` | Optional reranking after retrieval |
 | `prompt_template` | `str \| None` | `None` | Custom prompt (must contain `{context}` and `{question}`) |
@@ -104,6 +131,42 @@ Query the knowledge graph and generate an answer.
 | `ctx` | `Context \| None` | `None` | Execution context |
 
 **Returns:** `RagResult`
+
+**Conversation history:**
+
+History accepts a list of `ChatMessage` objects or plain dicts with `role` and `content` keys. Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `ValueError`.
+
+```python
+from graphrag_sdk import ChatMessage
+
+# Using ChatMessage objects
+result = await rag.completion(
+    "What happened next?",
+    history=[
+        ChatMessage(role="user", content="Who is Alice?"),
+        ChatMessage(role="assistant", content="Alice is an engineer."),
+    ],
+)
+
+# Using plain dicts
+result = await rag.completion(
+    "Tell me more.",
+    history=[
+        {"role": "user", "content": "What is Acme?"},
+        {"role": "assistant", "content": "A tech company."},
+    ],
+)
+```
+
+When history is provided, `completion()` builds a native messages list: `[system_prompt, *history, user_question]` and calls `LLMInterface.ainvoke_messages()`. Without history, it uses the single-turn `ainvoke()` path.
+
+### query() (deprecated)
+
+```python
+async def query(question: str, **kwargs) -> RagResult
+```
+
+**Deprecated.** Use `completion()` for the full RAG pipeline or `retrieve()` for retrieval-only. Emits a `DeprecationWarning` and delegates to `completion()`.
 
 ### deduplicate_entities()
 
@@ -142,9 +205,11 @@ Run all post-ingestion steps after all documents are ingested. Bundles:
 ### Sync Wrappers
 
 ```python
-def query_sync(question: str, **kwargs) -> RagResult
-def ingest_sync(source: str, **kwargs) -> IngestionResult
+def retrieve_sync(question: str, **kwargs) -> RetrieverResult
+def completion_sync(question: str, **kwargs) -> RagResult
+def ingest_sync(source: str | list[str], **kwargs) -> IngestionResult | list[IngestionResult]
 def finalize_sync() -> dict[str, Any]
+def query_sync(question: str, **kwargs) -> RagResult  # deprecated
 ```
 
 Convenience methods that run the async versions in `asyncio.run()`.
@@ -205,14 +270,18 @@ LLMInterface(model_name: str, model_params: dict | None = None, max_concurrency:
 |--------|-----------|-------------|
 | `invoke` | `(prompt: str, **kwargs) -> LLMResponse` | Sync text generation (abstract) |
 | `ainvoke` | `(prompt: str, *, max_retries=3, **kwargs) -> LLMResponse` | Async with retry + backoff |
+| `ainvoke_messages` | `(messages: list[ChatMessage], *, max_retries=3, **kwargs) -> LLMResponse` | Multi-turn native messages (see below) |
 | `invoke_with_model` | `(prompt: str, response_model: Type[BaseModel], **kwargs) -> BaseModel` | Structured output |
 | `ainvoke_with_model` | `(prompt: str, response_model: Type[BaseModel], *, max_retries=3) -> BaseModel` | Async structured output |
 | `abatch_invoke` | `(prompts: list[str], *, max_concurrency=None, max_retries=3) -> list[LLMBatchItem]` | Concurrent batch |
+
+`ainvoke_messages()` is used by `completion()` when conversation history is provided. The default implementation concatenates messages into a single prompt string and calls `ainvoke()`, so custom providers work without changes. `LiteLLM` and `OpenRouterLLM` override this with native multi-turn implementations.
 
 ### Embedder (ABC)
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
+| `model_name` | `@property -> str` | Embedding model identifier (abstract) |
 | `embed_query` | `(text: str, **kwargs) -> list[float]` | Single text embedding (abstract) |
 | `aembed_query` | `(text: str, **kwargs) -> list[float]` | Async single (default: thread pool) |
 | `embed_documents` | `(texts: list[str], **kwargs) -> list[list[float]]` | Batch (default: sequential) |
@@ -378,6 +447,22 @@ class ResolutionResult(DataModel):
     relationships: list[GraphRelationship] = []
     merged_count: int = 0
 ```
+
+### ChatMessage
+
+```python
+from graphrag_sdk import ChatMessage
+
+class ChatMessage(DataModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+    def to_dict(self) -> dict[str, str]  # {"role": ..., "content": ...}
+```
+
+Validated message type for multi-turn conversations. Used by `completion(history=...)` and `LLMInterface.ainvoke_messages()`. Invalid roles raise a validation error on construction.
+
+`LLMMessage` is a backward-compatible alias for `ChatMessage`.
 
 ### LLMResponse
 

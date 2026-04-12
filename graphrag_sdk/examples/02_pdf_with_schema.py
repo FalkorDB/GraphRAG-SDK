@@ -1,5 +1,5 @@
 """
-GraphRAG SDK v2 -- PDF Ingestion with Schema
+GraphRAG SDK -- PDF Ingestion with Schema
 ==============================================
 Ingest a PDF file with a custom schema that constrains entity/relationship extraction.
 Shows how to inspect retrieved context alongside the answer.

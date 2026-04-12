@@ -494,7 +494,7 @@ retriever = MultiPathRetrieval(
     keyword_limit=12,         # extract more keywords
 )
 
-result = await rag.query("What happened?", strategy=retriever)
+result = await rag.completion("What happened?", strategy=retriever)
 ```
 
 ### Retrieval Pipeline (9 Steps)
@@ -517,7 +517,7 @@ Pass a custom strategy to individual queries or set it as the default:
 
 ```python
 # Per-query override
-result = await rag.query("...", strategy=my_custom_retriever)
+result = await rag.completion("...", strategy=my_custom_retriever)
 
 # Default at init time
 rag = GraphRAG(

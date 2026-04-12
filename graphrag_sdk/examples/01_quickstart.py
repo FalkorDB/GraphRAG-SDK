@@ -70,6 +70,19 @@ async def main():
         print(f"\nQ: {question}")
         print(f"A: {answer.answer}")
 
+    # 6. Multi-turn conversation (native messages to LLM)
+    from graphrag_sdk import ChatMessage
+
+    followup = await rag.completion(
+        "What is her role there?",
+        history=[
+            ChatMessage(role="user", content="Where does Alice work?"),
+            ChatMessage(role="assistant", content="Alice works at Acme Corp in London."),
+        ],
+    )
+    print(f"\nQ: What is her role there?")
+    print(f"A: {followup.answer}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

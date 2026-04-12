@@ -14,6 +14,7 @@ from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import ConfigError
 from graphrag_sdk.core.models import (
+    ChatMessage,
     GraphSchema,
     IngestionResult,
     RagResult,
@@ -355,11 +356,44 @@ class GraphRAG:
 
     # ── Completion ──────────────────────────────────────────────
 
+    @staticmethod
+    def _validate_history(
+        history: list[ChatMessage | dict[str, str]],
+    ) -> list[ChatMessage]:
+        """Validate and normalise conversation history to ``ChatMessage`` objects.
+
+        Accepts either pre-built ``ChatMessage`` instances or plain dicts
+        with ``role`` and ``content`` keys.  Raises ``ValueError`` on
+        invalid entries.
+        """
+        validated: list[ChatMessage] = []
+        for i, msg in enumerate(history):
+            if isinstance(msg, ChatMessage):
+                validated.append(msg)
+            elif isinstance(msg, dict):
+                if "role" not in msg or "content" not in msg:
+                    raise ValueError(
+                        f"history[{i}]: each message must have 'role' and "
+                        f"'content' keys, got {sorted(msg.keys())}"
+                    )
+                try:
+                    validated.append(ChatMessage(role=msg["role"], content=msg["content"]))
+                except Exception:
+                    raise ValueError(
+                        f"history[{i}]: invalid role '{msg['role']}'. "
+                        f"Must be one of: 'system', 'user', 'assistant'"
+                    )
+            else:
+                raise TypeError(
+                    f"history[{i}]: expected ChatMessage or dict, got {type(msg).__name__}"
+                )
+        return validated
+
     async def completion(
         self,
         question: str,
         *,
-        history: list[dict[str, str]] | None = None,
+        history: list[ChatMessage | dict[str, str]] | None = None,
         strategy: RetrievalStrategy | None = None,
         reranker: RerankingStrategy | None = None,
         prompt_template: str | None = None,
@@ -370,12 +404,15 @@ class GraphRAG:
 
         Args:
             question: The user's question.
-            history: Optional conversation history as list of
-                ``{"role": "user"/"assistant", "content": "..."}`` dicts.
+            history: Optional conversation history as a list of
+                ``ChatMessage`` objects or ``{"role": ..., "content": ...}``
+                dicts.  Supported roles: ``"system"``, ``"user"``,
+                ``"assistant"``.  Messages are passed natively to the LLM
+                provider's multi-turn API.
             strategy: Override retrieval strategy (uses default if None).
             reranker: Optional reranking strategy to apply.
             prompt_template: Custom prompt (must contain {context} and
-                {question}; optionally {history_section}).
+                {question}).  Only used when *history* is ``None`` (single-turn).
             return_context: If True, include retriever results in output.
             ctx: Execution context.
 
@@ -398,23 +435,30 @@ class GraphRAG:
         # Step 3: Build context string
         context_str = "\n---\n".join(item.content for item in retriever_result.items)
 
-        # Step 4: Build history section
-        history_section = ""
+        # Step 4: Generate answer
         if history:
-            lines = []
-            for msg in history:
-                role = msg.get("role", "user").capitalize()
-                lines.append(f"{role}: {msg.get('content', '')}")
-            history_section = "\nConversation history:\n" + "\n".join(lines) + "\n"
-
-        # Step 5: Generate answer
-        template = prompt_template or _RAG_PROMPT
-        prompt = template.format(
-            context=context_str,
-            question=question,
-            history_section=history_section,
-        )
-        llm_response = await self.llm.ainvoke(prompt)
+            # Multi-turn: validate history and use native messages API
+            validated = self._validate_history(history)
+            system_prompt = (prompt_template or _RAG_PROMPT).format(
+                context=context_str,
+                question="",
+                history_section="",
+            )
+            messages: list[ChatMessage] = [
+                ChatMessage(role="system", content=system_prompt),
+                *validated,
+                ChatMessage(role="user", content=question),
+            ]
+            llm_response = await self.llm.ainvoke_messages(messages)
+        else:
+            # Single-turn: use the existing prompt template path
+            template = prompt_template or _RAG_PROMPT
+            prompt = template.format(
+                context=context_str,
+                question=question,
+                history_section="",
+            )
+            llm_response = await self.llm.ainvoke(prompt)
 
         result = RagResult(
             answer=self._clean_answer(llm_response.content),

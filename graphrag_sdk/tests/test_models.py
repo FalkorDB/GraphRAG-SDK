@@ -14,6 +14,7 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
     GraphSchema,
     IngestionResult,
+    ChatMessage,
     LLMMessage,
     LLMResponse,
     PropertyType,
@@ -208,6 +209,28 @@ class TestRetrieverModels:
     def test_raw_search_result(self):
         raw = RawSearchResult(records=[{"text": "hello"}], metadata={"strategy": "local"})
         assert len(raw.records) == 1
+
+
+class TestChatMessage:
+    def test_valid_roles(self):
+        for role in ("system", "user", "assistant"):
+            msg = ChatMessage(role=role, content="Hello")
+            assert msg.role == role
+
+    def test_invalid_role_raises(self):
+        with pytest.raises(Exception):
+            ChatMessage(role="robot", content="beep")
+
+    def test_to_dict(self):
+        msg = ChatMessage(role="user", content="Hello")
+        d = msg.to_dict()
+        assert d == {"role": "user", "content": "Hello"}
+
+    def test_llm_message_alias(self):
+        """LLMMessage is a backward-compatible alias for ChatMessage."""
+        msg = LLMMessage(role="user", content="Hello")
+        assert isinstance(msg, ChatMessage)
+        assert msg.role == "user"
 
 
 class TestLLMModels:

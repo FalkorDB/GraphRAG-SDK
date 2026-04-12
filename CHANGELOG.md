@@ -21,10 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Circuit breaker**: Resilient FalkorDB connection with automatic failure detection and recovery.
 - **Multi-tenant support**: `Context` with tenant isolation, distributed tracing, and latency budgeting.
 - **Parallel multi-source ingestion**: `ingest()` accepts `str | list[str]` with `max_concurrent` parameter for bounded parallel ingestion.
-- **Retrieve/completion split**: `retrieve()` for retrieval-only (no LLM call); `completion()` for full RAG pipeline with optional conversation history.
+- **Retrieve/completion split**: `retrieve()` for retrieval-only (no LLM call); `completion()` for full RAG pipeline with conversation history support.
+- **Native multi-turn conversations**: `completion(history=[...])` passes messages natively to the LLM provider's chat API (not string-stuffed into a single prompt). History accepts `ChatMessage` objects or `{"role": ..., "content": ...}` dicts with validated roles (`system`, `user`, `assistant`).
+- **`ChatMessage` model**: Pydantic-validated message type with `role: Literal["system", "user", "assistant"]` and `content: str`. Exported from the top-level package.
+- **`LLMInterface.ainvoke_messages()`**: New method for multi-turn message-based LLM calls. Default implementation falls back to `ainvoke()` (string concatenation), so custom providers work without changes. `LiteLLM` and `OpenRouterLLM` override with native implementations.
 - **Graph config node**: `__GraphRAGConfig__` singleton stores the embedding model and dimension used to build the graph; mismatches are caught on retrieval.
 - **Embedder.model_name**: Abstract property on the `Embedder` ABC for identifying the embedding model.
-- **547 tests**: Comprehensive unit and integration test suite with mock providers.
+- **556 tests**: Comprehensive unit and integration test suite with mock providers.
 - **Full documentation**: Architecture, strategies, configuration, providers, benchmark, and API reference.
 - **4 examples**: Quickstart, PDF with schema, custom strategies, and custom provider.
 
