@@ -52,6 +52,12 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "{text}\n\n"
     "## Instructions\n\n"
     "### Entities\n"
+    "- REMOVE any entity that is:\n"
+    "  - A purely symbolic or operator token (e.g. +=, ->, ++, ==, !=)\n"
+    "  - A common non-domain-specific shell/system abbreviation "
+    "(e.g. sh, cd, dt, ls, rm, cp, mv)\n"
+    "  - A generic short token (1-2 characters) that is not a widely-recognised "
+    "named entity or acronym (AI, US, UK, Go are fine; dt, bg, fn are not)\n"
     "- For each verified entity provide a concise 1-2 sentence description "
     "capturing key attributes and roles from the text. This description is "
     "embedded for semantic search.\n\n"
@@ -84,6 +90,19 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
     if conf is not None:
         extra["confidence"] = conf
     return extra
+
+
+def _format_entity_types(
+    types: list[str], descs: dict[str, str] | None = None
+) -> str:
+    """Format entity types for prompt injection, including descriptions if available."""
+    if not descs:
+        return ", ".join(types)
+    parts = []
+    for t in types:
+        d = descs.get(t)
+        parts.append(f"{t} -- {d}" if d else t)
+    return "\n".join(parts)
 
 
 class GraphExtraction(ExtractionStrategy):
@@ -132,9 +151,14 @@ class GraphExtraction(ExtractionStrategy):
         ctx: Context,
     ) -> GraphData:
         # Resolve entity types: schema overrides instance default
-        entity_types = (
-            [e.label for e in schema.entities] if schema.entities else list(self.entity_types)
-        )
+        if schema.entities:
+            entity_types = [e.label for e in schema.entities]
+            entity_type_descs: dict[str, str] = {
+                e.label: e.description for e in schema.entities if e.description
+            }
+        else:
+            entity_types = list(self.entity_types)
+            entity_type_descs = {}
 
         ctx.log(
             f"Extracting from {len(chunks.chunks)} chunks (hybrid, "
@@ -173,7 +197,7 @@ class GraphExtraction(ExtractionStrategy):
             # LLM mode: batch all NER prompts via abatch_invoke
             ner_prompts = [
                 NER_PROMPT.format(
-                    entity_types=", ".join(entity_types),
+                    entity_types=_format_entity_types(entity_types, entity_type_descs),
                     text=text,
                 )
                 for text in chunk_texts
@@ -236,7 +260,7 @@ class GraphExtraction(ExtractionStrategy):
                 [{"name": e.name, "type": e.type, "description": e.description} for e in ents]
             )
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
-                entity_types=", ".join(entity_types),
+                entity_types=_format_entity_types(entity_types, entity_type_descs),
                 entities_json=entities_json,
                 text=text,
             )
