@@ -243,8 +243,14 @@ class GraphRAG:
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
         ctx: Context | None = None,
+        _skip_post: bool = False,
     ) -> IngestionResult:
-        """Ingest a single source document."""
+        """Ingest a single source document.
+
+        Args:
+            _skip_post: Internal flag — when True, skips ensure_indices
+                and config write (caller handles them after the batch).
+        """
         if ctx is None:
             ctx = Context()
 
@@ -267,14 +273,15 @@ class GraphRAG:
 
         result = await pipeline.run(source, ctx, text=text)
 
-        # Post-ingestion: create indices only.
-        # backfill_entity_embeddings() is intentionally NOT called here —
-        # it re-scans all entities and is very slow when ingesting multiple
-        # documents sequentially.  Call finalize() after all ingestion.
-        await self.vector_store.ensure_indices()
+        if not _skip_post:
+            # Post-ingestion: create indices only.
+            # backfill_entity_embeddings() is intentionally NOT called here —
+            # it re-scans all entities and is very slow when ingesting multiple
+            # documents sequentially.  Call finalize() after all ingestion.
+            await self.vector_store.ensure_indices()
 
-        # Write/update graph config node (idempotent)
-        await self._write_graph_config()
+            # Write/update graph config node (idempotent)
+            await self._write_graph_config()
 
         return result
 
@@ -290,6 +297,10 @@ class GraphRAG:
         ctx: Context | None = None,
     ) -> list[IngestionResult]:
         """Ingest multiple sources in parallel with bounded concurrency."""
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent must be >= 1")
+
+        parent_ctx = ctx or Context()
         sem = asyncio.Semaphore(max_concurrent)
 
         async def _one(src: str) -> IngestionResult:
@@ -301,10 +312,17 @@ class GraphRAG:
                     chunker=chunker,
                     extractor=extractor,
                     resolver=resolver,
-                    ctx=ctx,
+                    ctx=parent_ctx.child(),
+                    _skip_post=True,
                 )
 
-        return list(await asyncio.gather(*[_one(s) for s in sources]))
+        results = list(await asyncio.gather(*[_one(s) for s in sources]))
+
+        # Post-batch: run ensure_indices and config write once
+        await self.vector_store.ensure_indices()
+        await self._write_graph_config()
+
+        return results
 
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with schema entity types if available."""
@@ -566,7 +584,9 @@ class GraphRAG:
         except ConfigError:
             raise
         except Exception:
+            # Don't mark as validated on transient failures — retry next call.
             logger.debug("Failed to validate graph config", exc_info=True)
+            return
 
         self._config_validated = True
 

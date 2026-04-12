@@ -41,7 +41,9 @@ class Embedder(ABC):
     Example::
 
         class OpenAIEmbedder(Embedder):
-            model_name = "text-embedding-ada-002"
+            @property
+            def model_name(self) -> str:
+                return "text-embedding-ada-002"
             def embed_query(self, text: str, **kw) -> list[float]:
                 return openai.embed(text)
     """
