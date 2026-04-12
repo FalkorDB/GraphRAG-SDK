@@ -134,6 +134,8 @@ class OpenRouterLLM(LLMInterface):
         **kwargs: Any,
     ) -> LLMResponse:
         """Native multi-turn completion via OpenRouter."""
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
         client = self._get_async_client()
         create_kwargs: dict[str, Any] = {
             "model": self.model_name,

@@ -43,7 +43,7 @@ from graphrag_sdk.storage.vector_store import VectorStore
 logger = logging.getLogger(__name__)
 
 
-_RAG_PROMPT = (
+_RAG_SYSTEM_PROMPT = (
     "You are a helpful assistant. Answer the question using ONLY "
     "the provided context.\n\n"
     "RULES:\n"
@@ -60,12 +60,11 @@ _RAG_PROMPT = (
     "6. If the context lacks sufficient information, say so briefly "
     "rather than inventing details.\n"
     "7. Respect negation: if a passage states something did NOT happen "
-    "or is NOT true, preserve that meaning.\n"
-    "{history_section}\n"
-    "{context}\n\n"
-    "Question: {question}\n\n"
-    "Answer:"
+    "or is NOT true, preserve that meaning.\n\n"
+    "{context}"
 )
+
+_RAG_PROMPT = _RAG_SYSTEM_PROMPT + ("\n\n{history_section}Question: {question}\n\nAnswer:")
 
 
 class GraphRAG:
@@ -457,10 +456,8 @@ class GraphRAG:
         if history:
             # Multi-turn: validate history and use native messages API
             validated = self._validate_history(history)
-            system_prompt = (prompt_template or _RAG_PROMPT).format(
+            system_prompt = (prompt_template or _RAG_SYSTEM_PROMPT).format(
                 context=context_str,
-                question="",
-                history_section="",
             )
             messages: list[ChatMessage] = [
                 ChatMessage(role="system", content=system_prompt),

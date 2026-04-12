@@ -100,7 +100,7 @@ print(result.retriever_result.items)  # See what was retrieved
 
 ### Multi-Turn Conversations
 
-`completion()` supports native multi-turn conversations. Messages are passed directly to the LLM's chat API — not string-stuffed into a single prompt.
+`completion()` supports multi-turn conversations. With the built-in providers (`LiteLLM`, `OpenRouterLLM`), messages are passed natively to the LLM's chat API. Custom providers that only implement `invoke()` get automatic fallback via message concatenation.
 
 ```python
 from graphrag_sdk import ChatMessage

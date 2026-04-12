@@ -61,8 +61,6 @@ class MockLLM(LLMInterface):
         return LLMResponse(content=response)
 
     async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
-        from graphrag_sdk.core.models import ChatMessage
-
         self.last_messages = messages
         return self.invoke("")
 

@@ -138,6 +138,8 @@ class LiteLLM(LLMInterface):
         **kwargs: Any,
     ) -> LLMResponse:
         """Native multi-turn completion via LiteLLM."""
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
         try:
             import litellm
         except ImportError:

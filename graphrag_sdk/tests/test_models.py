@@ -218,7 +218,7 @@ class TestChatMessage:
             assert msg.role == role
 
     def test_invalid_role_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ChatMessage(role="robot", content="beep")
 
     def test_to_dict(self):

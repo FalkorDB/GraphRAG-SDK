@@ -124,7 +124,7 @@ print(answer.answer)
 
 ### Multi-Turn Conversations
 
-`completion()` supports native multi-turn conversations. History messages are passed directly to the LLM provider's chat API as structured messages, not concatenated into a single prompt.
+`completion()` supports multi-turn conversations. With the built-in providers (`LiteLLM`, `OpenRouterLLM`), history messages are passed natively to the LLM's chat API. Custom providers that only implement `invoke()` get automatic fallback via message concatenation.
 
 ```python
 from graphrag_sdk import ChatMessage
