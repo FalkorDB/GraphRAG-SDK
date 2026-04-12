@@ -552,6 +552,7 @@ class GraphExtraction(ExtractionStrategy):
                 continue
             props: dict[str, Any] = {
                 "name": ent.name,
+                "type": ent.type,
                 "description": ent.description,
                 "source_chunk_ids": ent.source_chunk_ids,
             }
@@ -586,6 +587,7 @@ class GraphExtraction(ExtractionStrategy):
             props: dict[str, Any] = {
                 "rel_type": rel.type,
                 "fact": fact,
+                "description": rel.description or "",
                 "source_chunk_ids": rel.source_chunk_ids,
                 "src_name": rel.source,
                 "tgt_name": rel.target,
