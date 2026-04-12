@@ -10,15 +10,18 @@ import pytest
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import ConfigError
 from graphrag_sdk.core.models import (
+    ChatMessage,
     GraphSchema,
+    IngestionResult,
     LLMResponse,
     RagResult,
+    RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
-from graphrag_sdk.core.models import RawSearchResult
 
 from .conftest import MockEmbedder, MockLLM
 
@@ -308,3 +311,364 @@ class TestGraphRAGSyncWrappers:
         f.write_text("Sync ingest content.")
         result = g.ingest_sync(str(f))
         assert result is not None
+
+    def test_retrieve_sync(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+        result = g.retrieve_sync("test?")
+        assert isinstance(result, RetrieverResult)
+        assert len(result.items) == 1
+
+    def test_completion_sync(self, mock_conn, embedder):
+        llm = MockLLM(responses=["Sync completion."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+        result = g.completion_sync("test?")
+        assert result.answer == "Sync completion."
+
+
+class TestGraphRAGRetrieve:
+    async def test_retrieve_returns_retriever_result(self, mock_conn, embedder):
+        llm = MockLLM(responses=["should not be called"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="context", score=0.9)]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.retrieve("question?")
+        assert isinstance(result, RetrieverResult)
+        assert len(result.items) == 1
+        assert result.items[0].content == "context"
+        # LLM should NOT have been called
+        assert llm._call_index == 0
+
+    async def test_retrieve_with_reranker(self, mock_conn, embedder):
+        from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
+
+        llm = MockLLM(responses=["should not be called"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[
+                RetrieverResultItem(content="A", score=0.5),
+                RetrieverResultItem(content="B", score=0.9),
+            ])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        class FlipReranker(RerankingStrategy):
+            async def rerank(self, query, result, ctx):
+                return RetrieverResult(items=list(reversed(result.items)))
+
+        result = await g.retrieve("test", reranker=FlipReranker())
+        assert result.items[0].content == "B"
+        assert llm._call_index == 0
+
+
+class TestGraphRAGCompletion:
+    async def test_completion_basic(self, mock_conn, embedder):
+        llm = MockLLM(responses=["The answer is 42."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="Context chunk", score=0.9)]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion("What is the answer?")
+        assert isinstance(result, RagResult)
+        assert result.answer == "The answer is 42."
+        assert result.metadata["num_context_items"] == 1
+        assert result.metadata["has_history"] is False
+
+    async def test_completion_with_history_dicts(self, mock_conn, embedder):
+        """History as dicts should use ainvoke_messages natively."""
+        llm = MockLLM(responses=["Continued answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion(
+            "Follow up question",
+            history=[
+                {"role": "user", "content": "First question"},
+                {"role": "assistant", "content": "First answer"},
+            ],
+        )
+        assert result.answer == "Continued answer."
+        assert result.metadata["has_history"] is True
+        # Should have used ainvoke_messages, not ainvoke
+        assert llm.last_messages is not None
+        assert len(llm.last_messages) == 4  # system + 2 history + user question
+        assert llm.last_messages[0].role == "system"
+        assert llm.last_messages[1].role == "user"
+        assert llm.last_messages[1].content == "First question"
+        assert llm.last_messages[2].role == "assistant"
+        assert llm.last_messages[3].role == "user"
+        assert llm.last_messages[3].content == "Follow up question"
+
+    async def test_completion_with_history_chatmessage_objects(self, mock_conn, embedder):
+        """History as ChatMessage objects should work."""
+        llm = MockLLM(responses=["ChatMessage answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion(
+            "Follow up",
+            history=[
+                ChatMessage(role="system", content="You are helpful."),
+                ChatMessage(role="user", content="Hi"),
+                ChatMessage(role="assistant", content="Hello!"),
+            ],
+        )
+        assert result.answer == "ChatMessage answer."
+        assert llm.last_messages is not None
+        # system (RAG prompt) + system (from history) + user + assistant + user question
+        assert len(llm.last_messages) == 5
+
+    async def test_completion_history_invalid_role_raises(self, mock_conn, embedder):
+        """Invalid role in history should raise ValueError."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(ValueError, match="invalid role 'robot'"):
+            await g.completion(
+                "test?",
+                history=[{"role": "robot", "content": "beep boop"}],
+            )
+
+    async def test_completion_history_missing_keys_raises(self, mock_conn, embedder):
+        """History dict missing 'content' should raise ValueError."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(ValueError, match="must have 'role' and 'content'"):
+            await g.completion(
+                "test?",
+                history=[{"role": "user"}],
+            )
+
+    async def test_completion_history_wrong_type_raises(self, mock_conn, embedder):
+        """Non-dict, non-ChatMessage in history should raise TypeError."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(TypeError, match="expected ChatMessage or dict"):
+            await g.completion("test?", history=["not a dict"])
+
+    async def test_completion_no_history_uses_ainvoke(self, mock_conn, embedder):
+        """Without history, completion should use ainvoke (not ainvoke_messages)."""
+        llm = MockLLM(responses=["Single-turn answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion("test?")
+        assert result.answer == "Single-turn answer."
+        assert llm.last_messages is None  # ainvoke_messages was NOT called
+
+    async def test_completion_return_context(self, mock_conn, embedder):
+        llm = MockLLM(responses=["Answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="chunk")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion("q?", return_context=True)
+        assert result.retriever_result is not None
+
+    async def test_completion_custom_prompt(self, mock_conn, embedder):
+        llm = MockLLM(responses=["Custom answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        template = "Context: {context}\nQ: {question}\nA:"
+        result = await g.completion("test?", prompt_template=template)
+        assert llm._call_index == 1
+
+    async def test_completion_prompt_template_ignored_with_history(self, mock_conn, embedder):
+        """prompt_template should be ignored in multi-turn mode (no KeyError)."""
+        llm = MockLLM(responses=["Multi-turn answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        # This template has {question} — would KeyError if used in multi-turn
+        template = "Context: {context}\nQ: {question}\nA:"
+        result = await g.completion(
+            "follow up?",
+            history=[{"role": "user", "content": "hi"}],
+            prompt_template=template,
+        )
+        assert result.answer == "Multi-turn answer."
+        # Should have used ainvoke_messages, not ainvoke
+        assert llm.last_messages is not None
+
+
+class TestGraphRAGBatchIngestValidation:
+    async def test_ingest_batch_max_concurrent_zero_raises(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        with pytest.raises(ValueError, match="max_concurrent must be >= 1"):
+            await g.ingest(["a.txt", "b.txt"], max_concurrent=0)
+
+
+class TestGraphRAGBatchIngest:
+    async def test_ingest_list(self, graphrag, tmp_path):
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("Document A content.")
+        f2.write_text("Document B content.")
+        results = await graphrag.ingest([str(f1), str(f2)])
+        assert isinstance(results, list)
+        assert len(results) == 2
+        for r in results:
+            assert isinstance(r, IngestionResult)
+
+    async def test_ingest_list_with_text_raises(self, graphrag):
+        with pytest.raises(ValueError, match="text.*cannot be used with a list"):
+            await graphrag.ingest(["a", "b"], text="should fail")
+
+    async def test_ingest_single_still_works(self, graphrag, tmp_path):
+        f = tmp_path / "single.txt"
+        f.write_text("Single document.")
+        result = await graphrag.ingest(str(f))
+        assert isinstance(result, IngestionResult)
+
+
+class TestGraphRAGQueryDeprecation:
+    async def test_query_emits_deprecation(self, mock_conn, embedder):
+        llm = MockLLM(responses=["Answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.warns(DeprecationWarning, match="deprecated"):
+            await g.query("test?")
+
+    def test_query_sync_emits_deprecation(self, mock_conn, embedder):
+        llm = MockLLM(responses=["Answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.warns(DeprecationWarning, match="deprecated"):
+            g.query_sync("test?")
+
+
+class TestGraphRAGConfigNode:
+    async def test_config_mismatch_raises(self, mock_conn, embedder):
+        """Mismatched embedding model should raise ConfigError."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+
+        # Simulate stored config with a different model
+        config_result = MagicMock()
+        config_result.result_set = [["different-model", 1536]]
+        g.graph_store.query_raw = AsyncMock(return_value=config_result)
+
+        with pytest.raises(ConfigError, match="Embedding model mismatch"):
+            await g.retrieve("test?")
+
+    async def test_config_match_passes(self, mock_conn, embedder):
+        """Matching embedding model should pass validation."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+
+        # Simulate stored config matching the mock embedder
+        config_result = MagicMock()
+        config_result.result_set = [["mock-embedder", 1536]]
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[])
+        )
+        g._retrieval_strategy = mock_strategy
+        g.graph_store.query_raw = AsyncMock(return_value=config_result)
+
+        result = await g.retrieve("test?")
+        assert isinstance(result, RetrieverResult)
+
+    async def test_no_config_node_passes(self, mock_conn, embedder):
+        """Empty graph (no config node) should pass validation."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+
+        empty_result = MagicMock()
+        empty_result.result_set = []
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[])
+        )
+        g._retrieval_strategy = mock_strategy
+        g.graph_store.query_raw = AsyncMock(return_value=empty_result)
+
+        result = await g.retrieve("test?")
+        assert isinstance(result, RetrieverResult)

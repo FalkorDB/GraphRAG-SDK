@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Storage: Entity Deduplicator
+# GraphRAG SDK — Storage: Entity Deduplicator
 # Two-phase entity deduplication: exact name match + optional fuzzy embedding.
 # Preserves label-aware grouping to prevent cross-type merging.
 

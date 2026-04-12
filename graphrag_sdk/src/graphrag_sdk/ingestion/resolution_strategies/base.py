@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Resolution Strategy ABC
+# GraphRAG SDK — Ingestion: Resolution Strategy ABC
 # Pattern: Strategy — different deduplication approaches implement this interface.
 
 from __future__ import annotations

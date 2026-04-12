@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Storage
+# GraphRAG SDK — Storage
 # Data access layer: graph store and vector store.
 
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator

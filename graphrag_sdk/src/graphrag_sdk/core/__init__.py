@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core Foundation
+# GraphRAG SDK — Core Foundation
 # Stable contracts: models, providers, connection, context, exceptions.
 
 from graphrag_sdk.core.context import Context
@@ -16,9 +16,9 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import (
     Embedder,
-    LLMInterface,
     LiteLLM,
     LiteLLMEmbedder,
+    LLMInterface,
     OpenRouterEmbedder,
     OpenRouterLLM,
 )

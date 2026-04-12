@@ -1,15 +1,14 @@
-# GraphRAG SDK 2.0 — Core: Data Models
+# GraphRAG SDK — Core: Data Models
 # Pydantic v2 schemas used across the entire SDK.
 # Origin: Shared types + Neo4j DataModel pattern + schema types.
 
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
-
 
 # ── Base ─────────────────────────────────────────────────────────
 
@@ -255,11 +254,28 @@ class RawSearchResult(DataModel):
 # ── LLM Types ────────────────────────────────────────────────────
 
 
-class LLMMessage(DataModel):
-    """A message for the LLM conversation."""
+class ChatMessage(DataModel):
+    """A validated message for multi-turn LLM conversations.
 
-    role: str  # "system" | "user" | "assistant"
+    Used by ``completion(history=...)`` and ``LLMInterface.ainvoke_messages()``.
+
+    Example::
+
+        ChatMessage(role="system", content="You are a helpful assistant.")
+        ChatMessage(role="user", content="What is GraphRAG?")
+        ChatMessage(role="assistant", content="GraphRAG is...")
+    """
+
+    role: Literal["system", "user", "assistant"]
     content: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Convert to the ``{"role": ..., "content": ...}`` dict format used by LLM APIs."""
+        return {"role": self.role, "content": self.content}
+
+
+# Backward-compatible alias
+LLMMessage = ChatMessage
 
 
 class LLMResponse(DataModel):

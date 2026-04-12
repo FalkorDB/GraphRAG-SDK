@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — API
+# GraphRAG SDK — API
 
 from graphrag_sdk.api.main import GraphRAG
 

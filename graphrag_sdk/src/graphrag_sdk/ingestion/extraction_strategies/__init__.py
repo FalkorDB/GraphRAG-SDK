@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Extraction Strategies
+# GraphRAG SDK — Ingestion: Extraction Strategies
 
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (

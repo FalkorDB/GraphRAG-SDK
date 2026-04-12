@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Loader Strategy ABC
+# GraphRAG SDK — Ingestion: Loader Strategy ABC
 # Pattern: Strategy — every data source adapter implements this interface.
 
 from __future__ import annotations

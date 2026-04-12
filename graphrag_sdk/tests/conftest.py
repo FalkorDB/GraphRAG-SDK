@@ -32,6 +32,10 @@ class MockEmbedder(Embedder):
         self.dimension = dimension
         self.call_count = 0
 
+    @property
+    def model_name(self) -> str:
+        return "mock-embedder"
+
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         self.call_count += 1
         h = hash(text) % (10**9)
@@ -49,11 +53,16 @@ class MockLLM(LLMInterface):
         super().__init__(model_name=model_name)
         self._responses = responses or ['{"nodes": [], "relationships": []}']
         self._call_index = 0
+        self.last_messages: list | None = None  # track ainvoke_messages calls
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
         response = self._responses[min(self._call_index, len(self._responses) - 1)]
         self._call_index += 1
         return LLMResponse(content=response)
+
+    async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+        self.last_messages = messages
+        return self.invoke("")
 
 
 class MockLLMWithGraphExtraction(MockLLM):

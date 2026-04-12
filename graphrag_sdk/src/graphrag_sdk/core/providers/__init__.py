@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Provider package
+# GraphRAG SDK — Provider package
 # Re-exports all provider ABCs and built-in implementations.
 
 from graphrag_sdk.core.providers.base import (

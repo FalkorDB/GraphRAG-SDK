@@ -1,19 +1,24 @@
-# GraphRAG SDK 2.0 — API: GraphRAG Facade
+# GraphRAG SDK — API: GraphRAG Facade
 # Pattern: Facade — single entry point that hides all internal wiring.
 # Principle: Simplicity — two-line usage: init + query/ingest.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from typing import Any
+from typing import Any, overload
 
+from graphrag_sdk import __version__
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import ConfigError
 from graphrag_sdk.core.models import (
+    ChatMessage,
     GraphSchema,
     IngestionResult,
     RagResult,
+    RetrieverResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
@@ -38,7 +43,7 @@ from graphrag_sdk.storage.vector_store import VectorStore
 logger = logging.getLogger(__name__)
 
 
-_RAG_PROMPT = (
+_RAG_SYSTEM_PROMPT = (
     "You are a helpful assistant. Answer the question using ONLY "
     "the provided context.\n\n"
     "RULES:\n"
@@ -56,20 +61,21 @@ _RAG_PROMPT = (
     "rather than inventing details.\n"
     "7. Respect negation: if a passage states something did NOT happen "
     "or is NOT true, preserve that meaning.\n\n"
-    "{context}\n\n"
-    "Question: {question}\n\n"
-    "Answer:"
+    "{context}"
 )
+
+_RAG_PROMPT = _RAG_SYSTEM_PROMPT + ("\n\n{history_section}Question: {question}\n\nAnswer:")
 
 
 class GraphRAG:
     """The main user-facing class for GraphRAG operations.
 
-    Provides two primary operations:
+    Provides three primary operations:
     - ``ingest()`` — build a knowledge graph from sources
-    - ``query()`` — search the knowledge graph and generate answers
+    - ``retrieve()`` — search the knowledge graph (retrieval only)
+    - ``completion()`` — retrieve context and generate an answer
 
-    Both use sensible defaults but allow full strategy customisation.
+    All use sensible defaults but allow full strategy customisation.
 
     Args:
         connection: FalkorDB connection (or ConnectionConfig to create one).
@@ -90,8 +96,11 @@ class GraphRAG:
         # Ingest
         await rag.ingest("my_document.pdf")
 
-        # Query
-        result = await rag.query("What is the capital of France?")
+        # Retrieve context only
+        context = await rag.retrieve("What is the capital of France?")
+
+        # Full RAG: retrieve + generate answer
+        result = await rag.completion("What is the capital of France?")
         print(result.answer)
     """
 
@@ -113,6 +122,8 @@ class GraphRAG:
         self.llm = llm
         self.embedder = embedder
         self.schema = schema or GraphSchema()
+        self._embedding_dimension = embedding_dimension
+        self._config_validated = False
 
         # Storage layer
         self.graph_store = GraphStore(self._conn)
@@ -135,6 +146,7 @@ class GraphRAG:
 
     # ── Ingestion ────────────────────────────────────────────────
 
+    @overload
     async def ingest(
         self,
         source: str,
@@ -145,8 +157,38 @@ class GraphRAG:
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
         ctx: Context | None = None,
-    ) -> IngestionResult:
-        """Build a knowledge graph from a source.
+    ) -> IngestionResult: ...
+
+    @overload
+    async def ingest(
+        self,
+        source: list[str],
+        *,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
+        max_concurrent: int = 3,
+        ctx: Context | None = None,
+    ) -> list[IngestionResult]: ...
+
+    async def ingest(
+        self,
+        source: str | list[str],
+        *,
+        text: str | None = None,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
+        max_concurrent: int = 3,
+        ctx: Context | None = None,
+    ) -> IngestionResult | list[IngestionResult]:
+        """Build a knowledge graph from one or more sources.
+
+        Accepts a single source path or a list of paths. When a list
+        is provided, documents are ingested in parallel with bounded
+        concurrency.
 
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
@@ -155,16 +197,58 @@ class GraphRAG:
         - Resolver: ExactMatchResolution
 
         Args:
-            source: File path, URL, or identifier for the data source.
-            text: Optional raw text (skips loader if provided).
+            source: File path (or list of paths) for ingestion.
+            text: Optional raw text (single source only).
             loader: Custom loader strategy.
             chunker: Custom chunking strategy.
             extractor: Custom extraction strategy.
             resolver: Custom resolution strategy.
+            max_concurrent: Max parallel ingestions (default 3).
             ctx: Execution context.
 
         Returns:
-            IngestionResult with pipeline statistics.
+            IngestionResult for a single source, or
+            list[IngestionResult] for multiple sources.
+        """
+        if isinstance(source, list):
+            if text is not None:
+                raise ValueError("'text' parameter cannot be used with a list of sources")
+            return await self._ingest_batch(
+                source,
+                loader=loader,
+                chunker=chunker,
+                extractor=extractor,
+                resolver=resolver,
+                max_concurrent=max_concurrent,
+                ctx=ctx,
+            )
+        return await self._ingest_single(
+            source,
+            text=text,
+            loader=loader,
+            chunker=chunker,
+            extractor=extractor,
+            resolver=resolver,
+            ctx=ctx,
+        )
+
+    async def _ingest_single(
+        self,
+        source: str,
+        *,
+        text: str | None = None,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
+        ctx: Context | None = None,
+        _skip_post: bool = False,
+    ) -> IngestionResult:
+        """Ingest a single source document.
+
+        Args:
+            _skip_post: Internal flag — when True, skips ensure_indices
+                and config write (caller handles them after the batch).
         """
         if ctx is None:
             ctx = Context()
@@ -188,14 +272,56 @@ class GraphRAG:
 
         result = await pipeline.run(source, ctx, text=text)
 
-        # Post-ingestion: create indices only.
-        # backfill_entity_embeddings() is intentionally NOT called here —
-        # it re-scans all entities and is very slow when ingesting multiple
-        # documents sequentially.  Call it explicitly after all ingestion
-        # is complete (e.g. ``await rag.vector_store.backfill_entity_embeddings()``).
-        await self.vector_store.ensure_indices()
+        if not _skip_post:
+            # Post-ingestion: create indices only.
+            # backfill_entity_embeddings() is intentionally NOT called here —
+            # it re-scans all entities and is very slow when ingesting multiple
+            # documents sequentially.  Call finalize() after all ingestion.
+            await self.vector_store.ensure_indices()
+
+            # Write/update graph config node (idempotent)
+            await self._write_graph_config()
 
         return result
+
+    async def _ingest_batch(
+        self,
+        sources: list[str],
+        *,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
+        max_concurrent: int = 3,
+        ctx: Context | None = None,
+    ) -> list[IngestionResult]:
+        """Ingest multiple sources in parallel with bounded concurrency."""
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent must be >= 1")
+
+        parent_ctx = ctx or Context()
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _one(src: str) -> IngestionResult:
+            async with sem:
+                return await self._ingest_single(
+                    src,
+                    text=None,
+                    loader=loader,
+                    chunker=chunker,
+                    extractor=extractor,
+                    resolver=resolver,
+                    ctx=parent_ctx.child(),
+                    _skip_post=True,
+                )
+
+        results = list(await asyncio.gather(*[_one(s) for s in sources]))
+
+        # Post-batch: run ensure_indices and config write once
+        await self.vector_store.ensure_indices()
+        await self._write_graph_config()
+
+        return results
 
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with schema entity types if available."""
@@ -205,7 +331,167 @@ class GraphRAG:
             entity_types=entity_types,
         )
 
-    # ── Query ────────────────────────────────────────────────────
+    # ── Retrieval ────────────────────────────────────────────────
+
+    async def retrieve(
+        self,
+        question: str,
+        *,
+        strategy: RetrievalStrategy | None = None,
+        reranker: RerankingStrategy | None = None,
+        ctx: Context | None = None,
+    ) -> RetrieverResult:
+        """Retrieve context from the knowledge graph without generating an answer.
+
+        Use this to inspect retrieved context or pass it to your own LLM.
+        Use ``completion()`` for the full RAG pipeline.
+
+        Args:
+            question: The user's question.
+            strategy: Override retrieval strategy (uses default if None).
+            reranker: Optional reranking strategy to apply.
+            ctx: Execution context.
+
+        Returns:
+            RetrieverResult with context items and metadata.
+        """
+        if ctx is None:
+            ctx = Context()
+
+        ctx.log(f"Retrieve: {question[:80]}...")
+
+        await self._validate_graph_config()
+
+        retrieval = strategy or self._retrieval_strategy
+        retriever_result = await retrieval.search(question, ctx)
+
+        if reranker is not None:
+            retriever_result = await reranker.rerank(question, retriever_result, ctx)
+
+        ctx.log(f"Retrieved {len(retriever_result.items)} context items")
+        return retriever_result
+
+    # ── Completion ──────────────────────────────────────────────
+
+    @staticmethod
+    def _validate_history(
+        history: list[ChatMessage | dict[str, str]],
+    ) -> list[ChatMessage]:
+        """Validate and normalise conversation history to ``ChatMessage`` objects.
+
+        Accepts either pre-built ``ChatMessage`` instances or plain dicts
+        with ``role`` and ``content`` keys.  Raises ``ValueError`` on
+        invalid entries.
+        """
+        validated: list[ChatMessage] = []
+        for i, msg in enumerate(history):
+            if isinstance(msg, ChatMessage):
+                validated.append(msg)
+            elif isinstance(msg, dict):
+                if "role" not in msg or "content" not in msg:
+                    raise ValueError(
+                        f"history[{i}]: each message must have 'role' and "
+                        f"'content' keys, got {sorted(msg.keys())}"
+                    )
+                try:
+                    validated.append(ChatMessage(role=msg["role"], content=msg["content"]))
+                except Exception:
+                    raise ValueError(
+                        f"history[{i}]: invalid role '{msg['role']}'. "
+                        f"Must be one of: 'system', 'user', 'assistant'"
+                    )
+            else:
+                raise TypeError(
+                    f"history[{i}]: expected ChatMessage or dict, got {type(msg).__name__}"
+                )
+        return validated
+
+    async def completion(
+        self,
+        question: str,
+        *,
+        history: list[ChatMessage | dict[str, str]] | None = None,
+        strategy: RetrievalStrategy | None = None,
+        reranker: RerankingStrategy | None = None,
+        prompt_template: str | None = None,
+        return_context: bool = False,
+        ctx: Context | None = None,
+    ) -> RagResult:
+        """Full RAG pipeline: retrieve context and generate an answer.
+
+        Args:
+            question: The user's question.
+            history: Optional conversation history as a list of
+                ``ChatMessage`` objects or ``{"role": ..., "content": ...}``
+                dicts.  Supported roles: ``"system"``, ``"user"``,
+                ``"assistant"``.  Messages are passed natively to the LLM
+                provider's multi-turn API.
+            strategy: Override retrieval strategy (uses default if None).
+            reranker: Optional reranking strategy to apply.
+            prompt_template: Custom prompt for single-turn mode (must
+                contain ``{context}`` and ``{question}``).  Ignored when
+                *history* is provided — multi-turn uses the built-in
+                system prompt with the question in the final user message.
+            return_context: If True, include retriever results in output.
+            ctx: Execution context.
+
+        Returns:
+            RagResult with the generated answer.
+        """
+        if ctx is None:
+            ctx = Context()
+
+        ctx.log(f"Completion: {question[:80]}...")
+
+        # Step 1-2: Retrieve + rerank
+        retriever_result = await self.retrieve(
+            question,
+            strategy=strategy,
+            reranker=reranker,
+            ctx=ctx,
+        )
+
+        # Step 3: Build context string
+        context_str = "\n---\n".join(item.content for item in retriever_result.items)
+
+        # Step 4: Generate answer
+        if history:
+            # Multi-turn: validate history and use native messages API.
+            # prompt_template is ignored — the question goes in the final
+            # user message, not the system prompt.
+            validated = self._validate_history(history)
+            system_prompt = _RAG_SYSTEM_PROMPT.format(context=context_str)
+            messages: list[ChatMessage] = [
+                ChatMessage(role="system", content=system_prompt),
+                *validated,
+                ChatMessage(role="user", content=question),
+            ]
+            llm_response = await self.llm.ainvoke_messages(messages)
+        else:
+            # Single-turn: use the existing prompt template path
+            template = prompt_template or _RAG_PROMPT
+            prompt = template.format(
+                context=context_str,
+                question=question,
+                history_section="",
+            )
+            llm_response = await self.llm.ainvoke(prompt)
+
+        result = RagResult(
+            answer=self._clean_answer(llm_response.content),
+            retriever_result=retriever_result if return_context else None,
+            metadata={
+                "model": self.llm.model_name,
+                "num_context_items": len(retriever_result.items),
+                "strategy": (strategy or self._retrieval_strategy).__class__.__name__,
+                "has_history": bool(history),
+            },
+        )
+
+        ctx.log(f"Generated answer ({len(result.answer)} chars)")
+        return result
+
+    # ── Deprecated query() alias ────────────────────────────────
 
     async def query(
         self,
@@ -217,54 +503,91 @@ class GraphRAG:
         return_context: bool = False,
         ctx: Context | None = None,
     ) -> RagResult:
-        """Query the knowledge graph and generate an answer.
+        """Deprecated: use ``completion()`` instead.
 
-        Flow: Retrieve context → (optional) Rerank → Generate answer.
-
-        Args:
-            question: The user's question.
-            strategy: Override retrieval strategy (uses default if None).
-            reranker: Optional reranking strategy to apply.
-            prompt_template: Custom prompt template (must contain {context} and {question}).
-            return_context: If True, include retriever results in output.
-            ctx: Execution context.
-
-        Returns:
-            RagResult with the generated answer.
+        This is a backward-compatibility alias. It will be removed in
+        a future version.
         """
-        if ctx is None:
-            ctx = Context()
+        import warnings
 
-        ctx.log(f"Query: {question[:80]}...")
-
-        # Step 1: Retrieve
-        retrieval = strategy or self._retrieval_strategy
-        retriever_result = await retrieval.search(question, ctx)
-
-        # Step 2: Rerank (optional)
-        if reranker is not None:
-            retriever_result = await reranker.rerank(question, retriever_result, ctx)
-
-        # Step 3: Build context
-        context_str = "\n---\n".join(item.content for item in retriever_result.items)
-
-        # Step 4: Generate answer
-        template = prompt_template or _RAG_PROMPT
-        prompt = template.format(context=context_str, question=question)
-        llm_response = await self.llm.ainvoke(prompt)
-
-        result = RagResult(
-            answer=self._clean_answer(llm_response.content),
-            retriever_result=retriever_result if return_context else None,
-            metadata={
-                "model": self.llm.model_name,
-                "num_context_items": len(retriever_result.items),
-                "strategy": retrieval.__class__.__name__,
-            },
+        warnings.warn(
+            "GraphRAG.query() is deprecated. Use completion() for the full "
+            "RAG pipeline, or retrieve() for retrieval-only.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.completion(
+            question,
+            strategy=strategy,
+            reranker=reranker,
+            prompt_template=prompt_template,
+            return_context=return_context,
+            ctx=ctx,
         )
 
-        ctx.log(f"Generated answer ({len(result.answer)} chars)")
-        return result
+    # ── Graph Config ────────────────────────────────────────────
+
+    async def _write_graph_config(self) -> None:
+        """Write or update the ``__GraphRAGConfig__`` singleton node."""
+        from datetime import datetime, timezone
+
+        try:
+            await self.graph_store.query_raw(
+                "MERGE (c:__GraphRAGConfig__ {id: 'default'}) "
+                "SET c.embedding_model = $model, "
+                "c.embedding_dimension = $dim, "
+                "c.sdk_version = $version, "
+                "c.updated_at = $ts",
+                params={
+                    "model": self.embedder.model_name,
+                    "dim": self._embedding_dimension,
+                    "version": __version__,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception:
+            logger.debug("Failed to write graph config node", exc_info=True)
+
+    async def _validate_graph_config(self) -> None:
+        """Check that the current embedder matches the graph's stored config."""
+        if self._config_validated:
+            return
+
+        try:
+            result = await self.graph_store.query_raw(
+                "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
+                "RETURN c.embedding_model, c.embedding_dimension"
+            )
+            if not result.result_set:
+                # No config node — graph is empty or pre-config
+                self._config_validated = True
+                return
+
+            stored_model = result.result_set[0][0]
+            stored_dim = result.result_set[0][1]
+            current_model = self.embedder.model_name
+
+            if stored_model and stored_model != current_model:
+                raise ConfigError(
+                    f"Embedding model mismatch: graph was built with "
+                    f"'{stored_model}' but current embedder is "
+                    f"'{current_model}'. Use the same embedding model "
+                    f"to query this graph."
+                )
+            if stored_dim and stored_dim != self._embedding_dimension:
+                raise ConfigError(
+                    f"Embedding dimension mismatch: graph was built with "
+                    f"dimension {stored_dim} but current config is "
+                    f"{self._embedding_dimension}."
+                )
+        except ConfigError:
+            raise
+        except Exception:
+            # Don't mark as validated on transient failures — retry next call.
+            logger.debug("Failed to validate graph config", exc_info=True)
+            return
+
+        self._config_validated = True
 
     # ── Answer Post-processing ─────────────────────────────────
 
@@ -374,24 +697,31 @@ class GraphRAG:
 
     # ── Sync Convenience ─────────────────────────────────────────
 
+    def retrieve_sync(self, question: str, **kwargs: Any) -> RetrieverResult:
+        """Synchronous retrieve convenience method."""
+        return asyncio.run(self.retrieve(question, **kwargs))
+
+    def completion_sync(self, question: str, **kwargs: Any) -> RagResult:
+        """Synchronous completion convenience method."""
+        return asyncio.run(self.completion(question, **kwargs))
+
     def query_sync(self, question: str, **kwargs: Any) -> RagResult:
-        """Synchronous query convenience method.
+        """Deprecated: use ``completion_sync()`` instead."""
+        import warnings
 
-        Runs the async query in a new event loop. Prefer ``query()``
-        for production use.
-        """
-        import asyncio
+        warnings.warn(
+            "GraphRAG.query_sync() is deprecated. Use completion_sync().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.completion_sync(question, **kwargs)
 
-        return asyncio.run(self.query(question, **kwargs))
-
-    def ingest_sync(self, source: str, **kwargs: Any) -> IngestionResult:
+    def ingest_sync(
+        self, source: str | list[str], **kwargs: Any
+    ) -> IngestionResult | list[IngestionResult]:
         """Synchronous ingest convenience method."""
-        import asyncio
-
         return asyncio.run(self.ingest(source, **kwargs))
 
     def finalize_sync(self) -> dict[str, Any]:
         """Synchronous finalize convenience method."""
-        import asyncio
-
         return asyncio.run(self.finalize())

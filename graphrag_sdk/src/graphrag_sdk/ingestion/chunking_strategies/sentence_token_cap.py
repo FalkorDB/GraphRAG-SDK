@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Sentence + Token Cap Chunking
+# GraphRAG SDK — Ingestion: Sentence + Token Cap Chunking
 #
 # Best of both worlds: never splits mid-sentence (sentence boundaries via
 # regex) AND enforces a token cap per chunk (via tiktoken).

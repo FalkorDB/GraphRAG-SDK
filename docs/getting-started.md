@@ -1,4 +1,4 @@
-# Getting Started with GraphRAG SDK v2
+# Getting Started with GraphRAG SDK
 
 A step-by-step tutorial for building a knowledge graph from documents and querying it with natural language.
 
@@ -134,10 +134,22 @@ The ingestion pipeline runs a 9-step process: Load, Chunk, Lexical Graph, Extrac
 
 ## 8. Query the Knowledge Graph
 
-### Basic query
+### Retrieve context only
+
+Use `retrieve()` when you want to inspect the context or use your own LLM:
 
 ```python
-result = await rag.query("Who works at Acme Corp?")
+context = await rag.retrieve("Who works at Acme Corp?")
+for item in context.items:
+    print(f"[{item.score:.2f}] {item.content[:100]}...")
+```
+
+### Generate an answer
+
+Use `completion()` for the full RAG pipeline — retrieval + answer generation:
+
+```python
+result = await rag.completion("Who works at Acme Corp?")
 print(result.answer)
 ```
 
@@ -146,12 +158,41 @@ print(result.answer)
 Pass `return_context=True` to see which chunks and entities the retriever used to build the answer:
 
 ```python
-result = await rag.query("Who works at Acme Corp?", return_context=True)
+result = await rag.completion("Who works at Acme Corp?", return_context=True)
 for item in result.retriever_result.items:
     print(f"[{item.metadata.get('section', '')}] {item.content[:100]}...")
 ```
 
-This is useful for debugging retrieval quality and understanding which parts of your documents contribute to the answer.
+### Multi-turn conversations
+
+`completion()` supports native multi-turn conversations. Messages are passed directly to the LLM's chat API as structured messages:
+
+```python
+from graphrag_sdk import ChatMessage
+
+result = await rag.completion(
+    "What happened to her after that?",
+    history=[
+        ChatMessage(role="user", content="Who works at Acme Corp?"),
+        ChatMessage(role="assistant", content="Jane Doe works at Acme Corp."),
+    ],
+)
+print(result.answer)
+```
+
+You can also pass history as plain dicts:
+
+```python
+result = await rag.completion(
+    "Tell me more.",
+    history=[
+        {"role": "user", "content": "Who founded Acme?"},
+        {"role": "assistant", "content": "Jane Doe founded Acme in 1985."},
+    ],
+)
+```
+
+Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `ValueError`.
 
 ---
 
@@ -202,7 +243,8 @@ If you are not in an async context, use the synchronous convenience methods:
 
 ```python
 result = rag.ingest_sync("path/to/document.txt")
-result = rag.query_sync("Who works at Acme Corp?")
+context = rag.retrieve_sync("Who works at Acme Corp?")
+result = rag.completion_sync("Who works at Acme Corp?")
 results = rag.finalize_sync()
 ```
 

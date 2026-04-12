@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Extraction: Pluggable Coreference Resolvers
+# GraphRAG SDK — Extraction: Pluggable Coreference Resolvers
 # ABC + concrete implementations for coreference resolution
 # as an optional pre-processing step in GraphExtraction.
 

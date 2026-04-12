@@ -1,6 +1,6 @@
-# GraphRAG SDK v2
+# GraphRAG SDK
 
-GraphRAG SDK v2 is a production-grade Python SDK for building and querying knowledge graphs using Graph-based Retrieval Augmented Generation (GraphRAG). It uses [FalkorDB](https://www.falkordb.com/) as the graph database and supports any LLM/embedder provider through a pluggable provider interface.
+GraphRAG SDK is a production-grade Python SDK for building and querying knowledge graphs using Graph-based Retrieval Augmented Generation (GraphRAG). It uses [FalkorDB](https://www.falkordb.com/) as the graph database and supports any LLM/embedder provider through a pluggable provider interface.
 
 ## Key Features
 
@@ -48,7 +48,7 @@ async def main():
     await rag.finalize()
 
     # Query
-    answer = await rag.query("What is the main topic?")
+    answer = await rag.completion("What is the main topic?")
     print(answer.answer)
 
 asyncio.run(main())
@@ -114,8 +114,40 @@ await rag.finalize()
 ### Querying the Graph
 
 ```python
-answer = await rag.query("Who are the main characters in the story?")
+# Retrieve context only (no LLM call)
+context = await rag.retrieve("Who are the main characters?")
+
+# Full RAG: retrieve + generate answer
+answer = await rag.completion("Who are the main characters in the story?")
 print(answer.answer)
+```
+
+### Multi-Turn Conversations
+
+`completion()` supports multi-turn conversations. With the built-in providers (`LiteLLM`, `OpenRouterLLM`), history messages are passed natively to the LLM's chat API. Custom providers that only implement `invoke()` get automatic fallback via message concatenation.
+
+```python
+from graphrag_sdk import ChatMessage
+
+answer = await rag.completion(
+    "What happened to her after that?",
+    history=[
+        ChatMessage(role="user", content="Who is Alice?"),
+        ChatMessage(role="assistant", content="Alice is a software engineer at Acme Corp."),
+    ],
+)
+```
+
+You can also pass history as plain dicts — roles are validated automatically:
+
+```python
+answer = await rag.completion(
+    "Tell me more about that.",
+    history=[
+        {"role": "user", "content": "What is Acme Corp?"},
+        {"role": "assistant", "content": "Acme Corp is a tech company."},
+    ],
+)
 ```
 
 ## Architecture Overview

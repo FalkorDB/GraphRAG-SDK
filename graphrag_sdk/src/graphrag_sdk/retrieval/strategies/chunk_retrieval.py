@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Chunk Retrieval
+# GraphRAG SDK — Retrieval: Chunk Retrieval
 # 4-path chunk retrieval: fulltext + vector + MENTIONED_IN + 2-hop.
 
 from __future__ import annotations

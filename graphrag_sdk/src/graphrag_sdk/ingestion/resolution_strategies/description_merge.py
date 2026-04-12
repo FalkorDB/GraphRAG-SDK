@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Description Merge Resolution
+# GraphRAG SDK — Ingestion: Description Merge Resolution
 # Deduplicates entities by normalized name and merges their descriptions.
 # Uses LLM summarisation when the number of descriptions exceeds a threshold.
 

@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Ingestion: Semantic Resolution
+# GraphRAG SDK — Ingestion: Semantic Resolution
 # Groups entities by (normalized_name, label) to prevent cross-type merges,
 # then uses embeddings for near-duplicate detection within same-label groups.
 
@@ -211,6 +211,11 @@ class SemanticResolution(ResolutionStrategy):
                 top_k,
             )
             dim = mat_normed.shape[1]
+            if _hnswlib is None:
+                raise ImportError(
+                    "hnswlib is required for SemanticResolution fuzzy merge. "
+                    "Install with: pip install hnswlib"
+                )
             hnsw_index = _hnswlib.Index(space="ip", dim=dim)
             hnsw_index.init_index(max_elements=n, ef_construction=200, M=32)
             hnsw_index.set_ef(max(top_k + 1, 64))

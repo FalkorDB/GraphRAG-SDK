@@ -288,7 +288,7 @@ strategy = MultiPathRetrieval(
     enable_cypher=True,
 )
 
-result = await rag.query("Your question", strategy=strategy)
+result = await rag.completion("Your question", strategy=strategy)
 ```
 
 ### Tuning Parameters
@@ -309,7 +309,7 @@ The pipeline has built-in reranking (step 8), but you can also apply an external
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 
 reranker = CosineReranker(embedder=embedder, top_k=10)
-result = await rag.query("Your question", reranker=reranker)
+result = await rag.completion("Your question", reranker=reranker)
 ```
 
 ---

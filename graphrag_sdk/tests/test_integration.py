@@ -9,7 +9,7 @@ class TestTopLevelImports:
 
     def test_version(self):
         from graphrag_sdk import __version__
-        assert __version__ == "2.0.0a1"
+        assert __version__ == "1.0.0"
 
     def test_facade(self):
         from graphrag_sdk import GraphRAG

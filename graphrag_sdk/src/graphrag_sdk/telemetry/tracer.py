@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Telemetry: Tracer
+# GraphRAG SDK — Telemetry: Tracer
 # OpenTelemetry-compatible span tracking for enterprise observability.
 # Origin: User design — first-class telemetry module (replaces Neo4j's custom EventNotifier).
 
@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
-from collections.abc import Generator
 
 logger = logging.getLogger(__name__)
 

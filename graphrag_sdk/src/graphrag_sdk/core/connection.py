@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Core: FalkorDB Connection
+# GraphRAG SDK — Core: FalkorDB Connection
 # Async-only FalkorDB client using native ``falkordb.asyncio``.
 # Origin: User design — production resilience.
 
@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
@@ -21,7 +21,7 @@ class ConnectionConfig:
     host: str = "localhost"
     port: int = 6379
     username: str | None = None
-    password: str | None = None
+    password: str | None = field(default=None, repr=False)
     graph_name: str = "knowledge_graph"
     max_connections: int = 16
     retry_count: int = 3

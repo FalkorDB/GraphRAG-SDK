@@ -1,4 +1,4 @@
-# GraphRAG SDK 2.0 — Retrieval: Local Strategy
+# GraphRAG SDK — Retrieval: Local Strategy
 # Vector similarity search + 1-hop graph traversal.
 # The default retrieval strategy for v1.
 
