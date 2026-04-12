@@ -212,9 +212,7 @@ class GraphRAG:
         """
         if isinstance(source, list):
             if text is not None:
-                raise ValueError(
-                    "'text' parameter cannot be used with a list of sources"
-                )
+                raise ValueError("'text' parameter cannot be used with a list of sources")
             return await self._ingest_batch(
                 source,
                 loader=loader,
@@ -350,9 +348,7 @@ class GraphRAG:
         retriever_result = await retrieval.search(question, ctx)
 
         if reranker is not None:
-            retriever_result = await reranker.rerank(
-                question, retriever_result, ctx
-            )
+            retriever_result = await reranker.rerank(question, retriever_result, ctx)
 
         ctx.log(f"Retrieved {len(retriever_result.items)} context items")
         return retriever_result
@@ -393,13 +389,14 @@ class GraphRAG:
 
         # Step 1-2: Retrieve + rerank
         retriever_result = await self.retrieve(
-            question, strategy=strategy, reranker=reranker, ctx=ctx,
+            question,
+            strategy=strategy,
+            reranker=reranker,
+            ctx=ctx,
         )
 
         # Step 3: Build context string
-        context_str = "\n---\n".join(
-            item.content for item in retriever_result.items
-        )
+        context_str = "\n---\n".join(item.content for item in retriever_result.items)
 
         # Step 4: Build history section
         history_section = ""
@@ -408,9 +405,7 @@ class GraphRAG:
             for msg in history:
                 role = msg.get("role", "user").capitalize()
                 lines.append(f"{role}: {msg.get('content', '')}")
-            history_section = (
-                "\nConversation history:\n" + "\n".join(lines) + "\n"
-            )
+            history_section = "\nConversation history:\n" + "\n".join(lines) + "\n"
 
         # Step 5: Generate answer
         template = prompt_template or _RAG_PROMPT
@@ -427,9 +422,7 @@ class GraphRAG:
             metadata={
                 "model": self.llm.model_name,
                 "num_context_items": len(retriever_result.items),
-                "strategy": (
-                    strategy or self._retrieval_strategy
-                ).__class__.__name__,
+                "strategy": (strategy or self._retrieval_strategy).__class__.__name__,
                 "has_history": bool(history),
             },
         )
@@ -529,9 +522,7 @@ class GraphRAG:
         except ConfigError:
             raise
         except Exception:
-            logger.debug(
-                "Failed to validate graph config", exc_info=True
-            )
+            logger.debug("Failed to validate graph config", exc_info=True)
 
         self._config_validated = True
 
