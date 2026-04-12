@@ -126,7 +126,7 @@ Full RAG pipeline: retrieve context and generate an answer. When `history` is pr
 | `history` | `list[ChatMessage \| dict] \| None` | `None` | Conversation history (see below) |
 | `strategy` | `RetrievalStrategy \| None` | `None` | Override retrieval strategy |
 | `reranker` | `RerankingStrategy \| None` | `None` | Optional reranking after retrieval |
-| `prompt_template` | `str \| None` | `None` | Custom prompt (must contain `{context}` and `{question}`) |
+| `prompt_template` | `str \| None` | `None` | Custom prompt for single-turn (must contain `{context}` and `{question}`). Ignored when `history` is provided. |
 | `return_context` | `bool` | `False` | Include retriever results in output |
 | `ctx` | `Context \| None` | `None` | Execution context |
 

@@ -428,8 +428,10 @@ class GraphRAG:
                 provider's multi-turn API.
             strategy: Override retrieval strategy (uses default if None).
             reranker: Optional reranking strategy to apply.
-            prompt_template: Custom prompt (must contain {context} and
-                {question}).  Only used when *history* is ``None`` (single-turn).
+            prompt_template: Custom prompt for single-turn mode (must
+                contain ``{context}`` and ``{question}``).  Ignored when
+                *history* is provided — multi-turn uses the built-in
+                system prompt with the question in the final user message.
             return_context: If True, include retriever results in output.
             ctx: Execution context.
 
@@ -454,11 +456,11 @@ class GraphRAG:
 
         # Step 4: Generate answer
         if history:
-            # Multi-turn: validate history and use native messages API
+            # Multi-turn: validate history and use native messages API.
+            # prompt_template is ignored — the question goes in the final
+            # user message, not the system prompt.
             validated = self._validate_history(history)
-            system_prompt = (prompt_template or _RAG_SYSTEM_PROMPT).format(
-                context=context_str,
-            )
+            system_prompt = _RAG_SYSTEM_PROMPT.format(context=context_str)
             messages: list[ChatMessage] = [
                 ChatMessage(role="system", content=system_prompt),
                 *validated,

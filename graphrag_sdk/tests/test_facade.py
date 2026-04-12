@@ -540,6 +540,36 @@ class TestGraphRAGCompletion:
         result = await g.completion("test?", prompt_template=template)
         assert llm._call_index == 1
 
+    async def test_completion_prompt_template_ignored_with_history(self, mock_conn, embedder):
+        """prompt_template should be ignored in multi-turn mode (no KeyError)."""
+        llm = MockLLM(responses=["Multi-turn answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(
+                items=[RetrieverResultItem(content="c")]
+            )
+        )
+        g._retrieval_strategy = mock_strategy
+
+        # This template has {question} — would KeyError if used in multi-turn
+        template = "Context: {context}\nQ: {question}\nA:"
+        result = await g.completion(
+            "follow up?",
+            history=[{"role": "user", "content": "hi"}],
+            prompt_template=template,
+        )
+        assert result.answer == "Multi-turn answer."
+        # Should have used ainvoke_messages, not ainvoke
+        assert llm.last_messages is not None
+
+
+class TestGraphRAGBatchIngestValidation:
+    async def test_ingest_batch_max_concurrent_zero_raises(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        with pytest.raises(ValueError, match="max_concurrent must be >= 1"):
+            await g.ingest(["a.txt", "b.txt"], max_concurrent=0)
+
 
 class TestGraphRAGBatchIngest:
     async def test_ingest_list(self, graphrag, tmp_path):
