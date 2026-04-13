@@ -455,7 +455,7 @@ class VectorStore:
         fallback_query = (
             "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
             "WHERE r.embedding IS NOT NULL "
-            "WITH a, r, b, vecf32.distance.cosine(r.embedding, vecf32($vector)) AS dist "
+            "WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist "
             "RETURN r.src_name AS src, r.rel_type AS type, "
             "r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score "
             "ORDER BY dist ASC LIMIT $top_k"
