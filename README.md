@@ -243,7 +243,7 @@ schema = GraphSchema(
     ],
 )
 
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)  # conn, llm, embedder from above
 ```
 
 ---

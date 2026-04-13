@@ -128,8 +128,6 @@ The same pattern applies to resolution strategies (subclass `ResolutionStrategy`
 
 ---
 
----
-
 ## 7. Community
 
 - [GitHub Discussions](https://github.com/FalkorDB/GraphRAG-SDK/discussions) -- Questions, ideas, and general conversation

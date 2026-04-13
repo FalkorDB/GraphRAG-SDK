@@ -212,7 +212,12 @@ class FalkorDBConnection:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        await self.close()
+        try:
+            await self.close()
+        except Exception:
+            if exc[0] is None:
+                raise
+            logger.warning("Error closing connection during __aexit__", exc_info=True)
 
     # ── Lifecycle ────────────────────────────────────────────────
 

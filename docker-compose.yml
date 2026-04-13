@@ -1,6 +1,6 @@
 services:
   falkordb:
-    image: falkordb/falkordb:latest
+    image: falkordb/falkordb:v4.18.0
     ports:
       - "6379:6379"
     volumes:

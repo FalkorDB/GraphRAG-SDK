@@ -71,11 +71,14 @@ async def main():
         result = await rag.ingest("quickstart_doc", text=TEXT)
         print(f"Ingested: {result.nodes_created} nodes, {result.relationships_created} edges")
 
-        # 2. Retrieve context only (no LLM answer generation)
+        # 2. Finalize (dedup + embeddings + indexes)
+        await rag.finalize()
+
+        # 3. Retrieve context only (no LLM answer generation)
         context = await rag.retrieve("Where does Alice work?")
         print(f"\nRetrieved {len(context.items)} context items")
 
-        # 3. Full RAG: retrieve + generate answer
+        # 4. Full RAG: retrieve + generate answer
         for question in [
             "Where does Alice work?",
             "Who is the CTO of Acme Corp?",
@@ -85,7 +88,7 @@ async def main():
             print(f"\nQ: {question}")
             print(f"A: {answer.answer}")
 
-        # 4. Multi-turn conversation (native messages to LLM)
+        # 5. Multi-turn conversation (native messages to LLM)
         from graphrag_sdk import ChatMessage
 
         followup = await rag.completion(

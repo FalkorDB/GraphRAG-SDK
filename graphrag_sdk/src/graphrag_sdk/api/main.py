@@ -149,7 +149,16 @@ class GraphRAG:
     async def __aenter__(self) -> GraphRAG:
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:
+    async def __aexit__(self, *exc: object) -> None:
+        try:
+            await self.close()
+        except Exception:
+            if exc[0] is None:
+                raise
+            logger.warning("Error closing connection during __aexit__", exc_info=True)
+
+    async def close(self) -> None:
+        """Close the underlying database connection."""
         await self._conn.close()
 
     # ── Ingestion ────────────────────────────────────────────────

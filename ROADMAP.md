@@ -32,11 +32,13 @@ This roadmap is organized into **5 phases** covering production hardening, docum
 
 ---
 
-### 0.3 Async Context Manager :handshake:
+### 0.3 Async Context Manager :handshake: ✅
 
 **Problem:** `GraphRAG` has no `__aenter__`/`__aexit__`. If users forget cleanup, the FalkorDB `BlockingConnectionPool` (max 16 connections) leaks. In a web server, this exhausts the pool within minutes.
 
 **Solution:** Add `async with GraphRAG(...) as rag:` support. `__aexit__` calls `self._conn.close()`. Add `__del__` warning if pool is not closed.
+
+**Status:** Done — `__aenter__`/`__aexit__` added to both `GraphRAG` and `FalkorDBConnection` in PR #204. Public `close()` method added to `GraphRAG`.
 
 **Files:** `api/main.py`, `core/connection.py`
 
@@ -62,13 +64,15 @@ This roadmap is organized into **5 phases** covering production hardening, docum
 
 ---
 
-### 0.6 Release Automation :handshake:
+### 0.6 Release Automation :handshake: ✅
 
 **Problem:** No PyPI publish workflow, no docs deployment, no automated changelog.
 
 **Solution:** Add `publish.yml` (triggered by GitHub Release, build, PyPI via trusted publisher). Add `docs.yml` for GitHub Pages deployment (MkDocs Material). Add dependabot for dependency updates.
 
-**Files:** New `.github/workflows/publish.yml`, `.github/workflows/docs.yml`
+**Status:** Done — `publish.yml` and `docs.yml` added in PR #204.
+
+**Files:** `.github/workflows/publish.yml`, `.github/workflows/docs.yml`
 
 ---
 

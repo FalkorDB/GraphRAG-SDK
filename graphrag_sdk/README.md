@@ -3,9 +3,9 @@
 **The most accurate Graph RAG framework. Built on [FalkorDB](https://www.falkordb.com/).**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-orange.svg)](pyproject.toml)
-[![Tests: 558 passing](https://img.shields.io/badge/tests-558%20passing-brightgreen.svg)](tests/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/LICENSE)
+[![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-orange.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/pyproject.toml)
+[![Tests: 558 passing](https://img.shields.io/badge/tests-558%20passing-brightgreen.svg)](https://github.com/FalkorDB/GraphRAG-SDK/tree/main/graphrag_sdk/tests/)
 
 GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **~85% accuracy** on a 100-question benchmark using GPT-4.1.
 
@@ -50,25 +50,27 @@ pip install graphrag-sdk[all]           # Everything
 ### Ingest & Query
 
 ```python
-async with GraphRAG(
-    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-    llm=LiteLLM(model="openai/gpt-4o"),
-    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
-) as rag:
-    await rag.ingest("report.pdf")                              # PDF
-    await rag.ingest("source_id", text="Alice works at Acme.")  # Raw text
-    await rag.finalize()                                         # Dedup + index
+import asyncio
+from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 
-    # Retrieve context only
-    context = await rag.retrieve("Where does Alice work?")
+async def main():
+    async with GraphRAG(
+        connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+        llm=LiteLLM(model="openai/gpt-4o"),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
+    ) as rag:
+        await rag.ingest("report.pdf")                              # PDF
+        await rag.ingest("source_id", text="Alice works at Acme.")  # Raw text
+        await rag.finalize()                                         # Dedup + index
 
-    # Full RAG: retrieve + generate answer
-    result = await rag.completion("Where does Alice work?")
-    print(result.answer)
+        # Retrieve context only
+        context = await rag.retrieve("Where does Alice work?")
 
-    # With context inspection
-    result = await rag.completion("Where does Alice work?", return_context=True)
-    print(result.retriever_result.items)
+        # Full RAG: retrieve + generate answer
+        result = await rag.completion("Where does Alice work?")
+        print(result.answer)
+
+asyncio.run(main())
 ```
 
 ### Multi-Turn Conversations
@@ -107,7 +109,7 @@ schema = GraphSchema(
     ],
 )
 
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)  # conn, llm, embedder from above
 ```
 
 ### Strategy Customization
@@ -158,28 +160,28 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Documents** | 20 novels (Project Gutenberg) |
 | **Query P50** | 5.4s |
 
-See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
+See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/benchmark.md) for full methodology and reproduction instructions.
 
 ## Examples
 
 | # | Example | Description |
 |---|---------|-------------|
-| 1 | [`01_quickstart.py`](examples/01_quickstart.py) | Minimal ingest & query |
-| 2 | [`02_pdf_with_schema.py`](examples/02_pdf_with_schema.py) | PDF with custom schema |
-| 3 | [`03_custom_strategies.py`](examples/03_custom_strategies.py) | Benchmark-winning pipeline |
-| 4 | [`04_custom_provider.py`](examples/04_custom_provider.py) | Custom LLM/Embedder |
-| 5 | [`05_notebook_demo.ipynb`](examples/05_notebook_demo.ipynb) | Interactive notebook walkthrough |
+| 1 | [`01_quickstart.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/01_quickstart.py) | Minimal ingest & query |
+| 2 | [`02_pdf_with_schema.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/02_pdf_with_schema.py) | PDF with custom schema |
+| 3 | [`03_custom_strategies.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/03_custom_strategies.py) | Benchmark-winning pipeline |
+| 4 | [`04_custom_provider.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/04_custom_provider.py) | Custom LLM/Embedder |
+| 5 | [`05_notebook_demo.ipynb`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/05_notebook_demo.ipynb) | Interactive notebook walkthrough |
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) -- Install to first query
-- [Architecture](docs/architecture.md) -- Pipeline design and graph schema
-- [Configuration](docs/configuration.md) -- Connection and provider reference
-- [Strategies](docs/strategies.md) -- All ABCs and built-in implementations
-- [Providers](docs/providers.md) -- LLM & embedder configuration
-- [Benchmark](docs/benchmark.md) -- Methodology and reproduction
-- [API Reference](docs/api-reference.md) -- Full API documentation
+- [Getting Started](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/getting-started.md) -- Install to first query
+- [Architecture](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/architecture.md) -- Pipeline design and graph schema
+- [Configuration](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/configuration.md) -- Connection and provider reference
+- [Strategies](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/strategies.md) -- All ABCs and built-in implementations
+- [Providers](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/providers.md) -- LLM & embedder configuration
+- [Benchmark](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/benchmark.md) -- Methodology and reproduction
+- [API Reference](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/api-reference.md) -- Full API documentation
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[Apache License 2.0](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/LICENSE)
