@@ -131,42 +131,40 @@ class TestExactMatchResolution:
 
 
 class TestCrossLabelMerge:
-    """Bug 2: exact_match_merge with cross_label_merge=True should merge
-    same-name entities across different labels when LLM confirms."""
+    """Bug 2: exact_match_merge with cross_label_merge=True groups by name
+    only, merging same-name entities across labels. Uses enhanced summary
+    prompt for type selection when 3+ descriptions; heuristic otherwise."""
 
-    async def test_cross_label_merge_yes(self):
-        """LLM confirms same entity → merged into canonical type."""
+    async def test_cross_label_merge_heuristic(self):
+        """Two cross-label nodes (below summary threshold) → heuristic picks label."""
         nodes = [
             GraphNode(id="fdb__tech", label="Technology",
                       properties={"name": "FalkorDB", "description": "A graph database engine"}),
             GraphNode(id="fdb__org", label="Organization",
                       properties={"name": "FalkorDB", "description": "The company behind FalkorDB"}),
         ]
-        llm = MockLLM(responses=["YES Technology\nSame entity, technology is more accurate."])
         deduped, remap, count = await exact_match_merge(
-            nodes, llm, cross_label_merge=True,
+            nodes, None, cross_label_merge=True,
+        )
+        assert len(deduped) == 1
+        assert count == 1
+        # Heuristic: both have count 1, picks first non-Unknown alphabetically
+        assert deduped[0].label in ("Technology", "Organization")
+
+    async def test_cross_label_merge_prefers_non_unknown(self):
+        """Heuristic picks specific type over Unknown."""
+        nodes = [
+            GraphNode(id="fdb__tech", label="Technology",
+                      properties={"name": "FalkorDB", "description": "A graph DB"}),
+            GraphNode(id="fdb__unk", label="Unknown",
+                      properties={"name": "FalkorDB", "description": "FalkorDB system"}),
+        ]
+        deduped, remap, count = await exact_match_merge(
+            nodes, None, cross_label_merge=True,
         )
         assert len(deduped) == 1
         assert deduped[0].label == "Technology"
         assert count == 1
-        assert "fdb__org" in remap
-        assert remap["fdb__org"] == "fdb__tech"
-
-    async def test_cross_label_merge_no(self):
-        """LLM says different entities → kept separate."""
-        nodes = [
-            GraphNode(id="paris__person", label="Person",
-                      properties={"name": "Paris", "description": "A character named Paris"}),
-            GraphNode(id="paris__loc", label="Location",
-                      properties={"name": "Paris", "description": "Capital of France"}),
-        ]
-        llm = MockLLM(responses=["NO\nDifferent entities — person vs city."])
-        deduped, remap, count = await exact_match_merge(
-            nodes, llm, cross_label_merge=True,
-        )
-        assert len(deduped) == 2
-        assert count == 0
-        assert len(remap) == 0
 
     async def test_cross_label_merge_disabled_by_default(self):
         """Without cross_label_merge=True, same-name cross-label nodes stay separate."""
@@ -176,47 +174,31 @@ class TestCrossLabelMerge:
             GraphNode(id="fdb__org", label="Organization",
                       properties={"name": "FalkorDB", "description": "The company"}),
         ]
-        llm = MockLLM(responses=["YES Technology\nSame entity."])
-        deduped, remap, count = await exact_match_merge(nodes, llm)
+        deduped, remap, count = await exact_match_merge(nodes, None)
         assert len(deduped) == 2
         assert count == 0
 
-    async def test_cross_label_merge_no_llm(self):
-        """cross_label_merge=True but no LLM → no crash, no merge."""
-        nodes = [
-            GraphNode(id="fdb__tech", label="Technology",
-                      properties={"name": "FalkorDB", "description": "DB"}),
-            GraphNode(id="fdb__org", label="Organization",
-                      properties={"name": "FalkorDB", "description": "Company"}),
-        ]
-        deduped, remap, count = await exact_match_merge(
-            nodes, None, cross_label_merge=True,
-        )
-        assert len(deduped) == 2
-        assert count == 0
-
-    async def test_cross_label_merge_three_labels(self):
-        """Three labels for one name → LLM picks canonical, all merge."""
+    async def test_cross_label_merge_three_labels_with_summary(self):
+        """Three labels (3+ descriptions) → enhanced summary prompt picks type."""
         nodes = [
             GraphNode(id="fdb__tech", label="Technology",
                       properties={"name": "FalkorDB", "description": "Graph database engine"}),
             GraphNode(id="fdb__org", label="Organization",
-                      properties={"name": "FalkorDB", "description": "The company"}),
+                      properties={"name": "FalkorDB", "description": "The company behind it"}),
             GraphNode(id="fdb__unk", label="Unknown",
                       properties={"name": "FalkorDB", "description": "FalkorDB system"}),
         ]
-        llm = MockLLM(responses=["YES Technology\nAll refer to the graph database."])
+        # LLM returns: first line = chosen type, second line = summary
+        llm = MockLLM(responses=["Technology\nFalkorDB is a graph database engine."])
         deduped, remap, count = await exact_match_merge(
             nodes, llm, cross_label_merge=True,
         )
         assert len(deduped) == 1
         assert deduped[0].label == "Technology"
         assert count == 2
-        assert remap["fdb__org"] == "fdb__tech"
-        assert remap["fdb__unk"] == "fdb__tech"
 
-    async def test_cross_label_transitive_remap(self):
-        """Phase 1 same-label merge + cross-label merge chains resolve transitively."""
+    async def test_cross_label_all_in_one_group(self):
+        """All same-name nodes land in one group regardless of label."""
         nodes = [
             GraphNode(id="fdb__tech_1", label="Technology",
                       properties={"name": "FalkorDB", "description": "Graph DB v1"}),
@@ -225,17 +207,18 @@ class TestCrossLabelMerge:
             GraphNode(id="fdb__org", label="Organization",
                       properties={"name": "FalkorDB", "description": "The company"}),
         ]
-        llm = MockLLM(responses=["YES Technology\nSame entity."])
+        # 3 descriptions → summary prompt fires, LLM picks type
+        llm = MockLLM(responses=["Technology\nFalkorDB is a graph database."])
         deduped, remap, count = await exact_match_merge(
             nodes, llm, cross_label_merge=True,
         )
-        # fdb__tech_1 and fdb__tech_2 merge in Phase 1 (same label+name)
-        # Then cross-label merges fdb__org into the tech survivor
         assert len(deduped) == 1
-        assert deduped[0].label == "Technology"
-        # fdb__org should transitively point to the tech survivor
-        tech_survivor = deduped[0].id
-        assert remap.get("fdb__org") == tech_survivor
+        assert count == 2
+        # All duplicates remap to the survivor
+        survivor_id = deduped[0].id
+        for node in nodes:
+            if node.id != survivor_id:
+                assert remap[node.id] == survivor_id
 
     async def test_cross_label_merge_preserves_descriptions(self):
         """Merged descriptions from cross-label nodes should be combined."""
@@ -247,12 +230,27 @@ class TestCrossLabelMerge:
                       properties={"name": "FalkorDB", "description": "The company behind FalkorDB",
                                   "source_chunk_ids": ["c2"]}),
         ]
-        llm = MockLLM(responses=["YES Technology\nSame entity."])
         deduped, remap, count = await exact_match_merge(
-            nodes, llm, cross_label_merge=True,
+            nodes, None, cross_label_merge=True,
         )
         survivor = deduped[0]
+        # Descriptions pipe-joined (below summary threshold)
         assert "graph database" in survivor.properties["description"]
         assert "company" in survivor.properties["description"]
         assert "c1" in survivor.properties["source_chunk_ids"]
         assert "c2" in survivor.properties["source_chunk_ids"]
+
+    async def test_cross_label_same_label_unaffected(self):
+        """Same-label groups still merge normally with cross_label_merge=True."""
+        nodes = [
+            GraphNode(id="a1", label="Person", properties={"name": "Alice", "description": "Engineer"}),
+            GraphNode(id="a2", label="Person", properties={"name": "Alice", "description": "Developer"}),
+            GraphNode(id="b1", label="Person", properties={"name": "Bob", "description": "Manager"}),
+        ]
+        deduped, remap, count = await exact_match_merge(
+            nodes, None, cross_label_merge=True,
+        )
+        assert len(deduped) == 2  # Alice (merged) + Bob
+        assert count == 1
+        names = {n.properties["name"] for n in deduped}
+        assert names == {"Alice", "Bob"}

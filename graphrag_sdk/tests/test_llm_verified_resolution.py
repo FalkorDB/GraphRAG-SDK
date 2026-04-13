@@ -88,8 +88,10 @@ class TestPhase1ExactMatch:
         assert result.merged_count == 1
         assert len(result.nodes) == 1
 
-    async def test_same_name_diff_label_kept_separate(self, ctx):
-        """'Paris' Person vs 'Paris' Location — never merged regardless of similarity."""
+    async def test_same_name_diff_label_merged_cross_label(self, ctx):
+        """'Paris' Person vs 'Paris' Location — merged by cross-label dedup
+        (LLMVerifiedResolution enables cross_label_merge).
+        Heuristic picks the most common non-Unknown label."""
         gd = GraphData(
             nodes=[
                 GraphNode(id="p1", label="Person", properties={"name": "Paris"}),
@@ -99,8 +101,8 @@ class TestPhase1ExactMatch:
         )
         resolver = LLMVerifiedResolution()
         result = await resolver.resolve(gd, ctx)
-        assert result.merged_count == 0
-        assert len(result.nodes) == 2
+        assert result.merged_count == 1
+        assert len(result.nodes) == 1
 
     async def test_no_duplicates_passes_through(self, ctx):
         gd = GraphData(
@@ -441,8 +443,8 @@ class TestEdgeCases:
         assert result.merged_count == 0
         assert len(result.nodes) == 1
 
-    async def test_all_different_labels_no_cross_merge(self, ctx):
-        """Nodes in different labels never merge even with identical embeddings."""
+    async def test_all_different_labels_cross_merge(self, ctx):
+        """Same-name nodes with different labels merge via cross-label dedup."""
         vec = _unit([1.0, 0.0, 0.0, 0.0])
         embedder = ControlledEmbedder({"Paris": vec})
 
@@ -456,9 +458,10 @@ class TestEdgeCases:
         )
         resolver = LLMVerifiedResolution(
             embedder=embedder,
-            hard_threshold=0.50,  # very low — would merge if cross-label allowed
+            hard_threshold=0.50,
             soft_threshold=0.10,
         )
         result = await resolver.resolve(gd, ctx)
-        assert result.merged_count == 0
-        assert len(result.nodes) == 3
+        # cross_label_merge=True groups all "Paris" nodes together
+        assert result.merged_count == 2
+        assert len(result.nodes) == 1
