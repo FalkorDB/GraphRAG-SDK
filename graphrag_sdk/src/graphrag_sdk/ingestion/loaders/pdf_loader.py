@@ -67,7 +67,8 @@ class PdfLoader(LoaderStrategy):
             full_text = "\n\n".join(pages)
             logger.info(
                 "PDF loaded with PyMuPDF (sort=True): %d pages, %d chars",
-                page_count, len(full_text),
+                page_count,
+                len(full_text),
             )
             return DocumentOutput(
                 text=full_text,
