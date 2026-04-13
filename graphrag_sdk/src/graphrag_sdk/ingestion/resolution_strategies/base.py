@@ -115,7 +115,11 @@ async def exact_match_merge(
         elif is_mixed and descriptions and len(descriptions) < force_summary_threshold:
             # Mixed labels, few descriptions — use heuristic for label, pipe-join descs
             survivor.label = _pick_canonical_label(group_nodes)
-        elif is_mixed and descriptions and len(descriptions) >= force_summary_threshold and llm is not None:
+        elif (
+            is_mixed and descriptions
+            and len(descriptions) >= force_summary_threshold
+            and llm is not None
+        ):
             # Mixed labels, enough descriptions — enhanced summary prompt picks type
             mixed_label_groups[gi] = group_nodes
             entity_name = str(survivor.properties.get("name", survivor.id))
@@ -178,7 +182,10 @@ async def exact_match_merge(
             chosen = type_results[gi]
             valid_labels = {n.label for n in group_nodes}
             # Validate LLM returned a label that exists in the group
-            matched = next((l for l in valid_labels if l.lower() == chosen.lower()), None)
+            matched = next(
+                (lbl for lbl in valid_labels if lbl.lower() == chosen.lower()),
+                None,
+            )
             survivor.label = matched if matched else _pick_canonical_label(group_nodes)
         for duplicate in group_nodes[1:]:
             for key, value in duplicate.properties.items():
