@@ -116,7 +116,8 @@ async def exact_match_merge(
             # Mixed labels, few descriptions — use heuristic for label, pipe-join descs
             survivor.label = _pick_canonical_label(group_nodes)
         elif (
-            is_mixed and descriptions
+            is_mixed
+            and descriptions
             and len(descriptions) >= force_summary_threshold
             and llm is not None
         ):
@@ -134,18 +135,22 @@ async def exact_match_merge(
     for gi_ref, en, descs in summary_requests:
         if gi_ref in mixed_label_groups:
             types = ", ".join(sorted({n.label for n in mixed_label_groups[gi_ref]}))
-            prompts.append(_SUMMARY_WITH_TYPE_PROMPT.format(
-                entity_name=en,
-                max_tokens=max_summary_tokens,
-                types=types,
-                descriptions="\n".join(f"- {d}" for d in descs),
-            ))
+            prompts.append(
+                _SUMMARY_WITH_TYPE_PROMPT.format(
+                    entity_name=en,
+                    max_tokens=max_summary_tokens,
+                    types=types,
+                    descriptions="\n".join(f"- {d}" for d in descs),
+                )
+            )
         else:
-            prompts.append(_SUMMARY_PROMPT.format(
-                entity_name=en,
-                max_tokens=max_summary_tokens,
-                descriptions="\n".join(f"- {d}" for d in descs),
-            ))
+            prompts.append(
+                _SUMMARY_PROMPT.format(
+                    entity_name=en,
+                    max_tokens=max_summary_tokens,
+                    descriptions="\n".join(f"- {d}" for d in descs),
+                )
+            )
 
     batch_results: list = []
     summary_results: dict[int, str] = {}

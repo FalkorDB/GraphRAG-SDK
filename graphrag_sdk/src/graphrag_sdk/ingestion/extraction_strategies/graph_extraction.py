@@ -92,9 +92,7 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
     return extra
 
 
-def _format_entity_types(
-    types: list[str], descs: dict[str, str] | None = None
-) -> str:
+def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
     """Format entity types for prompt injection, including descriptions if available."""
     if not descs:
         return ", ".join(types)
