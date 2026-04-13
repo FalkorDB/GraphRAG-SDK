@@ -34,7 +34,10 @@ _SUMMARY_WITH_TYPE_PROMPT = (
 
 
 def _pick_canonical_label(nodes: list[GraphNode]) -> str:
-    """Heuristic label selection: most frequent non-Unknown label wins."""
+    """Heuristic label selection: most frequent non-Unknown label wins.
+
+    Ties are broken lexicographically for deterministic results across runs.
+    """
     counts: dict[str, int] = defaultdict(int)
     for n in nodes:
         counts[n.label] += 1
@@ -42,7 +45,8 @@ def _pick_canonical_label(nodes: list[GraphNode]) -> str:
     candidates = {k: v for k, v in counts.items() if k != "Unknown"}
     if not candidates:
         return "Unknown"
-    return max(candidates, key=lambda k: candidates[k])
+    # Sort by (-count, label) for deterministic tie-breaking
+    return sorted(candidates, key=lambda k: (-candidates[k], k))[0]
 
 
 async def exact_match_merge(
@@ -84,10 +88,9 @@ async def exact_match_merge(
     mixed_label_groups: dict[int, list[GraphNode]] = {}
 
     for _key, group_nodes in groups.items():
-        survivor = group_nodes[0]
-        deduplicated_nodes.append(survivor)
-
         if len(group_nodes) == 1:
+            survivor = group_nodes[0]
+            deduplicated_nodes.append(survivor)
             group_data.append((survivor, group_nodes, [], []))
             continue
 
@@ -103,18 +106,29 @@ async def exact_match_merge(
                     if sid not in all_source_ids:
                         all_source_ids.append(sid)
 
-        group_data.append((survivor, group_nodes, descriptions, all_source_ids))
-        gi = len(group_data) - 1
-
         # Check if this group has mixed labels
         is_mixed = len({n.label for n in group_nodes}) >= 2
 
-        if is_mixed and not descriptions:
-            # Mixed labels but no descriptions — use heuristic for label
-            survivor.label = _pick_canonical_label(group_nodes)
-        elif is_mixed and descriptions and len(descriptions) < force_summary_threshold:
-            # Mixed labels, few descriptions — use heuristic for label, pipe-join descs
-            survivor.label = _pick_canonical_label(group_nodes)
+        if is_mixed:
+            # Pick survivor whose label matches the canonical label so that
+            # survivor.id (derived from name+type) stays consistent.
+            canonical = _pick_canonical_label(group_nodes)
+            survivor = next(
+                (n for n in group_nodes if n.label == canonical),
+                group_nodes[0],
+            )
+        else:
+            survivor = group_nodes[0]
+
+        deduplicated_nodes.append(survivor)
+        group_data.append((survivor, group_nodes, descriptions, all_source_ids))
+        gi = len(group_data) - 1
+
+        if is_mixed and (
+            not descriptions or len(descriptions) < force_summary_threshold or llm is None
+        ):
+            # Mixed labels, heuristic already picked the right survivor above
+            pass
         elif (
             is_mixed
             and descriptions
@@ -182,17 +196,29 @@ async def exact_match_merge(
             )
         if all_source_ids:
             survivor.properties["source_chunk_ids"] = all_source_ids
-        # Apply LLM-chosen canonical label for mixed-label groups
+        # If LLM picked a different canonical label than the heuristic,
+        # swap survivor to the node whose label matches (keeps ID consistent).
         if gi in type_results:
             chosen = type_results[gi]
-            valid_labels = {n.label for n in group_nodes}
-            # Validate LLM returned a label that exists in the group
             matched = next(
-                (lbl for lbl in valid_labels if lbl.lower() == chosen.lower()),
+                (lbl for lbl in {n.label for n in group_nodes} if lbl.lower() == chosen.lower()),
                 None,
             )
-            survivor.label = matched if matched else _pick_canonical_label(group_nodes)
-        for duplicate in group_nodes[1:]:
+            if matched and matched != survivor.label:
+                new_survivor = next(
+                    (n for n in group_nodes if n.label == matched),
+                    None,
+                )
+                if new_survivor:
+                    # Swap: move properties to new survivor, replace in list
+                    new_survivor.properties.update(survivor.properties)
+                    idx = deduplicated_nodes.index(survivor)
+                    deduplicated_nodes[idx] = new_survivor
+                    group_data[gi] = (new_survivor, group_nodes, descriptions, all_source_ids)
+                    survivor = new_survivor
+        for duplicate in group_nodes:
+            if duplicate.id == survivor.id:
+                continue
             for key, value in duplicate.properties.items():
                 if key not in survivor.properties:
                     survivor.properties[key] = value

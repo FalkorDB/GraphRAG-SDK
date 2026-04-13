@@ -592,12 +592,12 @@ class TestEntityTypeDescriptions:
         types = ["Command", "Function", "Concept"]
         descs = {"Command": "FalkorDB GRAPH.* commands", "Function": "Cypher built-in functions"}
         result = _format_entity_types(types, descs)
-        assert "Command -- FalkorDB GRAPH.* commands" in result
-        assert "Function -- Cypher built-in functions" in result
+        assert "Command\n  Description: FalkorDB GRAPH.* commands" in result
+        assert "Function\n  Description: Cypher built-in functions" in result
         assert "\n" in result  # newline-separated when descriptions present
         # Concept has no description — should appear without suffix
         assert "Concept" in result
-        assert "Concept --" not in result
+        assert "Concept\n  Description:" not in result
 
     def test_without_descriptions(self):
         types = ["Person", "Organization"]
@@ -613,7 +613,7 @@ class TestEntityTypeDescriptions:
         types = ["Person", "Vehicle"]
         descs = {"Vehicle": "A car, truck, or other transport"}
         result = _format_entity_types(types, descs)
-        assert "Vehicle -- A car, truck, or other transport" in result
+        assert "Vehicle\n  Description: A car, truck, or other transport" in result
         assert "Person" in result
 
     async def test_descriptions_reach_step2_prompt(self, ctx):
@@ -643,5 +643,5 @@ class TestEntityTypeDescriptions:
         # Step 2 prompt (second call) should contain the descriptions
         assert len(captured_prompts) >= 2
         step2_prompt = captured_prompts[1]
-        assert "Command -- FalkorDB GRAPH.* commands" in step2_prompt
-        assert "Function -- Cypher built-in functions" in step2_prompt
+        assert "Command\n  Description: FalkorDB GRAPH.* commands" in step2_prompt
+        assert "Function\n  Description: Cypher built-in functions" in step2_prompt

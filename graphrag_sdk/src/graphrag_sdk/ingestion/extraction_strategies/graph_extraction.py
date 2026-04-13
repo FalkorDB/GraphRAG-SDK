@@ -93,13 +93,21 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
 
 
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
-    """Format entity types for prompt injection, including descriptions if available."""
+    """Format entity types for prompt injection.
+
+    When descriptions are available, each type is rendered on its own line
+    with a separate ``Description:`` sub-line so the LLM doesn't confuse
+    the description text with the canonical label.
+    """
     if not descs:
         return ", ".join(types)
     parts = []
     for t in types:
         d = descs.get(t)
-        parts.append(f"{t} -- {d}" if d else t)
+        if d:
+            parts.append(f"{t}\n  Description: {d}")
+        else:
+            parts.append(t)
     return "\n".join(parts)
 
 

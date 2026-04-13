@@ -148,8 +148,8 @@ class TestCrossLabelMerge:
         )
         assert len(deduped) == 1
         assert count == 1
-        # Heuristic: both have count 1, picks first non-Unknown alphabetically
-        assert deduped[0].label in ("Technology", "Organization")
+        # Heuristic: both have count 1, tie broken lexicographically
+        assert deduped[0].label == "Organization"  # O < T
 
     async def test_cross_label_merge_prefers_non_unknown(self):
         """Heuristic picks specific type over Unknown."""
