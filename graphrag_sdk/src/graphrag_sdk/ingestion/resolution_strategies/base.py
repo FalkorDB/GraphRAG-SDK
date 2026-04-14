@@ -22,14 +22,19 @@ _SUMMARY_PROMPT = (
 )
 
 _SUMMARY_WITH_TYPE_PROMPT = (
-    "Summarise the following descriptions of the entity '{entity_name}' "
-    "into a single concise description (max {max_tokens} tokens).\n\n"
-    "The descriptions come from entities classified under different types: "
-    "{types}. Pick the single most accurate type.\n\n"
+    "Entities named '{entity_name}' appear under different types: {types}.\n\n"
     "Descriptions:\n{descriptions}\n\n"
-    "Answer on the first line with ONLY the chosen type, then on the next "
-    "line provide the summary.\n\n"
-    "Type:\n"
+    "Do ALL of these descriptions refer to the SAME real-world entity?\n\n"
+    "If YES, respond with:\n"
+    "  Line 1: 'YES <canonical_type>' (pick the most accurate type from {types})\n"
+    "  Line 2+: a single concise summary (max {max_tokens} tokens)\n\n"
+    "If NO (these are distinct real-world entities that happen to share a name), "
+    "respond with:\n"
+    "  Line 1: 'NO'\n"
+    "  Line 2: brief reason (max 20 words)\n\n"
+    "Do not attempt partial merges. Answer YES only if all entries describe "
+    "the same real-world entity.\n\n"
+    "Answer:"
 )
 
 
@@ -62,38 +67,31 @@ async def exact_match_merge(
     When *cross_label_merge* is False (default), groups by
     ``(normalized_name, label)`` — only same-type duplicates merge.
 
-    When *cross_label_merge* is True, groups by ``(normalized_name,)`` so
-    that same-name entities under different labels also merge. For groups
-    with mixed labels and enough descriptions, the summary prompt is
-    enhanced to also select the canonical type. For smaller groups, a
-    heuristic picks the most frequent non-Unknown label.
+    When *cross_label_merge* is True, this runs a two-stage resolution:
+    first the same-label pass (safe, unconditional), then a cross-label
+    pass that asks the LLM to verify whether same-name entries under
+    different labels refer to the same real-world entity. On YES the LLM
+    also picks the canonical type. On NO — or if evidence is too sparse,
+    or LLM is unavailable, or the call errors — homograph nodes are
+    preserved under their original labels. Both stages share a single LLM
+    batch invocation; no extra calls beyond what the same-label summary
+    path already performs.
 
     Returns:
         (deduplicated_nodes, id_remap, merged_count)
     """
-    groups: dict[tuple, list[GraphNode]] = defaultdict(list)
+    # ── Stage 1: always group by (name, label) for the safe same-label pass ──
+    sl_groups: dict[tuple[str, str], list[GraphNode]] = defaultdict(list)
     for node in nodes:
         name = node.properties.get("name", node.id)
         norm = str(name).strip().lower()
-        key = (norm,) if cross_label_merge else (norm, node.label)
-        groups[key].append(node)
+        sl_groups[(norm, node.label)].append(node)
 
-    id_remap: dict[str, str] = {}
-    deduplicated_nodes: list[GraphNode] = []
-    merged_count = 0
-
-    summary_requests: list[tuple[int, str, list[str]]] = []
-    group_data: list[tuple[GraphNode, list[GraphNode], list[str], list[str]]] = []
-    # Track which group_data indices are mixed-label (need type selection)
-    mixed_label_groups: dict[int, list[GraphNode]] = {}
-
-    for _key, group_nodes in groups.items():
-        if len(group_nodes) == 1:
-            survivor = group_nodes[0]
-            deduplicated_nodes.append(survivor)
-            group_data.append((survivor, group_nodes, [], []))
-            continue
-
+    # Collect per-group evidence. Each entry tracks nodes, descriptions,
+    # source ids, and original-description count (used by cross-label
+    # threshold check after same-label merging collapses the descriptions).
+    sl_entries: list[dict] = []
+    for _key, group_nodes in sl_groups.items():
         descriptions: list[str] = []
         all_source_ids: list[str] = []
         for n in group_nodes:
@@ -105,125 +103,199 @@ async def exact_match_merge(
                 for sid in src_ids:
                     if sid not in all_source_ids:
                         all_source_ids.append(sid)
+        sl_entries.append(
+            {
+                "nodes": group_nodes,
+                "descriptions": descriptions,
+                "all_source_ids": all_source_ids,
+                "orig_desc_count": len(descriptions),
+                "is_merge": len(group_nodes) >= 2,
+            }
+        )
 
-        # Check if this group has mixed labels
-        is_mixed = len({n.label for n in group_nodes}) >= 2
-
-        if is_mixed:
-            # Pick survivor whose label matches the canonical label so that
-            # survivor.id (derived from name+type) stays consistent.
-            canonical = _pick_canonical_label(group_nodes)
-            survivor = next(
-                (n for n in group_nodes if n.label == canonical),
-                group_nodes[0],
+    # ── Stage 2: detect cross-label candidates on top of same-label groups ──
+    cl_candidates: list[dict] = []
+    if cross_label_merge and llm is not None:
+        by_name: dict[str, list[int]] = defaultdict(list)
+        for i, entry in enumerate(sl_entries):
+            norm = str(entry["nodes"][0].properties.get("name", "")).strip().lower()
+            by_name[norm].append(i)
+        for _name_key, indices in by_name.items():
+            if len(indices) < 2:
+                continue
+            labels = {sl_entries[i]["nodes"][0].label for i in indices}
+            if len(labels) < 2:
+                continue
+            total_orig_descs = sum(sl_entries[i]["orig_desc_count"] for i in indices)
+            if total_orig_descs < force_summary_threshold:
+                # Fail-safe: insufficient evidence to ask the LLM; preserve.
+                continue
+            all_descs: list[str] = []
+            for i in indices:
+                for n in sl_entries[i]["nodes"]:
+                    d = n.properties.get("description", "")
+                    if d:
+                        all_descs.append(str(d))
+            entity_name = str(
+                sl_entries[indices[0]]["nodes"][0].properties.get("name", "")
             )
-        else:
-            survivor = group_nodes[0]
+            cl_candidates.append(
+                {
+                    "sl_indices": indices,
+                    "name": entity_name,
+                    "descriptions": all_descs,
+                    "types": sorted(labels),
+                }
+            )
 
-        deduplicated_nodes.append(survivor)
-        group_data.append((survivor, group_nodes, descriptions, all_source_ids))
-        gi = len(group_data) - 1
-
-        if is_mixed and (
-            not descriptions or len(descriptions) < force_summary_threshold or llm is None
-        ):
-            # Mixed labels, heuristic already picked the right survivor above
-            pass
-        elif (
-            is_mixed
-            and descriptions
-            and len(descriptions) >= force_summary_threshold
+    # ── Stage 3: build a single LLM batch (summaries + cross-label verifies) ──
+    prompts: list[str] = []
+    summary_prompt_refs: list[tuple[int, list[str]]] = []  # (sl_entry_idx, descs)
+    for i, entry in enumerate(sl_entries):
+        if (
+            entry["is_merge"]
+            and entry["descriptions"]
+            and len(entry["descriptions"]) >= force_summary_threshold
             and llm is not None
         ):
-            # Mixed labels, enough descriptions — enhanced summary prompt picks type
-            mixed_label_groups[gi] = group_nodes
-            entity_name = str(survivor.properties.get("name", survivor.id))
-            summary_requests.append((gi, entity_name, descriptions))
-        elif descriptions and len(descriptions) >= force_summary_threshold and llm is not None:
-            # Same-label group, enough descriptions — standard summary
-            entity_name = str(survivor.properties.get("name", survivor.id))
-            summary_requests.append((gi, entity_name, descriptions))
-
-    # ── Single LLM batch call ────────────────────────────────────────
-    prompts: list[str] = []
-    for gi_ref, en, descs in summary_requests:
-        if gi_ref in mixed_label_groups:
-            types = ", ".join(sorted({n.label for n in mixed_label_groups[gi_ref]}))
-            prompts.append(
-                _SUMMARY_WITH_TYPE_PROMPT.format(
-                    entity_name=en,
-                    max_tokens=max_summary_tokens,
-                    types=types,
-                    descriptions="\n".join(f"- {d}" for d in descs),
-                )
-            )
-        else:
+            name = str(entry["nodes"][0].properties.get("name", ""))
             prompts.append(
                 _SUMMARY_PROMPT.format(
-                    entity_name=en,
+                    entity_name=name,
                     max_tokens=max_summary_tokens,
-                    descriptions="\n".join(f"- {d}" for d in descs),
+                    descriptions="\n".join(f"- {d}" for d in entry["descriptions"]),
                 )
             )
+            summary_prompt_refs.append((i, entry["descriptions"]))
+
+    cl_prompt_start = len(prompts)
+    for cand in cl_candidates:
+        types_str = ", ".join(cand["types"])
+        prompts.append(
+            _SUMMARY_WITH_TYPE_PROMPT.format(
+                entity_name=cand["name"],
+                max_tokens=max_summary_tokens,
+                types=types_str,
+                descriptions="\n".join(f"- {d}" for d in cand["descriptions"]),
+            )
+        )
 
     batch_results: list = []
-    summary_results: dict[int, str] = {}
-    type_results: dict[int, str] = {}
     if prompts and llm is not None:
         batch_results = await llm.abatch_invoke(prompts)
 
+    # ── Stage 4: parse results ──
+    sl_summaries: dict[int, str] = {}  # sl_entry_idx -> summary text
+    cl_approvals: dict[int, tuple[str, str]] = {}  # cl_idx -> (chosen_type, summary)
     for item in batch_results:
-        group_idx, _, descs = summary_requests[item.index]
-        if not item.ok:
-            summary_results[group_idx] = " | ".join(descs)
-            continue
-        content = item.response.content.strip()
-        if group_idx in mixed_label_groups:
-            # First line = chosen type, rest = summary
-            lines = content.split("\n", 1)
-            type_results[group_idx] = lines[0].strip()
-            summary_results[group_idx] = lines[1].strip() if len(lines) > 1 else " | ".join(descs)
+        idx = item.index
+        if idx < cl_prompt_start:
+            sl_entry_idx, descs = summary_prompt_refs[idx]
+            if item.ok:
+                sl_summaries[sl_entry_idx] = item.response.content.strip()
+            else:
+                sl_summaries[sl_entry_idx] = " | ".join(descs)
         else:
-            summary_results[group_idx] = content
-
-    # ── Apply merges ─────────────────────────────────────────────────
-    for gi, (survivor, group_nodes, descriptions, all_source_ids) in enumerate(group_data):
-        if len(group_nodes) == 1:
-            continue
-        if descriptions:
-            survivor.properties["description"] = (
-                summary_results[gi] if gi in summary_results else " | ".join(descriptions)
-            )
-        if all_source_ids:
-            survivor.properties["source_chunk_ids"] = all_source_ids
-        # If LLM picked a different canonical label than the heuristic,
-        # swap survivor to the node whose label matches (keeps ID consistent).
-        if gi in type_results:
-            chosen = type_results[gi]
-            matched = next(
-                (lbl for lbl in {n.label for n in group_nodes} if lbl.lower() == chosen.lower()),
-                None,
-            )
-            if matched and matched != survivor.label:
-                new_survivor = next(
-                    (n for n in group_nodes if n.label == matched),
-                    None,
-                )
-                if new_survivor:
-                    # Swap: move properties to new survivor, replace in list
-                    new_survivor.properties.update(survivor.properties)
-                    idx = deduplicated_nodes.index(survivor)
-                    deduplicated_nodes[idx] = new_survivor
-                    group_data[gi] = (new_survivor, group_nodes, descriptions, all_source_ids)
-                    survivor = new_survivor
-        for duplicate in group_nodes:
-            if duplicate.id == survivor.id:
+            cl_idx = idx - cl_prompt_start
+            if not item.ok:
+                # LLM error on cross-label verification → fail-safe: no merge.
                 continue
-            for key, value in duplicate.properties.items():
-                if key not in survivor.properties:
-                    survivor.properties[key] = value
-            id_remap[duplicate.id] = survivor.id
+            content = item.response.content.strip()
+            first_line = content.split("\n", 1)[0].strip()
+            if not first_line.upper().startswith("YES"):
+                # NO or malformed → fail-safe: preserve homographs.
+                continue
+            parts = first_line.split(None, 1)
+            chosen = parts[1].strip() if len(parts) >= 2 else ""
+            lines = content.split("\n", 1)
+            cl_summary = (
+                lines[1].strip()
+                if len(lines) > 1
+                else " | ".join(cl_candidates[cl_idx]["descriptions"])
+            )
+            cl_approvals[cl_idx] = (chosen, cl_summary)
+
+    # ── Stage 5: apply same-label merges, producing one survivor per sl group ──
+    sl_survivor_by_idx: dict[int, GraphNode] = {}
+    id_remap: dict[str, str] = {}
+    merged_count = 0
+    for i, entry in enumerate(sl_entries):
+        group_nodes = entry["nodes"]
+        if not entry["is_merge"]:
+            sl_survivor_by_idx[i] = group_nodes[0]
+            continue
+        survivor = group_nodes[0]
+        if entry["descriptions"]:
+            survivor.properties["description"] = (
+                sl_summaries[i] if i in sl_summaries else " | ".join(entry["descriptions"])
+            )
+        if entry["all_source_ids"]:
+            survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
+        for dup in group_nodes[1:]:
+            for k, v in dup.properties.items():
+                if k not in survivor.properties:
+                    survivor.properties[k] = v
+            id_remap[dup.id] = survivor.id
             merged_count += 1
+        sl_survivor_by_idx[i] = survivor
+
+    # ── Stage 6: apply approved cross-label merges ──
+    absorbed_sl_ids: set[str] = set()
+    for cl_idx, cand in enumerate(cl_candidates):
+        if cl_idx not in cl_approvals:
+            continue
+        chosen_type, cl_summary = cl_approvals[cl_idx]
+        sl_idx_list = cand["sl_indices"]
+        sl_survivors_in_cand = [sl_survivor_by_idx[i] for i in sl_idx_list]
+        cl_survivor = next(
+            (s for s in sl_survivors_in_cand if s.label.lower() == chosen_type.lower()),
+            None,
+        )
+        if cl_survivor is None:
+            canonical = _pick_canonical_label(sl_survivors_in_cand)
+            cl_survivor = next(
+                (s for s in sl_survivors_in_cand if s.label == canonical),
+                sl_survivors_in_cand[0],
+            )
+        merged_sources: list[str] = []
+        existing_srcs = cl_survivor.properties.get("source_chunk_ids", [])
+        if isinstance(existing_srcs, list):
+            merged_sources.extend(existing_srcs)
+        for s in sl_survivors_in_cand:
+            if s.id == cl_survivor.id:
+                continue
+            for k, v in s.properties.items():
+                if k not in cl_survivor.properties:
+                    cl_survivor.properties[k] = v
+            s_srcs = s.properties.get("source_chunk_ids", [])
+            if isinstance(s_srcs, list):
+                for sid in s_srcs:
+                    if sid not in merged_sources:
+                        merged_sources.append(sid)
+            absorbed_sl_ids.add(s.id)
+            id_remap[s.id] = cl_survivor.id
+            merged_count += 1
+        if merged_sources:
+            cl_survivor.properties["source_chunk_ids"] = merged_sources
+        cl_survivor.properties["description"] = cl_summary
+
+    # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
+    # cl-survivor becomes sl-loser → cl-survivor directly) ──
+    for k in list(id_remap.keys()):
+        target = id_remap[k]
+        seen = {k}
+        while target in id_remap and target not in seen:
+            seen.add(target)
+            target = id_remap[target]
+        id_remap[k] = target
+
+    # ── Stage 8: build final node list in original sl-group order ──
+    deduplicated_nodes: list[GraphNode] = []
+    for i in range(len(sl_entries)):
+        survivor = sl_survivor_by_idx[i]
+        if survivor.id in absorbed_sl_ids:
+            continue
+        deduplicated_nodes.append(survivor)
 
     return deduplicated_nodes, id_remap, merged_count
 
