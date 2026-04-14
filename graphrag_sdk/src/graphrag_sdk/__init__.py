@@ -53,6 +53,16 @@ from graphrag_sdk.core.providers import (
 
 # ── Ingestion Strategies ────────────────────────────────────────
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
+from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import (
+    CallableChunking,
+)
+from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import (
+    ContextualChunking,
+)
+from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
+    SentenceTokenCapChunking,
+)
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
     CorefResolver,
@@ -69,6 +79,18 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
+    DescriptionMergeResolution,
+)
+from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+    ExactMatchResolution,
+)
+from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
+    LLMVerifiedResolution,
+)
+from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
+    SemanticResolution,
+)
 
 # ── Retrieval Strategies ────────────────────────────────────────
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
@@ -118,6 +140,10 @@ __all__ = [
     "TextChunks",
     # Ingestion
     "ChunkingStrategy",
+    "CallableChunking",
+    "ContextualChunking",
+    "FixedSizeChunking",
+    "SentenceTokenCapChunking",
     "ExtractionStrategy",
     "GraphExtraction",
     "EntityExtractor",
@@ -128,6 +154,10 @@ __all__ = [
     "IngestionPipeline",
     "LoaderStrategy",
     "ResolutionStrategy",
+    "DescriptionMergeResolution",
+    "ExactMatchResolution",
+    "LLMVerifiedResolution",
+    "SemanticResolution",
     # Retrieval
     "CosineReranker",
     "MultiPathRetrieval",
