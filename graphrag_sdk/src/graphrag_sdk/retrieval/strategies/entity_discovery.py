@@ -142,7 +142,7 @@ async def discover_entities(
                 "  WHERE toLower(e.name) CONTAINS toLower(kw) "
                 "    AND toLower(e.name) <> toLower(kw) "
                 "  RETURN e.id AS id, e.name AS name, e.description AS desc "
-                "  ORDER BY size(e.name) ASC "
+                "  ORDER BY size(e.name) ASC, toLower(e.name) ASC, e.id ASC "
                 "  LIMIT 5 "
                 "} "
                 "RETURN id, name, desc",
