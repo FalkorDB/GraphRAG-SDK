@@ -88,8 +88,10 @@ class TestPhase1ExactMatch:
         assert result.merged_count == 1
         assert len(result.nodes) == 1
 
-    async def test_same_name_diff_label_kept_separate(self, ctx):
-        """'Paris' Person vs 'Paris' Location — never merged regardless of similarity."""
+    async def test_same_name_diff_label_preserved_without_evidence(self, ctx):
+        """'Paris' Person vs 'Paris' Location with no descriptions — homographs
+        are preserved (fail-safe when the LLM cannot verify they're the same
+        real-world entity)."""
         gd = GraphData(
             nodes=[
                 GraphNode(id="p1", label="Person", properties={"name": "Paris"}),
@@ -101,6 +103,8 @@ class TestPhase1ExactMatch:
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
         assert len(result.nodes) == 2
+        labels = {n.label for n in result.nodes}
+        assert labels == {"Person", "Location"}
 
     async def test_no_duplicates_passes_through(self, ctx):
         gd = GraphData(
@@ -441,8 +445,11 @@ class TestEdgeCases:
         assert result.merged_count == 0
         assert len(result.nodes) == 1
 
-    async def test_all_different_labels_no_cross_merge(self, ctx):
-        """Nodes in different labels never merge even with identical embeddings."""
+    async def test_all_different_labels_preserved_without_llm_confirmation(self, ctx):
+        """Same-name cross-label nodes are preserved when the LLM can't
+        verify them as the same real-world entity (here: no descriptions,
+        so Phase 1 never asks the LLM). Homographs such as Paris/Person vs
+        Paris/Location must not be silently fused."""
         vec = _unit([1.0, 0.0, 0.0, 0.0])
         embedder = ControlledEmbedder({"Paris": vec})
 
@@ -456,9 +463,11 @@ class TestEdgeCases:
         )
         resolver = LLMVerifiedResolution(
             embedder=embedder,
-            hard_threshold=0.50,  # very low — would merge if cross-label allowed
+            hard_threshold=0.50,
             soft_threshold=0.10,
         )
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
         assert len(result.nodes) == 3
+        labels = {n.label for n in result.nodes}
+        assert labels == {"Person", "Location", "Organization"}
