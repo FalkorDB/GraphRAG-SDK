@@ -136,9 +136,7 @@ async def exact_match_merge(
                     d = n.properties.get("description", "")
                     if d:
                         all_descs.append(str(d))
-            entity_name = str(
-                sl_entries[indices[0]]["nodes"][0].properties.get("name", "")
-            )
+            entity_name = str(sl_entries[indices[0]]["nodes"][0].properties.get("name", ""))
             cl_candidates.append(
                 {
                     "sl_indices": indices,
