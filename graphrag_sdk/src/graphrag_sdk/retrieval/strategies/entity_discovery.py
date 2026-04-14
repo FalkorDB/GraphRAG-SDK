@@ -87,15 +87,65 @@ async def discover_entities(
             found[eid] = info
             sources[eid] = source
 
-    # Path a: Cypher CONTAINS on entity names (batched UNWIND)
-    kw_batch = [kw for kw in llm_kw[:8] if kw]
+    # Path a: Cypher name match (exact-first, then CONTAINS). Both use a
+    # per-keyword quota so a broad keyword (e.g. "FalkorDB") cannot starve
+    # rare keywords (e.g. "indegree") out of downstream entity-list caps,
+    # even when the graph has many homonyms of the broad term.
+    seen_kw: set[str] = set()
+    kw_batch: list[str] = []
+    for kw in llm_kw[:8]:
+        if not kw:
+            continue
+        k_low = kw.lower()
+        if k_low in seen_kw:
+            continue
+        seen_kw.add(k_low)
+        kw_batch.append(kw)
+
     if kw_batch:
+        # Pass a1: exact-name matches, capped per keyword. Inserted first
+        # so exact matches land at the head of `found` and survive the
+        # downstream max_entities / result_assembly caps.
         try:
             result = await graph_store.query_raw(
                 "UNWIND $keywords AS kw "
-                "MATCH (e:__Entity__) WHERE toLower(e.name) CONTAINS toLower(kw) "
-                "RETURN e.id AS id, e.name AS name, e.description AS desc "
-                "LIMIT 40",
+                "CALL { "
+                "  WITH kw "
+                "  MATCH (e:__Entity__) WHERE toLower(e.name) = toLower(kw) "
+                "  RETURN e.id AS id, e.name AS name, e.description AS desc "
+                "  LIMIT 3 "
+                "} "
+                "RETURN id, name, desc",
+                {"keywords": kw_batch},
+            )
+            for row in result.result_set:
+                _add(
+                    row[0],
+                    {
+                        "name": row[1] if len(row) > 1 else "",
+                        "description": row[2] if len(row) > 2 else "",
+                    },
+                    "cypher_exact",
+                )
+        except Exception as exc:
+            logger.debug("Entity exact-name search failed: %s", exc)
+
+        # Pass a2: CONTAINS with per-keyword quota and shorter-name priority.
+        # Excludes exact matches (already added in pass a1) so the quota
+        # isn't spent re-fetching them.
+        try:
+            result = await graph_store.query_raw(
+                "UNWIND $keywords AS kw "
+                "CALL { "
+                "  WITH kw "
+                "  MATCH (e:__Entity__) "
+                "  WHERE toLower(e.name) CONTAINS toLower(kw) "
+                "    AND toLower(e.name) <> toLower(kw) "
+                "  RETURN e.id AS id, e.name AS name, e.description AS desc "
+                "  ORDER BY size(e.name) ASC "
+                "  LIMIT 5 "
+                "} "
+                "RETURN id, name, desc",
                 {"keywords": kw_batch},
             )
             for row in result.result_set:
