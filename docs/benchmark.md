@@ -300,14 +300,13 @@ The ingestion and retrieval pipeline is fully composable. Each stage can be swap
 | Strategy | Description |
 |----------|-------------|
 | `SentenceTokenCapChunking(max_tokens, overlap_sentences)` | Splits on sentence boundaries with a configurable token cap. Best for most use cases. |
-| `FixedSizeChunking(chunk_size, chunk_overlap)` | Character-based splitting. Fast, but may break mid-sentence. |
 
 ### Extraction strategies
 
 | Strategy | Description |
 |----------|-------------|
-| `GraphExtraction(llm, entity_extractor=GLiNERExtractor(), coref_resolver=FastCorefResolver())` | Local NER (no API cost) + coreference resolution + LLM for relationships. Best accuracy. Uses ~3 GB RAM for local models. |
-| `GraphExtraction(llm)` | LLM-only extraction. Lower RAM (~300 MB) but higher API cost per document. |
+| `GraphExtraction(llm, entity_extractor=GLiNERExtractor(), coref_resolver=FastCorefResolver())` | Local NER (no API cost) + coreference resolution + LLM for relationships. Best accuracy. |
+| `GraphExtraction(llm)` | LLM-only extraction. Higher API cost per document. |
 
 ### Resolution strategies
 
