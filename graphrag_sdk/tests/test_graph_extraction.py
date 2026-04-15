@@ -21,6 +21,8 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
+    VERIFY_EXTRACT_RELS_PROMPT,
+    _format_entity_types,
 )
 
 from .conftest import MockLLM, MockLLMWithGraphExtraction
@@ -568,3 +570,78 @@ class TestSpansMerging:
         assert len(merged) == 1
         assert "chunk-0" in merged[0].spans
         assert "chunk-1" in merged[0].spans
+
+
+class TestNoiseFilteringPrompt:
+    """Bug 4: VERIFY_EXTRACT_RELS_PROMPT should contain noise-filtering instructions."""
+
+    def test_prompt_contains_operator_filtering(self):
+        assert "symbolic" in VERIFY_EXTRACT_RELS_PROMPT.lower()
+
+    def test_prompt_contains_abbreviation_filtering(self):
+        assert "non-domain-specific" in VERIFY_EXTRACT_RELS_PROMPT
+
+    def test_prompt_contains_short_token_filtering(self):
+        assert "1-2 characters" in VERIFY_EXTRACT_RELS_PROMPT
+
+
+class TestEntityTypeDescriptions:
+    """Bug 3: _format_entity_types should include descriptions when available."""
+
+    def test_with_descriptions(self):
+        types = ["Command", "Function", "Concept"]
+        descs = {"Command": "FalkorDB GRAPH.* commands", "Function": "Cypher built-in functions"}
+        result = _format_entity_types(types, descs)
+        assert "Command\n  Description: FalkorDB GRAPH.* commands" in result
+        assert "Function\n  Description: Cypher built-in functions" in result
+        assert "\n" in result  # newline-separated when descriptions present
+        # Concept has no description — should appear without suffix
+        assert "Concept" in result
+        assert "Concept\n  Description:" not in result
+
+    def test_without_descriptions(self):
+        types = ["Person", "Organization"]
+        result = _format_entity_types(types)
+        assert result == "Person, Organization"
+
+    def test_empty_descriptions_dict(self):
+        types = ["Person", "Organization"]
+        result = _format_entity_types(types, {})
+        assert result == "Person, Organization"
+
+    def test_partial_descriptions(self):
+        types = ["Person", "Vehicle"]
+        descs = {"Vehicle": "A car, truck, or other transport"}
+        result = _format_entity_types(types, descs)
+        assert "Vehicle\n  Description: A car, truck, or other transport" in result
+        assert "Person" in result
+
+    async def test_descriptions_reach_step2_prompt(self, ctx):
+        """Schema entity type descriptions should appear in the Step 2 LLM prompt."""
+        captured_prompts: list[str] = []
+
+        class CaptureLLM(MockLLM):
+            def invoke(self, prompt, **kwargs):
+                captured_prompts.append(prompt)
+                return super().invoke(prompt, **kwargs)
+
+        llm = CaptureLLM(responses=[
+            json.dumps([{"name": "GRAPH.QUERY", "type": "Command", "description": "A cmd"}]),
+            json.dumps({"entities": [{"name": "GRAPH.QUERY", "type": "Command", "description": "A cmd"}],
+                        "relationships": []}),
+        ])
+        schema = GraphSchema(
+            entities=[
+                EntityType(label="Command", description="FalkorDB GRAPH.* commands"),
+                EntityType(label="Function", description="Cypher built-in functions"),
+            ],
+        )
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        chunks = _make_chunks("GRAPH.QUERY is a FalkorDB command.")
+        await extractor.extract(chunks, schema, ctx)
+
+        # Step 2 prompt (second call) should contain the descriptions
+        assert len(captured_prompts) >= 2
+        step2_prompt = captured_prompts[1]
+        assert "Command\n  Description: FalkorDB GRAPH.* commands" in step2_prompt
+        assert "Function\n  Description: Cypher built-in functions" in step2_prompt
