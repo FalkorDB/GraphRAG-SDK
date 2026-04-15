@@ -29,7 +29,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | 8 | LightRAG | 58.62 | 49.07 | 48.85 | 23.80 | 45.09 |
 | 9 | HippoRAG | 52.93 | 38.52 | 48.70 | 38.85 | 44.75 |
 
-> FalkorDB scored with GPT-4.1 (Azure OpenAI, `temperature=0`) on 20 Project Gutenberg novels, 100 questions, LLM-as-Judge (GPT-4.1). Competitor numbers are sourced from their published benchmarks. See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
+> FalkorDB scored with `gpt-4o-mini` (Azure OpenAI) on the [GraphRAG-Bench](https://graphrag-bench.github.io) Novel dataset — 20 novels, 2,010 questions, automated evaluation (ROUGE-L + answer-correctness with `gpt-4o-mini`). Competitor numbers are sourced from the GraphRAG-Bench published leaderboard. See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
 
 ---
 
