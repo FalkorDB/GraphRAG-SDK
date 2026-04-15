@@ -293,6 +293,109 @@ class TestGraphRAGDefaultExtractor:
         assert "Company" in extractor.entity_types
 
 
+class TestGraphRAGBackfill:
+    async def test_backfill_type_from_label(self, mock_conn, embedder, llm):
+        """Default backfill populates entity.type from the primary graph label."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        type_result = MagicMock()
+        type_result.result_set = [[7]]  # 7 entities updated
+        g.graph_store.query_raw = AsyncMock(return_value=type_result)
+
+        counters = await g.backfill_graph_properties()
+
+        assert counters["type_updated"] == 7
+        assert counters["description_updated"] == 0
+        assert counters["relations_reembedded"] == 0
+        # Only the type query was issued
+        assert g.graph_store.query_raw.await_count == 1
+        query_text = g.graph_store.query_raw.await_args.args[0]
+        assert "e.type = primary_label" in query_text
+
+    async def test_backfill_skips_when_no_nulls(self, mock_conn, embedder, llm):
+        """Type backfill returns 0 when no entities have NULL type."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        empty = MagicMock()
+        empty.result_set = [[0]]
+        g.graph_store.query_raw = AsyncMock(return_value=empty)
+
+        counters = await g.backfill_graph_properties()
+        assert counters["type_updated"] == 0
+
+    async def test_backfill_description_requires_opt_in(self, mock_conn, embedder, llm):
+        """Default (no properties kwarg) does not touch descriptions or call LLM."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        type_result = MagicMock()
+        type_result.result_set = [[3]]
+        g.graph_store.query_raw = AsyncMock(return_value=type_result)
+        # If LLM is called for rewriting, this would raise (no responses left)
+        g.vector_store.embed_relationships = AsyncMock(return_value=0)
+
+        counters = await g.backfill_graph_properties()
+        g.vector_store.embed_relationships.assert_not_awaited()
+        assert counters["description_updated"] == 0
+
+    async def test_backfill_description_reruns_extraction(self, mock_conn, embedder):
+        """With description opt-in, re-runs Step 2 on relevant chunks and updates edges."""
+        import json as _json
+
+        step2_json = _json.dumps({
+            "entities": [
+                {"name": "Alice", "type": "Person", "description": ""},
+                {"name": "Acme", "type": "Organization", "description": ""},
+            ],
+            "relationships": [
+                {
+                    "source": "Alice",
+                    "target": "Acme",
+                    "type": "WORKS_AT",
+                    "description": "Alice works at Acme as an engineer.",
+                }
+            ],
+        })
+        llm = MockLLM(responses=[step2_json])
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+
+        # Mock the multi-query sequence used by _backfill_relationship_descriptions:
+        # 1. find edges with NULL description
+        edges_result = MagicMock()
+        edges_result.result_set = [
+            [42, "Alice", "Person", "Acme", "Organization", "WORKS_AT", ["chunk1"]],
+        ]
+        # 2. fetch chunk texts
+        chunks_result = MagicMock()
+        chunks_result.result_set = [
+            ["chunk1", "Alice is an engineer at Acme Corp in London."],
+        ]
+        # 3. the update UNWIND write
+        write_result = MagicMock()
+        write_result.result_set = []
+
+        g.graph_store.query_raw = AsyncMock(
+            side_effect=[edges_result, chunks_result, write_result]
+        )
+        g.vector_store.embed_relationships = AsyncMock(return_value=1)
+
+        counters = await g.backfill_graph_properties(properties=["description"])
+
+        assert counters["description_updated"] == 1
+        assert counters["relations_reembedded"] == 1
+
+        # Confirm the update query was issued with the right payload
+        write_call = g.graph_store.query_raw.await_args_list[2]
+        write_cypher = write_call.args[0]
+        assert "SET r.description" in write_cypher
+        assert "r.embedding = NULL" in write_cypher
+        batch = write_call.args[1]["batch"]
+        assert len(batch) == 1
+        assert batch[0]["rid"] == 42
+        assert batch[0]["description"] == "Alice works at Acme as an engineer."
+        assert batch[0]["fact"] == "(Alice, WORKS_AT, Acme): Alice works at Acme as an engineer."
+
+        # And embed_relationships was called to regenerate embeddings
+        g.vector_store.embed_relationships.assert_awaited_once()
+
+
 class TestGraphRAGSyncWrappers:
     def test_query_sync(self, mock_conn, embedder):
         llm = MockLLM(responses=["Sync answer."])
@@ -417,18 +520,19 @@ class TestGraphRAGCompletion:
         )
         assert result.answer == "Continued answer."
         assert result.metadata["has_history"] is True
-        # Should have used ainvoke_messages, not ainvoke
         assert llm.last_messages is not None
         assert len(llm.last_messages) == 4  # system + 2 history + user question
         assert llm.last_messages[0].role == "system"
         assert llm.last_messages[1].role == "user"
         assert llm.last_messages[1].content == "First question"
         assert llm.last_messages[2].role == "assistant"
+        # Final user message carries the current context + question (via template)
         assert llm.last_messages[3].role == "user"
-        assert llm.last_messages[3].content == "Follow up question"
+        assert "Follow up question" in llm.last_messages[3].content
+        assert "c" in llm.last_messages[3].content  # retrieved context in final turn
 
     async def test_completion_with_history_chatmessage_objects(self, mock_conn, embedder):
-        """History as ChatMessage objects should work."""
+        """History as ChatMessage objects should work; history[0] system is honored."""
         llm = MockLLM(responses=["ChatMessage answer."])
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
         mock_strategy = MagicMock(spec=RetrievalStrategy)
@@ -449,8 +553,11 @@ class TestGraphRAGCompletion:
         )
         assert result.answer == "ChatMessage answer."
         assert llm.last_messages is not None
-        # system (RAG prompt) + system (from history) + user + assistant + user question
-        assert len(llm.last_messages) == 5
+        # Consumer-provided system is honored; SDK does NOT prepend its own.
+        # system(from history) + user + assistant + user question = 4
+        assert len(llm.last_messages) == 4
+        assert llm.last_messages[0].role == "system"
+        assert llm.last_messages[0].content == "You are helpful."
 
     async def test_completion_history_invalid_role_raises(self, mock_conn, embedder):
         """Invalid role in history should raise ValueError."""
@@ -497,8 +604,8 @@ class TestGraphRAGCompletion:
         with pytest.raises(TypeError, match="expected ChatMessage or dict"):
             await g.completion("test?", history=["not a dict"])
 
-    async def test_completion_no_history_uses_ainvoke(self, mock_conn, embedder):
-        """Without history, completion should use ainvoke (not ainvoke_messages)."""
+    async def test_completion_no_history_uses_messages_api(self, mock_conn, embedder):
+        """Without history, completion still uses ainvoke_messages (unified path)."""
         llm = MockLLM(responses=["Single-turn answer."])
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
         mock_strategy = MagicMock(spec=RetrievalStrategy)
@@ -509,7 +616,13 @@ class TestGraphRAGCompletion:
 
         result = await g.completion("test?")
         assert result.answer == "Single-turn answer."
-        assert llm.last_messages is None  # ainvoke_messages was NOT called
+        # Unified path: ainvoke_messages is used even without history.
+        # Messages = system(default) + user(wrapped question) = 2
+        assert llm.last_messages is not None
+        assert len(llm.last_messages) == 2
+        assert llm.last_messages[0].role == "system"
+        assert llm.last_messages[1].role == "user"
+        assert "test?" in llm.last_messages[1].content
 
     async def test_completion_return_context(self, mock_conn, embedder):
         llm = MockLLM(responses=["Answer."])
@@ -540,28 +653,151 @@ class TestGraphRAGCompletion:
         result = await g.completion("test?", prompt_template=template)
         assert llm._call_index == 1
 
-    async def test_completion_prompt_template_ignored_with_history(self, mock_conn, embedder):
-        """prompt_template should be ignored in multi-turn mode (no KeyError)."""
+    async def test_completion_prompt_template_honored_with_history(self, mock_conn, embedder):
+        """prompt_template wraps the final user turn in multi-turn mode too."""
         llm = MockLLM(responses=["Multi-turn answer."])
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
         mock_strategy = MagicMock(spec=RetrievalStrategy)
         mock_strategy.search = AsyncMock(
             return_value=RetrieverResult(
-                items=[RetrieverResultItem(content="c")]
+                items=[RetrieverResultItem(content="CTX")]
             )
         )
         g._retrieval_strategy = mock_strategy
 
-        # This template has {question} — would KeyError if used in multi-turn
-        template = "Context: {context}\nQ: {question}\nA:"
+        template = "CUSTOM|{context}|Q:{question}|END"
         result = await g.completion(
             "follow up?",
             history=[{"role": "user", "content": "hi"}],
             prompt_template=template,
         )
         assert result.answer == "Multi-turn answer."
-        # Should have used ainvoke_messages, not ainvoke
         assert llm.last_messages is not None
+        # Final user message should reflect the custom template
+        final = llm.last_messages[-1]
+        assert final.role == "user"
+        assert final.content == "CUSTOM|CTX|Q:follow up?|END"
+
+    async def test_completion_history_with_system_message(self, mock_conn, embedder):
+        """history[0] with role='system' is honored as-is; SDK does not prepend."""
+        llm = MockLLM(responses=["Pirate answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion(
+            "where be the treasure?",
+            history=[ChatMessage(role="system", content="You are a pirate. Arrr.")],
+        )
+        assert result.answer == "Pirate answer."
+        assert llm.last_messages is not None
+        # Exactly one system message — consumer's, not duplicated by SDK
+        system_msgs = [m for m in llm.last_messages if m.role == "system"]
+        assert len(system_msgs) == 1
+        assert system_msgs[0].content == "You are a pirate. Arrr."
+
+    async def test_completion_rewrite_question_off_by_default(self, mock_conn, embedder):
+        """Without rewrite_question_with_history, retrieval uses raw question."""
+        llm = MockLLM(responses=["Answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion(
+            "where did she go to college?",
+            history=[
+                {"role": "user", "content": "Who founded Acme?"},
+                {"role": "assistant", "content": "Jane Doe founded Acme."},
+            ],
+        )
+        # Retrieval strategy was called with the original question, unchanged
+        mock_strategy.search.assert_called_once()
+        call_args = mock_strategy.search.call_args
+        assert call_args[0][0] == "where did she go to college?"
+        assert result.metadata["retrieval_query"] == "where did she go to college?"
+
+    async def test_completion_rewrite_question_enabled(self, mock_conn, embedder):
+        """With rewrite enabled, retrieval uses the rewritten standalone query."""
+        # MockLLM responses: [0] = rewrite output, [1] = final answer
+        llm = MockLLM(responses=[
+            "Where did Jane Doe go to college?",
+            "She attended Stanford University.",
+        ])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion(
+            "where did she go to college?",
+            history=[
+                ChatMessage(role="user", content="Who founded Acme?"),
+                ChatMessage(role="assistant", content="Jane Doe founded Acme in 1985."),
+            ],
+            rewrite_question_with_history=True,
+        )
+        # Retrieval was called with the rewritten query, not the raw question
+        call_args = mock_strategy.search.call_args
+        assert call_args[0][0] == "Where did Jane Doe go to college?"
+        assert result.metadata["retrieval_query"] == "Where did Jane Doe go to college?"
+        assert result.answer == "She attended Stanford University."
+
+    async def test_completion_rewrite_fallback_on_empty(self, mock_conn, embedder):
+        """If the rewrite LLM returns empty, fall back to the original question."""
+        llm = MockLLM(responses=["", "Some answer."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        result = await g.completion(
+            "where did she go?",
+            history=[{"role": "user", "content": "Who?"}, {"role": "assistant", "content": "Jane."}],
+            rewrite_question_with_history=True,
+        )
+        # Empty rewrite → original question used for retrieval
+        call_args = mock_strategy.search.call_args
+        assert call_args[0][0] == "where did she go?"
+        assert result.metadata["retrieval_query"] == "where did she go?"
+
+    async def test_completion_custom_prompt_template_with_history(self, mock_conn, embedder):
+        """UI agent's use case: citation-style template works in multi-turn mode."""
+        llm = MockLLM(responses=["Answer with [1] markers."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="SRC")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        citation_template = (
+            "Cite sources with [1] [2] markers.\n"
+            "Context:\n{context}\n\nQuestion: {question}"
+        )
+        result = await g.completion(
+            "What is it?",
+            history=[
+                ChatMessage(role="system", content="You respond with citations."),
+                ChatMessage(role="user", content="Give me an overview."),
+                ChatMessage(role="assistant", content="Here is an overview [1]."),
+            ],
+            prompt_template=citation_template,
+        )
+        assert llm.last_messages is not None
+        final = llm.last_messages[-1]
+        assert "Cite sources with [1] [2] markers." in final.content
+        assert "SRC" in final.content
+        assert "What is it?" in final.content
 
 
 class TestGraphRAGBatchIngestValidation:

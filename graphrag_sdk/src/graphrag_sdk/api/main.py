@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any, overload
@@ -25,7 +26,12 @@ from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    VERIFY_EXTRACT_RELS_PROMPT,
     GraphExtraction,
+    _format_entity_types,
+)
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    DEFAULT_ENTITY_TYPES,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -44,15 +50,14 @@ logger = logging.getLogger(__name__)
 
 
 _RAG_SYSTEM_PROMPT = (
-    "You are a helpful assistant. Answer the question using ONLY "
-    "the provided context.\n\n"
+    "You are a helpful assistant. Answer questions using ONLY the "
+    "context provided in the user message.\n\n"
     "RULES:\n"
-    "1. Base your answer strictly on the context below.\n"
+    "1. Base your answer strictly on the provided context.\n"
     "2. Be direct and concise — match your answer length to the "
     "question's complexity. A simple factual question deserves a short "
     "answer; a complex question may need more detail.\n"
-    "3. Do not quote source passages verbatim. Do not include source "
-    "references or citations in your answer.\n"
+    "3. Do not quote source passages verbatim.\n"
     "4. Do not start with preambles like 'According to the context' or "
     "'Based on the passage'. Just answer directly.\n"
     "5. Preserve exact names, dates, places, and factual details "
@@ -60,11 +65,20 @@ _RAG_SYSTEM_PROMPT = (
     "6. If the context lacks sufficient information, say so briefly "
     "rather than inventing details.\n"
     "7. Respect negation: if a passage states something did NOT happen "
-    "or is NOT true, preserve that meaning.\n\n"
-    "{context}"
+    "or is NOT true, preserve that meaning."
 )
 
-_RAG_PROMPT = _RAG_SYSTEM_PROMPT + ("\n\n{history_section}Question: {question}\n\nAnswer:")
+_RAG_PROMPT = "Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"
+
+_QUESTION_REWRITE_PROMPT = (
+    "Given the conversation history, rewrite the user's last question "
+    "as a standalone question that includes all entity names, dates, "
+    "and references needed to answer it without the prior context. "
+    "Output only the rewritten question on a single line, no preamble "
+    "or explanation.\n\n"
+    "Conversation:\n{history}\n\n"
+    "Last question: {question}\n\nRewritten question:"
+)
 
 
 class GraphRAG:
@@ -406,6 +420,39 @@ class GraphRAG:
                 )
         return validated
 
+    async def _rewrite_question_with_history(
+        self,
+        question: str,
+        history: list[ChatMessage],
+        *,
+        ctx: Context,
+    ) -> str:
+        """Rewrite a follow-up question into a standalone form using history.
+
+        Returns the rewritten question, or the original if the LLM returns
+        an empty or suspicious result. Never raises to the caller.
+        """
+        history_lines = [
+            f"{m.role}: {m.content}"
+            for m in history
+            if m.role in ("user", "assistant")
+        ]
+        prompt = _QUESTION_REWRITE_PROMPT.format(
+            history="\n".join(history_lines),
+            question=question,
+        )
+        try:
+            resp = await self.llm.ainvoke(prompt)
+            rewritten = (resp.content or "").strip().splitlines()[0].strip() if resp.content else ""
+        except Exception as e:
+            ctx.log(f"Question rewrite failed, using original: {e}")
+            return question
+
+        if not rewritten or len(rewritten) > 4 * len(question) + 200:
+            ctx.log("Question rewrite returned empty/suspicious output, using original")
+            return question
+        return rewritten
+
     async def completion(
         self,
         question: str,
@@ -414,6 +461,7 @@ class GraphRAG:
         strategy: RetrievalStrategy | None = None,
         reranker: RerankingStrategy | None = None,
         prompt_template: str | None = None,
+        rewrite_question_with_history: bool = False,
         return_context: bool = False,
         ctx: Context | None = None,
     ) -> RagResult:
@@ -424,14 +472,22 @@ class GraphRAG:
             history: Optional conversation history as a list of
                 ``ChatMessage`` objects or ``{"role": ..., "content": ...}``
                 dicts.  Supported roles: ``"system"``, ``"user"``,
-                ``"assistant"``.  Messages are passed natively to the LLM
-                provider's multi-turn API.
+                ``"assistant"``.  If the first message has
+                ``role="system"``, it is used as the session system prompt
+                as-is (the SDK does **not** prepend its own).  Otherwise
+                a built-in system prompt is injected.
             strategy: Override retrieval strategy (uses default if None).
             reranker: Optional reranking strategy to apply.
-            prompt_template: Custom prompt for single-turn mode (must
-                contain ``{context}`` and ``{question}``).  Ignored when
-                *history* is provided — multi-turn uses the built-in
-                system prompt with the question in the final user message.
+            prompt_template: Template that wraps the current turn's
+                ``{context}`` and ``{question}``.  Applied in both
+                single-turn and multi-turn modes.  If omitted, a built-in
+                default template is used.
+            rewrite_question_with_history: If True and history is
+                provided, rewrite the current question into a standalone
+                form (collapsing pronouns/references) using a cheap LLM
+                call before retrieval.  Defaults to False.  The resolved
+                retrieval query is always exposed in
+                ``result.metadata["retrieval_query"]``.
             return_context: If True, include retriever results in output.
             ctx: Execution context.
 
@@ -443,9 +499,21 @@ class GraphRAG:
 
         ctx.log(f"Completion: {question[:80]}...")
 
-        # Step 1-2: Retrieve + rerank
+        # Validate history up front — reused for rewrite and message assembly.
+        validated_history = self._validate_history(history) if history else []
+
+        # Step 1: Optionally rewrite the question for retrieval.
+        retrieval_query = question
+        if validated_history and rewrite_question_with_history:
+            retrieval_query = await self._rewrite_question_with_history(
+                question, validated_history, ctx=ctx,
+            )
+            if retrieval_query != question:
+                ctx.log(f"Rewrote for retrieval: {retrieval_query[:80]}")
+
+        # Step 2: Retrieve + rerank (using possibly-rewritten query).
         retriever_result = await self.retrieve(
-            question,
+            retrieval_query,
             strategy=strategy,
             reranker=reranker,
             ctx=ctx,
@@ -454,28 +522,26 @@ class GraphRAG:
         # Step 3: Build context string
         context_str = "\n---\n".join(item.content for item in retriever_result.items)
 
-        # Step 4: Generate answer
-        if history:
-            # Multi-turn: validate history and use native messages API.
-            # prompt_template is ignored — the question goes in the final
-            # user message, not the system prompt.
-            validated = self._validate_history(history)
-            system_prompt = _RAG_SYSTEM_PROMPT.format(context=context_str)
-            messages: list[ChatMessage] = [
-                ChatMessage(role="system", content=system_prompt),
-                *validated,
-                ChatMessage(role="user", content=question),
-            ]
-            llm_response = await self.llm.ainvoke_messages(messages)
+        # Step 4: Build messages — unified path for single-turn and multi-turn.
+        # If history starts with role="system", honor it as-is (trust the
+        # consumer). Otherwise inject the SDK's default instructions.
+        if validated_history and validated_history[0].role == "system":
+            system_msg = validated_history[0]
+            rest_history = validated_history[1:]
         else:
-            # Single-turn: use the existing prompt template path
-            template = prompt_template or _RAG_PROMPT
-            prompt = template.format(
-                context=context_str,
-                question=question,
-                history_section="",
-            )
-            llm_response = await self.llm.ainvoke(prompt)
+            system_msg = ChatMessage(role="system", content=_RAG_SYSTEM_PROMPT)
+            rest_history = validated_history
+
+        template = prompt_template or _RAG_PROMPT
+        final_user_content = template.format(context=context_str, question=question)
+
+        messages: list[ChatMessage] = [
+            system_msg,
+            *rest_history,
+            ChatMessage(role="user", content=final_user_content),
+        ]
+
+        llm_response = await self.llm.ainvoke_messages(messages)
 
         result = RagResult(
             answer=self._clean_answer(llm_response.content),
@@ -485,6 +551,7 @@ class GraphRAG:
                 "num_context_items": len(retriever_result.items),
                 "strategy": (strategy or self._retrieval_strategy).__class__.__name__,
                 "has_history": bool(history),
+                "retrieval_query": retrieval_query,
             },
         )
 
@@ -694,6 +761,179 @@ class GraphRAG:
             "relationships_embedded": rel_count,
             "indexes": index_results,
         }
+
+    async def backfill_graph_properties(
+        self,
+        *,
+        properties: list[str] | None = None,
+        entity_types: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Backfill PR #206 properties on graphs ingested before the SDK stored them.
+
+        - ``"type"`` (cheap, default): derive ``entity.type`` from the
+          primary graph label for entities where it is NULL.  O(graph size)
+          Cypher, no LLM calls.
+        - ``"description"`` (opt-in, expensive): re-run the relationship-
+          extraction LLM step on the source chunks referenced by each
+          RELATES edge whose ``description`` is NULL/empty, then update
+          ``r.description`` and ``r.fact`` and invalidate ``r.embedding``.
+          Finally regenerates embeddings via ``embed_relationships()``.
+          Cost scales with the number of affected chunks, but skips
+          chunking, entity extraction, and embedding of unrelated data.
+
+        Args:
+            properties: Which properties to backfill.  Defaults to
+                ``["type"]``.  Pass ``["type", "description"]`` to also
+                rebuild relationship descriptions.
+            entity_types: Entity type labels to pass to the relationship
+                extraction prompt (description backfill only).  Defaults
+                to the SDK's built-in set.
+
+        Returns:
+            Dict of counters: ``type_updated``, ``description_updated``,
+            ``relations_reembedded``.
+        """
+        props = properties if properties is not None else ["type"]
+        counters = {"type_updated": 0, "description_updated": 0, "relations_reembedded": 0}
+
+        if "type" in props:
+            counters["type_updated"] = await self._backfill_entity_type()
+
+        if "description" in props:
+            etypes = entity_types or list(DEFAULT_ENTITY_TYPES)
+            counters["description_updated"] = await self._backfill_relationship_descriptions(etypes)
+            if counters["description_updated"] > 0:
+                counters["relations_reembedded"] = await self.vector_store.embed_relationships()
+
+        return counters
+
+    async def _backfill_entity_type(self) -> int:
+        """Set entity.type from the primary graph label where NULL."""
+        r = await self.graph_store.query_raw(
+            "MATCH (e:__Entity__) "
+            "WHERE e.type IS NULL "
+            "WITH e, [l IN labels(e) WHERE l <> '__Entity__'][0] AS primary_label "
+            "WHERE primary_label IS NOT NULL "
+            "SET e.type = primary_label "
+            "RETURN count(e) AS updated"
+        )
+        return int(r.result_set[0][0]) if r.result_set else 0
+
+    async def _backfill_relationship_descriptions(self, entity_types: list[str]) -> int:
+        """Re-run Step 2 extraction on chunks referenced by edges missing description."""
+        # 1. Find edges with NULL/empty description
+        r = await self.graph_store.query_raw(
+            "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
+            "WHERE (r.description IS NULL OR r.description = '') "
+            "AND r.source_chunk_ids IS NOT NULL "
+            "RETURN id(r) AS rid, a.name, a.type, b.name, b.type, "
+            "r.type, r.source_chunk_ids"
+        )
+        rows = list(r.result_set or [])
+        if not rows:
+            return 0
+
+        # 2. Collect all referenced chunk ids, build an edge-by-chunk index
+        edges_by_chunk: dict[str, list[dict[str, Any]]] = {}
+        all_chunk_ids: set[str] = set()
+        for row in rows:
+            rid, a_name, a_type, b_name, b_type, rel_type, chunk_ids = row
+            edge = {
+                "rid": rid, "source": a_name, "source_type": a_type,
+                "target": b_name, "target_type": b_type, "type": rel_type,
+                "chunk_ids": list(chunk_ids or []),
+            }
+            for cid in edge["chunk_ids"]:
+                edges_by_chunk.setdefault(cid, []).append(edge)
+                all_chunk_ids.add(cid)
+
+        # 3. Fetch chunk texts
+        chunk_fetch = await self.graph_store.query_raw(
+            "UNWIND $ids AS cid MATCH (c:Chunk {id: cid}) RETURN c.id, c.text",
+            {"ids": list(all_chunk_ids)},
+        )
+        chunk_texts: dict[str, str] = {
+            row[0]: row[1] for row in (chunk_fetch.result_set or [])
+        }
+
+        # 4. For each chunk, build VERIFY_EXTRACT_RELS_PROMPT with the entities
+        # referenced by the edges in that chunk, then run Step 2 in batch.
+        prompts: list[str] = []
+        prompt_chunk_ids: list[str] = []
+        entity_types_block = _format_entity_types(entity_types, None)
+
+        for cid, edges in edges_by_chunk.items():
+            text = chunk_texts.get(cid)
+            if not text:
+                continue
+            seen: set[tuple[str, str]] = set()
+            entities_list: list[dict[str, str]] = []
+            for e in edges:
+                for name, etype in (
+                    (e["source"], e["source_type"]),
+                    (e["target"], e["target_type"]),
+                ):
+                    key = (name.strip().lower(), etype or "")
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    entities_list.append({
+                        "name": name, "type": etype or "", "description": "",
+                    })
+            prompts.append(VERIFY_EXTRACT_RELS_PROMPT.format(
+                entity_types=entity_types_block,
+                entities_json=json.dumps(entities_list),
+                text=text,
+            ))
+            prompt_chunk_ids.append(cid)
+
+        if not prompts:
+            return 0
+
+        batch_results = await self.llm.abatch_invoke(prompts)
+
+        # 5. Parse each response and build (src_lower, type, tgt_lower) → description map per chunk
+        descriptions: dict[tuple[str, str, str], str] = {}
+        for item in batch_results:
+            if not item.ok or item.response is None:
+                continue
+            cid = prompt_chunk_ids[item.index]
+            _, rels = GraphExtraction._parse_step2_response(
+                item.response.content, entity_types, cid,
+            )
+            for rel in rels:
+                key = (
+                    rel.source.strip().lower(),
+                    rel.type.strip().lower(),
+                    rel.target.strip().lower(),
+                )
+                # Keep the longest description seen across chunks
+                if rel.description and len(rel.description) > len(descriptions.get(key, "")):
+                    descriptions[key] = rel.description
+
+        # 6. Update edges that got a description; leave others untouched
+        updates: list[dict[str, Any]] = []
+        for row in rows:
+            rid, a_name, _a_type, b_name, _b_type, rel_type, _chunk_ids = row
+            key = (a_name.strip().lower(), rel_type.strip().lower(), b_name.strip().lower())
+            desc = descriptions.get(key)
+            if not desc:
+                continue
+            fact = f"({a_name}, {rel_type}, {b_name}): {desc}"
+            updates.append({"rid": rid, "description": desc, "fact": fact})
+
+        if not updates:
+            return 0
+
+        await self.graph_store.query_raw(
+            "UNWIND $batch AS item "
+            "MATCH ()-[r:RELATES]->() WHERE id(r) = item.rid "
+            "SET r.description = item.description, "
+            "r.fact = item.fact, "
+            "r.embedding = NULL",
+            {"batch": updates},
+        )
+        return len(updates)
 
     # ── Sync Convenience ─────────────────────────────────────────
 
