@@ -294,8 +294,8 @@ The connection layer retries transient query failures up to 3 times using expone
 
 | File | What it contains |
 |------|-----------------|
-| [`storage/graph_store.py`](../graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | GraphStore — batched MERGE, label hints, statistics, cleanup |
-| [`storage/vector_store.py`](../graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | VectorStore — index management, chunk/entity/relationship embedding, search |
-| [`storage/deduplicator.py`](../graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — exact + fuzzy dedup, edge remapping |
-| [`utils/cypher.py`](../graphrag_sdk/src/graphrag_sdk/utils/cypher.py) | sanitize_cypher_label() and other Cypher utilities |
-| [`core/connection.py`](../graphrag_sdk/src/graphrag_sdk/core/connection.py) | FalkorDBConnection — async client, connection pooling, retry |
+| [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | GraphStore — batched MERGE, label hints, statistics, cleanup |
+| [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | VectorStore — index management, chunk/entity/relationship embedding, search |
+| [`storage/deduplicator.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — exact + fuzzy dedup, edge remapping |
+| [`utils/cypher.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/utils/cypher.py) | sanitize_cypher_label() and other Cypher utilities |
+| [`core/connection.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/connection.py) | FalkorDBConnection — async client, connection pooling, retry |

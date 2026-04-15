@@ -206,6 +206,19 @@ class FalkorDBConnection:
             else:
                 raise
 
+    # ── Async context manager ──────────────────────────────────
+
+    async def __aenter__(self) -> FalkorDBConnection:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        try:
+            await self.close()
+        except Exception:
+            if exc[0] is None:
+                raise
+            logger.warning("Error closing connection during __aexit__", exc_info=True)
+
     # ── Lifecycle ────────────────────────────────────────────────
 
     async def close(self) -> None:
