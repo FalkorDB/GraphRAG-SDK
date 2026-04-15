@@ -339,7 +339,7 @@ extractor = GraphExtraction(
 
 | File | What it contains |
 |------|-----------------|
-| [`graph_extraction.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction orchestrator, entity/relation aggregation, GraphData conversion |
-| [`entity_extractors.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/entity_extractors.py) | EntityExtractor ABC, GLiNERExtractor, LLMExtractor, entity utilities |
-| [`coref_resolvers.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/coref_resolvers.py) | CorefResolver ABC, FastCorefResolver |
-| [`base.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/base.py) | ExtractionStrategy ABC |
+| [`graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction orchestrator, entity/relation aggregation, GraphData conversion |
+| [`entity_extractors.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/entity_extractors.py) | EntityExtractor ABC, GLiNERExtractor, LLMExtractor, entity utilities |
+| [`coref_resolvers.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/coref_resolvers.py) | CorefResolver ABC, FastCorefResolver |
+| [`base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/base.py) | ExtractionStrategy ABC |

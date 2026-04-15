@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "graphrag-sdk"
 version = "1.0.0"
-description = "GraphRAG SDK — A modular, async-first Graph RAG framework for FalkorDB"
+description = "The most accurate Graph RAG framework. Build knowledge graphs and query them with natural language. Built on FalkorDB."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "FalkorDB", email = "support@falkordb.com" }]
-keywords = ["graphrag", "rag", "falkordb", "knowledge-graph", "llm"]
+keywords = ["graphrag", "rag", "falkordb", "knowledge-graph", "llm", "graph-database", "retrieval-augmented-generation", "nlp", "ai"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -57,6 +57,13 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/FalkorDB/GraphRAG-SDK"
+Documentation = "https://falkordb.github.io/GraphRAG-SDK/"
+Repository = "https://github.com/FalkorDB/GraphRAG-SDK"
+"Bug Tracker" = "https://github.com/FalkorDB/GraphRAG-SDK/issues"
+Changelog = "https://github.com/FalkorDB/GraphRAG-SDK/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/graphrag_sdk"]

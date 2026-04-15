@@ -64,7 +64,7 @@ This document explains how each path works, what it contributes, and how they pe
 > Simple keywords: `["professor", "harmon", "discover", "lighthouse"]`
 > LLM keywords: `["Professor Harmon", "lighthouse"]`
 
-**Code:** `MultiPathRetrieval._extract_keywords()` in [`multi_path.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py)
+**Code:** `MultiPathRetrieval._extract_keywords()` in [`multi_path.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py)
 
 ---
 
@@ -74,7 +74,7 @@ This document explains how each path works, what it contributes, and how they pe
 
 **Why:** This vector is used later to find chunks and facts that are semantically similar to the question — even if they don't share the exact same words.
 
-**Code:** `Embedder.aembed_query()` in [`providers/base.py`](../graphrag_sdk/src/graphrag_sdk/core/providers/base.py)
+**Code:** `Embedder.aembed_query()` in [`providers/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/providers/base.py)
 
 ---
 
@@ -89,7 +89,7 @@ Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
 
 **Important:** Facts are **scored** by their vector similarity to the question. Low-scoring facts are filtered out (see Step 8b) to reduce noise.
 
-**Code:** `search_relates_edges()` in [`entity_discovery.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py)
+**Code:** `search_relates_edges()` in [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py)
 
 ---
 
@@ -110,7 +110,7 @@ Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
 
 **Runs in parallel** with step 3a to avoid adding latency. If it fails, the other paths still produce results.
 
-**Code:** `execute_cypher_retrieval()` in [`cypher_generation.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py)
+**Code:** `execute_cypher_retrieval()` in [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py)
 
 ---
 
@@ -124,7 +124,7 @@ Alice —[WORKS_AT]→ Acme Corp: Alice is a senior engineer at Acme Corp
 
 Entities found in steps 3a and 3b are also merged in here.
 
-**Code:** `discover_entities()` in [`entity_discovery.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py)
+**Code:** `discover_entities()` in [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py)
 
 ---
 
@@ -142,7 +142,7 @@ Alice —[WORKS_AT]→ Acme Corp: Alice joined Acme as a senior engineer in 2019
 Acme Corp —[LOCATED_IN]→ New York: Acme Corp headquarters is in Manhattan
 ```
 
-**Code:** `expand_relationships()` in [`relationship_expansion.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py)
+**Code:** `expand_relationships()` in [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py)
 
 ---
 
@@ -161,7 +161,7 @@ Acme Corp —[LOCATED_IN]→ New York: Acme Corp headquarters is in Manhattan
 
 All four paths contribute to a single pool of candidate chunks.
 
-**Code:** `retrieve_chunks()` in [`chunk_retrieval.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)
+**Code:** `retrieve_chunks()` in [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)
 
 ---
 
@@ -169,7 +169,7 @@ All four paths contribute to a single pool of candidate chunks.
 
 **What it does:** Looks up which source document each chunk came from, so the final answer can reference the source.
 
-**Code:** `fetch_chunk_documents()` in [`chunk_retrieval.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)
+**Code:** `fetch_chunk_documents()` in [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)
 
 ---
 
@@ -183,7 +183,7 @@ Facts and passages are ranked by **different criteria** because they have differ
 
 **How:** Each chunk already has an embedding vector stored in the graph from ingestion. Instead of re-computing embeddings (which would require an expensive API call), we fetch the stored vectors and compute cosine similarity locally. This makes reranking **instant** instead of taking 2-3 seconds.
 
-**Code:** `rerank_chunks()` in [`result_assembly.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
+**Code:** `rerank_chunks()` in [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
 
 #### 8b — Fact Filtering (Score Threshold)
 
@@ -191,7 +191,7 @@ Facts and passages are ranked by **different criteria** because they have differ
 
 **Why separate?** Facts are short structured strings ("Alice —[WORKS_AT]→ Acme") while passages are long prose paragraphs. Short text has higher cosine similarity variance — a threshold that works for passages would let too many irrelevant facts through. Facts use a higher threshold (0.25) and always keep at least 3 top facts.
 
-**Code:** `filter_facts_by_relevance()` in [`result_assembly.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
+**Code:** `filter_facts_by_relevance()` in [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
 
 ---
 
@@ -209,7 +209,7 @@ Facts and passages are ranked by **different criteria** because they have differ
 
 The final LLM receives this structured context and generates a natural language answer.
 
-**Code:** `assemble_raw_result()` in [`result_assembly.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
+**Code:** `assemble_raw_result()` in [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)
 
 ---
 
@@ -318,13 +318,13 @@ result = await rag.completion("Your question", reranker=reranker)
 
 | File | What it contains |
 |------|-----------------|
-| [`multi_path.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py) | Main orchestrator — coordinates all 9 steps |
-| [`entity_discovery.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py) | RELATES vector search + 2-path entity discovery |
-| [`chunk_retrieval.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py) | 4-path chunk retrieval + document mapping |
-| [`relationship_expansion.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py) | 1-hop and 2-hop relationship traversal |
-| [`result_assembly.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py) | Reranking, fact filtering, question hints, context assembly |
-| [`cypher_generation.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py) | Text-to-Cypher: schema prompt, generation, validation, execution |
-| [`base.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/base.py) | RetrievalStrategy abstract base class |
-| [`local.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/strategies/local.py) | Simple vector + 1-hop retrieval (alternative strategy) |
-| [`cosine.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/reranking_strategies/cosine.py) | External cosine reranker |
-| [`router.py`](../graphrag_sdk/src/graphrag_sdk/retrieval/router.py) | Semantic router for conditional strategy selection |
+| [`multi_path.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py) | Main orchestrator — coordinates all 9 steps |
+| [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py) | RELATES vector search + 2-path entity discovery |
+| [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py) | 4-path chunk retrieval + document mapping |
+| [`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py) | 1-hop and 2-hop relationship traversal |
+| [`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py) | Reranking, fact filtering, question hints, context assembly |
+| [`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py) | Text-to-Cypher: schema prompt, generation, validation, execution |
+| [`base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/base.py) | RetrievalStrategy abstract base class |
+| [`local.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/local.py) | Simple vector + 1-hop retrieval (alternative strategy) |
+| [`cosine.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/reranking_strategies/cosine.py) | External cosine reranker |
+| [`router.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/router.py) | Semantic router for conditional strategy selection |
