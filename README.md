@@ -19,7 +19,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 ## Benchmarks
 | Rank | System | Fact retrieval | Complex | Contextual | Creative | Overall |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **1** | **`FalkorDB GraphRAG SDK ◄`** | **`71.47`** | **`83.61`** | **`85.08`** | **`83.58`** | **`78.01`** |
+| **1** | **`FalkorDB GraphRAG SDK ◄`** | **`65.22`** | **`58.63`** | **`69.54`** | **`57.08`** | **`63.73`** |
 | 2 | AutoPrunedRetriever | 45.99 | 62.80 | 83.10 | 62.97 | 63.72 |
 | 3 | G-Reasoner | 60.07 | 53.92 | 71.28 | 50.48 | 58.94 |
 | 4 | HippoRAG2 | 60.14 | 53.38 | 64.10 | 48.28 | 56.48 |
