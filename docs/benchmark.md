@@ -406,16 +406,15 @@ Source: [graphrag-bench.github.io](https://graphrag-bench.github.io) — Novel l
 |-------|--------:|
 | Avg. query latency | 3.6 s |
 
-### LLM-as-judge scores (supplementary)
+### Evaluation methodology
 
-Independently scored by GPT-4o on a 100-question sample:
+Scores use the official [GraphRAG-Bench](https://graphrag-bench.github.io) evaluation suite,
+ported from `github.com/GraphRAG-Bench/GraphRAG-Benchmark/Evaluation`:
 
-| Question Type | Avg. Score |
-|---------------|----------:|
-| Fact Retrieval | 8.40 / 10 |
-| Complex Reasoning | 8.11 / 10 |
-| Contextual Summarize | 7.78 / 10 |
-| Creative Generation | 7.00 / 10 |
-| **Overall** | **8.14 / 10** |
+| Component | How it works | Judge LLM |
+|-----------|-------------|-----------|
+| **answer_correctness** | 0.75 × Factuality F1 + 0.25 × Semantic Similarity. The LLM decomposes both the answer and reference into atomic statements, classifies TP / FP / FN, and computes F1. Semantic similarity is cosine similarity of answer vs reference embeddings. | gpt-4o-mini |
+| **rouge_score** | ROUGE-L F1 (used for Fact Retrieval & Complex Reasoning) | — (algorithmic) |
+| **coverage_score** | The LLM extracts facts from the reference and checks which are covered in the answer (used for Contextual Summarize & Creative Generation) | gpt-4o-mini |
 
-Only 4 out of 100 sampled questions scored below 5.0.
+**ACC** reported on the leaderboard = `answer_correctness × 100`, averaged per question type.
