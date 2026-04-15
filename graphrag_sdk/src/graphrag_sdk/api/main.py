@@ -433,9 +433,7 @@ class GraphRAG:
         an empty or suspicious result. Never raises to the caller.
         """
         history_lines = [
-            f"{m.role}: {m.content}"
-            for m in history
-            if m.role in ("user", "assistant")
+            f"{m.role}: {m.content}" for m in history if m.role in ("user", "assistant")
         ]
         prompt = _QUESTION_REWRITE_PROMPT.format(
             history="\n".join(history_lines),
@@ -506,7 +504,9 @@ class GraphRAG:
         retrieval_query = question
         if validated_history and rewrite_question_with_history:
             retrieval_query = await self._rewrite_question_with_history(
-                question, validated_history, ctx=ctx,
+                question,
+                validated_history,
+                ctx=ctx,
             )
             if retrieval_query != question:
                 ctx.log(f"Rewrote for retrieval: {retrieval_query[:80]}")
@@ -839,8 +839,12 @@ class GraphRAG:
         for row in rows:
             rid, a_name, a_type, b_name, b_type, rel_type, chunk_ids = row
             edge = {
-                "rid": rid, "source": a_name, "source_type": a_type,
-                "target": b_name, "target_type": b_type, "type": rel_type,
+                "rid": rid,
+                "source": a_name,
+                "source_type": a_type,
+                "target": b_name,
+                "target_type": b_type,
+                "type": rel_type,
                 "chunk_ids": list(chunk_ids or []),
             }
             for cid in edge["chunk_ids"]:
@@ -852,9 +856,7 @@ class GraphRAG:
             "UNWIND $ids AS cid MATCH (c:Chunk {id: cid}) RETURN c.id, c.text",
             {"ids": list(all_chunk_ids)},
         )
-        chunk_texts: dict[str, str] = {
-            row[0]: row[1] for row in (chunk_fetch.result_set or [])
-        }
+        chunk_texts: dict[str, str] = {row[0]: row[1] for row in (chunk_fetch.result_set or [])}
 
         # 4. For each chunk, build VERIFY_EXTRACT_RELS_PROMPT with the entities
         # referenced by the edges in that chunk, then run Step 2 in batch.
@@ -877,14 +879,20 @@ class GraphRAG:
                     if key in seen:
                         continue
                     seen.add(key)
-                    entities_list.append({
-                        "name": name, "type": etype or "", "description": "",
-                    })
-            prompts.append(VERIFY_EXTRACT_RELS_PROMPT.format(
-                entity_types=entity_types_block,
-                entities_json=json.dumps(entities_list),
-                text=text,
-            ))
+                    entities_list.append(
+                        {
+                            "name": name,
+                            "type": etype or "",
+                            "description": "",
+                        }
+                    )
+            prompts.append(
+                VERIFY_EXTRACT_RELS_PROMPT.format(
+                    entity_types=entity_types_block,
+                    entities_json=json.dumps(entities_list),
+                    text=text,
+                )
+            )
             prompt_chunk_ids.append(cid)
 
         if not prompts:
@@ -899,7 +907,9 @@ class GraphRAG:
                 continue
             cid = prompt_chunk_ids[item.index]
             _, rels = GraphExtraction._parse_step2_response(
-                item.response.content, entity_types, cid,
+                item.response.content,
+                entity_types,
+                cid,
             )
             for rel in rels:
                 key = (
