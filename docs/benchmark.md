@@ -58,7 +58,7 @@ Configure your LLM and embedding provider. Example for Azure OpenAI:
 ```bash
 export AZURE_OPENAI_API_KEY="your-key"
 export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
-export AZURE_API_VERSION="2024-12-01-preview"
+export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
 export AZURE_OPENAI_DEPLOYMENT="gpt-4o-mini"
 export AZURE_OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small"
 ```
@@ -193,6 +193,8 @@ extractor = GraphExtraction(
 Multiple resolution strategies run in sequence — each stage feeds its output into the next. Create a simple chained resolver:
 
 ```python
+from graphrag_sdk.core.models import GraphData, ResolutionResult
+
 class ChainedResolution(ResolutionStrategy):
     """Run multiple resolution strategies in sequence."""
     def __init__(self, *stages):
@@ -200,8 +202,16 @@ class ChainedResolution(ResolutionStrategy):
 
     async def resolve(self, graph_data, ctx):
         for stage in self._stages:
-            graph_data = await stage.resolve(graph_data, ctx)
-        return graph_data
+            result = await stage.resolve(graph_data, ctx)
+            # Convert ResolutionResult back to GraphData for the next stage
+            graph_data = GraphData(
+                nodes=result.nodes,
+                relationships=result.relationships,
+            )
+        return ResolutionResult(
+            nodes=graph_data.nodes,
+            relationships=graph_data.relationships,
+        )
 
 resolver = ChainedResolution(
     ExactMatchResolution(resolve_property="name"),
@@ -375,6 +385,8 @@ The following results were produced by running the pipeline described above on t
 | **Overall** | **63.73** | — | — |
 
 ### Leaderboard comparison
+
+> **Note:** Only the FalkorDB GraphRAG-SDK row was produced by us using the pipeline described above. All other system scores are taken from the [GraphRAG-Bench published leaderboard](https://graphrag-bench.github.io) as of April 2025. Leaderboard rankings may change as systems are updated and re-evaluated.
 
 | System | Fact Retrieval | Complex Reasoning | Contextual Summarize | Creative Generation | Overall |
 |--------|------:|------:|------:|------:|------:|
