@@ -80,7 +80,7 @@ async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
         llm=LiteLLM(model="openai/gpt-5.4"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large"),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     ) as rag:
         # Ingest raw text (pass a file path with the `pdf` extra installed for PDFs)
         result = await rag.ingest(
@@ -123,7 +123,7 @@ schema = GraphSchema(
 async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="openai/gpt-5.4"),
-    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large"),
+    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     schema=schema,
 ) as rag:
     ...  # ingest / completion as above
