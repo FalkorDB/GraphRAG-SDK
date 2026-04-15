@@ -29,7 +29,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | 8 | LightRAG | 58.62 | 49.07 | 48.85 | 23.80 | 45.09 |
 | 9 | HippoRAG | 52.93 | 38.52 | 48.70 | 38.85 | 44.75 |
 
-> See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
+> FalkorDB scored with GPT-4.1 (Azure OpenAI, `temperature=0`) on 20 Project Gutenberg novels, 100 questions, LLM-as-Judge (GPT-4.1). Competitor numbers are sourced from their published benchmarks. See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
 
 ---
 
@@ -44,8 +44,8 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | Ingestion | 2. Chunk | Sequential | Split content into overlapping text chunks. |
 | Ingestion | 3. Lexical Graph | Sequential | Create `Document` and `Chunk` nodes with provenance edges. |
 | Ingestion | 4. Extract | Sequential | Run GLiNER2 local NER and LLM-based relationship extraction. |
-| Ingestion | 5. Quality Filter | Sequential | Validate extracted data against schema constraints. |
-| Ingestion | 6. Prune | Sequential | Remove low-quality extractions. |
+| Ingestion | 5. Quality Filter | Sequential | Remove invalid extracted nodes (empty IDs, malformed shape). |
+| Ingestion | 6. Prune | Sequential | Filter nodes/relations against the schema; drop orphan relations. |
 | Ingestion | 7. Resolve | Sequential | Deduplicate entities (exact match, semantic, LLM-verified). |
 | Ingestion | 8. Write | Sequential | Persist graph updates with batched `MERGE` operations in FalkorDB. |
 | Ingestion | 9a. Mentions | Parallel | Link entities back to source chunks. |
@@ -56,7 +56,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | Retrieval | Relationship expansion | Runtime | Traverses connected entities and context. |
 | Retrieval | Cosine reranking | Runtime | Reorders candidates by relevance. |
 
-> 💡 Every answer includes provenance tracing back to its source sentence.
+> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
 
 ## Quick Start
 
@@ -65,7 +65,10 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 ```bash
 pip install graphrag-sdk[litellm]
 docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:latest
+export OPENAI_API_KEY="sk-..."
 ```
+
+> For PDF ingestion, install the `pdf` extra instead: `pip install graphrag-sdk[litellm,pdf]`.
 
 ### 2. Ingest a document
 
@@ -79,15 +82,18 @@ async def main():
         llm=LiteLLM(model="openai/gpt-4o"),
         embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
     ) as rag:
-        # Ingest from file (auto-detects PDF vs text)
-        result = await rag.ingest("my_document.pdf")
+        # Ingest raw text (pass a file path with the `pdf` extra installed for PDFs)
+        result = await rag.ingest(
+            "my_doc",
+            text="Alice Johnson is a software engineer at Acme Corp in London.",
+        )
         print(f"Nodes: {result.nodes_created}, Edges: {result.relationships_created}")
 
         # Finalize: deduplicate entities, backfill embeddings, create indexes
         await rag.finalize()
 
-        # Query with full provenance
-        answer = await rag.query("Who are the main characters?")
+        # Full RAG: retrieve + generate
+        answer = await rag.completion("Where does Alice work?")
         print(answer.answer)
 
 asyncio.run(main())
@@ -114,7 +120,13 @@ schema = GraphSchema(
     ],
 )
 
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+async with GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=LiteLLM(model="openai/gpt-4o"),
+    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
+    schema=schema,
+) as rag:
+    ...  # ingest / completion as above
 ```
 ---
 
@@ -144,26 +156,17 @@ rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
 
 ---
 
-## Development Milestones
-- 2024-MM: Milestone
-- 2024-MM: Milestone
-- 2025-MM: Milestone
-- 2025-MM: Milestone
-- 🎉 2026-04: Version 1.0 is released
-
----
 ## Contributing
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and code style guidelines.
 
 Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
-<!-- ### Community
+### Community
 
 - [Discord](https://discord.gg/6M4QwDXn2w) -- Ask questions, share what you build
 - [GitHub Discussions](https://github.com/FalkorDB/GraphRAG-SDK/discussions) -- Feature ideas, Q&A
 - [Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues) -- Bug reports and feature requests
--->
 
 ---
 
