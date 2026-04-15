@@ -1,174 +1,62 @@
-<!-- Replace with assets/logo.png when available:
-<p align="center">
-  <img src="assets/logo.png" width="140" alt="GraphRAG SDK">
-</p>
--->
-
-<h1 align="center">GraphRAG SDK</h1>
-
-<p align="center">
-  <strong>The most accurate Graph RAG framework. Built on <a href="https://www.falkordb.com/">FalkorDB</a>.</strong>
-</p>
+<h1 align="center">GraphRAG-SDK</h1>
+<h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
 
 <p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
-  <!-- <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg" alt="PyPI version"></a> -->
-  <a href="graphrag_sdk/tests/"><img src="https://img.shields.io/badge/tests-576%20passing-brightgreen.svg" alt="Tests: 576 passing"></a>
   <a href="https://github.com/FalkorDB/GraphRAG-SDK/actions"><img src="https://img.shields.io/github/actions/workflow/status/FalkorDB/GraphRAG-SDK/ci.yml?label=CI" alt="CI"></a>
-  <!-- <a href="https://discord.gg/INVITE_CODE"><img src="https://img.shields.io/discord/SERVER_ID?label=Discord&logo=discord" alt="Discord"></a> -->
+  <a href="https://discord.gg/6M4QwDXn2w"><img src="https://img.shields.io/discord/1146782921294884966?label=Discord&logo=discord" alt="Discord"></a>
   <a href="https://github.com/FalkorDB/GraphRAG-SDK"><img src="https://img.shields.io/github/stars/FalkorDB/GraphRAG-SDK?style=social" alt="GitHub Stars"></a>
 </p>
 
-<p align="center">
-  If GraphRAG SDK is useful to you, consider giving it a star to help others discover the project.
-</p>
+![knowledge-graph-construction-b](https://github.com/user-attachments/assets/69066899-0168-4e14-b359-f68c5b6c1e75)
+
+
+Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers quickly.
 
 ---
 
-## Get Started in 30 Seconds
+## Benchmarks
+| Rank | System | Fact retrieval | Complex | Contextual | Creative | Overall |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **1** | **`FalkorDB GraphRAG SDK ◄`** | **`65.22`** | **`58.63`** | **`69.54`** | **`57.08`** | **`63.73`** |
+| 2 | AutoPrunedRetriever | 45.99 | 62.80 | 83.10 | 62.97 | 63.72 |
+| 3 | G-Reasoner | 60.07 | 53.92 | 71.28 | 50.48 | 58.94 |
+| 4 | HippoRAG2 | 60.14 | 53.38 | 64.10 | 48.28 | 56.48 |
+| 5 | Fast-GraphRAG | 56.95 | 48.55 | 56.41 | 46.18 | 52.02 |
+| 6 | MS-GraphRAG (local) | 49.29 | 50.93 | 64.40 | 39.10 | 50.93 |
+| 7 | RAG (w rerank) | 60.92 | 42.93 | 51.30 | 38.26 | 48.35 |
+| 8 | LightRAG | 58.62 | 49.07 | 48.85 | 23.80 | 45.09 |
+| 9 | HippoRAG | 52.93 | 38.52 | 48.70 | 38.85 | 44.75 |
 
-<details open>
-<summary><strong>Using OpenAI</strong></summary>
-
-```python
-import asyncio
-from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
-
-async def main():
-    async with GraphRAG(
-        connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-        llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
-    ) as rag:
-        await rag.ingest("my_document.pdf")
-        await rag.finalize()
-        answer = await rag.completion("What is the main topic?")
-        print(answer.answer)
-
-asyncio.run(main())
-```
-
-</details>
-
-<details>
-<summary><strong>Using Azure OpenAI</strong></summary>
-
-```python
-import asyncio
-from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
-
-async def main():
-    async with GraphRAG(
-        connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-        llm=LiteLLM(model="azure/gpt-4.1"),
-        embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002"),
-    ) as rag:
-        await rag.ingest("my_document.pdf")
-        await rag.finalize()
-        answer = await rag.completion("What is the main topic?")
-        print(answer.answer)
-
-asyncio.run(main())
-```
-
-Set these environment variables for Azure:
-
-```bash
-export AZURE_OPENAI_API_KEY="your-key"
-export AZURE_OPENAI_ENDPOINT="https://your-endpoint.openai.azure.com/"
-export AZURE_OPENAI_API_VERSION="2024-12-01-preview"
-```
-
-</details>
+> FalkorDB scored with GPT-4.1 (Azure OpenAI, `temperature=0`) on 20 Project Gutenberg novels, 100 questions, LLM-as-Judge (GPT-4.1). Competitor numbers are sourced from their published benchmarks. See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
 
 ---
 
-## Benchmark Results
+![document-to-provenance-answer-flow-v1](https://github.com/user-attachments/assets/afd1607e-20e1-4954-95f2-274701f5d61d)
 
-**~85% accuracy** on a 100-question literary benchmark across 20 Project Gutenberg novels, evaluated with LLM-as-Judge scoring (GPT-4.1).
 
-| Question Type | Score | Questions |
-|---------------|-------|-----------|
-| Fact Retrieval | 9.0 / 10 | 42 |
-| Contextual Summarization | 8.9 / 10 | 18 |
-| Complex Reasoning | 8.5 / 10 | 37 |
-| Creative Generation | 8.3 / 10 | 3 |
-| **Overall** | **8.5 / 10** | **100** |
+## Ingestion & Retrieval Pipeline
 
-See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
+| Area | Item | Execution | Description |
+| --- | --- | --- | --- |
+| Ingestion | 1. Load | Sequential | Read raw text from files (PDF, TXT) or strings. |
+| Ingestion | 2. Chunk | Sequential | Split content into overlapping text chunks. |
+| Ingestion | 3. Lexical Graph | Sequential | Create `Document` and `Chunk` nodes with provenance edges. |
+| Ingestion | 4. Extract | Sequential | Run GLiNER2 local NER and LLM-based relationship extraction. |
+| Ingestion | 5. Quality Filter | Sequential | Remove invalid extracted nodes (empty IDs, malformed shape). |
+| Ingestion | 6. Prune | Sequential | Filter nodes/relations against the schema; drop orphan relations. |
+| Ingestion | 7. Resolve | Sequential | Deduplicate entities (exact match, semantic, LLM-verified). |
+| Ingestion | 8. Write | Sequential | Persist graph updates with batched `MERGE` operations in FalkorDB. |
+| Ingestion | 9a. Mentions | Parallel | Link entities back to source chunks. |
+| Ingestion | 9b. Index | Parallel | Embed and index chunks for retrieval. |
+| Retrieval | Vector search | Runtime | Finds semantically similar chunks. |
+| Retrieval | Full-text search | Runtime | Matches exact terms and keywords. |
+| Retrieval | Cypher queries | Runtime | Executes structured graph lookups. |
+| Retrieval | Relationship expansion | Runtime | Traverses connected entities and context. |
+| Retrieval | Cosine reranking | Runtime | Reorders candidates by relevance. |
 
----
-
-## How It Works
-
-```mermaid
-graph LR
-    A["Document"] -->|Load| B["Chunks"]
-    B -->|Extract| C["Entities &<br/>Relationships"]
-    C -->|Resolve| D["Deduplicated<br/>Knowledge Graph"]
-    D -->|Multi-Path<br/>Retrieval| E["Relevant<br/>Context"]
-    E -->|Generate| F["Answer with<br/>Provenance"]
-```
-
-**9-step ingestion pipeline** (7 sequential + 2 parallel):
-
-1. **Load** -- Read raw text from files (PDF, TXT) or strings
-2. **Chunk** -- Split into overlapping text chunks
-3. **Lexical Graph** -- Create Document and Chunk nodes with provenance edges
-4. **Extract** -- GLiNER2 local NER + LLM relationship extraction
-5. **Quality Filter** -- Filter extracted data against schema
-6. **Prune** -- Remove low-quality extractions
-7. **Resolve** -- Deduplicate entities (exact match, semantic, LLM-verified)
-8. **Write** -- Batched MERGE to FalkorDB
-9. **Mentions + Index** -- (parallel) Link entities to source chunks, embed and index chunks
-
-**Multi-path retrieval** combines vector search, fulltext search, Cypher queries, relationship expansion, and cosine reranking -- every answer traces back to its source sentence.
-
----
-
-## Why GraphRAG SDK?
-
-- **Strong accuracy** -- ~85% on our 100-question literary benchmark (see [docs/benchmark.md](docs/benchmark.md) for methodology)
-- **Simple API** -- `ingest()` + `completion()`. Sensible defaults, no pipeline configuration needed
-- **Multi-turn conversations** -- Native chat history support via `ChatMessage` with built-in provider support
-- **100+ LLM providers** -- OpenAI, Azure, Anthropic, Cohere, Ollama, and more via [LiteLLM](https://github.com/BerriAI/litellm)
-- **Fully modular** -- Every pipeline step (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an ABC
-- **Production-ready** -- Async-first, connection pooling, circuit breaker, batched writes, retry logic
-- **Full provenance** -- Every answer traces through entities, relationships, and chunks back to the source document
-- **PDF support** -- Ingest PDF, TXT, or raw strings. Auto-detects file type
-- **Schema-guided extraction** -- Define entity types and relationship patterns to constrain LLM extraction
-
----
-
-## Installation
-
-```bash
-pip install graphrag-sdk[litellm]
-```
-
-| Extra | What it adds |
-|-------|-------------|
-| `graphrag-sdk[litellm]` | OpenAI, Azure, Anthropic, Cohere, 100+ LLM providers |
-| `graphrag-sdk[openrouter]` | OpenRouter models |
-| `graphrag-sdk[pdf]` | PDF ingestion via pypdf |
-| `graphrag-sdk[all]` | Everything above |
-
-### Prerequisites
-
-**FalkorDB** (graph database):
-
-```bash
-# Option A: Docker Compose (recommended)
-docker compose up -d
-
-# Option B: Docker run
-docker run -p 6379:6379 falkordb/falkordb
-```
-
-**LLM API key** -- set `OPENAI_API_KEY` or your provider's key as an environment variable.
-
----
+> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
 
 ## Quick Start
 
@@ -176,8 +64,11 @@ docker run -p 6379:6379 falkordb/falkordb
 
 ```bash
 pip install graphrag-sdk[litellm]
-docker compose up -d
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:latest
+export OPENAI_API_KEY="sk-..."
 ```
+
+> For PDF ingestion, install the `pdf` extra instead: `pip install graphrag-sdk[litellm,pdf]`.
 
 ### 2. Ingest a document
 
@@ -188,41 +79,27 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-        llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
+        llm=LiteLLM(model="openai/gpt-5.4"),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     ) as rag:
-        # Ingest from file (auto-detects PDF vs text)
-        result = await rag.ingest("my_document.pdf")
+        # Ingest raw text (pass a file path with the `pdf` extra installed for PDFs)
+        result = await rag.ingest(
+            "my_doc",
+            text="Alice Johnson is a software engineer at Acme Corp in London.",
+        )
         print(f"Nodes: {result.nodes_created}, Edges: {result.relationships_created}")
 
         # Finalize: deduplicate entities, backfill embeddings, create indexes
         await rag.finalize()
 
-        # Retrieve context only
-        context = await rag.retrieve("Who are the main characters?")
-
-        # Full RAG: retrieve + generate answer
-        answer = await rag.completion("Who are the main characters?")
+        # Full RAG: retrieve + generate
+        answer = await rag.completion("Where does Alice work?")
         print(answer.answer)
 
 asyncio.run(main())
 ```
 
-### 3. Multi-turn conversations
-
-```python
-from graphrag_sdk import ChatMessage
-
-answer = await rag.completion(
-    "What happened to her after that?",
-    history=[
-        ChatMessage(role="user", content="Who is Alice?"),
-        ChatMessage(role="assistant", content="Alice is a software engineer at Acme Corp."),
-    ],
-)
-```
-
-### 4. Define a schema (optional)
+### 3. Define a schema (optional)
 
 ```python
 from graphrag_sdk import GraphSchema, EntityType, RelationType, SchemaPattern
@@ -243,32 +120,14 @@ schema = GraphSchema(
     ],
 )
 
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)  # conn, llm, embedder from above
+async with GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=LiteLLM(model="openai/gpt-5.4"),
+    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
+    schema=schema,
+) as rag:
+    ...  # ingest / completion as above
 ```
-
----
-
-## Strategy Reference
-
-Every algorithmic concern is a swappable strategy behind an abstract base class:
-
-| Concern | ABC | Built-in Options | Default |
-|---------|-----|-----------------|---------|
-| **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by extension |
-| **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` |
-| **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | `GraphExtraction` |
-| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution`, `SemanticResolution`, `LLMVerifiedResolution` | `ExactMatch` |
-| **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | `MultiPath` (5-path) |
-| **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine |
-
-### LLM & Embedding Providers
-
-| Provider | LLM Class | Embedder Class | Models |
-|----------|-----------|---------------|--------|
-| **LiteLLM** | `LiteLLM` | `LiteLLMEmbedder` | OpenAI, Azure, Anthropic, Cohere, 100+ |
-| **OpenRouter** | `OpenRouterLLM` | `OpenRouterEmbedder` | All OpenRouter models |
-| **Custom** | Subclass `LLMInterface` | Subclass `Embedder` | Anything |
-
 ---
 
 ## Examples
@@ -303,12 +162,11 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for development
 
 Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
-<!-- ### Community
+### Community
 
-- [Discord](https://discord.gg/INVITE_CODE) -- Ask questions, share what you build
+- [Discord](https://discord.gg/6M4QwDXn2w) -- Ask questions, share what you build
 - [GitHub Discussions](https://github.com/FalkorDB/GraphRAG-SDK/discussions) -- Feature ideas, Q&A
 - [Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues) -- Bug reports and feature requests
--->
 
 ---
 
