@@ -14,7 +14,7 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
   <!-- <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg" alt="PyPI version"></a> -->
-  <a href="graphrag_sdk/tests/"><img src="https://img.shields.io/badge/tests-558%20passing-brightgreen.svg" alt="Tests: 558 passing"></a>
+  <a href="graphrag_sdk/tests/"><img src="https://img.shields.io/badge/tests-576%20passing-brightgreen.svg" alt="Tests: 576 passing"></a>
   <a href="https://github.com/FalkorDB/GraphRAG-SDK/actions"><img src="https://img.shields.io/github/actions/workflow/status/FalkorDB/GraphRAG-SDK/ci.yml?label=CI" alt="CI"></a>
   <!-- <a href="https://discord.gg/INVITE_CODE"><img src="https://img.shields.io/discord/SERVER_ID?label=Discord&logo=discord" alt="Discord"></a> -->
   <a href="https://github.com/FalkorDB/GraphRAG-SDK"><img src="https://img.shields.io/github/stars/FalkorDB/GraphRAG-SDK?style=social" alt="GitHub Stars"></a>
@@ -129,7 +129,7 @@ graph LR
 
 ## Why GraphRAG SDK?
 
-- **Highest accuracy** -- ~85% on standardized benchmark, outperforming leading GraphRAG frameworks
+- **Strong accuracy** -- ~85% on our 100-question literary benchmark (see [docs/benchmark.md](docs/benchmark.md) for methodology)
 - **Simple API** -- `ingest()` + `completion()`. Sensible defaults, no pipeline configuration needed
 - **Multi-turn conversations** -- Native chat history support via `ChatMessage` with built-in provider support
 - **100+ LLM providers** -- OpenAI, Azure, Anthropic, Cohere, Ollama, and more via [LiteLLM](https://github.com/BerriAI/litellm)

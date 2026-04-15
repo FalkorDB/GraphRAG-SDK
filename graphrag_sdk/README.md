@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/LICENSE)
 [![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-orange.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/pyproject.toml)
-[![Tests: 558 passing](https://img.shields.io/badge/tests-558%20passing-brightgreen.svg)](https://github.com/FalkorDB/GraphRAG-SDK/tree/main/graphrag_sdk/tests/)
+[![Tests: 576 passing](https://img.shields.io/badge/tests-576%20passing-brightgreen.svg)](https://github.com/FalkorDB/GraphRAG-SDK/tree/main/graphrag_sdk/tests/)
 
 GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **~85% accuracy** on a 100-question benchmark using GPT-4.1.
 
@@ -160,7 +160,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Documents** | 20 novels (Project Gutenberg) |
 | **Query P50** | 5.4s |
 
-See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/benchmark.md) for full methodology and reproduction instructions.
+See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for full methodology and reproduction instructions.
 
 ## Examples
 
@@ -174,13 +174,13 @@ See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graph
 
 ## Documentation
 
-- [Getting Started](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/getting-started.md) -- Install to first query
-- [Architecture](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/architecture.md) -- Pipeline design and graph schema
-- [Configuration](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/configuration.md) -- Connection and provider reference
-- [Strategies](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/strategies.md) -- All ABCs and built-in implementations
-- [Providers](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/providers.md) -- LLM & embedder configuration
-- [Benchmark](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/benchmark.md) -- Methodology and reproduction
-- [API Reference](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/docs/api-reference.md) -- Full API documentation
+- [Getting Started](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/getting-started.md) -- Install to first query
+- [Architecture](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/architecture.md) -- Pipeline design and graph schema
+- [Configuration](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/configuration.md) -- Connection and provider reference
+- [Strategies](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/strategies.md) -- All ABCs and built-in implementations
+- [Providers](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/providers.md) -- LLM & embedder configuration
+- [Benchmark](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) -- Methodology and reproduction
+- [API Reference](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/api-reference.md) -- Full API documentation
 
 ## License
 

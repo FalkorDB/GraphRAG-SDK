@@ -46,6 +46,7 @@ nav:
   - Configuration: configuration.md
   - Strategies: strategies.md
   - Providers: providers.md
+  - Ingestion: ingestion.md
   - Extraction: extraction.md
   - Retrieval: retrieval.md
   - Storage: storage.md
