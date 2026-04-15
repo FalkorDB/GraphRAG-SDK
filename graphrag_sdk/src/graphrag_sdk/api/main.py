@@ -25,13 +25,13 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    DEFAULT_ENTITY_TYPES,
+)
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     VERIFY_EXTRACT_RELS_PROMPT,
     GraphExtraction,
     _format_entity_types,
-)
-from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
-    DEFAULT_ENTITY_TYPES,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
