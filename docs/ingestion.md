@@ -60,7 +60,7 @@ Steps 1-7 run **sequentially** (each depends on the previous). Steps 8-9 run **i
 
 **Output:** `DocumentOutput` containing the raw text and a `DocumentInfo` with a unique ID and file path.
 
-**Code:** `LoaderStrategy.load()` in [`ingestion/loaders/base.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/loaders/base.py)
+**Code:** `LoaderStrategy.load()` in [`ingestion/loaders/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/base.py)
 
 ---
 
@@ -77,7 +77,7 @@ Steps 1-7 run **sequentially** (each depends on the previous). Steps 8-9 run **i
 
 **Output:** `TextChunks` — a list of `TextChunk` objects, each with a unique ID (`uid`), the text content, and an index number.
 
-**Code:** `ChunkingStrategy.chunk()` in [`ingestion/chunking_strategies/base.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/base.py)
+**Code:** `ChunkingStrategy.chunk()` in [`ingestion/chunking_strategies/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/base.py)
 
 ---
 
@@ -103,7 +103,7 @@ Chunk 0 ──NEXT_CHUNK──> Chunk 1 ──NEXT_CHUNK──> Chunk 2
 
 **Why mandatory?** This is the Zero-Loss Data principle — every piece of source material is traceable in the graph. When the retrieval system finds a chunk, it can always trace back to the source document.
 
-**Code:** `IngestionPipeline._build_lexical_graph()` in [`ingestion/pipeline.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
+**Code:** `IngestionPipeline._build_lexical_graph()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
 
 ---
 
@@ -121,7 +121,7 @@ For a detailed explanation of the extraction process, see [extraction.md](extrac
 
 **Output:** `GraphData` containing nodes (entities), relationships, and mention records.
 
-**Code:** `ExtractionStrategy.extract()` in [`ingestion/extraction_strategies/base.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/base.py)
+**Code:** `ExtractionStrategy.extract()` in [`ingestion/extraction_strategies/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/base.py)
 
 ---
 
@@ -131,7 +131,7 @@ For a detailed explanation of the extraction process, see [extraction.md](extrac
 
 **Why:** LLMs sometimes produce malformed output (empty entity names, references to entities that weren't extracted). This step catches those before they reach the graph.
 
-**Code:** `IngestionPipeline._filter_quality()` in [`ingestion/pipeline.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
+**Code:** `IngestionPipeline._filter_quality()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
 
 ---
 
@@ -147,7 +147,7 @@ For a detailed explanation of the extraction process, see [extraction.md](extrac
 
 **Open schema mode:** If you define no entity or relationship types (empty `GraphSchema()`), this step is skipped entirely — everything passes through.
 
-**Code:** `IngestionPipeline._prune()` in [`ingestion/pipeline.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
+**Code:** `IngestionPipeline._prune()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
 
 ---
 
@@ -169,7 +169,7 @@ For a detailed explanation of the extraction process, see [extraction.md](extrac
 
 For details on resolution strategies, see [strategies.md](strategies.md).
 
-**Code:** `ResolutionStrategy.resolve()` in [`ingestion/resolution_strategies/base.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/base.py)
+**Code:** `ResolutionStrategy.resolve()` in [`ingestion/resolution_strategies/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/base.py)
 
 ---
 
@@ -185,7 +185,7 @@ For details on resolution strategies, see [strategies.md](strategies.md).
 
 For details on the storage layer, see [storage.md](storage.md).
 
-**Code:** `GraphStore.upsert_nodes()` and `GraphStore.upsert_relationships()` in [`storage/graph_store.py`](../graphrag_sdk/src/graphrag_sdk/storage/graph_store.py)
+**Code:** `GraphStore.upsert_nodes()` and `GraphStore.upsert_relationships()` in [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py)
 
 ---
 
@@ -209,8 +209,8 @@ These two steps run simultaneously since they're independent:
 3. Falls back to sequential embedding if the batch call fails
 
 **Code:**
-- Mentions: `IngestionPipeline._write_mentions()` in [`ingestion/pipeline.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
-- Chunk indexing: `VectorStore.index_chunks()` in [`storage/vector_store.py`](../graphrag_sdk/src/graphrag_sdk/storage/vector_store.py)
+- Mentions: `IngestionPipeline._write_mentions()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
+- Chunk indexing: `VectorStore.index_chunks()` in [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py)
 
 ---
 
@@ -284,13 +284,13 @@ stats = await rag.finalize()
 
 | File | What it contains |
 |------|-----------------|
-| [`pipeline.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | The 9-step pipeline orchestrator |
-| [`api/main.py`](../graphrag_sdk/src/graphrag_sdk/api/main.py) | `GraphRAG.ingest()` and `finalize()` — user-facing API |
-| [`loaders/text_loader.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/loaders/text_loader.py) | TextLoader implementation |
-| [`loaders/pdf_loader.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/loaders/pdf_loader.py) | PdfLoader implementation |
-| [`chunking_strategies/fixed_size.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
-| [`extraction_strategies/graph_extraction.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
-| [`resolution_strategies/exact_match.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |
-| [`resolution_strategies/description_merge.py`](../graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/description_merge.py) | DescriptionMergeResolution |
-| [`storage/graph_store.py`](../graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Batched node/relationship writes |
-| [`storage/vector_store.py`](../graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Chunk embedding + indexing |
+| [`pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | The 9-step pipeline orchestrator |
+| [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py) | `GraphRAG.ingest()` and `finalize()` — user-facing API |
+| [`loaders/text_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/text_loader.py) | TextLoader implementation |
+| [`loaders/pdf_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/pdf_loader.py) | PdfLoader implementation |
+| [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
+| [`extraction_strategies/graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
+| [`resolution_strategies/exact_match.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |
+| [`resolution_strategies/description_merge.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/description_merge.py) | DescriptionMergeResolution |
+| [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Batched node/relationship writes |
+| [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Chunk embedding + indexing |
