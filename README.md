@@ -1,3 +1,5 @@
+> 🧪 **v1.0.0rc1 is available as a pre-release.** Install with `pip install graphrag-sdk --pre` or pin `==1.0.0rc1`. This is a **breaking** rewrite from v0.x. Stable users: `pip install graphrag-sdk` still gives you v0.8.2 by default.
+
 <h1 align="center">GraphRAG-SDK</h1>
 <h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
 
