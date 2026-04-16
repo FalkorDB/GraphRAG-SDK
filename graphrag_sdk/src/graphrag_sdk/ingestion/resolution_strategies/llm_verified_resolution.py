@@ -152,6 +152,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
             self.llm,
             force_summary_threshold=self.force_summary_threshold,
             max_summary_tokens=self.max_summary_tokens,
+            cross_label_merge=True,
         )
         ctx.log(
             f"Phase 1 (exact-match): {merged_count} merged, {len(deduplicated_nodes)} surviving"
