@@ -38,7 +38,7 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "pytest>=8.2.1,<9.0.0",
-    "deepeval>=2.2.6,<3.0.0",
+    "deepeval>=2.2.6,<4.0.0",
 ]
 dev = [
     "sphinx>=7.3.7,<8.0.0",
