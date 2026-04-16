@@ -1,9 +1,7 @@
 """Tests for api/main.py — the GraphRAG Facade."""
 from __future__ import annotations
 
-import json
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -13,9 +11,7 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import ConfigError
 from graphrag_sdk.core.models import (
     ChatMessage,
-    GraphSchema,
     IngestionResult,
-    LLMResponse,
     RagResult,
     RawSearchResult,
     RetrieverResult,
@@ -23,8 +19,7 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
-from .conftest import MockEmbedder, MockLLM
-
+from .conftest import MockLLM
 
 # ── Fixtures ────────────────────────────────────────────────────
 
@@ -117,7 +112,6 @@ class TestGraphRAGIngest:
         """Verifies PDF extension triggers PdfLoader selection."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
         # We won't actually load a PDF, just verify the loader type
-        from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
         # The loader selection happens inside ingest() — test path detection
         # by checking that source ending in .pdf doesn't use TextLoader
         with pytest.raises(Exception):
@@ -291,109 +285,6 @@ class TestGraphRAGDefaultExtractor:
         assert isinstance(extractor, GraphExtraction)
         assert "Person" in extractor.entity_types
         assert "Company" in extractor.entity_types
-
-
-class TestGraphRAGBackfill:
-    async def test_backfill_type_from_label(self, mock_conn, embedder, llm):
-        """Default backfill populates entity.type from the primary graph label."""
-        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
-        type_result = MagicMock()
-        type_result.result_set = [[7]]  # 7 entities updated
-        g.graph_store.query_raw = AsyncMock(return_value=type_result)
-
-        counters = await g.backfill_graph_properties()
-
-        assert counters["type_updated"] == 7
-        assert counters["description_updated"] == 0
-        assert counters["relations_reembedded"] == 0
-        # Only the type query was issued
-        assert g.graph_store.query_raw.await_count == 1
-        query_text = g.graph_store.query_raw.await_args.args[0]
-        assert "e.type = primary_label" in query_text
-
-    async def test_backfill_skips_when_no_nulls(self, mock_conn, embedder, llm):
-        """Type backfill returns 0 when no entities have NULL type."""
-        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
-        empty = MagicMock()
-        empty.result_set = [[0]]
-        g.graph_store.query_raw = AsyncMock(return_value=empty)
-
-        counters = await g.backfill_graph_properties()
-        assert counters["type_updated"] == 0
-
-    async def test_backfill_description_requires_opt_in(self, mock_conn, embedder, llm):
-        """Default (no properties kwarg) does not touch descriptions or call LLM."""
-        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
-        type_result = MagicMock()
-        type_result.result_set = [[3]]
-        g.graph_store.query_raw = AsyncMock(return_value=type_result)
-        # If LLM is called for rewriting, this would raise (no responses left)
-        g.vector_store.embed_relationships = AsyncMock(return_value=0)
-
-        counters = await g.backfill_graph_properties()
-        g.vector_store.embed_relationships.assert_not_awaited()
-        assert counters["description_updated"] == 0
-
-    async def test_backfill_description_reruns_extraction(self, mock_conn, embedder):
-        """With description opt-in, re-runs Step 2 on relevant chunks and updates edges."""
-        import json as _json
-
-        step2_json = _json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": ""},
-                {"name": "Acme", "type": "Organization", "description": ""},
-            ],
-            "relationships": [
-                {
-                    "source": "Alice",
-                    "target": "Acme",
-                    "type": "WORKS_AT",
-                    "description": "Alice works at Acme as an engineer.",
-                }
-            ],
-        })
-        llm = MockLLM(responses=[step2_json])
-
-        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder)
-
-        # Mock the multi-query sequence used by _backfill_relationship_descriptions:
-        # 1. find edges with NULL description
-        edges_result = MagicMock()
-        edges_result.result_set = [
-            [42, "Alice", "Person", "Acme", "Organization", "WORKS_AT", ["chunk1"]],
-        ]
-        # 2. fetch chunk texts
-        chunks_result = MagicMock()
-        chunks_result.result_set = [
-            ["chunk1", "Alice is an engineer at Acme Corp in London."],
-        ]
-        # 3. the update UNWIND write
-        write_result = MagicMock()
-        write_result.result_set = []
-
-        g.graph_store.query_raw = AsyncMock(
-            side_effect=[edges_result, chunks_result, write_result]
-        )
-        g.vector_store.embed_relationships = AsyncMock(return_value=1)
-
-        counters = await g.backfill_graph_properties(properties=["description"])
-
-        assert counters["description_updated"] == 1
-        assert counters["relations_reembedded"] == 1
-
-        # Confirm the update query was issued with the right payload
-        write_call = g.graph_store.query_raw.await_args_list[2]
-        write_cypher = write_call.args[0]
-        assert "SET r.description" in write_cypher
-        assert "r.embedding = NULL" in write_cypher
-        batch = write_call.args[1]["batch"]
-        assert len(batch) == 1
-        assert batch[0]["rid"] == 42
-        assert batch[0]["description"] == "Alice works at Acme as an engineer."
-        assert batch[0]["fact"] == "(Alice, WORKS_AT, Acme): Alice works at Acme as an engineer."
-
-        # And embed_relationships was called to regenerate embeddings
-        g.vector_store.embed_relationships.assert_awaited_once()
 
 
 class TestGraphRAGSyncWrappers:

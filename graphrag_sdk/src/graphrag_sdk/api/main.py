@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from typing import Any, overload
@@ -25,14 +24,7 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
-from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
-    DEFAULT_ENTITY_TYPES,
-)
-from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
-    VERIFY_EXTRACT_RELS_PROMPT,
-    GraphExtraction,
-    _format_entity_types,
-)
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
@@ -778,189 +770,6 @@ class GraphRAG:
             "relationships_embedded": rel_count,
             "indexes": index_results,
         }
-
-    async def backfill_graph_properties(
-        self,
-        *,
-        properties: list[str] | None = None,
-        entity_types: list[str] | None = None,
-    ) -> dict[str, int]:
-        """Backfill PR #206 properties on graphs ingested before the SDK stored them.
-
-        - ``"type"`` (cheap, default): derive ``entity.type`` from the
-          primary graph label for entities where it is NULL.  O(graph size)
-          Cypher, no LLM calls.
-        - ``"description"`` (opt-in, expensive): re-run the relationship-
-          extraction LLM step on the source chunks referenced by each
-          RELATES edge whose ``description`` is NULL/empty, then update
-          ``r.description`` and ``r.fact`` and invalidate ``r.embedding``.
-          Finally regenerates embeddings via ``embed_relationships()``.
-          Cost scales with the number of affected chunks, but skips
-          chunking, entity extraction, and embedding of unrelated data.
-
-        Args:
-            properties: Which properties to backfill.  Defaults to
-                ``["type"]``.  Pass ``["type", "description"]`` to also
-                rebuild relationship descriptions.
-            entity_types: Entity type labels to pass to the relationship
-                extraction prompt (description backfill only).  Defaults
-                to the SDK's built-in set.
-
-        Returns:
-            Dict of counters: ``type_updated``, ``description_updated``,
-            ``relations_reembedded``.
-        """
-        props = properties if properties is not None else ["type"]
-        counters = {"type_updated": 0, "description_updated": 0, "relations_reembedded": 0}
-
-        if "type" in props:
-            counters["type_updated"] = await self._backfill_entity_type()
-
-        if "description" in props:
-            etypes = entity_types or list(DEFAULT_ENTITY_TYPES)
-            counters["description_updated"] = await self._backfill_relationship_descriptions(etypes)
-            if counters["description_updated"] > 0:
-                counters["relations_reembedded"] = await self.vector_store.embed_relationships()
-
-        return counters
-
-    async def _backfill_entity_type(self) -> int:
-        """Set entity.type from the primary graph label where NULL."""
-        r = await self.graph_store.query_raw(
-            "MATCH (e:__Entity__) "
-            "WHERE e.type IS NULL "
-            "WITH e, [l IN labels(e) WHERE l <> '__Entity__'][0] AS primary_label "
-            "WHERE primary_label IS NOT NULL "
-            "SET e.type = primary_label "
-            "RETURN count(e) AS updated"
-        )
-        return int(r.result_set[0][0]) if r.result_set else 0
-
-    async def _backfill_relationship_descriptions(self, entity_types: list[str]) -> int:
-        """Re-run Step 2 extraction on chunks referenced by edges missing description."""
-        # 1. Find edges with NULL/empty description
-        r = await self.graph_store.query_raw(
-            "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
-            "WHERE (r.description IS NULL OR r.description = '') "
-            "AND r.source_chunk_ids IS NOT NULL "
-            "RETURN id(r) AS rid, a.name, a.type, b.name, b.type, "
-            "r.type, r.source_chunk_ids"
-        )
-        rows = list(r.result_set or [])
-        if not rows:
-            return 0
-
-        # 2. Collect all referenced chunk ids, build an edge-by-chunk index
-        edges_by_chunk: dict[str, list[dict[str, Any]]] = {}
-        all_chunk_ids: set[str] = set()
-        for row in rows:
-            rid, a_name, a_type, b_name, b_type, rel_type, chunk_ids = row
-            edge = {
-                "rid": rid,
-                "source": a_name,
-                "source_type": a_type,
-                "target": b_name,
-                "target_type": b_type,
-                "type": rel_type,
-                "chunk_ids": list(chunk_ids or []),
-            }
-            for cid in edge["chunk_ids"]:
-                edges_by_chunk.setdefault(cid, []).append(edge)
-                all_chunk_ids.add(cid)
-
-        # 3. Fetch chunk texts
-        chunk_fetch = await self.graph_store.query_raw(
-            "UNWIND $ids AS cid MATCH (c:Chunk {id: cid}) RETURN c.id, c.text",
-            {"ids": list(all_chunk_ids)},
-        )
-        chunk_texts: dict[str, str] = {row[0]: row[1] for row in (chunk_fetch.result_set or [])}
-
-        # 4. For each chunk, build VERIFY_EXTRACT_RELS_PROMPT with the entities
-        # referenced by the edges in that chunk, then run Step 2 in batch.
-        prompts: list[str] = []
-        prompt_chunk_ids: list[str] = []
-        entity_types_block = _format_entity_types(entity_types, None)
-
-        for cid, edges in edges_by_chunk.items():
-            text = chunk_texts.get(cid)
-            if not text:
-                continue
-            seen: set[tuple[str, str]] = set()
-            entities_list: list[dict[str, str]] = []
-            for e in edges:
-                for name, etype in (
-                    (e["source"], e["source_type"]),
-                    (e["target"], e["target_type"]),
-                ):
-                    key = (name.strip().lower(), etype or "")
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    entities_list.append(
-                        {
-                            "name": name,
-                            "type": etype or "",
-                            "description": "",
-                        }
-                    )
-            prompts.append(
-                VERIFY_EXTRACT_RELS_PROMPT.format(
-                    entity_types=entity_types_block,
-                    entities_json=json.dumps(entities_list),
-                    text=text,
-                )
-            )
-            prompt_chunk_ids.append(cid)
-
-        if not prompts:
-            return 0
-
-        batch_results = await self.llm.abatch_invoke(prompts)
-
-        # 5. Parse each response and build (src_lower, type, tgt_lower) → description map per chunk
-        descriptions: dict[tuple[str, str, str], str] = {}
-        for item in batch_results:
-            if not item.ok or item.response is None:
-                continue
-            cid = prompt_chunk_ids[item.index]
-            _, rels = GraphExtraction._parse_step2_response(
-                item.response.content,
-                entity_types,
-                cid,
-            )
-            for rel in rels:
-                key = (
-                    rel.source.strip().lower(),
-                    rel.type.strip().lower(),
-                    rel.target.strip().lower(),
-                )
-                # Keep the longest description seen across chunks
-                if rel.description and len(rel.description) > len(descriptions.get(key, "")):
-                    descriptions[key] = rel.description
-
-        # 6. Update edges that got a description; leave others untouched
-        updates: list[dict[str, Any]] = []
-        for row in rows:
-            rid, a_name, _a_type, b_name, _b_type, rel_type, _chunk_ids = row
-            key = (a_name.strip().lower(), rel_type.strip().lower(), b_name.strip().lower())
-            desc = descriptions.get(key)
-            if not desc:
-                continue
-            fact = f"({a_name}, {rel_type}, {b_name}): {desc}"
-            updates.append({"rid": rid, "description": desc, "fact": fact})
-
-        if not updates:
-            return 0
-
-        await self.graph_store.query_raw(
-            "UNWIND $batch AS item "
-            "MATCH ()-[r:RELATES]->() WHERE id(r) = item.rid "
-            "SET r.description = item.description, "
-            "r.fact = item.fact, "
-            "r.embedding = NULL",
-            {"batch": updates},
-        )
-        return len(updates)
 
     # ── Sync Convenience ─────────────────────────────────────────
 
