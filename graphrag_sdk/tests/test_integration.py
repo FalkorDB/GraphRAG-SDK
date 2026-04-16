@@ -8,8 +8,14 @@ class TestTopLevelImports:
     """Verify all public API exports are importable."""
 
     def test_version(self):
+        import re
+
         from graphrag_sdk import __version__
-        assert __version__ == "1.0.0"
+
+        # Accept stable (1.0.0) and pre-release (1.0.0rc1, 1.0.0a1, 1.0.0b1) forms.
+        assert re.match(r"^1\.\d+\.\d+(rc\d+|a\d+|b\d+)?$", __version__), (
+            f"__version__ {__version__!r} does not look like a valid 1.x release"
+        )
 
     def test_facade(self):
         from graphrag_sdk import GraphRAG
