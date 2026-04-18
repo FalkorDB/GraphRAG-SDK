@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
@@ -78,14 +79,21 @@ class GraphStore:
             safe_label = sanitize_cypher_label(label)
             is_entity = label not in self._STRUCTURAL_LABELS
             # Filter out nodes with None or empty id (bad LLM extraction)
-            group = [n for n in group if n.id is not None and str(n.id).strip()]
+            group = [
+                n
+                for n in group
+                if n.id is not None and self._clean_identifier(n.id).strip()
+            ]
             if not group:
                 continue
             # Process in batches
             for start in range(0, len(group), self._BATCH_SIZE):
                 batch = group[start : start + self._BATCH_SIZE]
                 batch_data = [
-                    {"id": str(n.id), "properties": self._clean_properties(n.properties)}
+                    {
+                        "id": self._clean_identifier(n.id),
+                        "properties": self._clean_properties(n.properties),
+                    }
                     for n in batch
                 ]
                 query = (
@@ -110,7 +118,7 @@ class GraphStore:
                         if is_entity:
                             q += " SET n:__Entity__"
                         params = {
-                            "id": str(node.id),
+                            "id": self._clean_identifier(node.id),
                             "properties": self._clean_properties(node.properties),
                         }
                         try:
@@ -146,12 +154,20 @@ class GraphStore:
         count = 0
         for rel_type, group in by_type.items():
             safe_rel_type = sanitize_cypher_label(rel_type)
+            group = [
+                rel
+                for rel in group
+                if self._clean_identifier(rel.start_node_id).strip()
+                and self._clean_identifier(rel.end_node_id).strip()
+            ]
+            if not group:
+                continue
             for start in range(0, len(group), self._BATCH_SIZE):
                 batch = group[start : start + self._BATCH_SIZE]
                 batch_data = [
                     {
-                        "start_id": str(r.start_node_id),
-                        "end_id": str(r.end_node_id),
+                        "start_id": self._clean_identifier(r.start_node_id),
+                        "end_id": self._clean_identifier(r.end_node_id),
                         "properties": self._clean_properties(r.properties),
                     }
                     for r in batch
@@ -192,8 +208,8 @@ class GraphStore:
                             f"SET r += $properties"
                         )
                         params = {
-                            "start_id": str(rel.start_node_id),
-                            "end_id": str(rel.end_node_id),
+                            "start_id": self._clean_identifier(rel.start_node_id),
+                            "end_id": self._clean_identifier(rel.end_node_id),
                             "properties": self._clean_properties(rel.properties),
                         }
                         try:
@@ -327,6 +343,20 @@ class GraphStore:
     # ── Helpers ──────────────────────────────────────────────────
 
     @staticmethod
+    def _sanitize_string(value: str) -> str:
+        """Strip control chars that can break FalkorDB CYPHER param parsing."""
+        return "".join(
+            ch
+            for ch in value
+            if ch in "\t\n\r" or unicodedata.category(ch) != "Cc"
+        )
+
+    @classmethod
+    def _clean_identifier(cls, value: Any) -> str:
+        """Normalise IDs used in Cypher params."""
+        return cls._sanitize_string(str(value))
+
+    @staticmethod
     def _clean_properties(props: dict[str, Any]) -> dict[str, Any]:
         """Remove None values and non-serialisable types from properties.
 
@@ -338,10 +368,19 @@ class GraphStore:
             if value is None:
                 continue
             if isinstance(value, (str, int, float, bool)):
-                cleaned[key] = value
+                cleaned[key] = (
+                    GraphStore._sanitize_string(value) if isinstance(value, str) else value
+                )
             elif isinstance(value, list):
                 # FalkorDB supports lists of primitives — filter items
-                filtered = [item for item in value if isinstance(item, (str, int, float, bool))]
+                filtered: list[str | int | float | bool] = []
+                for item in value:
+                    if not isinstance(item, (str, int, float, bool)):
+                        continue
+                    if isinstance(item, str):
+                        filtered.append(GraphStore._sanitize_string(item))
+                    else:
+                        filtered.append(item)
                 if filtered:
                     cleaned[key] = filtered
             elif isinstance(value, dict):

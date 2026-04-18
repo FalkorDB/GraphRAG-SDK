@@ -56,6 +56,16 @@ class TestGraphStoreUpsertNodes:
         params = mock_connection.query.call_args[0][1]
         assert params["batch"][0]["id"] == "test-id"
 
+    async def test_upsert_sanitizes_control_chars_in_batch_params(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="id\x00\x01", label="Chunk", properties={"text": "A\x00B\x01C"})]
+        )
+        params = mock_connection.query.call_args[0][1]
+        assert params["batch"][0]["id"] == "id"
+        assert params["batch"][0]["properties"]["text"] == "ABC"
+
 
 class TestGraphStoreUpsertRelationships:
     async def test_upsert_relationship(self, graph_store, mock_connection):
@@ -167,9 +177,17 @@ class TestCleanProperties:
         )
         assert result == {"s": "text", "i": 42, "f": 3.14, "b": True}
 
+    def test_strips_control_chars_from_strings(self):
+        result = GraphStore._clean_properties({"text": "a\x00b\x01c\t\n\r"})
+        assert result["text"] == "abc\t\n\r"
+
     def test_preserves_lists(self):
         result = GraphStore._clean_properties({"tags": ["a", "b"]})
         assert result["tags"] == ["a", "b"]
+
+    def test_strips_control_chars_from_list_strings(self):
+        result = GraphStore._clean_properties({"tags": ["a\x00", "b\x01", 3]})
+        assert result["tags"] == ["a", "b", 3]
 
     def test_converts_objects_to_str(self):
         result = GraphStore._clean_properties({"obj": {"nested": True}})
