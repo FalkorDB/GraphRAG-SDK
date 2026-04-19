@@ -66,6 +66,21 @@ class TestGraphStoreUpsertNodes:
         assert params["batch"][0]["id"] == "id"
         assert params["batch"][0]["properties"]["text"] == "ABC"
 
+    async def test_upsert_sanitizes_control_chars_in_fallback_params(
+        self, graph_store, mock_connection
+    ):
+        """Per-item fallback path should also use sanitized IDs and properties."""
+        mock_connection.query = AsyncMock(
+            side_effect=[Exception("batch fail"), MagicMock()]
+        )
+        await graph_store.upsert_nodes(
+            [GraphNode(id="id\x00\x01", label="X", properties={"t": "A\x00B"})]
+        )
+        # Second call is the per-item fallback
+        fallback_params = mock_connection.query.call_args_list[1][0][1]
+        assert fallback_params["id"] == "id"
+        assert fallback_params["properties"]["t"] == "AB"
+
 
 class TestGraphStoreUpsertRelationships:
     async def test_upsert_relationship(self, graph_store, mock_connection):
@@ -81,6 +96,36 @@ class TestGraphStoreUpsertRelationships:
         assert "KNOWS" in cypher
         # Unknown rel type defaults to __Entity__ labels
         assert "`__Entity__`" in cypher
+
+    async def test_upsert_sanitizes_control_chars_in_batch_params(
+        self, graph_store, mock_connection
+    ):
+        rels = [
+            GraphRelationship(
+                start_node_id="a\x00\x01",
+                end_node_id="b\x00\x01",
+                type="RELATES",
+                properties={"note": "A\x00B\x01C"},
+            )
+        ]
+        await graph_store.upsert_relationships(rels)
+        params = mock_connection.query.call_args[0][1]
+        assert params["batch"][0]["start_id"] == "a"
+        assert params["batch"][0]["end_id"] == "b"
+        assert params["batch"][0]["properties"]["note"] == "ABC"
+
+    async def test_upsert_drops_rels_with_empty_sanitized_ids(
+        self, graph_store, mock_connection
+    ):
+        rels = [
+            GraphRelationship(start_node_id="\x00", end_node_id="valid", type="R"),
+            GraphRelationship(start_node_id="ok", end_node_id="also-ok", type="R"),
+        ]
+        result = await graph_store.upsert_relationships(rels)
+        assert result == 1
+        params = mock_connection.query.call_args[0][1]
+        assert len(params["batch"]) == 1
+        assert params["batch"][0]["start_id"] == "ok"
 
     async def test_upsert_empty_relationships(self, graph_store, mock_connection):
         result = await graph_store.upsert_relationships([])
