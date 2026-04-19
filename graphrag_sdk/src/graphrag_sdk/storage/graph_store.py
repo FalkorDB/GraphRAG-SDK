@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
@@ -77,16 +78,30 @@ class GraphStore:
         for label, group in by_label.items():
             safe_label = sanitize_cypher_label(label)
             is_entity = label not in self._STRUCTURAL_LABELS
-            # Filter out nodes with None or empty id (bad LLM extraction)
-            group = [n for n in group if n.id is not None and str(n.id).strip()]
-            if not group:
+            # Sanitize IDs once and filter out None / empty (bad LLM extraction)
+            pre_filter = len(group)
+            cleaned_group: list[tuple[GraphNode, str]] = [
+                (n, self._clean_identifier(n.id)) for n in group if n.id is not None
+            ]
+            cleaned_group = [(n, cid) for n, cid in cleaned_group if cid.strip()]
+            dropped = pre_filter - len(cleaned_group)
+            if dropped:
+                logger.warning(
+                    "Dropped %d %s node(s) with empty id after sanitization",
+                    dropped,
+                    safe_label,
+                )
+            if not cleaned_group:
                 continue
             # Process in batches
-            for start in range(0, len(group), self._BATCH_SIZE):
-                batch = group[start : start + self._BATCH_SIZE]
+            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
+                batch = cleaned_group[start : start + self._BATCH_SIZE]
                 batch_data = [
-                    {"id": str(n.id), "properties": self._clean_properties(n.properties)}
-                    for n in batch
+                    {
+                        "id": cid,
+                        "properties": self._clean_properties(n.properties),
+                    }
+                    for n, cid in batch
                 ]
                 query = (
                     f"UNWIND $batch AS item "
@@ -104,13 +119,13 @@ class GraphStore:
                         f"falling back to individual: {exc}"
                     )
                     # Per-item fallback
-                    for node in batch:
+                    for node, cid in batch:
                         safe_node_label = sanitize_cypher_label(node.label)
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) SET n += $properties"
                         if is_entity:
                             q += " SET n:__Entity__"
                         params = {
-                            "id": str(node.id),
+                            "id": cid,
                             "properties": self._clean_properties(node.properties),
                         }
                         try:
@@ -118,7 +133,7 @@ class GraphStore:
                             count += 1
                         except Exception as inner_exc:
                             logger.warning(
-                                f"Failed to upsert node {node.id} "
+                                f"Failed to upsert node {cid} "
                                 f"(label={safe_node_label}): {inner_exc}"
                             )
                             raise DatabaseError(f"Node upsert failed: {inner_exc}") from inner_exc
@@ -146,15 +161,37 @@ class GraphStore:
         count = 0
         for rel_type, group in by_type.items():
             safe_rel_type = sanitize_cypher_label(rel_type)
-            for start in range(0, len(group), self._BATCH_SIZE):
-                batch = group[start : start + self._BATCH_SIZE]
+            # Sanitize IDs once and filter out empty endpoints
+            pre_filter = len(group)
+            cleaned_group: list[tuple[GraphRelationship, str, str]] = [
+                (
+                    rel,
+                    self._clean_identifier(rel.start_node_id),
+                    self._clean_identifier(rel.end_node_id),
+                )
+                for rel in group
+            ]
+            cleaned_group = [
+                (rel, sid, eid) for rel, sid, eid in cleaned_group if sid.strip() and eid.strip()
+            ]
+            dropped = pre_filter - len(cleaned_group)
+            if dropped:
+                logger.warning(
+                    "Dropped %d [%s] relationship(s) with empty endpoint id after sanitization",
+                    dropped,
+                    safe_rel_type,
+                )
+            if not cleaned_group:
+                continue
+            for start in range(0, len(cleaned_group), self._BATCH_SIZE):
+                batch = cleaned_group[start : start + self._BATCH_SIZE]
                 batch_data = [
                     {
-                        "start_id": str(r.start_node_id),
-                        "end_id": str(r.end_node_id),
+                        "start_id": sid,
+                        "end_id": eid,
                         "properties": self._clean_properties(r.properties),
                     }
-                    for r in batch
+                    for r, sid, eid in batch
                 ]
                 src_label, tgt_label = self._REL_LABEL_HINTS.get(
                     rel_type, ("__Entity__", "__Entity__")
@@ -178,7 +215,7 @@ class GraphStore:
                         f"falling back to individual: {exc}"
                     )
                     # Per-item fallback
-                    for rel in batch:
+                    for rel, sid, eid in batch:
                         fb_src, fb_tgt = self._REL_LABEL_HINTS.get(
                             rel.type, ("__Entity__", "__Entity__")
                         )
@@ -192,8 +229,8 @@ class GraphStore:
                             f"SET r += $properties"
                         )
                         params = {
-                            "start_id": str(rel.start_node_id),
-                            "end_id": str(rel.end_node_id),
+                            "start_id": sid,
+                            "end_id": eid,
                             "properties": self._clean_properties(rel.properties),
                         }
                         try:
@@ -202,7 +239,7 @@ class GraphStore:
                         except Exception as inner_exc:
                             logger.warning(
                                 f"Failed to upsert relationship "
-                                f"{rel.start_node_id}-[{safe_fb_rel}]->{rel.end_node_id} "
+                                f"{sid}-[{safe_fb_rel}]->{eid} "
                                 f"({safe_fb_src}→{safe_fb_tgt}): {inner_exc}"
                             )
 
@@ -327,25 +364,44 @@ class GraphStore:
     # ── Helpers ──────────────────────────────────────────────────
 
     @staticmethod
-    def _clean_properties(props: dict[str, Any]) -> dict[str, Any]:
+    def _sanitize_string(value: str) -> str:
+        """Strip control chars that can break FalkorDB CYPHER param parsing."""
+        return "".join(ch for ch in value if ch in "\t\n\r" or unicodedata.category(ch) != "Cc")
+
+    @classmethod
+    def _clean_identifier(cls, value: Any) -> str:
+        """Normalise IDs used in Cypher params."""
+        return cls._sanitize_string(str(value))
+
+    @classmethod
+    def _clean_properties(cls, props: dict[str, Any]) -> dict[str, Any]:
         """Remove None values and non-serialisable types from properties.
 
-        - Lists: filter items to primitives only, drop None/empty.
+        - Strings: strip control characters.
+        - Lists: filter items to primitives only, strip control chars from strings.
         - Dicts: serialise to JSON string.
+        - Other: convert to string and strip control characters.
         """
         cleaned: dict[str, Any] = {}
         for key, value in props.items():
             if value is None:
                 continue
             if isinstance(value, (str, int, float, bool)):
-                cleaned[key] = value
+                cleaned[key] = cls._sanitize_string(value) if isinstance(value, str) else value
             elif isinstance(value, list):
                 # FalkorDB supports lists of primitives — filter items
-                filtered = [item for item in value if isinstance(item, (str, int, float, bool))]
+                filtered: list[str | int | float | bool] = []
+                for item in value:
+                    if not isinstance(item, (str, int, float, bool)):
+                        continue
+                    if isinstance(item, str):
+                        filtered.append(cls._sanitize_string(item))
+                    else:
+                        filtered.append(item)
                 if filtered:
                     cleaned[key] = filtered
             elif isinstance(value, dict):
                 cleaned[key] = json.dumps(value)
             else:
-                cleaned[key] = str(value)
+                cleaned[key] = cls._sanitize_string(str(value))
         return cleaned
