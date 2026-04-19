@@ -233,7 +233,7 @@ This step is important for query accuracy. It merges duplicate entities (e.g., "
 
 - [docs/configuration.md](configuration.md) -- Tuning connection settings, chunking parameters, and retrieval options.
 - [docs/strategies.md](strategies.md) -- Custom extraction and resolution strategies.
-- [docs/benchmark.md](benchmark.md) -- Reproducing benchmark results on the GraphRAG-Bench Novel corpus (20 novels, 2,010 questions).
+- [docs/benchmark.md](benchmark.md) -- Reproducing benchmark results on the 100-question novel corpus.
 
 ---
 

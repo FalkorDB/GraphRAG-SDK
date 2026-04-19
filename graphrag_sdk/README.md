@@ -7,7 +7,7 @@
 [![Version: 1.0.0rc1](https://img.shields.io/badge/version-1.0.0rc1-blue.svg)](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/pyproject.toml)
 [![Tests: 582 passing](https://img.shields.io/badge/tests-582%20passing-brightgreen.svg)](https://github.com/FalkorDB/GraphRAG-SDK/tree/main/graphrag_sdk/tests/)
 
-GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline ranks **#1 on GraphRAG-Bench Novel** — 63.73 overall ACC on 20 novels / 2,010 questions.
+GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **~85% accuracy** on a 100-question benchmark using GPT-4.1.
 
 ## Quick Start
 
@@ -19,8 +19,7 @@ async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
         llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-        embedding_dimension=256,
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
     ) as rag:
         result = await rag.ingest("my_document.txt")
         print(f"Created {result.nodes_created} nodes, {result.relationships_created} edges")
@@ -58,8 +57,7 @@ async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
         llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-        embedding_dimension=256,
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
     ) as rag:
         await rag.ingest("report.pdf")                              # PDF
         await rag.ingest("source_id", text="Alice works at Acme.")  # Raw text
@@ -153,18 +151,16 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 ## Benchmark
 
-**#1 on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel** — 63.73 overall ACC, ahead of MS-GraphRAG (50.93) and LightRAG (45.09).
+**~85% accuracy** (8.5/10) on a 100-question benchmark over 20 Project Gutenberg novels.
 
 | Metric | Value |
 |--------|-------|
-| **Overall ACC** | 63.73 (#1) |
-| **Fact retrieval** | 65.22 |
-| **Complex reasoning** | 58.63 |
-| **Contextual summarization** | 69.54 |
-| **Creative generation** | 57.08 |
-| **Questions** | 2,010 across 20 novels |
+| **Accuracy** | ~85% (8.5/10) |
+| **Questions** | 100 (fact retrieval, complex reasoning, summarization) |
+| **Documents** | 20 novels (Project Gutenberg) |
+| **Query P50** | 5.4s |
 
-See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for methodology and reproduction.
+See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for full methodology and reproduction instructions.
 
 ## Examples
 

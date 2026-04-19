@@ -11,7 +11,7 @@
   <a href="https://github.com/FalkorDB/GraphRAG-SDK"><img src="https://img.shields.io/github/stars/FalkorDB/GraphRAG-SDK?style=social" alt="GitHub Stars"></a>
 </p>
 
-![Knowledge graph construction](assets/knowledge-graph-construction.gif)
+![knowledge-graph-construction-b](https://github.com/user-attachments/assets/69066899-0168-4e14-b359-f68c5b6c1e75)
 
 
 Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers quickly.
@@ -35,7 +35,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 
 ---
 
-![Document-to-answer flow](assets/pipeline-flow.gif)
+![document-to-provenance-answer-flow-v1](https://github.com/user-attachments/assets/afd1607e-20e1-4954-95f2-274701f5d61d)
 
 
 ## Ingestion & Retrieval Pipeline
@@ -82,8 +82,7 @@ async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
         llm=LiteLLM(model="openai/gpt-5.4"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-        embedding_dimension=256,
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     ) as rag:
         # Ingest raw text (pass a file path with the `pdf` extra installed for PDFs)
         result = await rag.ingest(
@@ -126,73 +125,11 @@ schema = GraphSchema(
 async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="openai/gpt-5.4"),
-    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-    embedding_dimension=256,
+    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     schema=schema,
 ) as rag:
     ...  # ingest / completion as above
 ```
----
-
-## Migrating from v0.x
-
-v1.0 is a breaking rewrite. If you are on v0.8.2 and not yet ready to migrate, `pip install graphrag-sdk` continues to resolve to v0.8.2 by default — no action needed. To try the RC, use `pip install graphrag-sdk --pre` or pin `==1.0.0rc1`.
-
-Key breaking changes:
-
-- **`query()` / `query_sync()` are deprecated.** Use `retrieve()` (retrieval only) or `completion()` (retrieval + answer generation). Both are async-first.
-- **Re-ingestion required.** `backfill_graph_properties` was removed in the RC. Pre-v1 graphs cannot be upgraded in place — rebuild them with v1.
-- **Tighter dependency bounds.** `numpy<3`, `scipy<2`, `falkordb<2`, `gliner<1`, `pypdf>=6.9.2`. Check your lockfile.
-- **Multi-turn via `ChatMessage`.** Pass `history=[ChatMessage(role=..., content=...)]` to `completion()`. String-concatenated histories are no longer supported.
-
-Full list in [CHANGELOG.md](CHANGELOG.md).
-
----
-
-## FAQ
-
-<details>
-<summary><strong>Which LLM providers are supported?</strong></summary>
-
-LiteLLM covers 100+ providers — OpenAI, Azure OpenAI, Anthropic, Cohere, Ollama, Gemini, Bedrock, and more — all via a single `pip install graphrag-sdk[litellm]`. OpenRouter is also supported directly via `OpenRouterLLM` / `OpenRouterEmbedder`. See [docs/providers.md](docs/providers.md).
-</details>
-
-<details>
-<summary><strong>Why FalkorDB and not Neo4j / Arango / a generic graph adapter?</strong></summary>
-
-GraphRAG SDK is FalkorDB-native, not a generic graph adapter. It leans on FalkorDB's in-memory Cypher, native vector and full-text indexes, and the relationship-embedding store. Performance-critical paths (batched `MERGE`, vector search, full-text search) assume FalkorDB semantics. See [docs/architecture.md](docs/architecture.md).
-</details>
-
-<details>
-<summary><strong>How much does a benchmark run cost?</strong></summary>
-
-On GraphRAG-Bench Novel (20 novels, 2,010 questions) with `gpt-5.4`, expect a few USD end-to-end. Exact cost varies with coref model choice and resolution cascade depth. Full methodology and reproduction steps in [docs/benchmark.md](docs/benchmark.md).
-</details>
-
-<details>
-<summary><strong>I got an <code>hnswlib</code> <code>ImportError</code> during resolution.</strong></summary>
-
-`SemanticResolution` and `LLMVerifiedResolution` need `hnswlib`. Install with `pip install "graphrag-sdk[semantic]"` or `pip install hnswlib` directly.
-</details>
-
-<details>
-<summary><strong>My graph has duplicate entities after ingest. What now?</strong></summary>
-
-Always call `await rag.finalize()` after ingestion. Deduplication is intentionally a post-ingestion step — you can ingest N documents independently, then merge them globally in `finalize()`. See [docs/architecture.md](docs/architecture.md).
-</details>
-
-<details>
-<summary><strong>How do I reproduce the #1 benchmark result?</strong></summary>
-
-Use the `ChainedResolution` config described in [docs/benchmark.md](docs/benchmark.md) (ExactMatch → DescriptionMerge → Semantic @ 0.85 → LLMVerified @ 0.95/0.60) paired with `MultiPathRetrieval`. Full run takes about an hour on a single OpenAI key.
-</details>
-
----
-
-## What's new
-
-This is **v1.0.0rc1** — the release candidate for v1.0. See [CHANGELOG.md](CHANGELOG.md) for the full feature list.
-
 ---
 
 ## Examples
