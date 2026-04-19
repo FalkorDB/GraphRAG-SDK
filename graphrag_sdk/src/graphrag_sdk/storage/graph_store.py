@@ -81,9 +81,7 @@ class GraphStore:
             # Sanitize IDs once and filter out None / empty (bad LLM extraction)
             pre_filter = len(group)
             cleaned_group: list[tuple[GraphNode, str]] = [
-                (n, self._clean_identifier(n.id))
-                for n in group
-                if n.id is not None
+                (n, self._clean_identifier(n.id)) for n in group if n.id is not None
             ]
             cleaned_group = [(n, cid) for n, cid in cleaned_group if cid.strip()]
             dropped = pre_filter - len(cleaned_group)
@@ -166,13 +164,15 @@ class GraphStore:
             # Sanitize IDs once and filter out empty endpoints
             pre_filter = len(group)
             cleaned_group: list[tuple[GraphRelationship, str, str]] = [
-                (rel, self._clean_identifier(rel.start_node_id),
-                 self._clean_identifier(rel.end_node_id))
+                (
+                    rel,
+                    self._clean_identifier(rel.start_node_id),
+                    self._clean_identifier(rel.end_node_id),
+                )
                 for rel in group
             ]
             cleaned_group = [
-                (rel, sid, eid) for rel, sid, eid in cleaned_group
-                if sid.strip() and eid.strip()
+                (rel, sid, eid) for rel, sid, eid in cleaned_group if sid.strip() and eid.strip()
             ]
             dropped = pre_filter - len(cleaned_group)
             if dropped:
@@ -366,11 +366,7 @@ class GraphStore:
     @staticmethod
     def _sanitize_string(value: str) -> str:
         """Strip control chars that can break FalkorDB CYPHER param parsing."""
-        return "".join(
-            ch
-            for ch in value
-            if ch in "\t\n\r" or unicodedata.category(ch) != "Cc"
-        )
+        return "".join(ch for ch in value if ch in "\t\n\r" or unicodedata.category(ch) != "Cc")
 
     @classmethod
     def _clean_identifier(cls, value: Any) -> str:
@@ -391,9 +387,7 @@ class GraphStore:
             if value is None:
                 continue
             if isinstance(value, (str, int, float, bool)):
-                cleaned[key] = (
-                    cls._sanitize_string(value) if isinstance(value, str) else value
-                )
+                cleaned[key] = cls._sanitize_string(value) if isinstance(value, str) else value
             elif isinstance(value, list):
                 # FalkorDB supports lists of primitives — filter items
                 filtered: list[str | int | float | bool] = []
