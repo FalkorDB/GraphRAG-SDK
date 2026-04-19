@@ -166,8 +166,6 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for methodology and reproduction.
 
-See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for full methodology and reproduction instructions.
-
 ## Examples
 
 | # | Example | Description |
