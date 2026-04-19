@@ -6,7 +6,7 @@ GraphRAG SDK builds knowledge graphs from documents and answers questions over t
 
 ## Key Highlights
 
-- **#1 on GraphRAG-Bench Novel** — 63.73 overall ACC on 2,010 questions ([benchmark](benchmark.md))
+- **~85% accuracy** on a 100-question benchmark
 - **Simple API** -- `ingest()` + `completion()` with sensible defaults
 - **100+ LLM providers** via LiteLLM (OpenAI, Azure, Anthropic, Cohere, Ollama, and more)
 - **Fully modular** -- swap chunking, extraction, resolution, retrieval, and reranking strategies
@@ -28,8 +28,7 @@ async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
         llm=LiteLLM(model="openai/gpt-4o"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-        embedding_dimension=256,
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
     ) as rag:
         await rag.ingest("my_document.pdf")
         await rag.finalize()

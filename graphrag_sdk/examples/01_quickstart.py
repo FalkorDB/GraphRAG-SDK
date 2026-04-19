@@ -40,7 +40,7 @@ def get_providers():
 
     # ── Option A: OpenAI (default) ──────────────────────────────
     llm = LiteLLM(model="openai/gpt-4o")
-    embedder = LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256)
+    embedder = LiteLLMEmbedder(model="openai/text-embedding-3-small")
 
     # ── Option B: Azure OpenAI ──────────────────────────────────
     # llm = LiteLLM(
@@ -66,7 +66,6 @@ async def main():
         connection=ConnectionConfig(host="localhost", graph_name="quickstart"),
         llm=llm,
         embedder=embedder,
-        embedding_dimension=256,
     ) as rag:
         # 1. Ingest text
         result = await rag.ingest("quickstart_doc", text=TEXT)
