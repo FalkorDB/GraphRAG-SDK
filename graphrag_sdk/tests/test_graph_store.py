@@ -1,4 +1,5 @@
 """Tests for storage/graph_store.py — Repository pattern for graph operations."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -45,16 +46,35 @@ class TestGraphStoreUpsertNodes:
     async def test_upsert_raises_on_error(self, graph_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("db error"))
         with pytest.raises(DatabaseError, match="Node upsert failed"):
-            await graph_store.upsert_nodes(
-                [GraphNode(id="x", label="T", properties={})]
-            )
+            await graph_store.upsert_nodes([GraphNode(id="x", label="T", properties={})])
 
     async def test_upsert_passes_id_in_batch_param(self, graph_store, mock_connection):
-        await graph_store.upsert_nodes(
-            [GraphNode(id="test-id", label="X", properties={})]
-        )
+        await graph_store.upsert_nodes([GraphNode(id="test-id", label="X", properties={})])
         params = mock_connection.query.call_args[0][1]
         assert params["batch"][0]["id"] == "test-id"
+
+    async def test_upsert_sanitizes_control_chars_in_batch_params(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="id\x00\x01", label="Chunk", properties={"text": "A\x00B\x01C"})]
+        )
+        params = mock_connection.query.call_args[0][1]
+        assert params["batch"][0]["id"] == "id"
+        assert params["batch"][0]["properties"]["text"] == "ABC"
+
+    async def test_upsert_sanitizes_control_chars_in_fallback_params(
+        self, graph_store, mock_connection
+    ):
+        """Per-item fallback path should also use sanitized IDs and properties."""
+        mock_connection.query = AsyncMock(side_effect=[Exception("batch fail"), MagicMock()])
+        await graph_store.upsert_nodes(
+            [GraphNode(id="id\x00\x01", label="X", properties={"t": "A\x00B"})]
+        )
+        # Second call is the per-item fallback
+        fallback_params = mock_connection.query.call_args_list[1][0][1]
+        assert fallback_params["id"] == "id"
+        assert fallback_params["properties"]["t"] == "AB"
 
 
 class TestGraphStoreUpsertRelationships:
@@ -71,6 +91,34 @@ class TestGraphStoreUpsertRelationships:
         assert "KNOWS" in cypher
         # Unknown rel type defaults to __Entity__ labels
         assert "`__Entity__`" in cypher
+
+    async def test_upsert_sanitizes_control_chars_in_batch_params(
+        self, graph_store, mock_connection
+    ):
+        rels = [
+            GraphRelationship(
+                start_node_id="a\x00\x01",
+                end_node_id="b\x00\x01",
+                type="RELATES",
+                properties={"note": "A\x00B\x01C"},
+            )
+        ]
+        await graph_store.upsert_relationships(rels)
+        params = mock_connection.query.call_args[0][1]
+        assert params["batch"][0]["start_id"] == "a"
+        assert params["batch"][0]["end_id"] == "b"
+        assert params["batch"][0]["properties"]["note"] == "ABC"
+
+    async def test_upsert_drops_rels_with_empty_sanitized_ids(self, graph_store, mock_connection):
+        rels = [
+            GraphRelationship(start_node_id="\x00", end_node_id="valid", type="R"),
+            GraphRelationship(start_node_id="ok", end_node_id="also-ok", type="R"),
+        ]
+        result = await graph_store.upsert_relationships(rels)
+        assert result == 1
+        params = mock_connection.query.call_args[0][1]
+        assert len(params["batch"]) == 1
+        assert params["batch"][0]["start_id"] == "ok"
 
     async def test_upsert_empty_relationships(self, graph_store, mock_connection):
         result = await graph_store.upsert_relationships([])
@@ -162,14 +210,20 @@ class TestCleanProperties:
         assert result["c"] == "ok"
 
     def test_preserves_primitives(self):
-        result = GraphStore._clean_properties(
-            {"s": "text", "i": 42, "f": 3.14, "b": True}
-        )
+        result = GraphStore._clean_properties({"s": "text", "i": 42, "f": 3.14, "b": True})
         assert result == {"s": "text", "i": 42, "f": 3.14, "b": True}
+
+    def test_strips_control_chars_from_strings(self):
+        result = GraphStore._clean_properties({"text": "a\x00b\x01c\t\n\r"})
+        assert result["text"] == "abc\t\n\r"
 
     def test_preserves_lists(self):
         result = GraphStore._clean_properties({"tags": ["a", "b"]})
         assert result["tags"] == ["a", "b"]
+
+    def test_strips_control_chars_from_list_strings(self):
+        result = GraphStore._clean_properties({"tags": ["a\x00", "b\x01", 3]})
+        assert result["tags"] == ["a", "b", 3]
 
     def test_converts_objects_to_str(self):
         result = GraphStore._clean_properties({"obj": {"nested": True}})
@@ -184,8 +238,10 @@ class TestRelationshipLabelHints:
         """Known relationship types should use label hints in MATCH."""
         rels = [
             GraphRelationship(
-                start_node_id="doc1", end_node_id="chunk1",
-                type="PART_OF", properties={"index": 0},
+                start_node_id="doc1",
+                end_node_id="chunk1",
+                type="PART_OF",
+                properties={"index": 0},
             )
         ]
         await graph_store.upsert_relationships(rels)
@@ -197,8 +253,10 @@ class TestRelationshipLabelHints:
         """Unknown relationship types should default to __Entity__ labels."""
         rels = [
             GraphRelationship(
-                start_node_id="a", end_node_id="b",
-                type="CUSTOM_REL", properties={},
+                start_node_id="a",
+                end_node_id="b",
+                type="CUSTOM_REL",
+                properties={},
             )
         ]
         await graph_store.upsert_relationships(rels)
@@ -209,8 +267,10 @@ class TestRelationshipLabelHints:
         """MENTIONED_IN should use __Entity__ → Chunk labels."""
         rels = [
             GraphRelationship(
-                start_node_id="entity1", end_node_id="chunk1",
-                type="MENTIONED_IN", properties={},
+                start_node_id="entity1",
+                end_node_id="chunk1",
+                type="MENTIONED_IN",
+                properties={},
             )
         ]
         await graph_store.upsert_relationships(rels)
