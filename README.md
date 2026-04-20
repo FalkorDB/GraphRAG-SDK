@@ -19,19 +19,19 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 ---
 
 ## Benchmarks
-| Rank | System | Fact retrieval | Complex | Contextual | Creative | Overall |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **1** | **`FalkorDB GraphRAG SDK ◄`** | **`65.22`** | **`58.63`** | **`69.54`** | **`57.08`** | **`63.73`** |
-| 2 | AutoPrunedRetriever | 45.99 | 62.80 | 83.10 | 62.97 | 63.72 |
-| 3 | G-Reasoner | 60.07 | 53.92 | 71.28 | 50.48 | 58.94 |
-| 4 | HippoRAG2 | 60.14 | 53.38 | 64.10 | 48.28 | 56.48 |
-| 5 | Fast-GraphRAG | 56.95 | 48.55 | 56.41 | 46.18 | 52.02 |
-| 6 | MS-GraphRAG (local) | 49.29 | 50.93 | 64.40 | 39.10 | 50.93 |
-| 7 | RAG (w rerank) | 60.92 | 42.93 | 51.30 | 38.26 | 48.35 |
-| 8 | LightRAG | 58.62 | 49.07 | 48.85 | 23.80 | 45.09 |
-| 9 | HippoRAG | 52.93 | 38.52 | 48.70 | 38.85 | 44.75 |
+| Rank | System | Novel (Multi-Doc) | Medical (Single-Doc) | Overall |
+| :--- | :--- | :---: | :---: | :---: |
+| **1** | **FalkorDB GraphRAG SDK ◄** | **63.73** | **75.73** | **69.73** |
+| 2 | G-Reasoner | 58.94 | 73.30 | 66.12 |
+| 3 | AutoPrunedRetriever | 63.72 | 67.00 | 65.36 |
+| 4 | HippoRAG2 | 56.48 | 64.85 | 60.67 |
+| 5 | Fast-GraphRAG | 52.02 | 64.12 | 58.07 |
+| 6 | **RAG (w rerank) (Vector RAG)** | **48.35** | **62.43** | **55.39** |
+| 7 | LightRAG | 45.09 | 62.59 | 53.84 |
+| 8 | HippoRAG | 44.75 | 59.08 | 51.92 |
+| 9 | MS-GraphRAG (local) | 50.93 | 45.16 | 48.05 |
 
-> FalkorDB scored with `gpt-4o-mini` (Azure OpenAI) on the [GraphRAG-Bench](https://graphrag-bench.github.io) Novel dataset — 20 novels, 2,010 questions, automated evaluation (ROUGE-L + answer-correctness with `gpt-4o-mini`). Competitor numbers are sourced from the GraphRAG-Bench published leaderboard. See [docs/benchmark.md](docs/benchmark.md) for full methodology and reproduction instructions.
+> Overall ACC on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel (20 novels, 2,010 questions) and Medical (1 corpus, 2,062 questions) datasets. FalkorDB scored with `gpt-4o-mini` (Azure OpenAI); competitor numbers are from the published leaderboard. Overall = mean of Novel and Medical ACC. See [docs/benchmark.md](docs/benchmark.md) for per-category breakdowns, methodology, and reproduction instructions.
 
 ---
 
