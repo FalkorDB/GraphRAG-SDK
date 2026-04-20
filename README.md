@@ -26,7 +26,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | 3 | AutoPrunedRetriever | 63.72 | 67.00 | 65.36 |
 | 4 | HippoRAG2 | 56.48 | 64.85 | 60.67 |
 | 5 | Fast-GraphRAG | 52.02 | 64.12 | 58.07 |
-| 6 | RAG (w rerank) | 48.35 | 62.43 | 55.39 |
+| 6 | **RAG (w rerank) (Vector RAG)** | **48.35** | **62.43** | **55.39** |
 | 7 | LightRAG | 45.09 | 62.59 | 53.84 |
 | 8 | HippoRAG | 44.75 | 59.08 | 51.92 |
 | 9 | MS-GraphRAG (local) | 50.93 | 45.16 | 48.05 |
