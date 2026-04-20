@@ -71,6 +71,7 @@ export OPENAI_API_KEY="sk-..."
 ```
 
 > For PDF ingestion, install the `pdf` extra instead: `pip install graphrag-sdk[litellm,pdf]`.
+> Ingestion sanitizes unsupported control characters in IDs and string properties before graph upserts, which helps avoid FalkorDB Cypher parse errors on noisy PDFs.
 
 ### 2. Ingest a document
 
