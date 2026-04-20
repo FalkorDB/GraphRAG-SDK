@@ -21,7 +21,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 ## Benchmarks
 | Rank | System | Novel (Multi-Doc) | Medical (Single-Doc) | Overall |
 | :--- | :--- | :---: | :---: | :---: |
-| **1** | **`FalkorDB GraphRAG SDK ◄`** | **`63.73`** | **`75.73`** | **`69.73`** |
+| **1** | **FalkorDB GraphRAG SDK ◄** | **63.73** | **75.73** | **69.73** |
 | 2 | G-Reasoner | 58.94 | 73.30 | 66.12 |
 | 3 | AutoPrunedRetriever | 63.72 | 67.00 | 65.36 |
 | 4 | HippoRAG2 | 56.48 | 64.85 | 60.67 |
