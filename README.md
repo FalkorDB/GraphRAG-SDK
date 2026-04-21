@@ -1,4 +1,4 @@
-> 🧪 **v1.0.0rc1 is available as a pre-release.** Install with `pip install graphrag-sdk --pre` or pin `==1.0.0rc1`. This is a **breaking** rewrite from v0.x. Stable users: `pip install graphrag-sdk` still gives you v0.8.2 by default.
+> 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`.
 
 <h1 align="center">GraphRAG-SDK</h1>
 <h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
@@ -34,31 +34,6 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 > Overall ACC on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel (20 novels, 2,010 questions) and Medical (1 corpus, 2,062 questions) datasets. FalkorDB scored with `gpt-4o-mini` (Azure OpenAI); competitor numbers are from the published leaderboard. Overall = mean of Novel and Medical ACC. See [docs/benchmark.md](docs/benchmark.md) for per-category breakdowns, methodology, and reproduction instructions.
 
 ---
-
-![document-to-provenance-answer-flow-v1](https://github.com/user-attachments/assets/afd1607e-20e1-4954-95f2-274701f5d61d)
-
-
-## Ingestion & Retrieval Pipeline
-
-| Area | Item | Execution | Description |
-| --- | --- | --- | --- |
-| Ingestion | 1. Load | Sequential | Read raw text from files (PDF, TXT) or strings. |
-| Ingestion | 2. Chunk | Sequential | Split content into overlapping text chunks. |
-| Ingestion | 3. Lexical Graph | Sequential | Create `Document` and `Chunk` nodes with provenance edges. |
-| Ingestion | 4. Extract | Sequential | Run GLiNER2 local NER and LLM-based relationship extraction. |
-| Ingestion | 5. Quality Filter | Sequential | Remove invalid extracted nodes (empty IDs, malformed shape). |
-| Ingestion | 6. Prune | Sequential | Filter nodes/relations against the schema; drop orphan relations. |
-| Ingestion | 7. Resolve | Sequential | Deduplicate entities (exact match, semantic, LLM-verified). |
-| Ingestion | 8. Write | Sequential | Persist graph updates with batched `MERGE` operations in FalkorDB. |
-| Ingestion | 9a. Mentions | Parallel | Link entities back to source chunks. |
-| Ingestion | 9b. Index | Parallel | Embed and index chunks for retrieval. |
-| Retrieval | Vector search | Runtime | Finds semantically similar chunks. |
-| Retrieval | Full-text search | Runtime | Matches exact terms and keywords. |
-| Retrieval | Cypher queries | Runtime | Executes structured graph lookups. |
-| Retrieval | Relationship expansion | Runtime | Traverses connected entities and context. |
-| Retrieval | Cosine reranking | Runtime | Reorders candidates by relevance. |
-
-> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
 
 ## Quick Start
 
@@ -127,6 +102,34 @@ async with GraphRAG(
 ) as rag:
     ...  # ingest / completion as above
 ```
+
+---
+
+![document-to-provenance-answer-flow-v1](https://github.com/user-attachments/assets/afd1607e-20e1-4954-95f2-274701f5d61d)
+
+
+## Ingestion & Retrieval Pipeline
+
+| Area | Item | Execution | Description |
+| --- | --- | --- | --- |
+| Ingestion | 1. Load | Sequential | Read raw text from files (PDF, TXT) or strings. |
+| Ingestion | 2. Chunk | Sequential | Split content into overlapping text chunks. |
+| Ingestion | 3. Lexical Graph | Sequential | Create `Document` and `Chunk` nodes with provenance edges. |
+| Ingestion | 4. Extract | Sequential | Run GLiNER2 local NER and LLM-based relationship extraction. |
+| Ingestion | 5. Quality Filter | Sequential | Remove invalid extracted nodes (empty IDs, malformed shape). |
+| Ingestion | 6. Prune | Sequential | Filter nodes/relations against the schema; drop orphan relations. |
+| Ingestion | 7. Resolve | Sequential | Deduplicate entities (exact match, semantic, LLM-verified). |
+| Ingestion | 8. Write | Sequential | Persist graph updates with batched `MERGE` operations in FalkorDB. |
+| Ingestion | 9a. Mentions | Parallel | Link entities back to source chunks. |
+| Ingestion | 9b. Index | Parallel | Embed and index chunks for retrieval. |
+| Retrieval | Vector search | Runtime | Finds semantically similar chunks. |
+| Retrieval | Full-text search | Runtime | Matches exact terms and keywords. |
+| Retrieval | Cypher queries | Runtime | Executes structured graph lookups. |
+| Retrieval | Relationship expansion | Runtime | Traverses connected entities and context. |
+| Retrieval | Cosine reranking | Runtime | Reorders candidates by relevance. |
+
+> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
+
 ---
 
 ## Examples
@@ -152,6 +155,18 @@ async with GraphRAG(
 | [Providers](docs/providers.md) | LLM and embedder configuration guide |
 | [Benchmark](docs/benchmark.md) | Methodology, results, and reproduction instructions |
 | [API Reference](docs/api-reference.md) | Full API documentation |
+
+---
+
+## Development Milestones
+- 2024-06: First public release
+- 2024-Q4: PDF ingestion and multi-provider LLMs
+- 2025-Q1–Q2: Pluggable providers and pipeline tuning
+- 2025-Q3: Sharper retrieval, deeper test coverage
+- 🎉 2026-04: Version 1.0 is released
+- 2026-Q2: Increase production capabilities — timeouts, logs; expand ingestion support — tables, structured data
+- 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
+- 2026-Q4: Smarter retrieval — dynamic traversal, temporal graph
 
 ---
 
