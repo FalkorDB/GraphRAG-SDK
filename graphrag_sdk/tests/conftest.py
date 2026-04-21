@@ -17,7 +17,6 @@ from graphrag_sdk.core.models import (
     GraphSchema,
     LLMResponse,
     RelationType,
-    SchemaPattern,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 
@@ -121,12 +120,16 @@ def sample_schema() -> GraphSchema:
             EntityType(label="Company", description="A business organization"),
         ],
         relations=[
-            RelationType(label="WORKS_AT", description="Employment relationship"),
-            RelationType(label="KNOWS", description="Social relationship"),
-        ],
-        patterns=[
-            SchemaPattern(source="Person", relationship="WORKS_AT", target="Company"),
-            SchemaPattern(source="Person", relationship="KNOWS", target="Person"),
+            RelationType(
+                label="WORKS_AT",
+                description="Employment relationship",
+                patterns=[("Person", "Company")],
+            ),
+            RelationType(
+                label="KNOWS",
+                description="Social relationship",
+                patterns=[("Person", "Person")],
+            ),
         ],
     )
 

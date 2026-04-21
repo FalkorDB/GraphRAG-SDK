@@ -282,14 +282,14 @@ class IngestionPipeline:
     def _prune(self, graph_data: GraphData, schema: GraphSchema) -> GraphData:
         """Filter graph data to only include schema-conforming nodes and relationships.
 
-        If the schema has no entity types defined, all data passes through
-        (open-schema mode). ``Unknown`` entities (low-confidence NER) and
-        ``RELATES`` edges (GraphExtraction unified type) always pass through.
+        Validates both node labels and ``(source_label, rel_type, target_label)``
+        triples against the schema.  If the schema is empty (open mode), all
+        data passes through unchanged.
         """
         if not schema.entities and not schema.relations:
-            return graph_data  # Open schema — no pruning
+            return graph_data
 
-        # Filter nodes by allowed labels (keep "Unknown" — valid low-confidence entities)
+        # --- Node filtering (keep "Unknown" — low-confidence entities) ---
         allowed_labels = {e.label for e in schema.entities}
         if allowed_labels:
             allowed_labels.add("Unknown")
@@ -297,34 +297,46 @@ class IngestionPipeline:
         else:
             pruned_nodes = graph_data.nodes
 
-        # Filter relationships by allowed types
-        # Always allow "RELATES" — GraphExtraction's unified edge type
-        allowed_types = {r.label for r in schema.relations}
-        if allowed_types:
-            allowed_types.add("RELATES")
-            pruned_rels = [r for r in graph_data.relationships if r.type in allowed_types]
-        else:
-            pruned_rels = graph_data.relationships
+        nodes_by_id = {n.id: n for n in pruned_nodes}
 
-        # Ensure relationship endpoints exist
-        valid_ids = {n.id for n in pruned_nodes}
-        pruned_rels = [
-            r for r in pruned_rels if r.start_node_id in valid_ids and r.end_node_id in valid_ids
-        ]
+        # --- Build relation catalog ---
+        # label -> set of (src, tgt) pairs, or None for "open" (no pattern constraint).
+        allowed_rels: dict[str, set[tuple[str, str]] | None] = {}
+        for rt in schema.relations:
+            allowed_rels[rt.label] = set(rt.patterns) if rt.patterns else None
+
+        # --- Relationship filtering ---
+        pruned_rels: list[GraphRelationship] = []
+        for r in graph_data.relationships:
+            rel_label = r.properties.get("rel_type", r.type)
+
+            src = nodes_by_id.get(r.start_node_id)
+            tgt = nodes_by_id.get(r.end_node_id)
+            if src is None or tgt is None:
+                continue
+
+            if not allowed_rels:
+                pruned_rels.append(r)
+                continue
+
+            valid_pairs = allowed_rels.get(rel_label)
+            if valid_pairs is None and rel_label in allowed_rels:
+                pruned_rels.append(r)
+            elif valid_pairs and (src.label, tgt.label) in valid_pairs:
+                pruned_rels.append(r)
 
         pruned_node_count = len(graph_data.nodes) - len(pruned_nodes)
         pruned_rel_count = len(graph_data.relationships) - len(pruned_rels)
         if pruned_node_count or pruned_rel_count:
             logger.info(f"Pruned {pruned_node_count} nodes, {pruned_rel_count} rels")
 
-        new_gd = GraphData(
+        return GraphData(
             nodes=pruned_nodes,
             relationships=pruned_rels,
             mentions=graph_data.mentions,
             extracted_entities=graph_data.extracted_entities,
             extracted_relations=graph_data.extracted_relations,
         )
-        return new_gd
 
     def _filter_quality(self, graph_data: GraphData) -> GraphData:
         """Remove nodes with empty IDs or labels, and dangling relationships."""

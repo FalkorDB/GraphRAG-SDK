@@ -297,19 +297,11 @@ Both `LiteLLMEmbedder` and `OpenRouterEmbedder` implement binary-split error rec
 | `description` | `str \| None`   | `None`      | Human-readable description.                                  |
 | `required`    | `bool`          | `False`     | Whether the property is required.                            |
 
-**SchemaPattern** -- defines a valid source-relationship-target triple:
-
-| Field          | Type  | Description                        |
-|----------------|-------|------------------------------------|
-| `source`       | `str` | Source entity type label.          |
-| `relationship` | `str` | Relationship type label.           |
-| `target`       | `str` | Target entity type label.          |
-
 ### Example Schema Definition
 
 ```python
 from graphrag_sdk.core.models import (
-    EntityType, RelationType, PropertyType, SchemaPattern, GraphSchema,
+    EntityType, RelationType, PropertyType, GraphSchema,
 )
 
 schema = GraphSchema(
@@ -337,25 +329,35 @@ schema = GraphSchema(
         ),
     ],
     relations=[
-        RelationType(label="LIVES_IN", description="Person resides at location"),
-        RelationType(label="WORKS_FOR", description="Person is employed by organization"),
-        RelationType(label="LOCATED_IN", description="Organization is located at a place"),
+        RelationType(
+            label="LIVES_IN",
+            description="Person resides at location",
+            patterns=[("Person", "Location")],
+        ),
+        RelationType(
+            label="WORKS_FOR",
+            description="Person is employed by organization",
+            patterns=[("Person", "Organization")],
+        ),
+        RelationType(
+            label="LOCATED_IN",
+            description="Organization is located at a place",
+            patterns=[("Organization", "Location")],
+        ),
         RelationType(
             label="KNOWS",
             description="Two people know each other",
             properties=[
                 PropertyType(name="since", type="DATE"),
             ],
+            patterns=[("Person", "Person")],
         ),
-    ],
-    patterns=[
-        SchemaPattern(source="Person", relationship="LIVES_IN", target="Location"),
-        SchemaPattern(source="Person", relationship="WORKS_FOR", target="Organization"),
-        SchemaPattern(source="Organization", relationship="LOCATED_IN", target="Location"),
-        SchemaPattern(source="Person", relationship="KNOWS", target="Person"),
     ],
 )
 ```
+
+Each `RelationType.patterns` entry is a `(source_label, target_label)` tuple.
+An empty `patterns` list means the relation is allowed between any entity types.
 
 ### Open Schema Mode
 

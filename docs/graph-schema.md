@@ -224,11 +224,10 @@ schema = GraphSchema(
 
 ### Schema with Patterns
 
-Patterns define which source-relationship-target triples are valid:
+Patterns define which source-target pairs are valid for each relationship type.
+They are specified directly on `RelationType`:
 
 ```python
-from graphrag_sdk import SchemaPattern
-
 schema = GraphSchema(
     entities=[
         EntityType(label="Person"),
@@ -236,15 +235,13 @@ schema = GraphSchema(
         EntityType(label="Location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT"),
-        RelationType(label="LOCATED_IN"),
-    ],
-    patterns=[
-        SchemaPattern(source="Person", relationship="WORKS_AT", target="Organization"),
-        SchemaPattern(source="Organization", relationship="LOCATED_IN", target="Location"),
+        RelationType(label="WORKS_AT", patterns=[("Person", "Organization")]),
+        RelationType(label="LOCATED_IN", patterns=[("Organization", "Location")]),
     ],
 )
 ```
+
+A relationship with an empty `patterns` list is allowed between any entity types.
 
 ### Open Schema Mode
 

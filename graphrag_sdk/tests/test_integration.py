@@ -25,7 +25,7 @@ class TestTopLevelImports:
         from graphrag_sdk import (
             DataModel, GraphNode, GraphRelationship, TextChunk, TextChunks,
             DocumentInfo, DocumentOutput, EntityType, RelationType,
-            SchemaPattern, GraphSchema, GraphData, ResolutionResult,
+            GraphSchema, GraphData, ResolutionResult,
             RetrieverResult, RetrieverResultItem, RagResult, IngestionResult,
             SearchType,
         )

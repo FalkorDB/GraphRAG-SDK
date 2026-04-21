@@ -153,7 +153,7 @@ class TestIngestionPipeline:
         assert result.nodes_created >= 0
 
     async def test_schema_pruning(self, ctx, mock_graph_store, mock_vector_store):
-        """Pruning keeps Unknown + RELATES, drops non-schema labels/types."""
+        """Pruning keeps Unknown + valid rel_type, drops non-schema labels/types."""
         schema = GraphSchema(
             entities=[EntityType(label="Person")],
             relations=[RelationType(label="KNOWS")],
@@ -170,11 +170,11 @@ class TestIngestionPipeline:
                     relationships=[
                         GraphRelationship(
                             start_node_id="p1", end_node_id="x1",
-                            type="RELATES", properties={},
+                            type="RELATES", properties={"rel_type": "KNOWS"},
                         ),
                         GraphRelationship(
                             start_node_id="p1", end_node_id="a1",
-                            type="WRONG", properties={},
+                            type="RELATES", properties={"rel_type": "WRONG"},
                         ),
                     ],
                 )
@@ -191,7 +191,7 @@ class TestIngestionPipeline:
         result = await pipeline.run("test.txt", ctx)
         # Person + Unknown survive; Alien pruned
         assert result.nodes_created == 2
-        # RELATES survives; WRONG pruned (+ Alien endpoint gone)
+        # KNOWS survives; WRONG pruned (+ Alien endpoint gone)
         assert result.relationships_created == 1
 
     async def test_pipeline_wraps_exception(self, ctx, mock_graph_store, mock_vector_store):
@@ -284,3 +284,70 @@ class TestPruneMethod:
         result = pipeline._prune(data, schema)
         assert len(result.nodes) == 1
         assert len(result.relationships) == 0  # rel removed because 'b' is pruned
+
+    def test_prune_enforces_relation_patterns(self):
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        schema = GraphSchema(
+            entities=[
+                EntityType(label="Person"),
+                EntityType(label="Company"),
+            ],
+            relations=[
+                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+            ],
+        )
+        data = GraphData(
+            nodes=[
+                GraphNode(id="p", label="Person"),
+                GraphNode(id="c", label="Company"),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="p", end_node_id="c",
+                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                ),
+                GraphRelationship(
+                    start_node_id="c", end_node_id="p",
+                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                ),
+            ],
+        )
+        result = pipeline._prune(data, schema)
+        assert len(result.relationships) == 1
+        assert result.relationships[0].start_node_id == "p"
+
+    def test_prune_open_relation_patterns(self):
+        """RelationType with empty patterns allows any direction."""
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        schema = GraphSchema(
+            entities=[EntityType(label="Person")],
+            relations=[RelationType(label="KNOWS")],
+        )
+        data = GraphData(
+            nodes=[
+                GraphNode(id="a", label="Person"),
+                GraphNode(id="b", label="Person"),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="a", end_node_id="b",
+                    type="RELATES", properties={"rel_type": "KNOWS"},
+                ),
+            ],
+        )
+        result = pipeline._prune(data, schema)
+        assert len(result.relationships) == 1

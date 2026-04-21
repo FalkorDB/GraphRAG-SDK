@@ -24,7 +24,6 @@ from graphrag_sdk import (
     LiteLLM,
     LiteLLMEmbedder,
     RelationType,
-    SchemaPattern,
 )
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 
@@ -40,19 +39,31 @@ def create_schema() -> GraphSchema:
             EntityType(label="Concept", description="An abstract idea or theme"),
         ],
         relations=[
-            RelationType(label="WORKS_AT", description="Is employed by an organization"),
-            RelationType(label="LOCATED_IN", description="Is physically located in a place"),
-            RelationType(label="RELATED_TO", description="Has a general relationship with"),
-            RelationType(label="PART_OF", description="Is a member or component of"),
-            RelationType(label="PARTICIPATED_IN", description="Took part in an event"),
-        ],
-        patterns=[
-            SchemaPattern(source="Person", relationship="WORKS_AT", target="Organization"),
-            SchemaPattern(source="Person", relationship="LOCATED_IN", target="Place"),
-            SchemaPattern(source="Organization", relationship="LOCATED_IN", target="Place"),
-            SchemaPattern(source="Person", relationship="RELATED_TO", target="Person"),
-            SchemaPattern(source="Person", relationship="PART_OF", target="Organization"),
-            SchemaPattern(source="Person", relationship="PARTICIPATED_IN", target="Event"),
+            RelationType(
+                label="WORKS_AT",
+                description="Is employed by an organization",
+                patterns=[("Person", "Organization")],
+            ),
+            RelationType(
+                label="LOCATED_IN",
+                description="Is physically located in a place",
+                patterns=[("Person", "Place"), ("Organization", "Place")],
+            ),
+            RelationType(
+                label="RELATED_TO",
+                description="Has a general relationship with",
+                patterns=[("Person", "Person")],
+            ),
+            RelationType(
+                label="PART_OF",
+                description="Is a member or component of",
+                patterns=[("Person", "Organization")],
+            ),
+            RelationType(
+                label="PARTICIPATED_IN",
+                description="Took part in an event",
+                patterns=[("Person", "Event")],
+            ),
         ],
     )
 

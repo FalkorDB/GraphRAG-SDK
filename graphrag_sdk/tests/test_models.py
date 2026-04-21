@@ -24,7 +24,6 @@ from graphrag_sdk.core.models import (
     ResolutionResult,
     RetrieverResult,
     RetrieverResultItem,
-    SchemaPattern,
     SearchType,
     TextChunk,
     TextChunks,
@@ -154,22 +153,26 @@ class TestSchemaTypes:
     def test_relation_type(self):
         rt = RelationType(label="KNOWS", description="Social link")
         assert rt.label == "KNOWS"
+        assert rt.patterns == []
         assert hash(rt) == hash(RelationType(label="KNOWS"))
 
-    def test_schema_pattern(self):
-        sp = SchemaPattern(source="Person", relationship="WORKS_AT", target="Company")
-        assert sp.source == "Person"
+    def test_relation_type_with_patterns(self):
+        rt = RelationType(
+            label="WORKS_AT",
+            patterns=[("Person", "Company"), ("Person", "Organization")],
+        )
+        assert len(rt.patterns) == 2
+        assert ("Person", "Company") in rt.patterns
 
     def test_graph_schema(self, sample_schema):
         assert len(sample_schema.entities) == 2
         assert len(sample_schema.relations) == 2
-        assert len(sample_schema.patterns) == 2
+        assert len(sample_schema.relations[0].patterns) == 1
 
     def test_empty_schema(self):
         schema = GraphSchema()
         assert schema.entities == []
         assert schema.relations == []
-        assert schema.patterns == []
 
 
 class TestGraphData:
