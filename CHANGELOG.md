@@ -7,13 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0rc1] - 2026-04-16
+## [1.0.0] - 2026-04-21
 
-Release candidate for v1.0. Opt-in via `pip install graphrag-sdk --pre`. Stable
-installs (`pip install graphrag-sdk`) continue to resolve to v0.8.2 by design.
-
-Everything below this line is the v1.0 changelog, unchanged from the `[1.0.0]`
-draft — content is final for the stable release.
+First stable release of the v1.0 rewrite. `pip install graphrag-sdk` now resolves
+to this version by default. Legacy v0.x users can pin `graphrag-sdk==0.8.2`.
 
 ### Added
 
