@@ -65,7 +65,7 @@ SCHEMA = GraphSchema(
         RelationType(
             label="LOCATED_IN",
             description="Is located in a place",
-            patterns=[("Person", "Place")],
+            patterns=[("Person", "Place"), ("Organization", "Place")],
         ),
         RelationType(
             label="WORKS_AT",

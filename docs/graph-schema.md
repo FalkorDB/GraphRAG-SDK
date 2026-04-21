@@ -293,7 +293,7 @@ result = await rag.graph_store.query_raw(
 
 | File | What it contains |
 |------|-----------------|
-| [`core/models.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/models.py) | GraphSchema, EntityType, RelationType, SchemaPattern, PropertyType |
+| [`core/models.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/models.py) | GraphSchema, EntityType, RelationType, PropertyType |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Node/relationship upserts, label hints, statistics |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Index creation, vector search, fulltext search |
 | [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | Lexical graph construction, pruning logic |

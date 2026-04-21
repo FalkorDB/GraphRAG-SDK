@@ -282,9 +282,17 @@ class IngestionPipeline:
     def _prune(self, graph_data: GraphData, schema: GraphSchema) -> GraphData:
         """Filter graph data to only include schema-conforming nodes and relationships.
 
-        Validates both node labels and ``(source_label, rel_type, target_label)``
-        triples against the schema.  If the schema is empty (open mode), all
-        data passes through unchanged.
+        Each check runs only when the corresponding schema section is populated:
+
+        - ``schema.entities`` present → nodes whose label is not declared (or
+          "Unknown") are dropped; otherwise all nodes pass.
+        - ``schema.relations`` present → relationships whose ``rel_type`` is not
+          declared are dropped, and each declared relation's ``patterns`` (when
+          non-empty) filters by ``(src_label, tgt_label)``; otherwise all
+          relationships whose endpoints survived node-pruning pass.
+
+        When both sections are empty the pipeline is in open-schema mode and
+        the graph is returned unchanged.
         """
         if not schema.entities and not schema.relations:
             return graph_data
