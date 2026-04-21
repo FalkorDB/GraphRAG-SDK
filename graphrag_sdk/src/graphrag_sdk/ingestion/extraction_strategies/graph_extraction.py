@@ -116,7 +116,10 @@ def _format_relation_patterns(relations: list[RelationType]) -> str:
     """Format allowed relationships for prompt injection.
 
     Returns an empty string when no relations are defined (open schema),
-    so the prompt section collapses cleanly.
+    so the prompt section collapses cleanly.  Relations without declared
+    patterns render as ``- LABEL: description`` — the directional list is
+    only emitted when the schema actually constrains it, so we don't burn
+    prompt tokens on ``(any)`` noise.
     """
     if not relations:
         return ""
@@ -124,10 +127,11 @@ def _format_relation_patterns(relations: list[RelationType]) -> str:
     for rt in relations:
         if rt.patterns:
             pairs = ", ".join(f"{s} \u2192 {t}" for s, t in rt.patterns)
+            desc = f": {rt.description}" if rt.description else ""
+            lines.append(f"- {rt.label} ({pairs}){desc}")
         else:
-            pairs = "any"
-        desc = f": {rt.description}" if rt.description else ""
-        lines.append(f"- {rt.label} ({pairs}){desc}")
+            desc = f": {rt.description}" if rt.description else ""
+            lines.append(f"- {rt.label}{desc}")
     return "## Allowed Relationships\n" + "\n".join(lines) + "\n\n"
 
 

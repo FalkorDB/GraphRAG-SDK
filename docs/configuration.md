@@ -347,9 +347,6 @@ schema = GraphSchema(
         RelationType(
             label="KNOWS",
             description="Two people know each other",
-            properties=[
-                PropertyType(name="since", type="DATE"),
-            ],
             patterns=[("Person", "Person")],
         ),
     ],

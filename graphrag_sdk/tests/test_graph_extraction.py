@@ -677,9 +677,12 @@ class TestFormatRelationPatterns:
         assert "Organization \u2192 Place" in result
 
     def test_open_relation(self):
+        """Relations without declared patterns render as ``- LABEL`` — no ``(any)`` noise."""
         rels = [RelationType(label="RELATED_TO")]
         result = _format_relation_patterns(rels)
-        assert "RELATED_TO (any)" in result
+        assert "- RELATED_TO" in result
+        assert "(any)" not in result
+        assert "→" not in result
 
     async def test_relation_patterns_in_prompt(self, ctx):
         """Relation patterns should appear in the Step 2 LLM prompt."""

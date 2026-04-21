@@ -540,7 +540,6 @@ class EntityType(DataModel):
 class RelationType(DataModel):
     label: str                            # e.g. "WORKS_AT"
     description: str | None = None
-    properties: list[PropertyType] = []
     patterns: list[tuple[str, str]] = []  # Allowed (source_label, target_label) pairs
 ```
 

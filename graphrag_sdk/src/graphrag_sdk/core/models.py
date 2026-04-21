@@ -143,9 +143,11 @@ class RelationType(DataModel):
 
     label: str
     description: str | None = None
-    properties: list[PropertyType] = Field(default_factory=list)
     patterns: list[tuple[str, str]] = Field(default_factory=list)
 
+    # Identity is by label only — two RelationType instances with the same
+    # label but different patterns compare/hash equal. Schemas are expected
+    # to declare each relation label once.
     def __hash__(self) -> int:
         return hash(self.label)
 
