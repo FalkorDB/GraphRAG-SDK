@@ -152,16 +152,18 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 ## Benchmark
 
-**~85% accuracy** (8.5/10) on a 100-question benchmark over 20 Project Gutenberg novels.
+**#1 on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel** — 63.73 ACC, ahead of MS-GraphRAG (50.93) and LightRAG (45.09).
 
 | Metric | Value |
 |--------|-------|
-| **Accuracy** | ~85% (8.5/10) |
-| **Questions** | 100 (fact retrieval, complex reasoning, summarization) |
-| **Documents** | 20 novels (Project Gutenberg) |
-| **Query P50** | 5.4s |
+| **Novel ACC** | 63.73 (#1) |
+| **Fact retrieval** | 65.22 |
+| **Complex reasoning** | 58.63 |
+| **Contextual summarization** | 69.54 |
+| **Creative generation** | 57.08 |
+| **Questions** | 2,010 across 20 novels |
 
-See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for full methodology and reproduction instructions.
+See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for methodology and reproduction.
 
 ## Examples
 
