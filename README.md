@@ -158,6 +158,18 @@ async with GraphRAG(
 
 ---
 
+## Development Milestones
+- 2024-06: First public release
+- 2024-Q4: PDF ingestion and multi-provider LLMs
+- 2025-Q1–Q2: Pluggable providers and pipeline tuning
+- 2025-Q3: Sharper retrieval, deeper test coverage
+- 🎉 2026-04: Version 1.0 is released
+- 2026-Q2: Increase production capabilities — timeouts, logs; expand ingestion support — tables, structured data
+- 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
+- 2026-Q4: Smarter retrieval — dynamic traversal, temporal graph
+
+---
+
 ## Contributing
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and code style guidelines.
