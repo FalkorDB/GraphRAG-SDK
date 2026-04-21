@@ -35,31 +35,6 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 
 ---
 
-![document-to-provenance-answer-flow-v1](https://github.com/user-attachments/assets/afd1607e-20e1-4954-95f2-274701f5d61d)
-
-
-## Ingestion & Retrieval Pipeline
-
-| Area | Item | Execution | Description |
-| --- | --- | --- | --- |
-| Ingestion | 1. Load | Sequential | Read raw text from files (PDF, TXT) or strings. |
-| Ingestion | 2. Chunk | Sequential | Split content into overlapping text chunks. |
-| Ingestion | 3. Lexical Graph | Sequential | Create `Document` and `Chunk` nodes with provenance edges. |
-| Ingestion | 4. Extract | Sequential | Run GLiNER2 local NER and LLM-based relationship extraction. |
-| Ingestion | 5. Quality Filter | Sequential | Remove invalid extracted nodes (empty IDs, malformed shape). |
-| Ingestion | 6. Prune | Sequential | Filter nodes/relations against the schema; drop orphan relations. |
-| Ingestion | 7. Resolve | Sequential | Deduplicate entities (exact match, semantic, LLM-verified). |
-| Ingestion | 8. Write | Sequential | Persist graph updates with batched `MERGE` operations in FalkorDB. |
-| Ingestion | 9a. Mentions | Parallel | Link entities back to source chunks. |
-| Ingestion | 9b. Index | Parallel | Embed and index chunks for retrieval. |
-| Retrieval | Vector search | Runtime | Finds semantically similar chunks. |
-| Retrieval | Full-text search | Runtime | Matches exact terms and keywords. |
-| Retrieval | Cypher queries | Runtime | Executes structured graph lookups. |
-| Retrieval | Relationship expansion | Runtime | Traverses connected entities and context. |
-| Retrieval | Cosine reranking | Runtime | Reorders candidates by relevance. |
-
-> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
-
 ## Quick Start
 
 ### 1. Install and start FalkorDB
@@ -127,6 +102,34 @@ async with GraphRAG(
 ) as rag:
     ...  # ingest / completion as above
 ```
+
+---
+
+![document-to-provenance-answer-flow-v1](https://github.com/user-attachments/assets/afd1607e-20e1-4954-95f2-274701f5d61d)
+
+
+## Ingestion & Retrieval Pipeline
+
+| Area | Item | Execution | Description |
+| --- | --- | --- | --- |
+| Ingestion | 1. Load | Sequential | Read raw text from files (PDF, TXT) or strings. |
+| Ingestion | 2. Chunk | Sequential | Split content into overlapping text chunks. |
+| Ingestion | 3. Lexical Graph | Sequential | Create `Document` and `Chunk` nodes with provenance edges. |
+| Ingestion | 4. Extract | Sequential | Run GLiNER2 local NER and LLM-based relationship extraction. |
+| Ingestion | 5. Quality Filter | Sequential | Remove invalid extracted nodes (empty IDs, malformed shape). |
+| Ingestion | 6. Prune | Sequential | Filter nodes/relations against the schema; drop orphan relations. |
+| Ingestion | 7. Resolve | Sequential | Deduplicate entities (exact match, semantic, LLM-verified). |
+| Ingestion | 8. Write | Sequential | Persist graph updates with batched `MERGE` operations in FalkorDB. |
+| Ingestion | 9a. Mentions | Parallel | Link entities back to source chunks. |
+| Ingestion | 9b. Index | Parallel | Embed and index chunks for retrieval. |
+| Retrieval | Vector search | Runtime | Finds semantically similar chunks. |
+| Retrieval | Full-text search | Runtime | Matches exact terms and keywords. |
+| Retrieval | Cypher queries | Runtime | Executes structured graph lookups. |
+| Retrieval | Relationship expansion | Runtime | Traverses connected entities and context. |
+| Retrieval | Cosine reranking | Runtime | Reorders candidates by relevance. |
+
+> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
+
 ---
 
 ## Examples
