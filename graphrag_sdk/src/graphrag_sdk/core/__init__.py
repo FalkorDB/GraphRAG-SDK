@@ -11,7 +11,6 @@ from graphrag_sdk.core.models import (
     RelationType,
     RetrieverResult,
     RetrieverResultItem,
-    SchemaPattern,
     TextChunk,
 )
 from graphrag_sdk.core.providers import (
@@ -39,6 +38,5 @@ __all__ = [
     "RelationType",
     "RetrieverResult",
     "RetrieverResultItem",
-    "SchemaPattern",
     "TextChunk",
 ]

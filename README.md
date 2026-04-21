@@ -105,7 +105,7 @@ asyncio.run(main())
 ### 3. Define a schema (optional)
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType, SchemaPattern
+from graphrag_sdk import GraphSchema, EntityType, RelationType
 
 schema = GraphSchema(
     entities=[
@@ -114,12 +114,8 @@ schema = GraphSchema(
         EntityType(label="Location", description="A geographic location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Is employed by"),
-        RelationType(label="LOCATED_IN", description="Is situated in"),
-    ],
-    patterns=[
-        SchemaPattern(source="Person", relationship="WORKS_AT", target="Organization"),
-        SchemaPattern(source="Organization", relationship="LOCATED_IN", target="Location"),
+        RelationType(label="WORKS_AT", description="Is employed by", patterns=[("Person", "Organization")]),
+        RelationType(label="LOCATED_IN", description="Is situated in", patterns=[("Organization", "Location")]),
     ],
 )
 

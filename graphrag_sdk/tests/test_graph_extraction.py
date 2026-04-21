@@ -12,6 +12,7 @@ from graphrag_sdk.core.models import (
     ExtractedEntity,
     GraphSchema,
     EntityType,
+    RelationType,
     TextChunk,
     TextChunks,
 )
@@ -23,6 +24,7 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
     VERIFY_EXTRACT_RELS_PROMPT,
     _format_entity_types,
+    _format_relation_patterns,
 )
 
 from .conftest import MockLLM, MockLLMWithGraphExtraction
@@ -645,3 +647,68 @@ class TestEntityTypeDescriptions:
         step2_prompt = captured_prompts[1]
         assert "Command\n  Description: FalkorDB GRAPH.* commands" in step2_prompt
         assert "Function\n  Description: Cypher built-in functions" in step2_prompt
+
+
+class TestFormatRelationPatterns:
+    def test_empty_relations(self):
+        assert _format_relation_patterns([]) == ""
+
+    def test_relation_with_patterns(self):
+        rels = [
+            RelationType(
+                label="WORKS_AT",
+                description="Employment",
+                patterns=[("Person", "Company")],
+            ),
+        ]
+        result = _format_relation_patterns(rels)
+        assert "## Allowed Relationships" in result
+        assert "WORKS_AT (Person \u2192 Company): Employment" in result
+
+    def test_relation_with_multiple_patterns(self):
+        rels = [
+            RelationType(
+                label="LOCATED_IN",
+                patterns=[("Person", "Place"), ("Organization", "Place")],
+            ),
+        ]
+        result = _format_relation_patterns(rels)
+        assert "Person \u2192 Place" in result
+        assert "Organization \u2192 Place" in result
+
+    def test_open_relation(self):
+        """Relations without declared patterns render as ``- LABEL`` — no ``(any)`` noise."""
+        rels = [RelationType(label="RELATED_TO")]
+        result = _format_relation_patterns(rels)
+        assert "- RELATED_TO" in result
+        assert "(any)" not in result
+        assert "→" not in result
+
+    async def test_relation_patterns_in_prompt(self, ctx):
+        """Relation patterns should appear in the Step 2 LLM prompt."""
+        captured_prompts: list[str] = []
+
+        class CaptureLLM(MockLLM):
+            def invoke(self, prompt, **kwargs):
+                captured_prompts.append(prompt)
+                return super().invoke(prompt, **kwargs)
+
+        llm = CaptureLLM(responses=[
+            json.dumps([{"name": "Alice", "type": "Person", "description": "A person"}]),
+            json.dumps({"entities": [{"name": "Alice", "type": "Person", "description": "A person"}],
+                        "relationships": []}),
+        ])
+        schema = GraphSchema(
+            entities=[EntityType(label="Person"), EntityType(label="Company")],
+            relations=[
+                RelationType(label="WORKS_AT", description="Works at", patterns=[("Person", "Company")]),
+            ],
+        )
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+        chunks = _make_chunks("Alice works at Acme.")
+        await extractor.extract(chunks, schema, ctx)
+
+        assert len(captured_prompts) >= 2
+        step2_prompt = captured_prompts[1]
+        assert "## Allowed Relationships" in step2_prompt
+        assert "WORKS_AT (Person \u2192 Company): Works at" in step2_prompt

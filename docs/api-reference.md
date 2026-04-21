@@ -522,7 +522,7 @@ Deterministic entity ID from normalized name and optional type. When `entity_typ
 ## Schema
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType, SchemaPattern
+from graphrag_sdk import GraphSchema, EntityType, RelationType
 ```
 
 ### EntityType
@@ -540,7 +540,7 @@ class EntityType(DataModel):
 class RelationType(DataModel):
     label: str                            # e.g. "WORKS_AT"
     description: str | None = None
-    properties: list[PropertyType] = []
+    patterns: list[tuple[str, str]] = []  # Allowed (source_label, target_label) pairs
 ```
 
 ### PropertyType
@@ -553,22 +553,12 @@ class PropertyType(DataModel):
     required: bool = False
 ```
 
-### SchemaPattern
-
-```python
-class SchemaPattern(DataModel):
-    source: str                           # Source entity label
-    relationship: str                     # Relationship type
-    target: str                           # Target entity label
-```
-
 ### GraphSchema
 
 ```python
 class GraphSchema(DataModel):
     entities: list[EntityType] = []
     relations: list[RelationType] = []
-    patterns: list[SchemaPattern] = []    # Allowed source-relationship-target triples
 ```
 
 ---

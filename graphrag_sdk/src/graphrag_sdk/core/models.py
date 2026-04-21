@@ -134,12 +134,20 @@ class EntityType(DataModel):
 
 
 class RelationType(DataModel):
-    """Definition of a relationship type in the graph schema."""
+    """Definition of a relationship type in the graph schema.
+
+    ``patterns`` lists the allowed directional ``(source_label, target_label)``
+    pairs for this relationship.  An empty list means the relation is allowed
+    between any entity types (open mode).
+    """
 
     label: str
     description: str | None = None
-    properties: list[PropertyType] = Field(default_factory=list)
+    patterns: list[tuple[str, str]] = Field(default_factory=list)
 
+    # Identity is by label only — two RelationType instances with the same
+    # label but different patterns compare/hash equal. Schemas are expected
+    # to declare each relation label once.
     def __hash__(self) -> int:
         return hash(self.label)
 
@@ -147,14 +155,6 @@ class RelationType(DataModel):
         if not isinstance(other, RelationType):
             return NotImplemented
         return self.label == other.label
-
-
-class SchemaPattern(DataModel):
-    """A valid source→relationship→target pattern in the schema."""
-
-    source: str
-    relationship: str
-    target: str
 
 
 class GraphSchema(DataModel):
@@ -166,7 +166,6 @@ class GraphSchema(DataModel):
 
     entities: list[EntityType] = Field(default_factory=list)
     relations: list[RelationType] = Field(default_factory=list)
-    patterns: list[SchemaPattern] = Field(default_factory=list)
 
 
 # ── Extraction / Resolution Output Types ─────────────────────────

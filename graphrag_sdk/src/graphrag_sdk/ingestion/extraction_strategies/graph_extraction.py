@@ -18,6 +18,7 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
     GraphSchema,
+    RelationType,
     TextChunks,
 )
 from graphrag_sdk.core.providers import LLMInterface
@@ -46,6 +47,7 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "2. EXTRACT all relationships between the verified entities.\n\n"
     "## Entity Types\n"
     "{entity_types}\n\n"
+    "{relation_patterns}"
     "## Pre-extracted Entities\n"
     "{entities_json}\n\n"
     "## Text\n"
@@ -64,8 +66,7 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "### Relationships\n"
     "- Extract ALL factual connections stated or implied in the text.\n"
     "- source and target must be entity names from the verified entity list.\n"
-    "- type: a descriptive relationship label in UPPER_SNAKE_CASE "
-    "(e.g. WORKS_AT, MARRIED_TO, LOCATED_IN, CREATED_BY, PART_OF).\n"
+    "{relationship_type_instruction}"
     "- description: one sentence describing the relationship as a "
     "standalone fact. This is embedded for semantic search — it must be "
     "self-contained and understandable without the original text.\n"
@@ -109,6 +110,46 @@ def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) 
         else:
             parts.append(t)
     return "\n".join(parts)
+
+
+def _format_relation_patterns(relations: list[RelationType]) -> str:
+    """Format allowed relationships for prompt injection.
+
+    Returns an empty string when no relations are defined (open schema),
+    so the prompt section collapses cleanly.  Relations without declared
+    patterns render as ``- LABEL: description`` — the directional list is
+    only emitted when the schema actually constrains it, so we don't burn
+    prompt tokens on ``(any)`` noise.
+    """
+    if not relations:
+        return ""
+    lines: list[str] = []
+    for rt in relations:
+        if rt.patterns:
+            pairs = ", ".join(f"{s} \u2192 {t}" for s, t in rt.patterns)
+            desc = f": {rt.description}" if rt.description else ""
+            lines.append(f"- {rt.label} ({pairs}){desc}")
+        else:
+            desc = f": {rt.description}" if rt.description else ""
+            lines.append(f"- {rt.label}{desc}")
+    return "## Allowed Relationships\n" + "\n".join(lines) + "\n\n"
+
+
+def _relationship_type_instruction(relations: list[RelationType]) -> str:
+    """Return the type instruction line for the relationships section.
+
+    When the schema defines allowed relations the LLM is told to restrict
+    to those types; otherwise it may use any descriptive label.
+    """
+    if relations:
+        return (
+            "- type: MUST be one of the relationship types listed in "
+            "the Allowed Relationships section above.\n"
+        )
+    return (
+        "- type: a descriptive relationship label in UPPER_SNAKE_CASE "
+        "(e.g. WORKS_AT, MARRIED_TO, LOCATED_IN, CREATED_BY, PART_OF).\n"
+    )
 
 
 class GraphExtraction(ExtractionStrategy):
@@ -267,6 +308,8 @@ class GraphExtraction(ExtractionStrategy):
             )
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
+                relation_patterns=_format_relation_patterns(schema.relations),
+                relationship_type_instruction=_relationship_type_instruction(schema.relations),
                 entities_json=entities_json,
                 text=text,
             )

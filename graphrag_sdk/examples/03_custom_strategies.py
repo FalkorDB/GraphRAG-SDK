@@ -28,7 +28,6 @@ from graphrag_sdk import (
     LiteLLM,
     LiteLLMEmbedder,
     RelationType,
-    SchemaPattern,
 )
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
@@ -63,20 +62,36 @@ SCHEMA = GraphSchema(
         EntityType(label="Concept", description="A scientific field or abstract idea"),
     ],
     relations=[
-        RelationType(label="LOCATED_IN", description="Is located in a place"),
-        RelationType(label="WORKS_AT", description="Works at an institution"),
-        RelationType(label="MARRIED_TO", description="Is married to"),
-        RelationType(label="RELATED_TO", description="Has a relationship with"),
-        RelationType(label="AWARDED", description="Received an award or prize"),
-        RelationType(label="RESEARCHED", description="Conducted research on a topic"),
-    ],
-    patterns=[
-        SchemaPattern(source="Person", relationship="LOCATED_IN", target="Place"),
-        SchemaPattern(source="Person", relationship="WORKS_AT", target="Organization"),
-        SchemaPattern(source="Person", relationship="MARRIED_TO", target="Person"),
-        SchemaPattern(source="Person", relationship="RELATED_TO", target="Person"),
-        SchemaPattern(source="Person", relationship="AWARDED", target="Event"),
-        SchemaPattern(source="Person", relationship="RESEARCHED", target="Concept"),
+        RelationType(
+            label="LOCATED_IN",
+            description="Is located in a place",
+            patterns=[("Person", "Place"), ("Organization", "Place")],
+        ),
+        RelationType(
+            label="WORKS_AT",
+            description="Works at an institution",
+            patterns=[("Person", "Organization")],
+        ),
+        RelationType(
+            label="MARRIED_TO",
+            description="Is married to",
+            patterns=[("Person", "Person")],
+        ),
+        RelationType(
+            label="RELATED_TO",
+            description="Has a relationship with",
+            patterns=[("Person", "Person")],
+        ),
+        RelationType(
+            label="AWARDED",
+            description="Received an award or prize",
+            patterns=[("Person", "Event")],
+        ),
+        RelationType(
+            label="RESEARCHED",
+            description="Conducted research on a topic",
+            patterns=[("Person", "Concept")],
+        ),
     ],
 )
 
