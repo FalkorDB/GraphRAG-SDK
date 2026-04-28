@@ -11,13 +11,22 @@ class FixedSizeChunking(ChunkingStrategy):
     """Split text into fixed-size character windows with optional overlap.
 
     Args:
-        chunk_size: Maximum number of characters per chunk.
-        chunk_overlap: Number of overlapping characters between consecutive chunks.
+        chunk_size: Maximum number of characters per chunk. Defaults to
+            1000 for general-purpose use; the GraphRAG-Bench benchmark
+            configuration uses ``chunk_size=1500`` for richer per-extraction
+            context, which trades more LLM tokens per call for better
+            entity/relationship recall.
+        chunk_overlap: Number of overlapping characters between consecutive
+            chunks. ~10% of ``chunk_size`` is a reasonable default —
+            prevents entity loss at chunk boundaries.
 
     Example::
 
-        chunker = FixedSizeChunking(chunk_size=500, chunk_overlap=50)
-        result = await chunker.chunk(long_text, ctx)
+        # Default — fast, small chunks
+        chunker = FixedSizeChunking()
+
+        # Benchmark-tuned — better recall, more tokens
+        chunker = FixedSizeChunking(chunk_size=1500, chunk_overlap=200)
     """
 
     def __init__(

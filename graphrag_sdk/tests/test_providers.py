@@ -131,6 +131,71 @@ class TestLLMInterface:
         llm = CustomLLM()
         assert llm.max_concurrency == 5
 
+    async def test_ainvoke_warning_does_not_leak_exception_body(self, caplog):
+        """S6: retry WARNING must not include multi-line exception bodies."""
+
+        attempts = {"n": 0}
+        secret_body = "Authorization: Bearer SECRET_KEY_xyz\nresponse_body=...\nproxy=https://internal"
+
+        class FlakyLLM(LLMInterface):
+            def __init__(self) -> None:
+                super().__init__(model_name="flaky")
+
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise RuntimeError(f"upstream 500\n{secret_body}")
+                return LLMResponse(content="ok")
+
+        import logging
+
+        llm = FlakyLLM()
+        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.core.providers.base"):
+            response = await llm.ainvoke("hi", max_retries=3)
+        assert response.content == "ok"
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, "expected a retry WARNING"
+        msg = warnings[0].getMessage()
+        # Sanitized: class name + first line only, no leaked body
+        assert "RuntimeError" in msg
+        assert "upstream 500" in msg
+        assert "SECRET_KEY_xyz" not in msg
+        assert "proxy=" not in msg
+        # Single-line invariant
+        assert "\n" not in msg
+
+
+class TestSummarizeException:
+    """S6: WARNING-level exception logs must be single-line and length-bounded."""
+
+    def test_includes_class_name_and_message(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        s = summarize_exception(ValueError("bad input"))
+        assert s == "ValueError: bad input"
+
+    def test_class_name_only_when_message_is_empty(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        s = summarize_exception(RuntimeError())
+        assert s == "RuntimeError"
+
+    def test_strips_to_first_line(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        s = summarize_exception(RuntimeError("first line\nsecret payload\nmore"))
+        assert "secret payload" not in s
+        assert s == "RuntimeError: first line"
+
+    def test_truncates_long_messages(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        long_msg = "x" * 1000
+        s = summarize_exception(RuntimeError(long_msg))
+        assert len(s) < 250  # class name + truncated body + ellipsis
+        assert s.endswith("...")
+
 
 class TestLLMBatchItem:
     def test_ok_with_response(self):

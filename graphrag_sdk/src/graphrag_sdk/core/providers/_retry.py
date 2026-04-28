@@ -9,6 +9,23 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_MAX_EXC_SUMMARY_LEN = 200
+
+
+def summarize_exception(exc: BaseException) -> str:
+    """Render an exception for a sanitized one-line WARNING log.
+
+    Returns ``ExcType: <first-line, truncated>``. Provider exception strings
+    can include request payloads, response bodies, or proxy URLs; those
+    belong at DEBUG via ``exc_info=``, not in a single-line WARNING that may
+    be aggregated into shared log streams.
+    """
+    text = str(exc)
+    msg = text.splitlines()[0] if text else ""
+    if len(msg) > _MAX_EXC_SUMMARY_LEN:
+        msg = msg[:_MAX_EXC_SUMMARY_LEN] + "..."
+    return f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
 
 def is_transient_embedding_error(exc: Exception) -> bool:
     """Return True if the embedding error is transient (worth retrying via split).

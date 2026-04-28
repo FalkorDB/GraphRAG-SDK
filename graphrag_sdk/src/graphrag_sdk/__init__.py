@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG
@@ -26,6 +26,7 @@ from graphrag_sdk.core.models import (
     DocumentInfo,
     DocumentOutput,
     EntityType,
+    FinalizeResult,
     GraphData,
     GraphNode,
     GraphRelationship,
@@ -116,6 +117,7 @@ __all__ = [
     "Embedder",
     "EntityType",
     "FalkorDBConnection",
+    "FinalizeResult",
     "GraphData",
     "GraphNode",
     "GraphRAGError",

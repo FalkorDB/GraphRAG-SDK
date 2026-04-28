@@ -16,7 +16,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ConnectionConfig:
-    """FalkorDB connection configuration."""
+    """FalkorDB connection configuration.
+
+    TLS-related fields mirror ``redis-py``'s naming. They are no-ops unless
+    ``ssl=True``. When TLS is enabled, certificates are verified by default
+    (``ssl_cert_reqs="required"``) — relax explicitly only if you understand
+    the implications.
+    """
 
     host: str = "localhost"
     port: int = 6379
@@ -28,15 +34,32 @@ class ConnectionConfig:
     retry_delay: float = 1.0
     pool_timeout: float = 30.0
     query_timeout_ms: int | None = 10_000
+    # TLS / SSL
+    ssl: bool = False
+    ssl_cert_reqs: str = "required"
+    ssl_ca_certs: str | None = None
+    ssl_certfile: str | None = None
+    ssl_keyfile: str | None = None
+    ssl_check_hostname: bool = True
 
     @classmethod
     def from_url(cls, url: str, **kwargs: Any) -> ConnectionConfig:
-        """Create a ConnectionConfig from a ``redis://`` URL.
+        """Create a ConnectionConfig from a ``redis://`` or ``rediss://`` URL.
 
-        Supports ``redis://[user:pass@]host[:port][/db]``.
+        Supports ``redis://[user:pass@]host[:port][/db]`` for plaintext and
+        ``rediss://[user:pass@]host[:port][/db]`` for TLS. The scheme drives
+        the ``ssl`` field; explicit kwargs always win.
+
         Extra keyword arguments override parsed values.
         """
         parsed = urlparse(url)
+        if parsed.scheme not in ("redis", "rediss", ""):
+            raise ValueError(
+                f"Unsupported URL scheme: {parsed.scheme!r} "
+                "(use 'redis://' for plaintext or 'rediss://' for TLS)"
+            )
+        if parsed.scheme == "rediss":
+            kwargs.setdefault("ssl", True)
         return cls(
             host=parsed.hostname or "localhost",
             port=parsed.port or 6379,
@@ -81,22 +104,34 @@ class FalkorDBConnection:
         except ImportError:
             raise ImportError("falkordb package is required. Install with: pip install falkordb")
 
-        self._pool = BlockingConnectionPool(
-            host=self.config.host,
-            port=self.config.port,
-            username=self.config.username,
-            password=self.config.password,
-            max_connections=self.config.max_connections,
-            timeout=self.config.pool_timeout,
-            decode_responses=True,
-        )
+        pool_kwargs: dict[str, Any] = {
+            "host": self.config.host,
+            "port": self.config.port,
+            "username": self.config.username,
+            "password": self.config.password,
+            "max_connections": self.config.max_connections,
+            "timeout": self.config.pool_timeout,
+            "decode_responses": True,
+        }
+        if self.config.ssl:
+            from redis.asyncio.connection import SSLConnection
+
+            pool_kwargs["connection_class"] = SSLConnection
+            pool_kwargs["ssl_cert_reqs"] = self.config.ssl_cert_reqs
+            pool_kwargs["ssl_ca_certs"] = self.config.ssl_ca_certs
+            pool_kwargs["ssl_certfile"] = self.config.ssl_certfile
+            pool_kwargs["ssl_keyfile"] = self.config.ssl_keyfile
+            pool_kwargs["ssl_check_hostname"] = self.config.ssl_check_hostname
+
+        self._pool = BlockingConnectionPool(**pool_kwargs)
         self._driver = FalkorDB(connection_pool=self._pool)
         self._graph = self._driver.select_graph(self.config.graph_name)
 
         logger.info(
-            "Connected to FalkorDB (async) at %s:%s",
+            "Connected to FalkorDB (async) at %s:%s (tls=%s)",
             self.config.host,
             self.config.port,
+            self.config.ssl,
         )
 
     @property

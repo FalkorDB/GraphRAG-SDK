@@ -13,6 +13,7 @@ from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
+    summarize_exception,
 )
 from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
@@ -120,9 +121,13 @@ class OpenRouterLLM(LLMInterface):
                 if attempt < max_retries - 1:
                     delay = 2**attempt
                     logger.warning(
-                        f"OpenRouter call failed (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {delay}s: {exc}"
+                        "OpenRouter call failed (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        summarize_exception(exc),
                     )
+                    logger.debug("OpenRouter call failure details", exc_info=exc)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
@@ -156,9 +161,13 @@ class OpenRouterLLM(LLMInterface):
                 if attempt < max_retries - 1:
                     delay = 2**attempt
                     logger.warning(
-                        f"OpenRouter call failed (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {delay}s: {exc}"
+                        "OpenRouter call failed (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        summarize_exception(exc),
                     )
+                    logger.debug("OpenRouter call failure details", exc_info=exc)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 

@@ -61,6 +61,13 @@ class MyCustomLLM(LLMInterface):
 class MyCustomEmbedder(Embedder):
     """Example: wrap a local embedding model or custom API.
 
+    !!! WARNING — STUB IMPLEMENTATION !!!
+    The ``embed_query`` body below returns a zero vector. This is a
+    template, not a working embedder. **Replace it with a real call**
+    before running this example against a graph you care about — a
+    zero-vector embedder produces a graph where every chunk is
+    "identical" and vector retrieval is meaningless.
+
     You must implement `embed_query()`. Optionally override
     `embed_documents()` for batch optimization and `aembed_query()`
     / `aembed_documents()` for async support.
@@ -76,9 +83,14 @@ class MyCustomEmbedder(Embedder):
         return "my-custom-embedder"
 
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
-        # Replace with your actual embedding call:
-        # return self.model.encode(text).tolist()
-        return [0.0] * self.dimension  # Stub: zero vector
+        # ⚠️ STUB: returns a zero vector — replace before real use.
+        # Real implementation:
+        #     return self.model.encode(text).tolist()
+        raise NotImplementedError(
+            "MyCustomEmbedder.embed_query is a stub. Replace the body "
+            "with a real embedding call (e.g., SentenceTransformer, "
+            "a custom API client) before using this provider."
+        )
 
     def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         # Optional batch optimization. Default calls embed_query per text.

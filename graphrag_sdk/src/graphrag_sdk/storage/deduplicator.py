@@ -11,6 +11,11 @@ from graphrag_sdk.core.providers import Embedder
 
 logger = logging.getLogger(__name__)
 
+# Pagination safety net — well above any realistic graph size at typical
+# batch sizes (10_000 * 500 = 5M entities). Trips only on a pathological
+# server bug that keeps returning the same page.
+_MAX_PAGINATION_ITERATIONS = 10_000
+
 # Cypher queries for remapping edges from a duplicate to a survivor entity.
 _REMAP_QUERIES = [
     # Outgoing RELATES from duplicate
@@ -120,7 +125,7 @@ class EntityDeduplicator:
         all_ids: list[str] = []
         all_names: list[str] = []
         all_labels: list[str] = []
-        while True:
+        for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, "
@@ -135,6 +140,11 @@ class EntityDeduplicator:
                 all_names.append(row[1] if len(row) > 1 and row[1] else str(row[0]))
                 all_labels.append(row[2] if len(row) > 2 and row[2] else "")
             offset += batch_size
+        else:
+            logger.error(
+                "Pagination exceeded %d iterations in _deduplicate_fuzzy — aborting",
+                _MAX_PAGINATION_ITERATIONS,
+            )
 
         if len(all_ids) < 2:
             return 0
@@ -203,7 +213,7 @@ class EntityDeduplicator:
         """Fetch all entities in batches, including their primary label."""
         offset = 0
         entities: list[dict] = []
-        while True:
+        for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, e.description AS desc, "
@@ -223,6 +233,11 @@ class EntityDeduplicator:
                     }
                 )
             offset += batch_size
+        else:
+            logger.error(
+                "Pagination exceeded %d iterations in _fetch_all_entities — aborting",
+                _MAX_PAGINATION_ITERATIONS,
+            )
         return entities
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:

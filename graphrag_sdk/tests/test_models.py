@@ -9,6 +9,7 @@ from graphrag_sdk.core.models import (
     DocumentInfo,
     DocumentOutput,
     EntityType,
+    FinalizeResult,
     GraphData,
     GraphNode,
     GraphRelationship,
@@ -174,6 +175,34 @@ class TestSchemaTypes:
         assert schema.entities == []
         assert schema.relations == []
 
+    def test_graph_schema_warns_on_undeclared_pattern_label(self, caplog):
+        """A2: catch typos like 'Persn' at config time, not later in pruning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.core.models"):
+            GraphSchema(
+                entities=[EntityType(label="Person"), EntityType(label="Company")],
+                relations=[
+                    RelationType(label="WORKS_AT", patterns=[("Persn", "Company")]),
+                ],
+            )
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        msg = next((r.getMessage() for r in warnings if "WORKS_AT" in r.getMessage()), None)
+        assert msg is not None
+        assert "Persn" in msg
+
+    def test_graph_schema_open_mode_does_not_warn(self, caplog):
+        """No entities declared = open mode; pattern labels can be anything."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.core.models"):
+            GraphSchema(
+                relations=[RelationType(label="X", patterns=[("Anything", "Goes")])],
+            )
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
 
 class TestGraphData:
     def test_creation(self, sample_graph_data):
@@ -264,6 +293,28 @@ class TestIngestionResult:
         result = IngestionResult(nodes_created=10, relationships_created=5, chunks_indexed=3)
         assert result.nodes_created == 10
         assert result.relationships_created == 5
+
+
+class TestFinalizeResult:
+    def test_defaults(self):
+        result = FinalizeResult()
+        assert result.null_stubs_removed == 0
+        assert result.entities_deduplicated == 0
+        assert result.entities_embedded == 0
+        assert result.relationships_embedded == 0
+        assert result.indexes == {}
+
+    def test_with_counts(self):
+        result = FinalizeResult(
+            null_stubs_removed=2,
+            entities_deduplicated=5,
+            entities_embedded=10,
+            relationships_embedded=7,
+            indexes={"vector_Chunk": True, "fulltext_Entity": False},
+        )
+        assert result.entities_deduplicated == 5
+        assert result.indexes["vector_Chunk"] is True
+        assert result.indexes["fulltext_Entity"] is False
 
 
 class TestSearchType:

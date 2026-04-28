@@ -120,7 +120,7 @@ async def main():
 
     # Clear previous data
     try:
-        await rag.graph_store.delete_all()
+        await rag.delete_all()
     except Exception:
         pass
 
@@ -130,8 +130,8 @@ async def main():
 
     for source_id, text in DOCUMENTS:
         result = await rag.ingest(
-            source_id,
             text=text,
+            document_id=source_id,
             # Larger chunks capture more context per extraction call
             chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
             # GraphExtraction: GLiNER2 entity NER + LLM verify & relationship extraction
@@ -145,15 +145,15 @@ async def main():
     # --- Post-ingestion: finalize (dedup, embeddings, indexes) ---
     print("\nRunning finalize()...")
     finalize_result = await rag.finalize()
-    print(f"  Deduplicated: {finalize_result['entities_deduplicated']} entities")
-    print(f"  Embedded: {finalize_result['entities_embedded']} entities, "
-          f"{finalize_result['relationships_embedded']} relationships")
+    print(f"  Deduplicated: {finalize_result.entities_deduplicated} entities")
+    print(f"  Embedded: {finalize_result.entities_embedded} entities, "
+          f"{finalize_result.relationships_embedded} relationships")
 
     elapsed = time.time() - t0
     print(f"\nTotal ingestion time: {elapsed:.1f}s")
 
     # --- Graph statistics ---
-    stats = await rag.graph_store.get_statistics()
+    stats = await rag.get_statistics()
     print(f"\nGraph Statistics:")
     print(f"  Nodes:         {stats['node_count']}")
     print(f"  Edges:         {stats['edge_count']}")

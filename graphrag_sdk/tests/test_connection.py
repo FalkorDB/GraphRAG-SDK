@@ -19,6 +19,10 @@ class TestConnectionConfig:
         assert cfg.max_connections == 16
         assert cfg.retry_count == 3
         assert cfg.retry_delay == 1.0
+        # TLS off by default; verification strict if enabled.
+        assert cfg.ssl is False
+        assert cfg.ssl_cert_reqs == "required"
+        assert cfg.ssl_check_hostname is True
 
     def test_custom_values(self):
         cfg = ConnectionConfig(
@@ -32,6 +36,28 @@ class TestConnectionConfig:
         assert cfg.port == 6380
         assert cfg.username == "admin"
         assert cfg.graph_name == "my_graph"
+
+
+class TestConnectionConfigFromURL:
+    def test_redis_scheme_keeps_ssl_off(self):
+        cfg = ConnectionConfig.from_url("redis://user:pw@host:6380/0")
+        assert cfg.host == "host"
+        assert cfg.port == 6380
+        assert cfg.username == "user"
+        assert cfg.password == "pw"
+        assert cfg.ssl is False
+
+    def test_rediss_scheme_enables_ssl(self):
+        cfg = ConnectionConfig.from_url("rediss://host:6380")
+        assert cfg.ssl is True
+
+    def test_explicit_kwargs_override_scheme(self):
+        cfg = ConnectionConfig.from_url("rediss://host", ssl=False)
+        assert cfg.ssl is False
+
+    def test_unknown_scheme_raises(self):
+        with pytest.raises(ValueError, match="Unsupported URL scheme"):
+            ConnectionConfig.from_url("https://host")
 
 
 class TestFalkorDBConnection:
@@ -116,3 +142,43 @@ class TestFalkorDBConnection:
             conn._driver = mock_driver
             conn._graph = mock_graph
             assert conn.graph is mock_graph
+
+
+class TestFalkorDBConnectionTLS:
+    def test_pool_omits_ssl_kwargs_when_ssl_disabled(self):
+        from redis.asyncio import BlockingConnectionPool
+
+        conn = FalkorDBConnection(ConnectionConfig(host="h", port=1, ssl=False))
+        with patch("redis.asyncio.BlockingConnectionPool") as mock_pool, \
+             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+            mock_falkor.return_value.select_graph = MagicMock()
+            conn._ensure_client()
+            kwargs = mock_pool.call_args.kwargs
+            assert "connection_class" not in kwargs
+            assert "ssl_cert_reqs" not in kwargs
+
+    def test_pool_passes_ssl_kwargs_when_enabled(self):
+        from redis.asyncio.connection import SSLConnection
+
+        cfg = ConnectionConfig(
+            host="h",
+            port=1,
+            ssl=True,
+            ssl_cert_reqs="required",
+            ssl_ca_certs="/etc/ca.pem",
+            ssl_certfile="/etc/client.pem",
+            ssl_keyfile="/etc/client.key",
+            ssl_check_hostname=True,
+        )
+        conn = FalkorDBConnection(cfg)
+        with patch("redis.asyncio.BlockingConnectionPool") as mock_pool, \
+             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+            mock_falkor.return_value.select_graph = MagicMock()
+            conn._ensure_client()
+            kwargs = mock_pool.call_args.kwargs
+            assert kwargs["connection_class"] is SSLConnection
+            assert kwargs["ssl_cert_reqs"] == "required"
+            assert kwargs["ssl_ca_certs"] == "/etc/ca.pem"
+            assert kwargs["ssl_certfile"] == "/etc/client.pem"
+            assert kwargs["ssl_keyfile"] == "/etc/client.key"
+            assert kwargs["ssl_check_hostname"] is True
