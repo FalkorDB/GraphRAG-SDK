@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 # ── Base ─────────────────────────────────────────────────────────
 
@@ -136,9 +139,22 @@ class EntityType(DataModel):
 class RelationType(DataModel):
     """Definition of a relationship type in the graph schema.
 
-    ``patterns`` lists the allowed directional ``(source_label, target_label)``
-    pairs for this relationship.  An empty list means the relation is allowed
-    between any entity types (open mode).
+    ``patterns`` lists allowed directional ``(source_label, target_label)``
+    pairs. Direction matters: ``("Person", "Company")`` means
+    ``(Person)-[REL]->(Company)`` — *not* the inverse.
+
+    Example::
+
+        # "Person works at Company"
+        RelationType(
+            label="WORKS_AT",
+            patterns=[("Person", "Company")],   # source -> target
+        )
+
+    An empty list means the relation is allowed between any entity types
+    (open mode). Pattern mismatches at extraction time are silently pruned;
+    a structured warning naming the offending ``(src, tgt)`` pairs is logged
+    so a swapped direction is easy to spot.
     """
 
     label: str
@@ -166,6 +182,31 @@ class GraphSchema(DataModel):
 
     entities: list[EntityType] = Field(default_factory=list)
     relations: list[RelationType] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _warn_on_undeclared_pattern_labels(self) -> GraphSchema:
+        """Warn when a ``RelationType.patterns`` references undeclared entity labels.
+
+        Catches typos like ``("Persn", "Company")`` at config time, before any
+        extraction has run. We warn rather than raise: open-schema setups may
+        legitimately reference labels not (yet) listed in ``entities``.
+        """
+        if not self.entities:
+            return self
+        declared = {e.label for e in self.entities}
+        for rel in self.relations:
+            for src, tgt in rel.patterns:
+                missing = [lbl for lbl in (src, tgt) if lbl not in declared]
+                if missing:
+                    logger.warning(
+                        "RelationType '%s' pattern (%s, %s) references "
+                        "entity label(s) not declared in schema.entities: %s",
+                        rel.label,
+                        src,
+                        tgt,
+                        ", ".join(missing),
+                    )
+        return self
 
 
 # ── Extraction / Resolution Output Types ─────────────────────────
@@ -306,6 +347,21 @@ class IngestionResult(DataModel):
     relationships_created: int = 0
     chunks_indexed: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FinalizeResult(DataModel):
+    """Result from ``GraphRAG.finalize()``.
+
+    Aggregates counts from each post-ingestion step. Replaces the previous
+    untyped ``dict[str, Any]`` so callers get IDE autocomplete and mypy
+    enforcement on field access.
+    """
+
+    null_stubs_removed: int = 0
+    entities_deduplicated: int = 0
+    entities_embedded: int = 0
+    relationships_embedded: int = 0
+    indexes: dict[str, bool] = Field(default_factory=dict)
 
 
 # ── Enums ────────────────────────────────────────────────────────

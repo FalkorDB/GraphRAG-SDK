@@ -163,7 +163,7 @@ async def discover_entities(
     # Path b: Fulltext search on entity index
     for kw in all_keywords[:6]:
         try:
-            ft_ents = await vector_store.fulltext_search(kw, top_k=3, label="__Entity__")
+            ft_ents = await vector_store.fulltext_search_entities(kw, top_k=3)
             for ent in ft_ents:
                 eid = ent.get("id", "")
                 if eid:

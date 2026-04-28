@@ -15,7 +15,6 @@ def vector_store(mock_connection, embedder):
     return VectorStore(
         mock_connection,
         embedder=embedder,
-        index_name="test_idx",
         embedding_dimension=8,
     )
 
@@ -25,35 +24,96 @@ def vector_store_no_embedder(mock_connection):
     return VectorStore(mock_connection, embedder=None)
 
 
+class TestVectorStoreConstructor:
+    def test_rejects_zero_dimension(self, mock_connection):
+        with pytest.raises(ValueError):
+            VectorStore(mock_connection, embedding_dimension=0)
+
+    def test_rejects_excessive_dimension(self, mock_connection):
+        with pytest.raises(ValueError):
+            VectorStore(mock_connection, embedding_dimension=10_000)
+
+
 class TestVectorStoreIndex:
-    async def test_create_vector_index(self, vector_store, mock_connection):
-        await vector_store.create_vector_index()
+    async def test_create_chunk_vector_index(self, vector_store, mock_connection):
+        await vector_store.create_chunk_vector_index()
         cypher = mock_connection.query.call_args[0][0]
         assert "CREATE VECTOR INDEX" in cypher
         assert "Chunk" in cypher
         assert "8" in cypher  # dimension
+        assert "cosine" in cypher
 
-    async def test_create_fulltext_index(self, vector_store, mock_connection):
-        await vector_store.create_fulltext_index()
+    async def test_create_entity_vector_index(self, vector_store, mock_connection):
+        await vector_store.create_entity_vector_index()
+        cypher = mock_connection.query.call_args[0][0]
+        assert "__Entity__" in cypher
+
+    async def test_create_relates_vector_index(self, vector_store, mock_connection):
+        await vector_store.create_relates_vector_index()
+        cypher = mock_connection.query.call_args[0][0]
+        assert "RELATES" in cypher
+
+    async def test_create_chunk_fulltext_index(self, vector_store, mock_connection):
+        await vector_store.create_chunk_fulltext_index()
         cypher = mock_connection.query.call_args[0][0]
         assert "fulltext.createNodeIndex" in cypher
-        assert "Chunk" in cypher
-
-    async def test_create_fulltext_index_custom_props(self, vector_store, mock_connection):
-        await vector_store.create_fulltext_index("Chunk", "text", "title")
-        cypher = mock_connection.query.call_args[0][0]
+        assert "'Chunk'" in cypher
         assert "'text'" in cypher
-        assert "'title'" in cypher
 
-    async def test_drop_vector_index(self, vector_store, mock_connection):
-        await vector_store.drop_vector_index()
+    async def test_create_entity_fulltext_index(self, vector_store, mock_connection):
+        await vector_store.create_entity_fulltext_index()
+        cypher = mock_connection.query.call_args[0][0]
+        assert "'__Entity__'" in cypher
+        assert "'name'" in cypher
+        assert "'description'" in cypher
+
+    async def test_drop_chunk_vector_index(self, vector_store, mock_connection):
+        await vector_store.drop_chunk_vector_index()
         cypher = mock_connection.query.call_args[0][0]
         assert "vector.drop" in cypher
+        assert "Chunk" in cypher
+
+    async def test_drop_entity_vector_index(self, vector_store, mock_connection):
+        await vector_store.drop_entity_vector_index()
+        cypher = mock_connection.query.call_args[0][0]
+        assert "__Entity__" in cypher
+
+    async def test_drop_relates_vector_index(self, vector_store, mock_connection):
+        await vector_store.drop_relates_vector_index()
+        cypher = mock_connection.query.call_args[0][0]
+        assert "RELATES" in cypher
 
     async def test_create_index_error_handled(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("index exists"))
         # Should not raise, just warn
-        await vector_store.create_vector_index()
+        await vector_store.create_chunk_vector_index()
+
+    async def test_create_index_returns_true_on_already_indexed(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB returns 'already indexed' when the index exists; treat as success."""
+        mock_connection.query = AsyncMock(side_effect=Exception("Already indexed"))
+        result = await vector_store.create_chunk_vector_index()
+        assert result is True
+
+    async def test_create_index_returns_true_on_already_exists(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB also returns 'already exists' for some index conflicts;
+        same idempotent-success semantics."""
+        mock_connection.query = AsyncMock(side_effect=Exception("Index already exists"))
+        result = await vector_store.create_chunk_vector_index()
+        assert result is True
+
+    async def test_create_index_returns_false_on_real_failure(
+        self, vector_store, mock_connection
+    ):
+        """A non-idempotent error (e.g. syntax) must surface as False."""
+        mock_connection.query = AsyncMock(
+            side_effect=Exception("Syntax error near 'CREATE'")
+        )
+        result = await vector_store.create_chunk_vector_index()
+        assert result is False
 
 
 class TestVectorStoreIndexChunks:
@@ -101,53 +161,66 @@ class TestVectorStoreIndexChunks:
 
 
 class TestVectorStoreSearch:
-    async def test_search(self, vector_store, mock_connection):
+    async def test_search_chunks(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = [
             ["chunk-1", "Hello world", 0.95],
             ["chunk-2", "Goodbye world", 0.80],
         ]
         mock_connection.query = AsyncMock(return_value=result_mock)
-        results = await vector_store.search(query_vector=[0.1] * 8, top_k=5)
+        results = await vector_store.search_chunks(query_vector=[0.1] * 8, top_k=5)
         assert len(results) == 2
         assert results[0]["id"] == "chunk-1"
         assert results[0]["score"] == 0.95
+        cypher = mock_connection.query.call_args[0][0]
+        assert "'Chunk'" in cypher
 
-    async def test_search_empty(self, vector_store, mock_connection):
+    async def test_search_chunks_empty(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = []
         mock_connection.query = AsyncMock(return_value=result_mock)
-        results = await vector_store.search(query_vector=[0.1] * 8)
+        results = await vector_store.search_chunks(query_vector=[0.1] * 8)
         assert results == []
 
-    async def test_search_error_returns_empty(self, vector_store, mock_connection):
+    async def test_search_chunks_error_returns_empty(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("search failed"))
-        results = await vector_store.search(query_vector=[0.1] * 8)
+        results = await vector_store.search_chunks(query_vector=[0.1] * 8)
         assert results == []
 
-    async def test_search_custom_top_k(self, vector_store, mock_connection):
+    async def test_search_chunks_custom_top_k(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = []
         mock_connection.query = AsyncMock(return_value=result_mock)
-        await vector_store.search(query_vector=[0.1] * 8, top_k=10)
+        await vector_store.search_chunks(query_vector=[0.1] * 8, top_k=10)
         params = mock_connection.query.call_args[0][1]
         assert params["top_k"] == 10
 
 
 class TestVectorStoreFulltextSearch:
-    async def test_fulltext_search(self, vector_store, mock_connection):
+    async def test_fulltext_search_chunks(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = [
             ["chunk-1", "Match text", 1.5],
         ]
         mock_connection.query = AsyncMock(return_value=result_mock)
-        results = await vector_store.fulltext_search("Match")
+        results = await vector_store.fulltext_search_chunks("Match")
         assert len(results) == 1
         assert results[0]["text"] == "Match text"
+        cypher = mock_connection.query.call_args[0][0]
+        assert "'Chunk'" in cypher
 
-    async def test_fulltext_search_error_returns_empty(self, vector_store, mock_connection):
+    async def test_fulltext_search_entities(self, vector_store, mock_connection):
+        result_mock = MagicMock()
+        result_mock.result_set = [["e-1", "Alice", 1.5]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+        results = await vector_store.fulltext_search_entities("Alice")
+        assert results[0]["text"] == "Alice"
+        cypher = mock_connection.query.call_args[0][0]
+        assert "'__Entity__'" in cypher
+
+    async def test_fulltext_search_chunks_error_returns_empty(self, vector_store, mock_connection):
         mock_connection.query = AsyncMock(side_effect=Exception("search failed"))
-        results = await vector_store.fulltext_search("test")
+        results = await vector_store.fulltext_search_chunks("test")
         assert results == []
 
 

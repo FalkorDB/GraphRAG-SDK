@@ -57,13 +57,13 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-        llm=LiteLLM(model="openai/gpt-5.4"),
+        llm=LiteLLM(model="openai/gpt-5.5"),
         embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     ) as rag:
         # Ingest raw text (pass a file path with the `pdf` extra installed for PDFs)
         result = await rag.ingest(
-            "my_doc",
             text="Alice Johnson is a software engineer at Acme Corp in London.",
+            document_id="my_doc",
         )
         print(f"Nodes: {result.nodes_created}, Edges: {result.relationships_created}")
 
@@ -96,7 +96,7 @@ schema = GraphSchema(
 
 async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-    llm=LiteLLM(model="openai/gpt-5.4"),
+    llm=LiteLLM(model="openai/gpt-5.5"),
     embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     schema=schema,
 ) as rag:

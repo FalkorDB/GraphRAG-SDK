@@ -12,6 +12,7 @@ from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
+    summarize_exception,
 )
 from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
@@ -49,22 +50,53 @@ class LiteLLM(LLMInterface):
         self._max_tokens = max_tokens
         self._extra = kwargs
 
+    @staticmethod
+    def _is_reasoning_model(model: str) -> bool:
+        """Return True for OpenAI reasoning models (o1 / o3 / gpt-5 family).
+
+        These models impose two restrictions vs the chat-completion default:
+        ``temperature`` only accepts the default value (1.0), and the token
+        cap parameter is ``max_completion_tokens`` rather than ``max_tokens``.
+        """
+        # Strip provider prefix (``openai/``, ``azure/``…) before matching.
+        name = model.split("/")[-1].lower()
+        return name.startswith(("o1", "o3", "gpt-5"))
+
     def _completion_kwargs(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
         kw: dict[str, Any] = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": self._temperature,
             **self._extra,
             **kwargs,
         }
+        is_reasoning = self._is_reasoning_model(self.model_name)
+        if is_reasoning:
+            # Reasoning models (o1/o3/gpt-5) reject explicit ``temperature``
+            # and use ``max_completion_tokens`` instead of ``max_tokens``.
+            # Strip caller-supplied values too — they would otherwise leak
+            # through from ``**kwargs`` or ``self._extra`` and trigger an
+            # API error. Caller's ``max_tokens`` (if any) wins over the
+            # instance default for the translation.
+            kw.pop("temperature", None)
+            caller_max_tokens = kw.pop("max_tokens", None)
+            effective_max_tokens = (
+                caller_max_tokens if caller_max_tokens is not None else self._max_tokens
+            )
+            if effective_max_tokens is not None:
+                kw["max_completion_tokens"] = effective_max_tokens
+        else:
+            # Standard chat models — caller-supplied values via ``**kwargs``
+            # win; instance defaults fill in only when the caller didn't
+            # specify anything.
+            kw.setdefault("temperature", self._temperature)
+            if self._max_tokens is not None:
+                kw.setdefault("max_tokens", self._max_tokens)
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
             kw["api_base"] = self._api_base
         if self._api_version is not None:
             kw["api_version"] = self._api_version
-        if self._max_tokens is not None:
-            kw["max_tokens"] = self._max_tokens
         return kw
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
@@ -104,9 +136,13 @@ class LiteLLM(LLMInterface):
                 if attempt < max_retries - 1:
                     delay = 2**attempt
                     logger.warning(
-                        f"LiteLLM call failed (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {delay}s: {exc}"
+                        "LiteLLM call failed (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        summarize_exception(exc),
                     )
+                    logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
@@ -116,18 +152,30 @@ class LiteLLM(LLMInterface):
         kw: dict[str, Any] = {
             "model": self.model_name,
             "messages": [m.to_dict() for m in messages],
-            "temperature": self._temperature,
             **self._extra,
             **kwargs,
         }
+        # See ``_completion_kwargs`` for the rationale — same translation
+        # rules; ``setdefault`` for non-reasoning preserves caller overrides.
+        is_reasoning = self._is_reasoning_model(self.model_name)
+        if is_reasoning:
+            kw.pop("temperature", None)
+            caller_max_tokens = kw.pop("max_tokens", None)
+            effective_max_tokens = (
+                caller_max_tokens if caller_max_tokens is not None else self._max_tokens
+            )
+            if effective_max_tokens is not None:
+                kw["max_completion_tokens"] = effective_max_tokens
+        else:
+            kw.setdefault("temperature", self._temperature)
+            if self._max_tokens is not None:
+                kw.setdefault("max_tokens", self._max_tokens)
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
             kw["api_base"] = self._api_base
         if self._api_version is not None:
             kw["api_version"] = self._api_version
-        if self._max_tokens is not None:
-            kw["max_tokens"] = self._max_tokens
         return kw
 
     async def ainvoke_messages(
@@ -160,9 +208,13 @@ class LiteLLM(LLMInterface):
                 if attempt < max_retries - 1:
                     delay = 2**attempt
                     logger.warning(
-                        f"LiteLLM call failed (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {delay}s: {exc}"
+                        "LiteLLM call failed (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        summarize_exception(exc),
                     )
+                    logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 

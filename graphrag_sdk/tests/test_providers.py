@@ -131,6 +131,71 @@ class TestLLMInterface:
         llm = CustomLLM()
         assert llm.max_concurrency == 5
 
+    async def test_ainvoke_warning_does_not_leak_exception_body(self, caplog):
+        """S6: retry WARNING must not include multi-line exception bodies."""
+
+        attempts = {"n": 0}
+        secret_body = "Authorization: Bearer SECRET_KEY_xyz\nresponse_body=...\nproxy=https://internal"
+
+        class FlakyLLM(LLMInterface):
+            def __init__(self) -> None:
+                super().__init__(model_name="flaky")
+
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise RuntimeError(f"upstream 500\n{secret_body}")
+                return LLMResponse(content="ok")
+
+        import logging
+
+        llm = FlakyLLM()
+        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.core.providers.base"):
+            response = await llm.ainvoke("hi", max_retries=3)
+        assert response.content == "ok"
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, "expected a retry WARNING"
+        msg = warnings[0].getMessage()
+        # Sanitized: class name + first line only, no leaked body
+        assert "RuntimeError" in msg
+        assert "upstream 500" in msg
+        assert "SECRET_KEY_xyz" not in msg
+        assert "proxy=" not in msg
+        # Single-line invariant
+        assert "\n" not in msg
+
+
+class TestSummarizeException:
+    """S6: WARNING-level exception logs must be single-line and length-bounded."""
+
+    def test_includes_class_name_and_message(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        s = summarize_exception(ValueError("bad input"))
+        assert s == "ValueError: bad input"
+
+    def test_class_name_only_when_message_is_empty(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        s = summarize_exception(RuntimeError())
+        assert s == "RuntimeError"
+
+    def test_strips_to_first_line(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        s = summarize_exception(RuntimeError("first line\nsecret payload\nmore"))
+        assert "secret payload" not in s
+        assert s == "RuntimeError: first line"
+
+    def test_truncates_long_messages(self):
+        from graphrag_sdk.core.providers._retry import summarize_exception
+
+        long_msg = "x" * 1000
+        s = summarize_exception(RuntimeError(long_msg))
+        assert len(s) < 250  # class name + truncated body + ellipsis
+        assert s.endswith("...")
+
 
 class TestLLMBatchItem:
     def test_ok_with_response(self):
@@ -344,6 +409,143 @@ class TestLiteLLM:
             llm = LiteLLM(model="gpt-4")
             with pytest.raises(ImportError, match="pip install graphrag-sdk\\[litellm\\]"):
                 llm.invoke("test")
+
+
+class TestLiteLLMReasoningModelDetection:
+    """Reasoning-model branch translates `temperature` and `max_tokens`."""
+
+    def test_classifier_recognizes_gpt5_o1_o3(self):
+        is_rm = LiteLLM._is_reasoning_model
+        # GPT-5 family (with and without provider prefix)
+        assert is_rm("openai/gpt-5")
+        assert is_rm("openai/gpt-5.4")
+        assert is_rm("openai/gpt-5.5")
+        assert is_rm("openai/gpt-5-mini")
+        assert is_rm("gpt-5.5")
+        # o-series
+        assert is_rm("openai/o1")
+        assert is_rm("openai/o1-mini")
+        assert is_rm("openai/o3")
+        assert is_rm("openai/o3-mini")
+        # Non-reasoning models
+        assert not is_rm("openai/gpt-4o")
+        assert not is_rm("openai/gpt-4o-mini")
+        assert not is_rm("openai/gpt-4-turbo")
+        assert not is_rm("anthropic/claude-3-5-sonnet")
+
+    def test_kwargs_omit_temperature_for_reasoning_model(self):
+        llm = LiteLLM(model="openai/gpt-5.5", temperature=0.0)
+        kw = llm._completion_kwargs("hello")
+        assert "temperature" not in kw
+
+    def test_kwargs_translate_max_tokens_for_reasoning_model(self):
+        llm = LiteLLM(model="openai/gpt-5.5", max_tokens=500)
+        kw = llm._completion_kwargs("hello")
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 500
+
+    def test_kwargs_keep_temperature_and_max_tokens_for_chat_model(self):
+        llm = LiteLLM(model="openai/gpt-4o", temperature=0.0, max_tokens=500)
+        kw = llm._completion_kwargs("hello")
+        assert kw["temperature"] == 0.0
+        assert kw["max_tokens"] == 500
+        assert "max_completion_tokens" not in kw
+
+    def test_messages_kwargs_apply_same_translation(self):
+        from graphrag_sdk.core.models import ChatMessage
+
+        llm = LiteLLM(model="openai/gpt-5.5", temperature=0.5, max_tokens=200)
+        kw = llm._messages_completion_kwargs([ChatMessage(role="user", content="hi")])
+        assert "temperature" not in kw
+        assert kw["max_completion_tokens"] == 200
+
+    def test_caller_supplied_temperature_dropped_for_reasoning_model(self):
+        """A caller passing temperature= via **kwargs must not bypass the
+        reasoning-model strip — the API would reject the request."""
+        llm = LiteLLM(model="openai/gpt-5.5")
+        kw = llm._completion_kwargs("hello", temperature=0.5)
+        assert "temperature" not in kw
+
+    def test_caller_supplied_max_tokens_translated_for_reasoning_model(self):
+        """Caller-supplied max_tokens must be translated to max_completion_tokens
+        for reasoning models, not silently dropped or leaked through."""
+        llm = LiteLLM(model="openai/gpt-5.5")
+        kw = llm._completion_kwargs("hello", max_tokens=123)
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 123
+
+    def test_extra_temperature_dropped_for_reasoning_model(self):
+        """Same protection applies when temperature comes via the
+        constructor's **kwargs (self._extra) rather than the call site."""
+        llm = LiteLLM(model="openai/gpt-5.5", temperature=0.7)
+        # temperature=0.7 was explicitly passed; for reasoning models it
+        # should not appear in the request kwargs.
+        kw = llm._completion_kwargs("hello")
+        assert "temperature" not in kw
+
+    def test_caller_temperature_overrides_instance_default_for_chat_model(self):
+        """For non-reasoning models, a caller passing ``temperature=`` must
+        override the instance default — not be silently overwritten by it."""
+        llm = LiteLLM(model="openai/gpt-4o", temperature=0.0)
+        kw = llm._completion_kwargs("hi", temperature=0.7)
+        assert kw["temperature"] == 0.7
+
+    def test_caller_max_tokens_overrides_instance_default_for_chat_model(self):
+        llm = LiteLLM(model="openai/gpt-4o", max_tokens=100)
+        kw = llm._completion_kwargs("hi", max_tokens=500)
+        assert kw["max_tokens"] == 500
+
+
+class TestOpenRouterReasoningModelDetection:
+    def test_kwargs_omit_temperature_for_reasoning_model(self):
+        llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test", temperature=0.0)
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={}
+        )
+        assert "temperature" not in kw
+
+    def test_kwargs_translate_max_tokens_for_reasoning_model(self):
+        llm = OpenRouterLLM(
+            model="openai/gpt-5.5", api_key="test", max_tokens=300
+        )
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={}
+        )
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 300
+
+    def test_kwargs_keep_temperature_for_chat_model(self):
+        llm = OpenRouterLLM(model="openai/gpt-4o", api_key="test", temperature=0.0)
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={}
+        )
+        assert kw["temperature"] == 0.0
+
+    def test_caller_supplied_temperature_dropped_for_reasoning_model(self):
+        """Caller-supplied temperature in extra must be stripped for
+        reasoning models — same fix as the LiteLLM provider."""
+        llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test")
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={"temperature": 0.5}
+        )
+        assert "temperature" not in kw
+
+    def test_caller_supplied_max_tokens_translated_for_reasoning_model(self):
+        llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test")
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={"max_tokens": 100}
+        )
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 100
+
+    def test_caller_temperature_overrides_instance_default_for_chat_model(self):
+        """Non-reasoning models must let caller temperature win over the
+        instance default — same regression as the LiteLLM provider."""
+        llm = OpenRouterLLM(model="openai/gpt-4o", api_key="test", temperature=0.0)
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={"temperature": 0.7}
+        )
+        assert kw["temperature"] == 0.7
 
 
 # ═══════════════════════════════════════════════════════════════════

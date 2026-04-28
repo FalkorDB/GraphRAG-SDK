@@ -55,7 +55,7 @@ class LocalRetrieval(RetrievalStrategy):
         query_vector = await self._embedder.aembed_query(query)
 
         # Step 2: Vector search for matching chunks
-        chunk_results = await self._vector.search(
+        chunk_results = await self._vector.search_chunks(
             query_vector=query_vector,
             top_k=top_k,
         )

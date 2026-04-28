@@ -87,7 +87,7 @@ class TestRetrievalStrategyBase:
 class TestLocalRetrieval:
     @pytest.fixture
     def local_strategy(self, mock_graph_store, mock_vector_store, embedder):
-        mock_vector_store.search = AsyncMock(
+        mock_vector_store.search_chunks = AsyncMock(
             return_value=[
                 {"id": "chunk-1", "text": "Alice works at Acme.", "score": 0.95},
                 {"id": "chunk-2", "text": "Bob works at Acme.", "score": 0.85},
@@ -121,7 +121,7 @@ class TestLocalRetrieval:
         assert "Alice" in content or "Related entities" in content
 
     async def test_local_no_entities(self, ctx, mock_graph_store, mock_vector_store, embedder):
-        mock_vector_store.search = AsyncMock(
+        mock_vector_store.search_chunks = AsyncMock(
             return_value=[{"id": "c1", "text": "Chunk text", "score": 0.9}]
         )
         strategy = LocalRetrieval(
@@ -134,7 +134,7 @@ class TestLocalRetrieval:
         assert len(result.items) == 1
 
     async def test_local_empty_results(self, ctx, mock_graph_store, mock_vector_store, embedder):
-        mock_vector_store.search = AsyncMock(return_value=[])
+        mock_vector_store.search_chunks = AsyncMock(return_value=[])
         strategy = LocalRetrieval(
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
@@ -145,7 +145,7 @@ class TestLocalRetrieval:
 
     async def test_local_custom_top_k(self, ctx, local_strategy, mock_vector_store):
         await local_strategy.search("test", ctx, top_k=3)
-        call_kwargs = mock_vector_store.search.call_args
+        call_kwargs = mock_vector_store.search_chunks.call_args
         assert call_kwargs[1]["top_k"] == 3
 
     async def test_local_scores_in_items(self, ctx, local_strategy):

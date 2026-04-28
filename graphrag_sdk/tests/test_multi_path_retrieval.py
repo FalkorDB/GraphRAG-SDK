@@ -43,10 +43,11 @@ def mp_graph_store():
 @pytest.fixture
 def mp_vector_store():
     store = MagicMock()
-    store.search = AsyncMock(return_value=[])
+    store.search_chunks = AsyncMock(return_value=[])
     store.search_entities = AsyncMock(return_value=[])
     store.search_relationships = AsyncMock(return_value=[])
-    store.fulltext_search = AsyncMock(return_value=[])
+    store.fulltext_search_chunks = AsyncMock(return_value=[])
+    store.fulltext_search_entities = AsyncMock(return_value=[])
     return store
 
 
@@ -171,14 +172,14 @@ class TestMultiPathRetrieval:
         assert len(unwind_kw_queries) >= 1
 
         # Fulltext should be called on __Entity__
-        assert mp_vector_store.fulltext_search.call_count >= 1
+        assert mp_vector_store.fulltext_search_entities.call_count >= 1
 
     async def test_chunk_retrieval_2_paths(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Chunk retrieval should use fulltext + vector (2 paths only)."""
-        mp_vector_store.fulltext_search = AsyncMock(return_value=[
+        mp_vector_store.fulltext_search_chunks = AsyncMock(return_value=[
             {"id": "c1", "text": "Alice is an engineer.", "score": 0.8},
         ])
-        mp_vector_store.search = AsyncMock(return_value=[
+        mp_vector_store.search_chunks = AsyncMock(return_value=[
             {"id": "c2", "text": "Bob works with Alice.", "score": 0.7},
         ])
 
@@ -191,8 +192,8 @@ class TestMultiPathRetrieval:
         result = await s.search("Who is Alice?")
         assert isinstance(result, RetrieverResult)
         # Both fulltext and vector search called
-        assert mp_vector_store.fulltext_search.call_count >= 1
-        assert mp_vector_store.search.call_count >= 1
+        assert mp_vector_store.fulltext_search_chunks.call_count >= 1
+        assert mp_vector_store.search_chunks.call_count >= 1
 
     async def test_mentioned_in_and_2hop_chunk_paths(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Retrieval should use MENTIONED_IN and 2-hop chunk paths when entities are discovered."""
@@ -237,7 +238,7 @@ class TestMultiPathRetrieval:
         mp_vector_store.search_relationships = AsyncMock(return_value=[
             {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "engineer", "score": 0.9},
         ])
-        mp_vector_store.fulltext_search = AsyncMock(return_value=[
+        mp_vector_store.fulltext_search_chunks = AsyncMock(return_value=[
             {"id": "c1", "text": "Alice is a software engineer at Acme Corp.", "score": 0.8},
         ])
 
@@ -286,7 +287,7 @@ class TestMultiPathRetrieval:
 
     async def test_source_document_tags(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Passages should include [Source: filename] when document info is available."""
-        mp_vector_store.fulltext_search = AsyncMock(return_value=[
+        mp_vector_store.fulltext_search_chunks = AsyncMock(return_value=[
             {"id": "c1", "text": "Alice is an engineer at Acme Corp.", "score": 0.8},
         ])
 
@@ -355,9 +356,10 @@ class TestMultiPathRetrieval:
         store = MagicMock()
         store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
         vec = MagicMock()
-        vec.search = AsyncMock(return_value=[])
+        vec.search_chunks = AsyncMock(return_value=[])
         vec.search_relationships = AsyncMock(return_value=[])
-        vec.fulltext_search = AsyncMock(return_value=[])
+        vec.fulltext_search_chunks = AsyncMock(return_value=[])
+        vec.fulltext_search_entities = AsyncMock(return_value=[])
 
         s = MultiPathRetrieval(
             graph_store=store,

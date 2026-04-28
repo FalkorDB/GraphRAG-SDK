@@ -351,3 +351,91 @@ class TestPruneMethod:
         )
         result = pipeline._prune(data, schema)
         assert len(result.relationships) == 1
+
+    def test_prune_logs_pattern_mismatch_warning(self, caplog):
+        """A2: pattern mismatches must emit a structured per-type warning."""
+        import logging
+
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        schema = GraphSchema(
+            entities=[EntityType(label="Person"), EntityType(label="Company")],
+            relations=[
+                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+            ],
+        )
+        # Three inverted (Company -> Person) extractions — triggers the warning.
+        data = GraphData(
+            nodes=[
+                GraphNode(id="p", label="Person"),
+                GraphNode(id="c", label="Company"),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="c", end_node_id="p",
+                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                )
+                for _ in range(3)
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.ingestion.pipeline"):
+            result = pipeline._prune(data, schema)
+
+        assert len(result.relationships) == 0
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        msg = next((r.getMessage() for r in warnings if "WORKS_AT" in r.getMessage()), None)
+        assert msg is not None
+        # Names the offending pair, the declared pattern, and a hint
+        assert "Company" in msg and "Person" in msg
+        assert "[('Person', 'Company')]" in msg
+        assert "inverted" in msg.lower()
+
+    def test_prune_pattern_mismatch_sample_is_bounded(self, caplog):
+        """A2: warning must sample, not flood, on large mismatch counts."""
+        import logging
+
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+        schema = GraphSchema(
+            entities=[EntityType(label="Person"), EntityType(label="Company")],
+            relations=[
+                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+            ],
+        )
+        data = GraphData(
+            nodes=[
+                GraphNode(id="p", label="Person"),
+                GraphNode(id="c", label="Company"),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="c", end_node_id="p",
+                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                )
+                for _ in range(50)
+            ],
+        )
+        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.ingestion.pipeline"):
+            pipeline._prune(data, schema)
+
+        msg = next(
+            (r.getMessage() for r in caplog.records
+             if r.levelno == logging.WARNING and "WORKS_AT" in r.getMessage()),
+            None,
+        )
+        assert msg is not None
+        # Total count is reported, but the sampled list does not contain 50 entries.
+        assert "Pruned 50" in msg
+        assert msg.count("('Company', 'Person')") <= 3

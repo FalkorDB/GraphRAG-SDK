@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
+from graphrag_sdk.core.providers._retry import summarize_exception
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +122,13 @@ class LLMInterface(ABC):
                 if attempt < max_retries - 1:
                     delay = (2**attempt) * (0.5 + random.random())
                     logger.warning(
-                        f"LLM call failed (attempt {attempt + 1}/{max_retries}), "
-                        f"retrying in {delay:.1f}s: {exc}"
+                        "LLM call failed (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        summarize_exception(exc),
                     )
+                    logger.debug("LLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 

@@ -105,6 +105,11 @@ async def main():
     )
     print(f"Done: {result.nodes_created} nodes, {result.relationships_created} edges")
 
+    # Run dedup + entity/relationship embeddings + final indexing.
+    # Without this, multi-document graphs retain duplicates and entity-
+    # and edge-level vector search returns no results.
+    await rag.finalize()
+
     # Query with context inspection
     question = "What are the main topics discussed in this document?"
     print(f"\nQ: {question}")
@@ -119,7 +124,7 @@ async def main():
         print(f"  [{i+1}] (score={score:.3f}) {item.content[:100]}...")
 
     # Show graph stats
-    stats = await rag.graph_store.get_statistics()
+    stats = await rag.get_statistics()
     print(f"\nGraph: {stats['node_count']} nodes, {stats['edge_count']} edges")
     print(f"Entity types: {stats['entity_types']}")
 

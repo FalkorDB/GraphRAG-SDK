@@ -31,6 +31,11 @@ from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
 logger = logging.getLogger(__name__)
 
+# Number of offending (src, tgt) pairs to include verbatim in the
+# "pattern mismatch" warning. Enough to spot the inversion; bounded
+# so a misconfigured schema can't flood logs.
+_PATTERN_MISMATCH_SAMPLE_SIZE = 3
+
 
 class IngestionPipeline:
     """Sequential orchestrator for knowledge graph construction.
@@ -315,6 +320,10 @@ class IngestionPipeline:
 
         # --- Relationship filtering ---
         pruned_rels: list[GraphRelationship] = []
+        # Track (src, tgt) pairs dropped for pattern-mismatch (vs unknown rel
+        # type or pruned endpoints). Direction inversion is the most common
+        # cause and the hardest to debug without a structured warning.
+        pattern_mismatches: dict[str, list[tuple[str, str]]] = {}
         for r in graph_data.relationships:
             rel_label = r.properties.get("rel_type", r.type)
 
@@ -332,11 +341,27 @@ class IngestionPipeline:
                 pruned_rels.append(r)
             elif valid_pairs and (src.label, tgt.label) in valid_pairs:
                 pruned_rels.append(r)
+            elif valid_pairs:
+                # Declared rel type, but (src, tgt) doesn't match any pattern.
+                pattern_mismatches.setdefault(rel_label, []).append((src.label, tgt.label))
 
         pruned_node_count = len(graph_data.nodes) - len(pruned_nodes)
         pruned_rel_count = len(graph_data.relationships) - len(pruned_rels)
         if pruned_node_count or pruned_rel_count:
             logger.info(f"Pruned {pruned_node_count} nodes, {pruned_rel_count} rels")
+
+        for rel_label, observed in pattern_mismatches.items():
+            sample = observed[:_PATTERN_MISMATCH_SAMPLE_SIZE]
+            declared = sorted(allowed_rels[rel_label] or set())
+            logger.warning(
+                "Pruned %d '%s' relationships due to (source, target) mismatch. "
+                "Declared patterns: %s. Observed (sample): %s. "
+                "If extraction looks correct, the pattern direction may be inverted.",
+                len(observed),
+                rel_label,
+                declared,
+                sample,
+            )
 
         return GraphData(
             nodes=pruned_nodes,

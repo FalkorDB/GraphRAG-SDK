@@ -9,9 +9,22 @@ from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.models import TextChunks
-from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
+
+_MAX_EMBEDDING_DIMENSION = 8192
+
+# Pagination safety net for IS-NULL streaming loops. At batch_size=500
+# this covers 5M items — large enough for any realistic graph. Trips
+# only on a pathological condition where mutations don't reduce the
+# IS-NULL filter (e.g. server bug, persistent embedding failures).
+_MAX_PAGINATION_ITERATIONS = 10_000
+
+# Substrings FalkorDB returns when an index already exists. Mirrors
+# ``FalkorDBConnection._NON_TRANSIENT_MARKERS`` for the index-creation
+# subset — both markers indicate the operation is already done, so we
+# treat them as idempotent success rather than a creation failure.
+_INDEX_EXISTS_MARKERS = ("already indexed", "already exists")
 
 # Characters that RediSearch treats as syntax in fulltext queries.
 _REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
@@ -44,125 +57,127 @@ class VectorStore:
     Args:
         connection: FalkorDB connection instance.
         embedder: Embedder for generating vectors (optional — required for indexing).
-        index_name: Name of the vector index (default: "chunk_embeddings").
-        embedding_dimension: Dimension of embedding vectors.
-        similarity_function: Distance metric ("cosine", "euclidean", "ip").
+        embedding_dimension: Dimension of embedding vectors (1..8192).
 
     Example::
 
         store = VectorStore(connection, embedder=my_embedder, embedding_dimension=1536)
-        await store.create_vector_index()
+        await store.ensure_indices()
         await store.index_chunks(chunks)
-        results = await store.search(query_vector, top_k=5)
+        results = await store.search_chunks(query_vector, top_k=5)
     """
 
     def __init__(
         self,
         connection: FalkorDBConnection,
         embedder: Any | None = None,
-        index_name: str = "chunk_embeddings",
         embedding_dimension: int = 1536,
-        similarity_function: str = "cosine",
     ) -> None:
+        if not 1 <= embedding_dimension <= _MAX_EMBEDDING_DIMENSION:
+            raise ValueError(
+                f"embedding_dimension must be between 1 and {_MAX_EMBEDDING_DIMENSION}, "
+                f"got {embedding_dimension}"
+            )
         self._conn = connection
         self._embedder = embedder
-        self.index_name = index_name
         self.embedding_dimension = embedding_dimension
-        self.similarity_function = similarity_function
         self._indices_ensured: bool = False
 
     # ── Index Management ─────────────────────────────────────────
+    #
+    # Index identifiers (labels, properties, similarity function) are
+    # hardcoded in every Cypher statement below. No user-supplied string
+    # is interpolated into a query — only ``embedding_dimension``, an int
+    # bound-checked at construction.
 
-    async def create_vector_index(
-        self,
-        label: str = "Chunk",
-        property: str = "embedding",
-    ) -> None:
-        """Create a vector index on a node label/property.
+    async def _try_create_index(self, query: str, descriptor: str, kind: str) -> bool:
+        """Run a CREATE INDEX query idempotently.
 
-        Args:
-            label: Node label to index (default: "Chunk").
-            property: Property containing the vector (default: "embedding").
+        Returns ``True`` if the index now exists (created or already existed),
+        ``False`` if creation failed for any other reason. The bool flows up
+        to ``ensure_indices()`` so the result map honestly reflects whether
+        each index is in place — failures are not papered over as success.
         """
-        safe_label = sanitize_cypher_label(label)
-        query = (
-            f"CREATE VECTOR INDEX FOR (n:{safe_label}) ON (n.{property}) "
-            f"OPTIONS {{dimension:{self.embedding_dimension}, "
-            f"similarityFunction:'{self.similarity_function}'}}"
-        )
         try:
             await self._conn.query(query)
-            logger.info(
-                f"Created vector index on {label}.{property} (dim={self.embedding_dimension})"
-            )
-        except Exception as exc:
-            if "already indexed" in str(exc).lower():
-                logger.debug(f"Vector index on {label}.{property} already exists")
-            else:
-                logger.warning(f"Could not create vector index: {exc}")
-
-    async def create_entity_vector_index(self) -> None:
-        """Create a vector index on __Entity__.embedding."""
-        await self.create_vector_index(label="__Entity__", property="embedding")
-
-    async def create_relationship_vector_index(self, rel_type: str) -> None:
-        """Create a vector index on edges of the given relationship type.
-
-        Idempotent — silently succeeds if the index already exists.
-        """
-        safe_rel_type = sanitize_cypher_label(rel_type)
-        query = (
-            f"CREATE VECTOR INDEX FOR ()-[e:`{safe_rel_type}`]->() ON (e.embedding) "
-            f"OPTIONS {{dimension:{self.embedding_dimension}, "
-            f"similarityFunction:'{self.similarity_function}'}}"
-        )
-        try:
-            await self._conn.query(query)
-            logger.info(
-                f"Created relationship vector index on [{rel_type}].embedding "
-                f"(dim={self.embedding_dimension})"
-            )
-        except Exception as exc:
-            if "already indexed" in str(exc).lower():
-                logger.debug(f"Relationship vector index on [{rel_type}] already exists")
-            else:
-                logger.warning(
-                    f"Could not create relationship vector index for [{rel_type}]: {exc}"
+            if kind == "vector":
+                logger.info(
+                    f"Created vector index on {descriptor} (dim={self.embedding_dimension})"
                 )
-
-    async def create_fulltext_index(
-        self,
-        label: str = "Chunk",
-        *properties: str,
-    ) -> None:
-        """Create a fulltext index on node properties.
-
-        Args:
-            label: Node label to index.
-            properties: Property names to index.
-        """
-        if not properties:
-            properties = ("text",)
-        safe_label = sanitize_cypher_label(label)
-        props = ", ".join(f"'{p}'" for p in properties)
-        query = f"CALL db.idx.fulltext.createNodeIndex('{safe_label}', {props})"
-        try:
-            await self._conn.query(query)
-            logger.info(f"Created fulltext index on {label}({', '.join(properties)})")
-        except Exception as exc:
-            if "already indexed" in str(exc).lower():
-                logger.debug(f"Fulltext index on {label} already exists")
             else:
-                logger.warning(f"Could not create fulltext index: {exc}")
-
-    async def drop_vector_index(self, label: str = "Chunk") -> None:
-        """Drop a vector index."""
-        safe_label = sanitize_cypher_label(label)
-        try:
-            await self._conn.query(f"CALL db.idx.vector.drop('{safe_label}')")
-            logger.info(f"Dropped vector index on {safe_label}")
+                logger.info(f"Created fulltext index on {descriptor}")
+            return True
         except Exception as exc:
-            logger.warning(f"Could not drop vector index: {exc}")
+            msg = str(exc).lower()
+            if any(marker in msg for marker in _INDEX_EXISTS_MARKERS):
+                logger.debug(f"{kind.capitalize()} index on {descriptor} already exists")
+                return True
+            logger.warning(f"Could not create {kind} index on {descriptor}: {exc}")
+            return False
+
+    async def create_chunk_vector_index(self) -> bool:
+        """Create the vector index on ``Chunk.embedding``."""
+        query = (
+            f"CREATE VECTOR INDEX FOR (n:Chunk) ON (n.embedding) "
+            f"OPTIONS {{dimension:{self.embedding_dimension}, similarityFunction:'cosine'}}"
+        )
+        return await self._try_create_index(query, "Chunk.embedding", "vector")
+
+    async def create_entity_vector_index(self) -> bool:
+        """Create the vector index on ``__Entity__.embedding``."""
+        query = (
+            f"CREATE VECTOR INDEX FOR (n:__Entity__) ON (n.embedding) "
+            f"OPTIONS {{dimension:{self.embedding_dimension}, similarityFunction:'cosine'}}"
+        )
+        return await self._try_create_index(query, "__Entity__.embedding", "vector")
+
+    async def create_relates_vector_index(self) -> bool:
+        """Create the vector index on ``RELATES.embedding`` edges."""
+        query = (
+            f"CREATE VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding) "
+            f"OPTIONS {{dimension:{self.embedding_dimension}, similarityFunction:'cosine'}}"
+        )
+        return await self._try_create_index(query, "[RELATES].embedding", "vector")
+
+    async def create_chunk_fulltext_index(self) -> bool:
+        """Create the fulltext index on ``Chunk.text``."""
+        return await self._try_create_index(
+            "CALL db.idx.fulltext.createNodeIndex('Chunk', 'text')",
+            "Chunk(text)",
+            "fulltext",
+        )
+
+    async def create_entity_fulltext_index(self) -> bool:
+        """Create the fulltext index on ``__Entity__(name, description)``."""
+        return await self._try_create_index(
+            "CALL db.idx.fulltext.createNodeIndex('__Entity__', 'name', 'description')",
+            "__Entity__(name, description)",
+            "fulltext",
+        )
+
+    async def drop_chunk_vector_index(self) -> None:
+        """Drop the ``Chunk`` vector index."""
+        try:
+            await self._conn.query("CALL db.idx.vector.drop('Chunk')")
+            logger.info("Dropped vector index on Chunk")
+        except Exception as exc:
+            logger.warning(f"Could not drop vector index on Chunk: {exc}")
+
+    async def drop_entity_vector_index(self) -> None:
+        """Drop the ``__Entity__`` vector index."""
+        try:
+            await self._conn.query("CALL db.idx.vector.drop('__Entity__')")
+            logger.info("Dropped vector index on __Entity__")
+        except Exception as exc:
+            logger.warning(f"Could not drop vector index on __Entity__: {exc}")
+
+    async def drop_relates_vector_index(self) -> None:
+        """Drop the ``RELATES`` edge vector index."""
+        try:
+            await self._conn.query("CALL db.idx.vector.drop('RELATES')")
+            logger.info("Dropped vector index on RELATES")
+        except Exception as exc:
+            logger.warning(f"Could not drop vector index on RELATES: {exc}")
 
     # ── Indexing ─────────────────────────────────────────────────
 
@@ -260,7 +275,7 @@ class VectorStore:
 
         total_embedded = 0
 
-        while True:
+        for _ in range(_MAX_PAGINATION_ITERATIONS):
             try:
                 # No SKIP — embedded edges drop out of the IS NULL filter,
                 # so each query naturally returns the next un-embedded batch.
@@ -315,36 +330,36 @@ class VectorStore:
                     total_embedded += 1
                 except Exception as inner_exc:
                     logger.warning(f"Failed to embed edge {item['rid']}: {inner_exc}")
+        else:
+            logger.error(
+                "Pagination exceeded %d iterations in embed_relationships — aborting",
+                _MAX_PAGINATION_ITERATIONS,
+            )
 
         logger.info(f"Embedded {total_embedded} RELATES edges")
         return total_embedded
 
     # ── Search ───────────────────────────────────────────────────
 
-    async def search(
+    async def search_chunks(
         self,
         query_vector: list[float],
         top_k: int = 5,
-        label: str = "Chunk",
-        index_name: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search.
+        """Vector similarity search on ``Chunk`` nodes.
 
         Args:
             query_vector: The query embedding vector.
             top_k: Number of results to return.
-            label: Node label to search (default: "Chunk").
-            index_name: Optional custom index name.
 
         Returns:
-            List of dicts with id, text, score, and other properties.
+            List of dicts with id, text, score.
         """
-        safe_label = sanitize_cypher_label(label)
         query = (
-            f"CALL db.idx.vector.queryNodes('{safe_label}', 'embedding', $top_k, vecf32($vector)) "
-            f"YIELD node, score "
-            f"RETURN node.id AS id, node.text AS text, score "
-            f"ORDER BY score DESC"
+            "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector)) "
+            "YIELD node, score "
+            "RETURN node.id AS id, node.text AS text, score "
+            "ORDER BY score DESC"
         )
         try:
             result = await self._conn.query(
@@ -482,29 +497,69 @@ class VectorStore:
             logger.warning(f"Relationship vector search failed: {exc}")
             return []
 
-    async def fulltext_search(
+    async def fulltext_search_chunks(
         self,
         query_text: str,
         top_k: int = 5,
-        label: str = "Chunk",
     ) -> list[dict[str, Any]]:
-        """Fulltext search.
+        """Fulltext search on ``Chunk`` nodes.
 
         Args:
             query_text: Text to search for.
             top_k: Number of results.
-            label: Node label to search.
 
         Returns:
             List of dicts with id, text, score.
         """
-        safe_label = sanitize_cypher_label(label)
         escaped_text = _escape_fulltext_query(query_text)
         query = (
-            f"CALL db.idx.fulltext.queryNodes('{safe_label}', $query_text) "
-            f"YIELD node, score "
-            f"RETURN node.id AS id, node.text AS text, score "
-            f"ORDER BY score DESC LIMIT $top_k"
+            "CALL db.idx.fulltext.queryNodes('Chunk', $query_text) "
+            "YIELD node, score "
+            "RETURN node.id AS id, node.text AS text, score "
+            "ORDER BY score DESC LIMIT $top_k"
+        )
+        try:
+            result = await self._conn.query(
+                query,
+                {
+                    "query_text": escaped_text,
+                    "top_k": top_k,
+                },
+            )
+            results: list[dict[str, Any]] = []
+            for row in result.result_set:
+                results.append(
+                    {
+                        "id": row[0],
+                        "text": row[1] if len(row) > 1 else "",
+                        "score": row[2] if len(row) > 2 else 0.0,
+                    }
+                )
+            return results
+        except Exception as exc:
+            logger.warning(f"Fulltext search failed: {exc}")
+            return []
+
+    async def fulltext_search_entities(
+        self,
+        query_text: str,
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Fulltext search on ``__Entity__`` nodes.
+
+        Args:
+            query_text: Text to search for.
+            top_k: Number of results.
+
+        Returns:
+            List of dicts with id, text (name), score.
+        """
+        escaped_text = _escape_fulltext_query(query_text)
+        query = (
+            "CALL db.idx.fulltext.queryNodes('__Entity__', $query_text) "
+            "YIELD node, score "
+            "RETURN node.id AS id, node.name AS text, score "
+            "ORDER BY score DESC LIMIT $top_k"
         )
         try:
             result = await self._conn.query(
@@ -541,46 +596,39 @@ class VectorStore:
         - __Entity__ fulltext index (name, description)
 
         Returns:
-            Dict mapping index name to whether creation succeeded.
+            Dict mapping each index name to whether creation succeeded
+            **on this call**. If a previous call already established all
+            indices (``self._indices_ensured`` is ``True``), this method
+            short-circuits and returns ``{}`` to signal "no work was
+            performed" — not "no indexes exist". Callers that need a
+            point-in-time view of index health should reset the cache
+            (see ``GraphRAG.delete_all``) or call ``ensure_indices()``
+            on a fresh ``VectorStore`` instance.
         """
         if self._indices_ensured:
             return {}
 
         results: dict[str, bool] = {}
 
-        for label, prop in [
-            ("Chunk", "embedding"),
-            ("__Entity__", "embedding"),
-        ]:
-            key = f"vector_{label}"
+        creators: list[tuple[str, Any]] = [
+            ("vector_Chunk", self.create_chunk_vector_index),
+            ("vector_Entity", self.create_entity_vector_index),
+            ("vector_RELATES", self.create_relates_vector_index),
+            ("fulltext_Chunk", self.create_chunk_fulltext_index),
+            ("fulltext_Entity", self.create_entity_fulltext_index),
+        ]
+        for key, fn in creators:
             try:
-                await self.create_vector_index(label=label, property=prop)
-                results[key] = True
+                results[key] = await fn()
             except Exception:
-                logger.debug("Vector index creation failed for %s", key, exc_info=True)
+                logger.debug("Index creation failed for %s", key, exc_info=True)
                 results[key] = False
 
-        # RELATES edge vector index
-        try:
-            await self.create_relationship_vector_index("RELATES")
-            results["vector_RELATES"] = True
-        except Exception:
-            logger.debug("RELATES vector index creation failed", exc_info=True)
-            results["vector_RELATES"] = False
-
-        for label, props in [
-            ("Chunk", ("text",)),
-            ("__Entity__", ("name", "description")),
-        ]:
-            key = f"fulltext_{label}"
-            try:
-                await self.create_fulltext_index(label, *props)
-                results[key] = True
-            except Exception:
-                logger.debug("Fulltext index creation failed for %s", key, exc_info=True)
-                results[key] = False
-
-        self._indices_ensured = True
+        # Only mark indices as ensured if everything actually succeeded —
+        # otherwise the next call to ensure_indices() would skip retrying
+        # transient failures.
+        if all(results.values()):
+            self._indices_ensured = True
         logger.info(f"ensure_indices complete: {results}")
         return results
 
@@ -603,7 +651,7 @@ class VectorStore:
 
         total_backfilled = 0
 
-        while True:
+        for _ in range(_MAX_PAGINATION_ITERATIONS):
             try:
                 # No SKIP — embedded entities drop out of the IS NULL filter,
                 # so each query naturally returns the next un-embedded batch.
@@ -666,6 +714,11 @@ class VectorStore:
                         logger.debug(
                             "Single entity backfill failed for %s", item.get("eid"), exc_info=True
                         )
+        else:
+            logger.error(
+                "Pagination exceeded %d iterations in backfill_entity_embeddings — aborting",
+                _MAX_PAGINATION_ITERATIONS,
+            )
 
         logger.info(f"Backfilled {total_backfilled} entity embeddings")
         return total_backfilled

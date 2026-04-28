@@ -37,7 +37,7 @@ async def retrieve_chunks(
     fulltext_queries = [query] + llm_kw[:6] + simple_kw[:4]
     for ft_q in fulltext_queries:
         try:
-            results = await vector_store.fulltext_search(ft_q, top_k=5, label="Chunk")
+            results = await vector_store.fulltext_search_chunks(ft_q, top_k=5)
             for c in results:
                 _add(c.get("id", ""), c.get("text", ""), "fulltext")
         except Exception as exc:
@@ -45,7 +45,7 @@ async def retrieve_chunks(
 
     # Path B: Vector search
     try:
-        results = await vector_store.search(query_vector, top_k=15, label="Chunk")
+        results = await vector_store.search_chunks(query_vector, top_k=15)
         for c in results:
             _add(c.get("id", ""), c.get("text", ""), "vector")
     except Exception as exc:

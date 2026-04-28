@@ -39,7 +39,7 @@ def get_providers():
     """
 
     # ── Option A: OpenAI (default) ──────────────────────────────
-    llm = LiteLLM(model="openai/gpt-4o")
+    llm = LiteLLM(model="openai/gpt-5.5")
     embedder = LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256)
 
     # ── Option B: Azure OpenAI ──────────────────────────────────
@@ -69,7 +69,7 @@ async def main():
         embedding_dimension=256,
     ) as rag:
         # 1. Ingest text
-        result = await rag.ingest("quickstart_doc", text=TEXT)
+        result = await rag.ingest(text=TEXT, document_id="quickstart_doc")
         print(f"Ingested: {result.nodes_created} nodes, {result.relationships_created} edges")
 
         # 2. Finalize (dedup + embeddings + indexes)
