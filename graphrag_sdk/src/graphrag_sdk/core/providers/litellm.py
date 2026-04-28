@@ -71,29 +71,32 @@ class LiteLLM(LLMInterface):
         }
         is_reasoning = self._is_reasoning_model(self.model_name)
         if is_reasoning:
-            # Reasoning models (o1/o3/gpt-5) reject explicit temperature
-            # and use ``max_completion_tokens``. Strip any caller-supplied
-            # values too — instance-default guards alone are not enough
-            # because ``**kwargs``/``self._extra`` may have already
-            # injected them above.
+            # Reasoning models (o1/o3/gpt-5) reject explicit ``temperature``
+            # and use ``max_completion_tokens`` instead of ``max_tokens``.
+            # Strip caller-supplied values too — they would otherwise leak
+            # through from ``**kwargs`` or ``self._extra`` and trigger an
+            # API error. Caller's ``max_tokens`` (if any) wins over the
+            # instance default for the translation.
             kw.pop("temperature", None)
             caller_max_tokens = kw.pop("max_tokens", None)
+            effective_max_tokens = (
+                caller_max_tokens if caller_max_tokens is not None else self._max_tokens
+            )
+            if effective_max_tokens is not None:
+                kw["max_completion_tokens"] = effective_max_tokens
         else:
-            kw["temperature"] = self._temperature
-            caller_max_tokens = None
+            # Standard chat models — caller-supplied values via ``**kwargs``
+            # win; instance defaults fill in only when the caller didn't
+            # specify anything.
+            kw.setdefault("temperature", self._temperature)
+            if self._max_tokens is not None:
+                kw.setdefault("max_tokens", self._max_tokens)
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
             kw["api_base"] = self._api_base
         if self._api_version is not None:
             kw["api_version"] = self._api_version
-        # Resolve max-tokens cap — caller wins over instance default.
-        effective_max_tokens = caller_max_tokens if caller_max_tokens is not None else self._max_tokens
-        if effective_max_tokens is not None:
-            if is_reasoning:
-                kw["max_completion_tokens"] = effective_max_tokens
-            else:
-                kw["max_tokens"] = effective_max_tokens
         return kw
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
@@ -152,28 +155,27 @@ class LiteLLM(LLMInterface):
             **self._extra,
             **kwargs,
         }
-        # See ``_completion_kwargs`` — same translation rules; we strip
-        # caller-supplied ``temperature`` / ``max_tokens`` too, not just
-        # the instance defaults.
+        # See ``_completion_kwargs`` for the rationale — same translation
+        # rules; ``setdefault`` for non-reasoning preserves caller overrides.
         is_reasoning = self._is_reasoning_model(self.model_name)
         if is_reasoning:
             kw.pop("temperature", None)
             caller_max_tokens = kw.pop("max_tokens", None)
+            effective_max_tokens = (
+                caller_max_tokens if caller_max_tokens is not None else self._max_tokens
+            )
+            if effective_max_tokens is not None:
+                kw["max_completion_tokens"] = effective_max_tokens
         else:
-            kw["temperature"] = self._temperature
-            caller_max_tokens = None
+            kw.setdefault("temperature", self._temperature)
+            if self._max_tokens is not None:
+                kw.setdefault("max_tokens", self._max_tokens)
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
             kw["api_base"] = self._api_base
         if self._api_version is not None:
             kw["api_version"] = self._api_version
-        effective_max_tokens = caller_max_tokens if caller_max_tokens is not None else self._max_tokens
-        if effective_max_tokens is not None:
-            if is_reasoning:
-                kw["max_completion_tokens"] = effective_max_tokens
-            else:
-                kw["max_tokens"] = effective_max_tokens
         return kw
 
     async def ainvoke_messages(

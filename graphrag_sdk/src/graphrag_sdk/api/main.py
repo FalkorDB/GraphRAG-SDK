@@ -334,12 +334,11 @@ class GraphRAG:
             callers must inspect each entry. Failures are also logged at
             WARNING.
         """
-        # ── Config validation (cached, runs at most once per session) ──
-        # Catches dim/model mismatches up-front instead of mid-ingest, where
-        # FalkorDB would reject vectors with a less-actionable error.
-        await self._validate_graph_config()
-
-        # ── Validate input mode ──
+        # ── Validate input mode (cheap, no I/O) ──
+        # Run argument-shape checks before the embedder/DB probe so a
+        # caller passing bad arguments (e.g., neither source nor text)
+        # gets the intended ValueError instead of having it masked by an
+        # unrelated ConfigError raised from the probe.
         if source is None and text is None:
             raise ValueError("Either 'source' (file path) or 'text' must be provided")
         if source is not None and text is not None:
@@ -354,6 +353,11 @@ class GraphRAG:
                 "Cannot pass both 'text' and 'loader'. The loader is ignored "
                 "when text is provided directly — pass only one."
             )
+
+        # ── Config validation (cached, runs at most once per session) ──
+        # Catches dim/model mismatches up-front instead of mid-ingest, where
+        # FalkorDB would reject vectors with a less-actionable error.
+        await self._validate_graph_config()
 
         # ── Dispatch ──
         if isinstance(source, list):

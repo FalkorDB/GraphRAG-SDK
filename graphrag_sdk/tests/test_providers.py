@@ -483,6 +483,18 @@ class TestLiteLLMReasoningModelDetection:
         kw = llm._completion_kwargs("hello")
         assert "temperature" not in kw
 
+    def test_caller_temperature_overrides_instance_default_for_chat_model(self):
+        """For non-reasoning models, a caller passing ``temperature=`` must
+        override the instance default — not be silently overwritten by it."""
+        llm = LiteLLM(model="openai/gpt-4o", temperature=0.0)
+        kw = llm._completion_kwargs("hi", temperature=0.7)
+        assert kw["temperature"] == 0.7
+
+    def test_caller_max_tokens_overrides_instance_default_for_chat_model(self):
+        llm = LiteLLM(model="openai/gpt-4o", max_tokens=100)
+        kw = llm._completion_kwargs("hi", max_tokens=500)
+        assert kw["max_tokens"] == 500
+
 
 class TestOpenRouterReasoningModelDetection:
     def test_kwargs_omit_temperature_for_reasoning_model(self):
@@ -525,6 +537,15 @@ class TestOpenRouterReasoningModelDetection:
         )
         assert "max_tokens" not in kw
         assert kw["max_completion_tokens"] == 100
+
+    def test_caller_temperature_overrides_instance_default_for_chat_model(self):
+        """Non-reasoning models must let caller temperature win over the
+        instance default — same regression as the LiteLLM provider."""
+        llm = OpenRouterLLM(model="openai/gpt-4o", api_key="test", temperature=0.0)
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={"temperature": 0.7}
+        )
+        assert kw["temperature"] == 0.7
 
 
 # ═══════════════════════════════════════════════════════════════════

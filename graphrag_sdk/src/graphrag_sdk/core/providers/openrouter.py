@@ -69,9 +69,10 @@ class OpenRouterLLM(LLMInterface):
         """Assemble ``client.chat.completions.create`` kwargs once,
         applying the reasoning-model param translations centrally.
 
-        For reasoning models we strip any caller-supplied ``temperature``
-        and translate ``max_tokens`` → ``max_completion_tokens``,
-        because the OpenAI Chat Completions API rejects both names.
+        Caller-supplied ``temperature`` / ``max_tokens`` (via ``extra``)
+        are stripped for reasoning models because the API rejects both
+        names. For non-reasoning models, caller values win and instance
+        defaults only fill in when the caller didn't specify.
         """
         kw: dict[str, Any] = {
             "model": self.model_name,
@@ -82,15 +83,15 @@ class OpenRouterLLM(LLMInterface):
         if is_reasoning:
             kw.pop("temperature", None)
             caller_max_tokens = kw.pop("max_tokens", None)
+            effective_max_tokens = (
+                caller_max_tokens if caller_max_tokens is not None else self._max_tokens
+            )
+            if effective_max_tokens is not None:
+                kw["max_completion_tokens"] = effective_max_tokens
         else:
             kw.setdefault("temperature", self._temperature)
-            caller_max_tokens = None
-        effective_max_tokens = caller_max_tokens if caller_max_tokens is not None else self._max_tokens
-        if effective_max_tokens is not None:
-            if is_reasoning:
-                kw.setdefault("max_completion_tokens", effective_max_tokens)
-            else:
-                kw.setdefault("max_tokens", effective_max_tokens)
+            if self._max_tokens is not None:
+                kw.setdefault("max_tokens", self._max_tokens)
         return kw
 
     def _get_client(self):

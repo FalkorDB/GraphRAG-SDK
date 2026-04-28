@@ -1048,3 +1048,25 @@ class TestGraphRAGIngestValidation:
 
         with pytest.raises(ConfigError, match="Embedding model mismatch"):
             await g.ingest(text="hello", document_id="d1")
+
+    async def test_ingest_input_validation_runs_before_config_probe(
+        self, mock_conn, embedder
+    ):
+        """Bad input must raise ``ValueError`` immediately, without first
+        triggering the embedder probe / DB call inside _validate_graph_config."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+
+        # If _validate_graph_config ran first, this AsyncMock would be called.
+        g._graph_store.query_raw = AsyncMock(
+            side_effect=AssertionError("must not run before input validation")
+        )
+        g.embedder.aembed_query = AsyncMock(
+            side_effect=AssertionError("must not run before input validation")
+        )
+
+        with pytest.raises(ValueError, match="Either 'source'.*or 'text'"):
+            await g.ingest()
+        # Probe and DB query must not have fired.
+        g._graph_store.query_raw.assert_not_called()
+        g.embedder.aembed_query.assert_not_called()
