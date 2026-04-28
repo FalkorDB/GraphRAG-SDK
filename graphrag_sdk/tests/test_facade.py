@@ -1003,6 +1003,33 @@ class TestGraphRAGEmbedderProbe:
             await g.retrieve("test?")
         assert g._config_validated is False
 
+    async def test_probe_failure_does_not_cache_validated(self, mock_conn, embedder):
+        """Transient probe outage must not permanently disable the dim
+        check by caching ``_config_validated = True``."""
+        llm = MockLLM(responses=["A.", "B."])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        empty_result = MagicMock()
+        empty_result.result_set = []
+        g._graph_store.query_raw = AsyncMock(return_value=empty_result)
+        # First probe raises (transient failure) — function should bail
+        # without flipping the cache.
+        g.embedder.aembed_query = AsyncMock(side_effect=RuntimeError("transient"))
+
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        g._retrieval_strategy = mock_strategy
+
+        await g.retrieve("test?")
+        # Probe failure logged, validation NOT cached.
+        assert g._config_validated is False
+
+        # Second call: probe recovers and produces a correctly-sized
+        # vector. The previous failure didn't poison the cache, so the
+        # dim check runs and succeeds, flipping the flag.
+        g.embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+        await g.retrieve("test?")
+        assert g._config_validated is True
+
 
 class TestGraphRAGIngestValidation:
     """A6: _validate_graph_config runs at start of ingest, not just retrieve."""

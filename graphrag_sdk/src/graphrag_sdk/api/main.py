@@ -818,7 +818,12 @@ class GraphRAG:
         try:
             probe = await self.embedder.aembed_query("dim_check")
         except Exception:
+            # Probe failure is non-fatal — but don't cache a "validated"
+            # state, otherwise a transient outage permanently disables
+            # the dim check for this instance. Return so the next call
+            # retries the probe once the underlying issue clears.
             logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
+            return
         else:
             if not probe:
                 # Empty list / None means the embedder produced nothing for

@@ -459,6 +459,30 @@ class TestLiteLLMReasoningModelDetection:
         assert "temperature" not in kw
         assert kw["max_completion_tokens"] == 200
 
+    def test_caller_supplied_temperature_dropped_for_reasoning_model(self):
+        """A caller passing temperature= via **kwargs must not bypass the
+        reasoning-model strip — the API would reject the request."""
+        llm = LiteLLM(model="openai/gpt-5.5")
+        kw = llm._completion_kwargs("hello", temperature=0.5)
+        assert "temperature" not in kw
+
+    def test_caller_supplied_max_tokens_translated_for_reasoning_model(self):
+        """Caller-supplied max_tokens must be translated to max_completion_tokens
+        for reasoning models, not silently dropped or leaked through."""
+        llm = LiteLLM(model="openai/gpt-5.5")
+        kw = llm._completion_kwargs("hello", max_tokens=123)
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 123
+
+    def test_extra_temperature_dropped_for_reasoning_model(self):
+        """Same protection applies when temperature comes via the
+        constructor's **kwargs (self._extra) rather than the call site."""
+        llm = LiteLLM(model="openai/gpt-5.5", temperature=0.7)
+        # temperature=0.7 was explicitly passed; for reasoning models it
+        # should not appear in the request kwargs.
+        kw = llm._completion_kwargs("hello")
+        assert "temperature" not in kw
+
 
 class TestOpenRouterReasoningModelDetection:
     def test_kwargs_omit_temperature_for_reasoning_model(self):
@@ -484,6 +508,23 @@ class TestOpenRouterReasoningModelDetection:
             [{"role": "user", "content": "hi"}], extra={}
         )
         assert kw["temperature"] == 0.0
+
+    def test_caller_supplied_temperature_dropped_for_reasoning_model(self):
+        """Caller-supplied temperature in extra must be stripped for
+        reasoning models — same fix as the LiteLLM provider."""
+        llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test")
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={"temperature": 0.5}
+        )
+        assert "temperature" not in kw
+
+    def test_caller_supplied_max_tokens_translated_for_reasoning_model(self):
+        llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test")
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={"max_tokens": 100}
+        )
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 100
 
 
 # ═══════════════════════════════════════════════════════════════════

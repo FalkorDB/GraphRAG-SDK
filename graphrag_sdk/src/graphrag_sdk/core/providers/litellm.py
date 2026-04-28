@@ -69,22 +69,31 @@ class LiteLLM(LLMInterface):
             **self._extra,
             **kwargs,
         }
-        # Reasoning models reject explicit temperature settings — omit the
-        # key entirely and let the API use its default (1.0).
-        if not self._is_reasoning_model(self.model_name):
+        is_reasoning = self._is_reasoning_model(self.model_name)
+        if is_reasoning:
+            # Reasoning models (o1/o3/gpt-5) reject explicit temperature
+            # and use ``max_completion_tokens``. Strip any caller-supplied
+            # values too — instance-default guards alone are not enough
+            # because ``**kwargs``/``self._extra`` may have already
+            # injected them above.
+            kw.pop("temperature", None)
+            caller_max_tokens = kw.pop("max_tokens", None)
+        else:
             kw["temperature"] = self._temperature
+            caller_max_tokens = None
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
             kw["api_base"] = self._api_base
         if self._api_version is not None:
             kw["api_version"] = self._api_version
-        if self._max_tokens is not None:
-            # Reasoning models renamed ``max_tokens`` to ``max_completion_tokens``.
-            if self._is_reasoning_model(self.model_name):
-                kw["max_completion_tokens"] = self._max_tokens
+        # Resolve max-tokens cap — caller wins over instance default.
+        effective_max_tokens = caller_max_tokens if caller_max_tokens is not None else self._max_tokens
+        if effective_max_tokens is not None:
+            if is_reasoning:
+                kw["max_completion_tokens"] = effective_max_tokens
             else:
-                kw["max_tokens"] = self._max_tokens
+                kw["max_tokens"] = effective_max_tokens
         return kw
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
@@ -143,21 +152,28 @@ class LiteLLM(LLMInterface):
             **self._extra,
             **kwargs,
         }
-        # See ``_is_reasoning_model`` — same param-translation rules apply
-        # to multi-turn message calls.
-        if not self._is_reasoning_model(self.model_name):
+        # See ``_completion_kwargs`` — same translation rules; we strip
+        # caller-supplied ``temperature`` / ``max_tokens`` too, not just
+        # the instance defaults.
+        is_reasoning = self._is_reasoning_model(self.model_name)
+        if is_reasoning:
+            kw.pop("temperature", None)
+            caller_max_tokens = kw.pop("max_tokens", None)
+        else:
             kw["temperature"] = self._temperature
+            caller_max_tokens = None
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
             kw["api_base"] = self._api_base
         if self._api_version is not None:
             kw["api_version"] = self._api_version
-        if self._max_tokens is not None:
-            if self._is_reasoning_model(self.model_name):
-                kw["max_completion_tokens"] = self._max_tokens
+        effective_max_tokens = caller_max_tokens if caller_max_tokens is not None else self._max_tokens
+        if effective_max_tokens is not None:
+            if is_reasoning:
+                kw["max_completion_tokens"] = effective_max_tokens
             else:
-                kw["max_tokens"] = self._max_tokens
+                kw["max_tokens"] = effective_max_tokens
         return kw
 
     async def ainvoke_messages(
