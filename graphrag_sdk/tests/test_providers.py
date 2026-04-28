@@ -411,6 +411,81 @@ class TestLiteLLM:
                 llm.invoke("test")
 
 
+class TestLiteLLMReasoningModelDetection:
+    """Reasoning-model branch translates `temperature` and `max_tokens`."""
+
+    def test_classifier_recognizes_gpt5_o1_o3(self):
+        is_rm = LiteLLM._is_reasoning_model
+        # GPT-5 family (with and without provider prefix)
+        assert is_rm("openai/gpt-5")
+        assert is_rm("openai/gpt-5.4")
+        assert is_rm("openai/gpt-5.5")
+        assert is_rm("openai/gpt-5-mini")
+        assert is_rm("gpt-5.5")
+        # o-series
+        assert is_rm("openai/o1")
+        assert is_rm("openai/o1-mini")
+        assert is_rm("openai/o3")
+        assert is_rm("openai/o3-mini")
+        # Non-reasoning models
+        assert not is_rm("openai/gpt-4o")
+        assert not is_rm("openai/gpt-4o-mini")
+        assert not is_rm("openai/gpt-4-turbo")
+        assert not is_rm("anthropic/claude-3-5-sonnet")
+
+    def test_kwargs_omit_temperature_for_reasoning_model(self):
+        llm = LiteLLM(model="openai/gpt-5.5", temperature=0.0)
+        kw = llm._completion_kwargs("hello")
+        assert "temperature" not in kw
+
+    def test_kwargs_translate_max_tokens_for_reasoning_model(self):
+        llm = LiteLLM(model="openai/gpt-5.5", max_tokens=500)
+        kw = llm._completion_kwargs("hello")
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 500
+
+    def test_kwargs_keep_temperature_and_max_tokens_for_chat_model(self):
+        llm = LiteLLM(model="openai/gpt-4o", temperature=0.0, max_tokens=500)
+        kw = llm._completion_kwargs("hello")
+        assert kw["temperature"] == 0.0
+        assert kw["max_tokens"] == 500
+        assert "max_completion_tokens" not in kw
+
+    def test_messages_kwargs_apply_same_translation(self):
+        from graphrag_sdk.core.models import ChatMessage
+
+        llm = LiteLLM(model="openai/gpt-5.5", temperature=0.5, max_tokens=200)
+        kw = llm._messages_completion_kwargs([ChatMessage(role="user", content="hi")])
+        assert "temperature" not in kw
+        assert kw["max_completion_tokens"] == 200
+
+
+class TestOpenRouterReasoningModelDetection:
+    def test_kwargs_omit_temperature_for_reasoning_model(self):
+        llm = OpenRouterLLM(model="openai/gpt-5.5", api_key="test", temperature=0.0)
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={}
+        )
+        assert "temperature" not in kw
+
+    def test_kwargs_translate_max_tokens_for_reasoning_model(self):
+        llm = OpenRouterLLM(
+            model="openai/gpt-5.5", api_key="test", max_tokens=300
+        )
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={}
+        )
+        assert "max_tokens" not in kw
+        assert kw["max_completion_tokens"] == 300
+
+    def test_kwargs_keep_temperature_for_chat_model(self):
+        llm = OpenRouterLLM(model="openai/gpt-4o", api_key="test", temperature=0.0)
+        kw = llm._build_create_kwargs(
+            [{"role": "user", "content": "hi"}], extra={}
+        )
+        assert kw["temperature"] == 0.0
+
+
 # ═══════════════════════════════════════════════════════════════════
 # TestLiteLLMEmbedder
 # ═══════════════════════════════════════════════════════════════════

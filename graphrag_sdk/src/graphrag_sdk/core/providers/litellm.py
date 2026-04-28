@@ -50,14 +50,29 @@ class LiteLLM(LLMInterface):
         self._max_tokens = max_tokens
         self._extra = kwargs
 
+    @staticmethod
+    def _is_reasoning_model(model: str) -> bool:
+        """Return True for OpenAI reasoning models (o1 / o3 / gpt-5 family).
+
+        These models impose two restrictions vs the chat-completion default:
+        ``temperature`` only accepts the default value (1.0), and the token
+        cap parameter is ``max_completion_tokens`` rather than ``max_tokens``.
+        """
+        # Strip provider prefix (``openai/``, ``azure/``…) before matching.
+        name = model.split("/")[-1].lower()
+        return name.startswith(("o1", "o3", "gpt-5"))
+
     def _completion_kwargs(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
         kw: dict[str, Any] = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": self._temperature,
             **self._extra,
             **kwargs,
         }
+        # Reasoning models reject explicit temperature settings — omit the
+        # key entirely and let the API use its default (1.0).
+        if not self._is_reasoning_model(self.model_name):
+            kw["temperature"] = self._temperature
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
@@ -65,7 +80,11 @@ class LiteLLM(LLMInterface):
         if self._api_version is not None:
             kw["api_version"] = self._api_version
         if self._max_tokens is not None:
-            kw["max_tokens"] = self._max_tokens
+            # Reasoning models renamed ``max_tokens`` to ``max_completion_tokens``.
+            if self._is_reasoning_model(self.model_name):
+                kw["max_completion_tokens"] = self._max_tokens
+            else:
+                kw["max_tokens"] = self._max_tokens
         return kw
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
@@ -121,10 +140,13 @@ class LiteLLM(LLMInterface):
         kw: dict[str, Any] = {
             "model": self.model_name,
             "messages": [m.to_dict() for m in messages],
-            "temperature": self._temperature,
             **self._extra,
             **kwargs,
         }
+        # See ``_is_reasoning_model`` — same param-translation rules apply
+        # to multi-turn message calls.
+        if not self._is_reasoning_model(self.model_name):
+            kw["temperature"] = self._temperature
         if self._api_key is not None:
             kw["api_key"] = self._api_key
         if self._api_base is not None:
@@ -132,7 +154,10 @@ class LiteLLM(LLMInterface):
         if self._api_version is not None:
             kw["api_version"] = self._api_version
         if self._max_tokens is not None:
-            kw["max_tokens"] = self._max_tokens
+            if self._is_reasoning_model(self.model_name):
+                kw["max_completion_tokens"] = self._max_tokens
+            else:
+                kw["max_tokens"] = self._max_tokens
         return kw
 
     async def ainvoke_messages(

@@ -48,6 +48,40 @@ class OpenRouterLLM(LLMInterface):
         self._client = None
         self._async_client = None
 
+    @staticmethod
+    def _is_reasoning_model(model: str) -> bool:
+        """Return True for OpenAI reasoning models (o1 / o3 / gpt-5 family).
+
+        These models reject explicit ``temperature`` settings (default 1.0
+        only) and use ``max_completion_tokens`` instead of ``max_tokens``.
+        OpenRouter passes the param names straight through to upstream so
+        the same translation rules apply.
+        """
+        # Strip provider prefix (``openai/``…) before matching.
+        name = model.split("/")[-1].lower()
+        return name.startswith(("o1", "o3", "gpt-5"))
+
+    def _build_create_kwargs(
+        self,
+        messages: list[dict[str, str]],
+        extra: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Assemble ``client.chat.completions.create`` kwargs once,
+        applying the reasoning-model param translations centrally."""
+        kw: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": messages,
+            **extra,
+        }
+        if not self._is_reasoning_model(self.model_name):
+            kw.setdefault("temperature", self._temperature)
+        if self._max_tokens is not None:
+            if self._is_reasoning_model(self.model_name):
+                kw.setdefault("max_completion_tokens", self._max_tokens)
+            else:
+                kw.setdefault("max_tokens", self._max_tokens)
+        return kw
+
     def _get_client(self):
         if self._client is None:
             try:
@@ -82,14 +116,10 @@ class OpenRouterLLM(LLMInterface):
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
         client = self._get_client()
-        create_kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self._temperature,
-            **kwargs,
-        }
-        if self._max_tokens is not None:
-            create_kwargs.setdefault("max_tokens", self._max_tokens)
+        create_kwargs = self._build_create_kwargs(
+            [{"role": "user", "content": prompt}],
+            kwargs,
+        )
         response = client.chat.completions.create(**create_kwargs)
         content = response.choices[0].message.content or ""
         return LLMResponse(content=content)
@@ -102,14 +132,10 @@ class OpenRouterLLM(LLMInterface):
         **kwargs: Any,
     ) -> LLMResponse:
         client = self._get_async_client()
-        create_kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self._temperature,
-            **kwargs,
-        }
-        if self._max_tokens is not None:
-            create_kwargs.setdefault("max_tokens", self._max_tokens)
+        create_kwargs = self._build_create_kwargs(
+            [{"role": "user", "content": prompt}],
+            kwargs,
+        )
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
@@ -142,14 +168,10 @@ class OpenRouterLLM(LLMInterface):
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
         client = self._get_async_client()
-        create_kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "messages": [m.to_dict() for m in messages],
-            "temperature": self._temperature,
-            **kwargs,
-        }
-        if self._max_tokens is not None:
-            create_kwargs.setdefault("max_tokens", self._max_tokens)
+        create_kwargs = self._build_create_kwargs(
+            [m.to_dict() for m in messages],
+            kwargs,
+        )
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:

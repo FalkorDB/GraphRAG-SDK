@@ -57,7 +57,7 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 async def main():
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-        llm=LiteLLM(model="openai/gpt-4o"),
+        llm=LiteLLM(model="openai/gpt-5.5"),
         embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     ) as rag:
         # Ingest raw text (pass a file path with the `pdf` extra installed for PDFs)
@@ -96,7 +96,7 @@ schema = GraphSchema(
 
 async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
-    llm=LiteLLM(model="openai/gpt-4o"),
+    llm=LiteLLM(model="openai/gpt-5.5"),
     embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
     schema=schema,
 ) as rag:

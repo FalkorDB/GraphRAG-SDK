@@ -39,7 +39,7 @@ def get_providers():
     """
 
     # ── Option A: OpenAI (default) ──────────────────────────────
-    llm = LiteLLM(model="openai/gpt-4o")
+    llm = LiteLLM(model="openai/gpt-5.5")
     embedder = LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256)
 
     # ── Option B: Azure OpenAI ──────────────────────────────────
