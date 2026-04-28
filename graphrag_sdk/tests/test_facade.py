@@ -154,7 +154,7 @@ class TestGraphRAGIngest:
         # Patch vector_store methods
         graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
         graphrag._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
-        result = await graphrag.ingest(text="Test text.")
+        await graphrag.ingest(text="Test text.")
         graphrag._vector_store.ensure_indices.assert_awaited_once()
 
     async def test_ingest_does_not_call_backfill(self, graphrag):
@@ -792,10 +792,16 @@ class TestGraphRAGBatchIngestValidation:
             await g.ingest(["a.txt", "b.txt"], max_concurrency=0)
 
     async def test_ingest_batch_rejects_old_keyword(self, mock_conn, embedder, llm):
-        """A3: max_concurrent was renamed to max_concurrency in v1.0.1."""
+        """A3: max_concurrent was renamed to max_concurrency in v1.0.1.
+
+        The deprecated keyword is passed via dict-spread so static analyzers
+        don't flag the (intentionally invalid) call site — the assertion is
+        that the runtime rejects it.
+        """
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        old_kwarg = {"max_concurrent": 2}
         with pytest.raises(TypeError):
-            await g.ingest(["a.txt", "b.txt"], max_concurrent=2)
+            await g.ingest(["a.txt", "b.txt"], **old_kwarg)
 
 
 class TestGraphRAGBatchIngest:

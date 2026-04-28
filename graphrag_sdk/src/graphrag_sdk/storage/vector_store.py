@@ -84,7 +84,14 @@ class VectorStore:
     # is interpolated into a query — only ``embedding_dimension``, an int
     # bound-checked at construction.
 
-    async def _try_create_index(self, query: str, descriptor: str, kind: str) -> None:
+    async def _try_create_index(self, query: str, descriptor: str, kind: str) -> bool:
+        """Run a CREATE INDEX query idempotently.
+
+        Returns ``True`` if the index now exists (created or already existed),
+        ``False`` if creation failed for any other reason. The bool flows up
+        to ``ensure_indices()`` so the result map honestly reflects whether
+        each index is in place — failures are not papered over as success.
+        """
         try:
             await self._conn.query(query)
             if kind == "vector":
@@ -93,47 +100,49 @@ class VectorStore:
                 )
             else:
                 logger.info(f"Created fulltext index on {descriptor}")
+            return True
         except Exception as exc:
             if "already indexed" in str(exc).lower():
                 logger.debug(f"{kind.capitalize()} index on {descriptor} already exists")
-            else:
-                logger.warning(f"Could not create {kind} index on {descriptor}: {exc}")
+                return True
+            logger.warning(f"Could not create {kind} index on {descriptor}: {exc}")
+            return False
 
-    async def create_chunk_vector_index(self) -> None:
+    async def create_chunk_vector_index(self) -> bool:
         """Create the vector index on ``Chunk.embedding``."""
         query = (
             f"CREATE VECTOR INDEX FOR (n:Chunk) ON (n.embedding) "
             f"OPTIONS {{dimension:{self.embedding_dimension}, similarityFunction:'cosine'}}"
         )
-        await self._try_create_index(query, "Chunk.embedding", "vector")
+        return await self._try_create_index(query, "Chunk.embedding", "vector")
 
-    async def create_entity_vector_index(self) -> None:
+    async def create_entity_vector_index(self) -> bool:
         """Create the vector index on ``__Entity__.embedding``."""
         query = (
             f"CREATE VECTOR INDEX FOR (n:__Entity__) ON (n.embedding) "
             f"OPTIONS {{dimension:{self.embedding_dimension}, similarityFunction:'cosine'}}"
         )
-        await self._try_create_index(query, "__Entity__.embedding", "vector")
+        return await self._try_create_index(query, "__Entity__.embedding", "vector")
 
-    async def create_relates_vector_index(self) -> None:
+    async def create_relates_vector_index(self) -> bool:
         """Create the vector index on ``RELATES.embedding`` edges."""
         query = (
             f"CREATE VECTOR INDEX FOR ()-[e:RELATES]->() ON (e.embedding) "
             f"OPTIONS {{dimension:{self.embedding_dimension}, similarityFunction:'cosine'}}"
         )
-        await self._try_create_index(query, "[RELATES].embedding", "vector")
+        return await self._try_create_index(query, "[RELATES].embedding", "vector")
 
-    async def create_chunk_fulltext_index(self) -> None:
+    async def create_chunk_fulltext_index(self) -> bool:
         """Create the fulltext index on ``Chunk.text``."""
-        await self._try_create_index(
+        return await self._try_create_index(
             "CALL db.idx.fulltext.createNodeIndex('Chunk', 'text')",
             "Chunk(text)",
             "fulltext",
         )
 
-    async def create_entity_fulltext_index(self) -> None:
+    async def create_entity_fulltext_index(self) -> bool:
         """Create the fulltext index on ``__Entity__(name, description)``."""
-        await self._try_create_index(
+        return await self._try_create_index(
             "CALL db.idx.fulltext.createNodeIndex('__Entity__', 'name', 'description')",
             "__Entity__(name, description)",
             "fulltext",
@@ -596,13 +605,16 @@ class VectorStore:
         ]
         for key, fn in creators:
             try:
-                await fn()
-                results[key] = True
+                results[key] = await fn()
             except Exception:
                 logger.debug("Index creation failed for %s", key, exc_info=True)
                 results[key] = False
 
-        self._indices_ensured = True
+        # Only mark indices as ensured if everything actually succeeded —
+        # otherwise the next call to ensure_indices() would skip retrying
+        # transient failures.
+        if all(results.values()):
+            self._indices_ensured = True
         logger.info(f"ensure_indices complete: {results}")
         return results
 

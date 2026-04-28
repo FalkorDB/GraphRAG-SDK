@@ -62,11 +62,14 @@ class MyCustomEmbedder(Embedder):
     """Example: wrap a local embedding model or custom API.
 
     !!! WARNING — STUB IMPLEMENTATION !!!
-    The ``embed_query`` body below returns a zero vector. This is a
-    template, not a working embedder. **Replace it with a real call**
-    before running this example against a graph you care about — a
-    zero-vector embedder produces a graph where every chunk is
-    "identical" and vector retrieval is meaningless.
+    The ``embed_query`` body below intentionally raises
+    ``NotImplementedError``. This is a template, not a working
+    embedder. **Replace it with a real call** (e.g.,
+    ``SentenceTransformer.encode`` or a custom API client) before
+    running this example. The runtime error is deliberate — it
+    prevents the alternative footgun where a zero-vector stub
+    silently produces a graph where every chunk is "identical"
+    and vector retrieval is meaningless.
 
     You must implement `embed_query()`. Optionally override
     `embed_documents()` for batch optimization and `aembed_query()`

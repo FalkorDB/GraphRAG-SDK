@@ -128,7 +128,7 @@ class LLMInterface(ABC):
                         delay,
                         summarize_exception(exc),
                     )
-                    logger.debug("LLM call failure details", exc_info=exc)
+                    logger.debug("LLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 

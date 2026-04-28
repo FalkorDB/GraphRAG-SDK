@@ -111,7 +111,7 @@ class LiteLLM(LLMInterface):
                         delay,
                         summarize_exception(exc),
                     )
-                    logger.debug("LiteLLM call failure details", exc_info=exc)
+                    logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
@@ -171,7 +171,7 @@ class LiteLLM(LLMInterface):
                         delay,
                         summarize_exception(exc),
                     )
-                    logger.debug("LiteLLM call failure details", exc_info=exc)
+                    logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 

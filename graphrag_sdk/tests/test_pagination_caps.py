@@ -9,8 +9,6 @@ from __future__ import annotations
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from graphrag_sdk.storage import deduplicator as dedup_mod
 from graphrag_sdk.storage import vector_store as vs_mod
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator

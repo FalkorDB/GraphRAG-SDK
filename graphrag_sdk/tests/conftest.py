@@ -230,4 +230,5 @@ def mock_vector_store(embedder: MockEmbedder) -> MagicMock:
     store.create_entity_fulltext_index = AsyncMock()
     store.ensure_indices = AsyncMock(return_value={})
     store.backfill_entity_embeddings = AsyncMock(return_value=0)
+    store.embed_relationships = AsyncMock(return_value=0)
     return store

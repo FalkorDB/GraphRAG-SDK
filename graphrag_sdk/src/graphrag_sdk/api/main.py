@@ -91,13 +91,7 @@ _RAG_SYSTEM_PROMPT_DELIMITED = (
     "or is NOT true, preserve that meaning."
 )
 
-_RAG_PROMPT = (
-    "<context>\n"
-    "{context}\n"
-    "</context>\n\n"
-    "Question: {question}\n\n"
-    "Answer:"
-)
+_RAG_PROMPT = "<context>\n{context}\n</context>\n\nQuestion: {question}\n\nAnswer:"
 
 # Matches a literal ``</context>`` closing tag (case-insensitive, whitespace
 # tolerant) so a chunk containing the closing delimiter cannot escape the
@@ -108,6 +102,7 @@ _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
 def _neutralize_context_close_tag(text: str) -> str:
     """Disarm any literal ``</context>`` that appears inside untrusted text."""
     return _CONTEXT_CLOSE_RE.sub("</ context>", text)
+
 
 _QUESTION_REWRITE_PROMPT = (
     "Given the conversation history, rewrite the user's last question "
@@ -220,8 +215,7 @@ class GraphRAG:
             # with full traceback so it's visible in the operator's logs,
             # then return None so Python re-raises the inner exception.
             logger.warning(
-                "Error closing connection during __aexit__ "
-                "(inner exception will propagate)",
+                "Error closing connection during __aexit__ (inner exception will propagate)",
                 exc_info=True,
             )
 
@@ -243,9 +237,17 @@ class GraphRAG:
         """Drop the entire knowledge graph.
 
         Irreversible. Removes all nodes, relationships, and indexes
-        managed by this ``GraphRAG`` instance.
+        managed by this ``GraphRAG`` instance. Also invalidates the
+        cached config and index flags so a follow-up ``ingest()`` on
+        the same instance re-runs validation and re-creates indexes
+        instead of trusting stale state.
         """
         await self._graph_store.delete_all()
+        # Indexes were dropped along with the graph; force re-creation
+        # on the next ensure_indices() call.
+        self._vector_store._indices_ensured = False
+        # The __GraphRAGConfig__ node is gone too; re-validate next time.
+        self._config_validated = False
 
     # ── Ingestion ────────────────────────────────────────────────
 
@@ -339,18 +341,14 @@ class GraphRAG:
 
         # ── Validate input mode ──
         if source is None and text is None:
-            raise ValueError(
-                "Either 'source' (file path) or 'text' must be provided"
-            )
+            raise ValueError("Either 'source' (file path) or 'text' must be provided")
         if source is not None and text is not None:
             raise ValueError(
                 "Cannot pass both 'source' and 'text'. Use 'source' for file "
                 "paths or 'text' (with optional 'document_id') for raw text."
             )
         if text is None and document_id is not None:
-            raise ValueError(
-                "'document_id' is only valid when 'text' is provided"
-            )
+            raise ValueError("'document_id' is only valid when 'text' is provided")
         if text is not None and loader is not None:
             raise ValueError(
                 "Cannot pass both 'text' and 'loader'. The loader is ignored "
@@ -372,9 +370,7 @@ class GraphRAG:
         # In text mode, the resolved document id is passed down as the
         # ``source`` argument — the pipeline stores it on
         # ``DocumentInfo.path`` for provenance, and never reads from disk.
-        effective_source = source if text is None else (
-            document_id or f"text-{uuid4().hex[:8]}"
-        )
+        effective_source = source if text is None else (document_id or f"text-{uuid4().hex[:8]}")
         return await self._ingest_single(
             effective_source,
             text=text,
@@ -699,8 +695,7 @@ class GraphRAG:
         using_default_template = prompt_template is None
         if using_default_template:
             context_str = "\n---\n".join(
-                _neutralize_context_close_tag(item.content)
-                for item in retriever_result.items
+                _neutralize_context_close_tag(item.content) for item in retriever_result.items
             )
             default_system_content = _RAG_SYSTEM_PROMPT_DELIMITED
         else:

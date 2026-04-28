@@ -343,9 +343,7 @@ class IngestionPipeline:
                 pruned_rels.append(r)
             elif valid_pairs:
                 # Declared rel type, but (src, tgt) doesn't match any pattern.
-                pattern_mismatches.setdefault(rel_label, []).append(
-                    (src.label, tgt.label)
-                )
+                pattern_mismatches.setdefault(rel_label, []).append((src.label, tgt.label))
 
         pruned_node_count = len(graph_data.nodes) - len(pruned_nodes)
         pruned_rel_count = len(graph_data.relationships) - len(pruned_rels)
