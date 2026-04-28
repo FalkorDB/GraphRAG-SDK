@@ -987,6 +987,22 @@ class TestGraphRAGEmbedderProbe:
         result = await g.retrieve("test?")
         assert isinstance(result, RetrieverResult)
 
+    async def test_empty_embedder_probe_raises_configerror(self, mock_conn, embedder):
+        """An empty vector from a misbehaving embedder must fail fast,
+        not silently flip ``_config_validated``."""
+        from graphrag_sdk.core.exceptions import ConfigError
+
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        empty_result = MagicMock()
+        empty_result.result_set = []
+        g._graph_store.query_raw = AsyncMock(return_value=empty_result)
+        g.embedder.aembed_query = AsyncMock(return_value=[])
+
+        with pytest.raises(ConfigError, match="empty vector"):
+            await g.retrieve("test?")
+        assert g._config_validated is False
+
 
 class TestGraphRAGIngestValidation:
     """A6: _validate_graph_config runs at start of ingest, not just retrieve."""

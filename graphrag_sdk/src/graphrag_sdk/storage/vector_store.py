@@ -20,6 +20,12 @@ _MAX_EMBEDDING_DIMENSION = 8192
 # IS-NULL filter (e.g. server bug, persistent embedding failures).
 _MAX_PAGINATION_ITERATIONS = 10_000
 
+# Substrings FalkorDB returns when an index already exists. Mirrors
+# ``FalkorDBConnection._NON_TRANSIENT_MARKERS`` for the index-creation
+# subset — both markers indicate the operation is already done, so we
+# treat them as idempotent success rather than a creation failure.
+_INDEX_EXISTS_MARKERS = ("already indexed", "already exists")
+
 # Characters that RediSearch treats as syntax in fulltext queries.
 _REDISEARCH_SPECIAL = set(r""",./<>{}[]\"':;!@#$%^&*()-+=~|""")
 
@@ -102,7 +108,8 @@ class VectorStore:
                 logger.info(f"Created fulltext index on {descriptor}")
             return True
         except Exception as exc:
-            if "already indexed" in str(exc).lower():
+            msg = str(exc).lower()
+            if any(marker in msg for marker in _INDEX_EXISTS_MARKERS):
                 logger.debug(f"{kind.capitalize()} index on {descriptor} already exists")
                 return True
             logger.warning(f"Could not create {kind} index on {descriptor}: {exc}")
@@ -589,7 +596,14 @@ class VectorStore:
         - __Entity__ fulltext index (name, description)
 
         Returns:
-            Dict mapping index name to whether creation succeeded.
+            Dict mapping each index name to whether creation succeeded
+            **on this call**. If a previous call already established all
+            indices (``self._indices_ensured`` is ``True``), this method
+            short-circuits and returns ``{}`` to signal "no work was
+            performed" — not "no indexes exist". Callers that need a
+            point-in-time view of index health should reset the cache
+            (see ``GraphRAG.delete_all``) or call ``ensure_indices()``
+            on a fresh ``VectorStore`` instance.
         """
         if self._indices_ensured:
             return {}

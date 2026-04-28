@@ -820,7 +820,17 @@ class GraphRAG:
         except Exception:
             logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
         else:
-            if probe and len(probe) != self._embedding_dimension:
+            if not probe:
+                # Empty list / None means the embedder produced nothing for
+                # a real input. That's a misbehaving embedder — fail fast
+                # rather than silently flipping ``_config_validated`` and
+                # writing an unusable graph downstream.
+                raise ConfigError(
+                    f"Embedder probe returned an empty vector for "
+                    f"'{self.embedder.model_name}'. The embedder is not "
+                    f"producing usable output."
+                )
+            if len(probe) != self._embedding_dimension:
                 raise ConfigError(
                     f"embedding_dimension={self._embedding_dimension} was "
                     f"configured, but the embedder ('{self.embedder.model_name}') "

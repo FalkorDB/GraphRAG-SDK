@@ -88,6 +88,33 @@ class TestVectorStoreIndex:
         # Should not raise, just warn
         await vector_store.create_chunk_vector_index()
 
+    async def test_create_index_returns_true_on_already_indexed(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB returns 'already indexed' when the index exists; treat as success."""
+        mock_connection.query = AsyncMock(side_effect=Exception("Already indexed"))
+        result = await vector_store.create_chunk_vector_index()
+        assert result is True
+
+    async def test_create_index_returns_true_on_already_exists(
+        self, vector_store, mock_connection
+    ):
+        """FalkorDB also returns 'already exists' for some index conflicts;
+        same idempotent-success semantics."""
+        mock_connection.query = AsyncMock(side_effect=Exception("Index already exists"))
+        result = await vector_store.create_chunk_vector_index()
+        assert result is True
+
+    async def test_create_index_returns_false_on_real_failure(
+        self, vector_store, mock_connection
+    ):
+        """A non-idempotent error (e.g. syntax) must surface as False."""
+        mock_connection.query = AsyncMock(
+            side_effect=Exception("Syntax error near 'CREATE'")
+        )
+        result = await vector_store.create_chunk_vector_index()
+        assert result is False
+
 
 class TestVectorStoreIndexChunks:
     async def test_index_chunks_uses_unwind(self, vector_store, mock_connection, embedder):
