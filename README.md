@@ -1,9 +1,9 @@
-> 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`.
-
 <h1 align="center">GraphRAG-SDK</h1>
 <h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
 
 <p align="center"><b>Benchmark-leading accuracy</b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b>5-minute setup</b></p>
+
+<p align="center"><b>→ <a href="#quick-start">Get started in 5 minutes</a></b></p>
 
 <p align="center">
   <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg?label=pypi" alt="PyPI version"></a>
@@ -171,6 +171,7 @@ async with GraphRAG(
 - 2025-Q1–Q2: Pluggable providers and pipeline tuning
 - 2025-Q3: Sharper retrieval, deeper test coverage
 - 🎉 2026-04: Version 1.0 is released
+  - 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`
 - 2026-Q2: Production observability; expand ingestion support — tables, structured data
 - 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
 - 2026-Q4: Smarter retrieval — dynamic traversal, temporal graph
