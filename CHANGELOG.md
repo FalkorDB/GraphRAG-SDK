@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Default `embedding_dimension` lowered from 1536 to 256.** Aligns
+  the out-of-the-box default with the `text-embedding-3-large`
+  Matryoshka 256-dim configuration used in the benchmark (overall
+  ACC 69.73). Affects `GraphRAG(...)` and `VectorStore(...)` when
+  `embedding_dimension` is left unset; existing graphs created
+  with the prior default continue to work because the dimension
+  is stored in the FalkorDB vector index. To preserve the old
+  behavior on new graphs, pass `embedding_dimension=1536`
+  explicitly. README, getting-started, api-reference, storage,
+  graph-schema docs, and the custom-provider example updated to
+  match.
+
 ## [1.0.1] - 2026-04-28
 
 Security and API hygiene release addressing findings from a full

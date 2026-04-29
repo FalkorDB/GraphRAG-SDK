@@ -98,7 +98,7 @@ Node labels and relationship types are sanitized via `sanitize_cypher_label()` t
 
 ```
 CREATE VECTOR INDEX FOR (n:Chunk) ON (n.embedding)
-OPTIONS {dimension:1536, similarityFunction:'cosine'}
+OPTIONS {dimension:256, similarityFunction:'cosine'}
 ```
 
 **Fulltext indexes** use the RediSearch-based fulltext API:
@@ -112,7 +112,7 @@ CALL db.idx.fulltext.createNodeIndex('__Entity__', 'name', 'description')
 
 ```
 CREATE VECTOR INDEX FOR ()-[e:`RELATES`]->() ON (e.embedding)
-OPTIONS {dimension:1536, similarityFunction:'cosine'}
+OPTIONS {dimension:256, similarityFunction:'cosine'}
 ```
 
 All index creation is idempotent — if the index already exists, the error is silently caught and logged at debug level.

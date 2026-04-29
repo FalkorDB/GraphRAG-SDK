@@ -61,7 +61,7 @@ class VectorStore:
 
     Example::
 
-        store = VectorStore(connection, embedder=my_embedder, embedding_dimension=1536)
+        store = VectorStore(connection, embedder=my_embedder, embedding_dimension=256)
         await store.ensure_indices()
         await store.index_chunks(chunks)
         results = await store.search_chunks(query_vector, top_k=5)
@@ -71,7 +71,7 @@ class VectorStore:
         self,
         connection: FalkorDBConnection,
         embedder: Any | None = None,
-        embedding_dimension: int = 1536,
+        embedding_dimension: int = 256,
     ) -> None:
         if not 1 <= embedding_dimension <= _MAX_EMBEDDING_DIMENSION:
             raise ValueError(

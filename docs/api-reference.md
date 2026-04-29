@@ -720,7 +720,7 @@ GraphStore(connection: FalkorDBConnection)
 ### VectorStore
 
 ```python
-VectorStore(connection, embedder=None, index_name="chunk_embeddings", embedding_dimension=1536, similarity_function="cosine")
+VectorStore(connection, embedder=None, index_name="chunk_embeddings", embedding_dimension=256, similarity_function="cosine")
 ```
 
 | Method | Signature | Description |
