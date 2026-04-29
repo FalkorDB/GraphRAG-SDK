@@ -1,9 +1,7 @@
 <h1 align="center">GraphRAG-SDK</h1>
 <h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
 
-<p align="center"><b>Benchmark-leading accuracy</b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b>5-minute setup</b></p>
-
-<p align="center"><b>→ <a href="#quick-start">Get started in 5 minutes</a></b></p>
+<p align="center"><b>Benchmark-leading accuracy</b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b><a href="#quick-start">5-minute setup</a></b></p>
 
 <p align="center">
   <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg?label=pypi" alt="PyPI version"></a>
