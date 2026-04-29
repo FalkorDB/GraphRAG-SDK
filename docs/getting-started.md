@@ -96,13 +96,13 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="azure/gpt-4.1"),
-    embedder=LiteLLMEmbedder(model="azure/text-embedding-ada-002"),
+    embedder=LiteLLMEmbedder(model="azure/text-embedding-3-large", dimensions=256),
     schema=schema,
-    embedding_dimension=1536,  # must match your embedding model's output dimension
+    embedding_dimension=256,  # must match your embedding model's output dimension
 )
 ```
 
-If your embedding model produces vectors with a different dimensionality (e.g., `text-embedding-3-large` at 256 or 1024 dimensions), set `embedding_dimension` accordingly. The default is `1536`.
+The default is `256` (matched-Matryoshka dimensions of `text-embedding-3-large`). If your embedding model produces a different dimensionality (e.g., 1024, 1536, or 3072), set `embedding_dimension` accordingly.
 
 `ConnectionConfig` accepts additional parameters such as `port`, `username`, `password`, and `query_timeout_ms`. See [docs/configuration.md](configuration.md) for the full list.
 

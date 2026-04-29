@@ -1,9 +1,11 @@
-> 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`.
-
 <h1 align="center">GraphRAG-SDK</h1>
 <h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
 
+<p align="center"><b>Benchmark-leading accuracy</b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b><a href="#quick-start">5-minute setup</a></b></p>
+
 <p align="center">
+  <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg?label=pypi" alt="PyPI version"></a>
+  <a href="https://pepy.tech/projects/graphrag-sdk"><img src="https://img.shields.io/pepy/dt/graphrag-sdk?label=downloads&color=16A534" alt="Downloads"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
   <a href="https://github.com/FalkorDB/GraphRAG-SDK/actions"><img src="https://img.shields.io/github/actions/workflow/status/FalkorDB/GraphRAG-SDK/ci.yml?label=CI" alt="CI"></a>
@@ -14,7 +16,7 @@
 ![knowledge-graph-construction-b](https://github.com/user-attachments/assets/69066899-0168-4e14-b359-f68c5b6c1e75)
 
 
-Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers quickly.
+Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers in under 5 minutes.
 
 ---
 
@@ -32,6 +34,8 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | 9 | MS-GraphRAG (local) | 50.93 | 45.16 | 48.05 |
 
 > Overall ACC on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel (20 novels, 2,010 questions) and Medical (1 corpus, 2,062 questions) datasets. FalkorDB scored with `gpt-4o-mini` (Azure OpenAI); competitor numbers are from the published leaderboard. Overall = mean of Novel and Medical ACC. See [docs/benchmark.md](docs/benchmark.md) for per-category breakdowns, methodology, and reproduction instructions.
+
+Vectors match similar chunks. The graph traverses relationships. Every answer cites its source.
 
 ---
 
@@ -56,9 +60,9 @@ from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
 
 async def main():
     async with GraphRAG(
-        connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+        connection=ConnectionConfig(host="localhost", graph_name="my_graph"),  # graph_name = per-tenant isolation
         llm=LiteLLM(model="openai/gpt-5.5"),
-        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
+        embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
     ) as rag:
         # Ingest raw text (pass a file path with the `pdf` extra installed for PDFs)
         result = await rag.ingest(
@@ -97,11 +101,16 @@ schema = GraphSchema(
 async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="openai/gpt-5.5"),
-    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=1536),
+    embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
     schema=schema,
 ) as rag:
     ...  # ingest / completion as above
 ```
+
+<p align="center">
+  <b>→ Full walkthrough: <a href="docs/getting-started.md">Getting Started</a></b><br/>
+  <b>→ Benchmark-winning recipe: <a href="graphrag_sdk/examples/03_custom_strategies.py">Custom Strategies</a></b>
+</p>
 
 ---
 
@@ -110,23 +119,17 @@ async with GraphRAG(
 
 ## Ingestion & Retrieval Pipeline
 
-| Area | Item | Execution | Description |
-| --- | --- | --- | --- |
-| Ingestion | 1. Load | Sequential | Read raw text from files (PDF, TXT) or strings. |
-| Ingestion | 2. Chunk | Sequential | Split content into overlapping text chunks. |
-| Ingestion | 3. Lexical Graph | Sequential | Create `Document` and `Chunk` nodes with provenance edges. |
-| Ingestion | 4. Extract | Sequential | Run GLiNER2 local NER and LLM-based relationship extraction. |
-| Ingestion | 5. Quality Filter | Sequential | Remove invalid extracted nodes (empty IDs, malformed shape). |
-| Ingestion | 6. Prune | Sequential | Filter nodes/relations against the schema; drop orphan relations. |
-| Ingestion | 7. Resolve | Sequential | Deduplicate entities (exact match, semantic, LLM-verified). |
-| Ingestion | 8. Write | Sequential | Persist graph updates with batched `MERGE` operations in FalkorDB. |
-| Ingestion | 9a. Mentions | Parallel | Link entities back to source chunks. |
-| Ingestion | 9b. Index | Parallel | Embed and index chunks for retrieval. |
-| Retrieval | Vector search | Runtime | Finds semantically similar chunks. |
-| Retrieval | Full-text search | Runtime | Matches exact terms and keywords. |
-| Retrieval | Cypher queries | Runtime | Executes structured graph lookups. |
-| Retrieval | Relationship expansion | Runtime | Traverses connected entities and context. |
-| Retrieval | Cosine reranking | Runtime | Reorders candidates by relevance. |
+| Area | Step | Cost |
+| --- | --- | --- |
+| Ingestion | Extract entities & relations | LLM |
+| Ingestion | Resolve & deduplicate entities | LLM |
+| Ingestion | Embed & index | LLM |
+| Retrieval | Vector search | DB |
+| Retrieval | Full-text search | DB |
+| Retrieval | Text-to-Cypher *(experimental)* | LLM |
+| Retrieval | Cypher queries | DB |
+| Retrieval | Relationship expansion | DB |
+| Retrieval | Cosine reranking | Local |
 
 > 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
 
@@ -134,13 +137,15 @@ async with GraphRAG(
 
 ## Examples
 
-| # | Example | What it demonstrates |
-|---|---------|---------------------|
-| 1 | [Quick Start](graphrag_sdk/examples/01_quickstart.py) | Minimal ingest + query |
-| 2 | [PDF with Schema](graphrag_sdk/examples/02_pdf_with_schema.py) | PDF ingestion with custom entity types |
-| 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | Benchmark-winning pipeline configuration |
-| 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Implement your own LLM/Embedder |
-| 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | Interactive walkthrough with provenance inspection |
+> **Working starters — clone, plug in your source, ship.**
+
+| # | Example | What you'll build |
+|---|---------|-------------------|
+| 1 | [Quick Start](graphrag_sdk/examples/01_quickstart.py) | Your first ingest-and-query loop in under 30 lines |
+| 2 | [PDF with Schema](graphrag_sdk/examples/02_pdf_with_schema.py) | A PDF Q&A bot with your own entity and relation types |
+| 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | The benchmark-winning pipeline, ready to drop in |
+| 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
+| 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
 
 ---
 
@@ -163,8 +168,9 @@ async with GraphRAG(
 - 2024-Q4: PDF ingestion and multi-provider LLMs
 - 2025-Q1–Q2: Pluggable providers and pipeline tuning
 - 2025-Q3: Sharper retrieval, deeper test coverage
-- 🎉 2026-04: Version 1.0 is released
-- 2026-Q2: Increase production capabilities — timeouts, logs; expand ingestion support — tables, structured data
+- 🎉 2026-04: Version 1.0 is released with a new set of benchmarks based on a year's worth of research and customer PoCs
+  - 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`
+- 2026-Q2: Production observability; expand ingestion support — tables, structured data
 - 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
 - 2026-Q4: Smarter retrieval — dynamic traversal, temporal graph
 

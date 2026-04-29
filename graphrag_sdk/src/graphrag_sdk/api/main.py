@@ -159,7 +159,7 @@ class GraphRAG:
         embedder: Embedder,
         schema: GraphSchema | None = None,
         retrieval_strategy: RetrievalStrategy | None = None,
-        embedding_dimension: int = 1536,
+        embedding_dimension: int = 256,
     ) -> None:
         # Connection
         if isinstance(connection, ConnectionConfig):

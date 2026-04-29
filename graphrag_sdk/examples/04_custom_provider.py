@@ -76,7 +76,7 @@ class MyCustomEmbedder(Embedder):
     / `aembed_documents()` for async support.
     """
 
-    def __init__(self, dimension: int = 1536) -> None:
+    def __init__(self, dimension: int = 256) -> None:
         self.dimension = dimension
         # Initialize your embedding model here, e.g.:
         # self.model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -113,7 +113,7 @@ async def main():
     rag = GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="custom_provider_demo"),
         llm=MyCustomLLM(model_name="my-local-llama"),
-        embedder=MyCustomEmbedder(dimension=1536),
+        embedder=MyCustomEmbedder(dimension=256),
     )
 
     # Ingest with custom providers

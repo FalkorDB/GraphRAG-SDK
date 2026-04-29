@@ -162,7 +162,7 @@ The SDK creates 5 standard indexes during `finalize()` (or `ensure_indices()`). 
 **Syntax:**
 ```
 CREATE VECTOR INDEX FOR (n:Chunk) ON (n.embedding)
-OPTIONS {dimension:1536, similarityFunction:'cosine'}
+OPTIONS {dimension:256, similarityFunction:'cosine'}
 ```
 
 ### Fulltext Indexes (2)
