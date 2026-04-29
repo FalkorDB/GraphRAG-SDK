@@ -170,7 +170,7 @@ async with GraphRAG(
 - 2024-Q4: PDF ingestion and multi-provider LLMs
 - 2025-Q1–Q2: Pluggable providers and pipeline tuning
 - 2025-Q3: Sharper retrieval, deeper test coverage
-- 🎉 2026-04: Version 1.0 is released
+- 🎉 2026-04: Version 1.0 is released with a new set of benchmarks based on a year's worth of research and customer PoCs
   - 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`
 - 2026-Q2: Production observability; expand ingestion support — tables, structured data
 - 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
