@@ -68,7 +68,7 @@ class MarkdownLoader(LoaderStrategy):
             if not t.map:
                 return ""
             start, end = t.map
-            return "\n".join(lines[start:end]).strip()
+            return "\n".join(lines[start:end]).rstrip("\n")
 
         def skip_to_close(start_idx: int, open_type: str, close_type: str) -> int:
             nesting = 1

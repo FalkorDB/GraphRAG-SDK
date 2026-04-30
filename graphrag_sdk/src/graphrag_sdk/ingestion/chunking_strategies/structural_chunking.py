@@ -119,21 +119,44 @@ class StructuralChunking(ChunkingStrategy):
                 sub_chunks = await self.fallback_chunker.chunk(el.content or "", ctx)
                 total_parts = len(sub_chunks.chunks)
                 for idx, sc in enumerate(sub_chunks.chunks, start=1):
-                    sc.index = chunk_index
                     part_suffix = f" [Parte {idx}/{total_parts}]" if total_parts > 1 else ""
 
+                    prefix_str = ""
                     if prefix and el.type != "header":
-                        sc.text = f"{prefix}{part_suffix}\n{sc.text}"
+                        prefix_str = f"{prefix}{part_suffix}\n"
                     elif total_parts > 1:
-                        sc.text = f"[Elemento Fragmentado - Parte {idx}/{total_parts}]\n{sc.text}"
+                        prefix_str = f"[Elemento Fragmentado - Parte {idx}/{total_parts}]\n"
 
-                    chunks.append(sc)
+                    final_text = f"{prefix_str}{sc.text}"
+                    final_tokens = len(enc.encode(final_text))
+
+                    if final_tokens > self.max_tokens:
+                        ctx.log(
+                            f"StructuralChunking warning: Fallback chunk {idx}/{total_parts} "
+                            f"exceeds max_tokens after prefixing "
+                            f"({final_tokens} > {self.max_tokens})"
+                        )
+
+                    new_metadata = dict(sc.metadata)
+                    new_metadata["token_count"] = final_tokens
+
+                    chunks.append(
+                        TextChunk(
+                            text=final_text,
+                            index=chunk_index,
+                            uid=sc.uid,
+                            metadata=new_metadata,
+                        )
+                    )
                     chunk_index += 1
                 continue
 
-            if buf_tokens + el_tokens <= self.max_tokens:
+            candidate_text = "\n\n".join([*buf, el_text])
+            candidate_tokens = len(enc.encode(candidate_text))
+
+            if candidate_tokens <= self.max_tokens:
                 buf.append(el_text)
-                buf_tokens += el_tokens
+                buf_tokens = candidate_tokens
             else:
                 # Emit current buffer
                 _flush_buffer()

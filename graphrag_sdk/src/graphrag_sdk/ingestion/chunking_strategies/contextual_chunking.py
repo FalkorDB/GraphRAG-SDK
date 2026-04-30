@@ -48,7 +48,7 @@ class ContextualChunking(ChunkingStrategy):
     retrieval for questions that require cross-chunk co-reference
     resolution (e.g. pronouns, "the town", "the battle").
 
-    Chunks are first produced by the ``base_chunker``, then enriched 
+    Chunks are first produced by the ``base_chunker``, then enriched
     with LLM context in a single batched call.
 
     Args:
