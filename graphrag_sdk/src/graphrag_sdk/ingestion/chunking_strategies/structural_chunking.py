@@ -101,7 +101,8 @@ class StructuralChunking(ChunkingStrategy):
         for el in flat_elements:
             # Build element text with context prefix
             prefix = " > ".join(el.breadcrumbs) if el.breadcrumbs else ""
-            # Don't duplicate the prefix if the element content already starts with it (e.g. headers)
+            # Don't duplicate the prefix if the element
+            # content already starts with it (e.g. headers)
             if prefix and el.type != "header":
                 el_text = f"{prefix}\n{el.content}"
             else:
@@ -120,12 +121,12 @@ class StructuralChunking(ChunkingStrategy):
                 for idx, sc in enumerate(sub_chunks.chunks, start=1):
                     sc.index = chunk_index
                     part_suffix = f" [Parte {idx}/{total_parts}]" if total_parts > 1 else ""
-                    
+
                     if prefix and el.type != "header":
                         sc.text = f"{prefix}{part_suffix}\n{sc.text}"
                     elif total_parts > 1:
                         sc.text = f"[Elemento Fragmentado - Parte {idx}/{total_parts}]\n{sc.text}"
-                        
+
                     chunks.append(sc)
                     chunk_index += 1
                 continue

@@ -18,7 +18,7 @@ import re
 import tiktoken
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.models import TextChunk, TextChunks
+from graphrag_sdk.core.models import DocumentOutput, TextChunk, TextChunks
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 
@@ -56,7 +56,8 @@ class ContextualChunking(ChunkingStrategy):
         base_chunker: The underlying chunking strategy to use. If None,
             defaults to ``SentenceTokenCapChunking(max_tokens, overlap_sentences)``.
         max_tokens: Token cap per chunk (used if base_chunker is None). Default 512.
-        overlap_sentences: Sentences shared between chunks (used if base_chunker is None). Default 2.
+        overlap_sentences: Sentences shared between chunks (used if base_chunker is None).
+            Default 2.
         encoding_name: tiktoken encoding for token counting. Default ``cl100k_base``.
         max_document_tokens: Maximum tokens of the source document included in each
             context prompt. Documents exceeding this are truncated before being sent
@@ -79,9 +80,11 @@ class ContextualChunking(ChunkingStrategy):
     ) -> None:
         super().__init__()
         self.llm = llm
-        
+
         if base_chunker is None:
-            from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
+            from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
+                SentenceTokenCapChunking,
+            )
             self.base_chunker = SentenceTokenCapChunking(
                 max_tokens=max_tokens,
                 overlap_sentences=overlap_sentences,
@@ -89,7 +92,7 @@ class ContextualChunking(ChunkingStrategy):
             )
         else:
             self.base_chunker = base_chunker
-            
+
         self.encoding_name = encoding_name
         self.max_document_tokens = max_document_tokens
 
@@ -103,12 +106,14 @@ class ContextualChunking(ChunkingStrategy):
         raw_chunks = await self.base_chunker.chunk_document(document, ctx)
         return await self._enrich_chunks(raw_chunks, document.text, ctx)
 
-    async def _enrich_chunks(self, raw_chunks: TextChunks, document_text: str, ctx: Context) -> TextChunks:
+    async def _enrich_chunks(
+        self, raw_chunks: TextChunks, document_text: str, ctx: Context
+    ) -> TextChunks:
         if not raw_chunks.chunks:
             return raw_chunks
 
         enc = tiktoken.get_encoding(self.encoding_name)
-        
+
         # Truncate the document reference to avoid exceeding the LLM context window.
         doc_tokens = enc.encode(document_text)
         if len(doc_tokens) > self.max_document_tokens:
@@ -146,7 +151,7 @@ class ContextualChunking(ChunkingStrategy):
         for i, chunk in enumerate(raw_chunks.chunks):
             context = context_map.get(i, "")
             enriched_text = f"{context}\n\n{chunk.text}" if context else chunk.text
-            
+
             # Merge metadata
             new_metadata = dict(chunk.metadata)
             new_metadata.update({
@@ -156,7 +161,7 @@ class ContextualChunking(ChunkingStrategy):
                 "token_count": len(enc.encode(enriched_text)),
                 "char_count": len(enriched_text),
             })
-            
+
             enriched_chunks.append(
                 TextChunk(
                     text=enriched_text,

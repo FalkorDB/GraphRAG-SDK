@@ -109,7 +109,7 @@ class DocumentElement(DataModel):
     level: int | None = None  # e.g., 1 for H1
     breadcrumbs: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    children: list["DocumentElement"] = Field(default_factory=list)
+    children: list[DocumentElement] = Field(default_factory=list)
 
 
 class DocumentOutput(DataModel):
