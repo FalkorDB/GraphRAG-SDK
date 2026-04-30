@@ -114,10 +114,17 @@ async def fetch_chunk_documents(
     graph_store: Any,
     chunk_ids: list[str],
 ) -> dict[str, str]:
-    """Batch-fetch source document name for each chunk via PART_OF.
+    """Batch-fetch the source document path for each chunk via PART_OF.
+
+    Returns the value of ``Document.path`` exactly as it was stored at
+    ingestion time — typically a path relative to the ingestion root
+    (e.g. ``"operations/falkordblite/falkordblite-py.md"``). Downstream
+    consumers (citation rendering, source-link builders) need the full
+    relative path; basenames alone are ambiguous when the same filename
+    appears in multiple directories (e.g. ``index.md``).
 
     Returns:
-        Mapping of chunk_id -> document filename.
+        Mapping of chunk_id -> document path.
     """
     if not chunk_ids:
         return {}
@@ -133,8 +140,7 @@ async def fetch_chunk_documents(
             cid = row[0] or ""
             path = row[1] if len(row) > 1 else ""
             if cid and path:
-                name = path.rsplit("/", 1)[-1] if "/" in path else path
-                mapping[cid] = name
+                mapping[cid] = path
         return mapping
     except Exception as exc:
         logger.debug("Document name fetch failed: %s", exc)
