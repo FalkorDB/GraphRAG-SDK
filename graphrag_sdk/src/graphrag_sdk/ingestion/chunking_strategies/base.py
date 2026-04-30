@@ -6,7 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.models import TextChunks
+from graphrag_sdk.core.models import DocumentOutput, TextChunks
 
 
 class ChunkingStrategy(ABC):
@@ -35,3 +35,18 @@ class ChunkingStrategy(ABC):
             TextChunks collection.
         """
         ...
+
+    async def chunk_document(self, document: DocumentOutput, ctx: Context) -> TextChunks:
+        """Split a document into chunks.
+
+        By default, delegates to ``chunk`` using the raw text. Strategies that need
+        structural elements can override this method.
+
+        Args:
+            document: DocumentOutput with text and optional structural elements.
+            ctx: Execution context.
+
+        Returns:
+            TextChunks collection.
+        """
+        return await self.chunk(document.text, ctx)

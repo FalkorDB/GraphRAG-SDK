@@ -151,3 +151,97 @@ class TestPdfLoader:
 
         with pytest.raises(ImportError, match=r"graphrag-sdk\[pdf"):
             await pdf_mod.PdfLoader().load(str(file), ctx)
+
+
+class TestMarkdownLoader:
+    async def test_load_markdown_structure(self, ctx, tmp_path):
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+        file = tmp_path / "struct.md"
+        content = (
+            "# Main Title\n"
+            "Intro paragraph.\n\n"
+            "## Section 1\n"
+            "Section 1 details.\n\n"
+            "### Subsection 1.1\n"
+            "Deep details."
+        )
+        file.write_text(content)
+        loader = MarkdownLoader()
+        result = await loader.load(str(file), ctx)
+        
+        elements = result.elements
+        assert elements is not None
+        assert len(elements) == 6  # 3 headers, 3 paragraphs
+        
+        # Verify first header
+        assert elements[0].type == "header"
+        assert elements[0].level == 1
+        assert elements[0].content == "# Main Title"
+        assert elements[0].breadcrumbs == ["Main Title"]
+        
+        # Verify first paragraph
+        assert elements[1].type == "paragraph"
+        assert elements[1].content == "Intro paragraph."
+        assert elements[1].breadcrumbs == ["Main Title"]
+        
+        # Verify H2
+        assert elements[2].type == "header"
+        assert elements[2].level == 2
+        assert elements[2].content == "## Section 1"
+        assert elements[2].breadcrumbs == ["Main Title", "Section 1"]
+        
+        # Verify deeply nested paragraph
+        assert elements[5].type == "paragraph"
+        assert elements[5].content == "Deep details."
+        assert elements[5].breadcrumbs == ["Main Title", "Section 1", "Subsection 1.1"]
+
+    async def test_file_not_found(self, ctx):
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+        loader = MarkdownLoader()
+        with pytest.raises(LoaderError, match="File not found"):
+            await loader.load("/nonexistent.md", ctx)
+
+    async def test_markdown_complex_structures(self, ctx, tmp_path):
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+        file = tmp_path / "complex.md"
+        content = (
+            "# Data\n\n"
+            "| ID | Name |\n"
+            "|---|---|\n"
+            "| 1 | Alice |\n\n"
+            "Some list:\n"
+            "- Item 1\n"
+            "  - Subitem\n"
+            "\n"
+            "- Item 2\n\n"
+            "Code:\n"
+            "```python\n"
+            "def foo():\n"
+            "    return 42\n"
+            "```\n"
+        )
+        file.write_text(content)
+        loader = MarkdownLoader()
+        result = await loader.load(str(file), ctx)
+        
+        elements = result.elements
+        assert elements is not None
+        
+        # Verify table
+        assert elements[1].type == "table"
+        assert "| 1 | Alice |" in elements[1].content
+        
+        # Verify paragraph
+        assert elements[2].type == "paragraph"
+        assert elements[2].content == "Some list:"
+        
+        # Verify list
+        assert elements[3].type == "list"
+        assert "- Item 1" in elements[3].content
+        assert "- Item 2" in elements[3].content
+        
+        # Verify code block
+        assert elements[5].type == "code"
+        assert "def foo():" in elements[5].content

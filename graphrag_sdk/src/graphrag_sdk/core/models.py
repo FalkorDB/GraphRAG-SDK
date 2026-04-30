@@ -101,11 +101,23 @@ class DocumentInfo(DataModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class DocumentElement(DataModel):
+    """A structural element parsed from a document (e.g., section, paragraph, table)."""
+
+    type: str  # e.g., "header", "paragraph", "list", "table", "code"
+    content: str | None = None
+    level: int | None = None  # e.g., 1 for H1
+    breadcrumbs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    children: list["DocumentElement"] = Field(default_factory=list)
+
+
 class DocumentOutput(DataModel):
-    """Output from a data loader — document text + metadata."""
+    """Output from a data loader — document text + metadata + structural elements."""
 
     text: str
     document_info: DocumentInfo = Field(default_factory=DocumentInfo)
+    elements: list[DocumentElement] | None = None
 
 
 # ── Schema Types ─────────────────────────────────────────────────

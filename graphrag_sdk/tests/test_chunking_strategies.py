@@ -232,3 +232,72 @@ class TestCallableChunking:
         chunker = CallableChunking(ParagraphSplitter())
         result = await chunker.chunk("Para one.\n\nPara two.", ctx)
         assert len(result.chunks) == 2
+
+
+class TestStructuralChunking:
+    async def test_chunk_with_elements(self, ctx):
+        from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+        # Create elements
+        elements = [
+            DocumentElement(type="header", content="# Title", breadcrumbs=["Title"]),
+            DocumentElement(type="paragraph", content="Intro.", breadcrumbs=["Title"]),
+            DocumentElement(type="paragraph", content="P2.", breadcrumbs=["Title"]),
+        ]
+        doc = DocumentOutput(
+            text="# Title\n\nIntro.\n\nP2.",
+            document_info=DocumentInfo(path="test.md"),
+            elements=elements,
+        )
+
+        # max_tokens=100 ensures they group together
+        chunker = StructuralChunking(max_tokens=100)
+        result = await chunker.chunk_document(doc, ctx)
+
+        assert len(result.chunks) == 1
+        text = result.chunks[0].text
+        # Header text has prefix but since it's a header we avoided duplicating.
+        # Actually in our code, if prefix is present but it's not a header it gets added.
+        assert "Title\nIntro." in result.chunks[0].text
+        assert "Title\nP2." in result.chunks[0].text
+
+    async def test_fallback_when_oversized(self, ctx):
+        from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+        # A very large paragraph
+        large_content = "Word. " * 50
+        elements = [
+            DocumentElement(type="paragraph", content=large_content, breadcrumbs=["H1"])
+        ]
+        doc = DocumentOutput(
+            text=large_content,
+            document_info=DocumentInfo(path="test.md"),
+            elements=elements,
+        )
+
+        # Cap tokens to a very small number to force fallback
+        chunker = StructuralChunking(max_tokens=10)
+        result = await chunker.chunk_document(doc, ctx)
+
+        assert len(result.chunks) > 1
+        total_parts = len(result.chunks)
+        for i, chunk in enumerate(result.chunks, start=1):
+            assert f"H1 [Parte {i}/{total_parts}]" in chunk.text
+
+    async def test_no_elements_fallback(self, ctx):
+        from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+        doc = DocumentOutput(
+            text="Just some text. More text.",
+            document_info=DocumentInfo(path="test.txt"),
+            elements=None,
+        )
+
+        chunker = StructuralChunking(max_tokens=50)
+        result = await chunker.chunk_document(doc, ctx)
+
+        assert len(result.chunks) == 1
+        assert result.chunks[0].text == "Just some text. More text."
