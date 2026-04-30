@@ -85,6 +85,7 @@ class ContextualChunking(ChunkingStrategy):
             from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
                 SentenceTokenCapChunking,
             )
+
             self.base_chunker = SentenceTokenCapChunking(
                 max_tokens=max_tokens,
                 overlap_sentences=overlap_sentences,
@@ -154,13 +155,15 @@ class ContextualChunking(ChunkingStrategy):
 
             # Merge metadata
             new_metadata = dict(chunk.metadata)
-            new_metadata.update({
-                "contextual_enriched": bool(context),
-                "context_prefix": context,
-                "original_chunk": chunk.text,
-                "token_count": len(enc.encode(enriched_text)),
-                "char_count": len(enriched_text),
-            })
+            new_metadata.update(
+                {
+                    "contextual_enriched": bool(context),
+                    "context_prefix": context,
+                    "original_chunk": chunk.text,
+                    "token_count": len(enc.encode(enriched_text)),
+                    "char_count": len(enriched_text),
+                }
+            )
 
             enriched_chunks.append(
                 TextChunk(

@@ -6,4 +6,3 @@ from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 
 __all__ = ["LoaderStrategy", "MarkdownLoader", "PdfLoader", "TextLoader"]
-

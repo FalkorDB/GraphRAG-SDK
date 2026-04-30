@@ -168,4 +168,3 @@ class StructuralChunking(ChunkingStrategy):
 
         ctx.log(f"StructuralChunking produced {len(chunks)} chunks")
         return TextChunks(chunks=chunks)
-
