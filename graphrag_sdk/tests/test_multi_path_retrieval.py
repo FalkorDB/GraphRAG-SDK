@@ -286,7 +286,12 @@ class TestMultiPathRetrieval:
         assert call_count["two_hop_rel"] >= 1
 
     async def test_source_document_tags(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
-        """Passages should include [Source: filename] when document info is available."""
+        """Passages should include [Source: <path>] with the full Document.path verbatim.
+
+        Citation consumers (link builders, source-attribution UIs) need
+        the full relative path to disambiguate files that share a
+        basename — e.g. `operations/index.md` vs `commands/index.md`.
+        """
         mp_vector_store.fulltext_search_chunks = AsyncMock(return_value=[
             {"id": "c1", "text": "Alice is an engineer at Acme Corp.", "score": 0.8},
         ])
@@ -294,7 +299,7 @@ class TestMultiPathRetrieval:
         async def mock_query_raw(cypher, params=None):
             if "PART_OF" in cypher:
                 result = MagicMock()
-                result.result_set = [["c1", "/docs/novel.txt"]]
+                result.result_set = [["c1", "docs/fiction/novel.txt"]]
                 return result
             result = MagicMock()
             result.result_set = []
@@ -311,7 +316,7 @@ class TestMultiPathRetrieval:
         result = await s.search("Who is Alice?")
         for item in result.items:
             if item.metadata.get("section") == "passages":
-                assert "[Source: novel.txt]" in item.content
+                assert "[Source: docs/fiction/novel.txt]" in item.content
                 break
 
     async def test_question_type_yesno(self):
