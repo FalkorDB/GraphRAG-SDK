@@ -155,7 +155,7 @@ class ContextualChunking(ChunkingStrategy):
             # Merge metadata
             new_metadata = dict(chunk.metadata)
             new_metadata.update({
-                "contextual_enriched": True,
+                "contextual_enriched": bool(context),
                 "context_prefix": context,
                 "original_chunk": chunk.text,
                 "token_count": len(enc.encode(enriched_text)),
