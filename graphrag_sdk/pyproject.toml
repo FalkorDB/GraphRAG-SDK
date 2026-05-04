@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "graphrag-sdk"
-version = "1.0.1"
+version = "1.0.2"
 description = "The most accurate Graph RAG framework. Build knowledge graphs and query them with natural language. Built on FalkorDB."
 readme = "README.md"
 requires-python = ">=3.10"
