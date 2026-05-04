@@ -32,6 +32,7 @@ class StructuralChunking(ChunkingStrategy):
         fallback_chunker: ChunkingStrategy | None = None,
         max_tokens: int = 512,
         encoding_name: str = "cl100k_base",
+        overlap_sentences: int = 2,
     ) -> None:
         super().__init__()
         if fallback_chunker is None:
@@ -42,6 +43,7 @@ class StructuralChunking(ChunkingStrategy):
             self.fallback_chunker = SentenceTokenCapChunking(
                 max_tokens=max_tokens,
                 encoding_name=encoding_name,
+                overlap_sentences=overlap_sentences,
             )
         else:
             self.fallback_chunker = fallback_chunker
@@ -79,9 +81,10 @@ class StructuralChunking(ChunkingStrategy):
 
         buf: list[str] = []
         buf_tokens = 0
+        buf_breadcrumbs: list[str] = []  # union of breadcrumbs for elements in buf
 
         def _flush_buffer() -> None:
-            nonlocal chunk_index, buf, buf_tokens
+            nonlocal chunk_index, buf, buf_tokens, buf_breadcrumbs
             if not buf:
                 return
             chunks.append(
@@ -91,12 +94,14 @@ class StructuralChunking(ChunkingStrategy):
                     metadata={
                         "strategy": "structural_chunking",
                         "token_count": buf_tokens,
+                        "breadcrumbs": list(buf_breadcrumbs),
                     },
                 )
             )
             chunk_index += 1
             buf = []
             buf_tokens = 0
+            buf_breadcrumbs = []
 
         for el in flat_elements:
             # Build element text with context prefix
@@ -119,13 +124,13 @@ class StructuralChunking(ChunkingStrategy):
                 sub_chunks = await self.fallback_chunker.chunk(el.content or "", ctx)
                 total_parts = len(sub_chunks.chunks)
                 for idx, sc in enumerate(sub_chunks.chunks, start=1):
-                    part_suffix = f" [Parte {idx}/{total_parts}]" if total_parts > 1 else ""
+                    part_suffix = f" [Part {idx}/{total_parts}]" if total_parts > 1 else ""
 
                     prefix_str = ""
                     if prefix and el.type != "header":
                         prefix_str = f"{prefix}{part_suffix}\n"
                     elif total_parts > 1:
-                        prefix_str = f"[Elemento Fragmentado - Parte {idx}/{total_parts}]\n"
+                        prefix_str = f"[Fragmented Element - Part {idx}/{total_parts}]\n"
 
                     final_text = f"{prefix_str}{sc.text}"
                     final_tokens = len(enc.encode(final_text))
@@ -139,6 +144,7 @@ class StructuralChunking(ChunkingStrategy):
 
                     new_metadata = dict(sc.metadata)
                     new_metadata["token_count"] = final_tokens
+                    new_metadata["breadcrumbs"] = list(el.breadcrumbs) if el.breadcrumbs else []
 
                     chunks.append(
                         TextChunk(
@@ -157,11 +163,16 @@ class StructuralChunking(ChunkingStrategy):
             if candidate_tokens <= self.max_tokens:
                 buf.append(el_text)
                 buf_tokens = candidate_tokens
+                # Merge this element's breadcrumbs into the buffer's breadcrumb list
+                for crumb in (el.breadcrumbs or []):
+                    if crumb not in buf_breadcrumbs:
+                        buf_breadcrumbs.append(crumb)
             else:
                 # Emit current buffer
                 _flush_buffer()
                 buf = [el_text]
                 buf_tokens = el_tokens
+                buf_breadcrumbs = list(el.breadcrumbs) if el.breadcrumbs else []
 
         # Emit any remaining buffer
         _flush_buffer()

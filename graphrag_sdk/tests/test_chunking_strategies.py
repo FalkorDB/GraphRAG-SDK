@@ -5,6 +5,7 @@ Strategies under test:
   2. SentenceTokenCapChunking (tiktoken, no LLM)
   3. ContextualChunking       (tiktoken + LLM — mock LLM used)
   4. CallableChunking         (adapts any function — sync & async)
+  5. StructuralChunking       (Groups document elements based on structure, constrained by a token cap) 
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import Callabl
 from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import ContextualChunking
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
+from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -165,6 +167,52 @@ class TestContextualChunking:
         assert "context_prefix" in result.chunks[0].metadata
         assert "original_chunk" in result.chunks[0].metadata
 
+    async def test_metadata_strategy_is_contextual_chunking(self, ctx):
+        """metadata['strategy'] must always equal 'contextual_chunking'.
+
+        Regression: a previous refactor silently overwrote the strategy key
+        without setting it to the contextual value, breaking any downstream
+        code that filters chunks by metadata['strategy'].
+        """
+        chunker = ContextualChunking(llm=_ContextualMockLLM(), max_tokens=512)
+        result = await chunker.chunk(SAMPLE_TEXT, ctx)
+        assert len(result.chunks) >= 1
+        for chunk in result.chunks:
+            assert chunk.metadata.get("strategy") == "contextual_chunking"
+
+
+    async def test_metadata_base_strategy_preserved(self, ctx):
+        """metadata['base_strategy'] must reflect the underlying chunker's strategy.
+
+        When a caller wraps e.g. StructuralChunking inside
+        ContextualChunking, the original strategy name must be kept so that
+        provenance information is not silently discarded.
+        """
+        chunker = ContextualChunking(
+            llm=_ContextualMockLLM(),
+            base_chunker=StructuralChunking(max_tokens=512, overlap_sentences=2),
+        )
+        result = await chunker.chunk(SAMPLE_TEXT, ctx)
+        assert len(result.chunks) >= 1
+        for chunk in result.chunks:
+            # base_strategy must be the value that StructuralChunking wrote
+            assert "base_strategy" in chunk.metadata
+            assert chunk.metadata["strategy"] == "contextual_chunking"
+
+    def test_raises_on_conflicting_kwargs(self):
+        """Passing shorthand kwargs alongside base_chunker must raise TypeError.
+
+        The parameters max_tokens, overlap_sentences, and encoding_name are
+        only meaningful when ContextualChunking builds the default base chunker.
+        Accepting them silently when base_chunker is supplied would mislead
+        callers into believing those values take effect.
+        """
+        with pytest.raises(TypeError, match="cannot be used together with 'base_chunker'"):
+            ContextualChunking(
+                llm=_ContextualMockLLM(),
+                base_chunker=StructuralChunking(max_tokens=256),
+                max_tokens=512,  # dead — should blow up
+            )
 
 # ---------------------------------------------------------------------------
 # 4. CallableChunking
@@ -230,7 +278,7 @@ class TestCallableChunking:
                 return text.split("\n\n")
 
         chunker = CallableChunking(ParagraphSplitter())
-        result = await chunker.chunk("Para one.\n\nPara two.", ctx)
+        result = await chunker.chunk("Part one.\n\nPart two.", ctx)
         assert len(result.chunks) == 2
 
 
@@ -284,7 +332,7 @@ class TestStructuralChunking:
         assert len(result.chunks) > 1
         total_parts = len(result.chunks)
         for i, chunk in enumerate(result.chunks, start=1):
-            assert f"H1 [Parte {i}/{total_parts}]" in chunk.text
+            assert f"H1 [Part {i}/{total_parts}]" in chunk.text
 
     async def test_no_elements_fallback(self, ctx):
         from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
@@ -301,3 +349,62 @@ class TestStructuralChunking:
 
         assert len(result.chunks) == 1
         assert result.chunks[0].text == "Just some text. More text."
+
+    async def test_metadata_breadcrumbs_in_normal_chunk(self, ctx):
+        """Buffered chunks must carry the union of their elements' breadcrumbs.
+
+        The lexical-graph step spreads chunk.metadata onto Chunk node properties,
+        so breadcrumbs become graph-queryable without any extra pipeline work.
+        """
+        from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+        elements = [
+            DocumentElement(type="header",    content="Title",   breadcrumbs=["Title"]),
+            DocumentElement(type="paragraph", content="Intro.",  breadcrumbs=["Title"]),
+            DocumentElement(type="paragraph", content="Detail.", breadcrumbs=["Title", "Sub"]),
+        ]
+        doc = DocumentOutput(
+            text="Title\n\nIntro.\n\nDetail.",
+            document_info=DocumentInfo(path="test.md"),
+            elements=elements,
+        )
+
+        chunker = StructuralChunking(max_tokens=200)
+        result = await chunker.chunk_document(doc, ctx)
+
+        # All three elements fit in a single buffer → one chunk
+        assert len(result.chunks) == 1
+        meta = result.chunks[0].metadata
+        assert "breadcrumbs" in meta
+        # Must contain every unique breadcrumb seen across all elements in the chunk
+        assert "Title" in meta["breadcrumbs"]
+        assert "Sub" in meta["breadcrumbs"]
+
+    async def test_metadata_breadcrumbs_in_oversized_fallback(self, ctx):
+        """Fallback chunks (oversized elements) must also carry breadcrumbs."""
+        from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+        large_content = "Word. " * 50
+        elements = [
+            DocumentElement(
+                type="paragraph",
+                content=large_content,
+                breadcrumbs=["Chapter", "Section"],
+            )
+        ]
+        doc = DocumentOutput(
+            text=large_content,
+            document_info=DocumentInfo(path="test.md"),
+            elements=elements,
+        )
+
+        chunker = StructuralChunking(max_tokens=10)
+        result = await chunker.chunk_document(doc, ctx)
+
+        assert len(result.chunks) > 1
+        for chunk in result.chunks:
+            assert "breadcrumbs" in chunk.metadata
+            assert chunk.metadata["breadcrumbs"] == ["Chapter", "Section"]
+

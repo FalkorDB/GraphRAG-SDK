@@ -55,7 +55,13 @@ class MarkdownLoader(LoaderStrategy):
 
     def _parse_markdown(self, text: str) -> list[DocumentElement]:
         """Parse raw markdown text into structural DocumentElements."""
-        from markdown_it import MarkdownIt
+        try:
+            from markdown_it import MarkdownIt
+        except ImportError:
+            raise ImportError(
+                "Markdown parsing requires 'markdown-it-py'. Install with:"
+                "\n  pip install graphrag-sdk[markdown]"
+            )
 
         md = MarkdownIt("commonmark").enable("table")
         tokens = md.parse(text)
@@ -118,7 +124,7 @@ class MarkdownLoader(LoaderStrategy):
                     DocumentElement(
                         type="header",
                         level=level,
-                        content=content,
+                        content=title,
                         breadcrumbs=[b[1] for b in current_breadcrumbs],
                     )
                 )

@@ -177,7 +177,7 @@ class TestMarkdownLoader:
         # Verify first header
         assert elements[0].type == "header"
         assert elements[0].level == 1
-        assert elements[0].content == "# Main Title"
+        assert elements[0].content == "Main Title"
         assert elements[0].breadcrumbs == ["Main Title"]
         
         # Verify first paragraph
@@ -188,7 +188,7 @@ class TestMarkdownLoader:
         # Verify H2
         assert elements[2].type == "header"
         assert elements[2].level == 2
-        assert elements[2].content == "## Section 1"
+        assert elements[2].content == "Section 1"
         assert elements[2].breadcrumbs == ["Main Title", "Section 1"]
         
         # Verify deeply nested paragraph
