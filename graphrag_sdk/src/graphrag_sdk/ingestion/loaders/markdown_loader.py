@@ -104,7 +104,6 @@ class MarkdownLoader(LoaderStrategy):
             token = tokens[i]
 
             if token.type == "heading_open":
-                content = get_content(token)
                 level = int(token.tag[1:])
 
                 title = ""

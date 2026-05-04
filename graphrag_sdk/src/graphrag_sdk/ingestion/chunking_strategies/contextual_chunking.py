@@ -110,8 +110,16 @@ class ContextualChunking(ChunkingStrategy):
             _encoding_name = "cl100k_base"
         else:
             _max_tokens = max_tokens if max_tokens is not ContextualChunking._UNSET else 512
-            _overlap = overlap_sentences if overlap_sentences is not ContextualChunking._UNSET else 2
-            _encoding_name = encoding_name if encoding_name is not ContextualChunking._UNSET else "cl100k_base"
+            _overlap = (
+                overlap_sentences
+                if overlap_sentences is not ContextualChunking._UNSET
+                else 2
+            )
+            _encoding_name = (
+                encoding_name
+                if encoding_name is not ContextualChunking._UNSET
+                else "cl100k_base"
+            )
 
             from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
                 SentenceTokenCapChunking,
