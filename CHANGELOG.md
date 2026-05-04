@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-05-04
+
+Patch release. One retrieval correctness fix and one default-value
+change carried over from the post-1.0.1 README onboarding work.
+
+### Fixed
+
+- **Chunk citations preserve the full `Document.path`.** The chunk
+  retrieval strategy was reducing the path returned from the graph
+  to a basename via `path.rsplit("/", 1)[-1]` before handing it off
+  to the citation pipeline. That dropped real information: files
+  sharing a basename across directories — e.g. `operations/index.md`
+  vs `commands/index.md` — collapsed to the same identifier
+  downstream, and consumers building source links from the citation
+  could no longer reconstruct the original location. `Document.path`
+  already stored the full path passed to `rag.ingest()`, so this is
+  a read-side fix only; existing graphs start emitting full paths in
+  the next query with no migration required.
+
 ### Changed
 
 - **Default `embedding_dimension` lowered from 1536 to 256.** Aligns
