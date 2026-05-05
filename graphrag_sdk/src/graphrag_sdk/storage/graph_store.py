@@ -361,6 +361,221 @@ class GraphStore:
             await self._conn.query("MATCH (n) DETACH DELETE n")
         logger.info("Deleted all graph data")
 
+    # ── Document Lifecycle (incremental ingestion support) ──────
+    # Used by GraphRAG.update() / delete_document() / apply_changes().
+    # Cypher stays here per the repository pattern — facade calls these.
+
+    async def get_document_record(self, document_id: str) -> dict[str, Any] | None:
+        """Return ``{"path", "content_hash"}`` for a Document, or None.
+
+        Pre-1.1.0 Document nodes lack ``content_hash`` — callers should
+        treat a returned ``None`` hash as "always run the full update path".
+        """
+        result = await self._conn.query(
+            "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
+            "d.content_hash AS content_hash LIMIT 1",
+            {"id": document_id},
+        )
+        if not result.result_set:
+            return None
+        row = result.result_set[0]
+        return {"path": row[0], "content_hash": row[1]}
+
+    async def get_document_entity_candidates(self, document_id: str) -> list[str]:
+        """Return ids of entities mentioned in this document's chunks.
+
+        Captured before deletion so orphan cleanup can be scoped to just
+        these entities — never global. Entities still mentioned by chunks
+        of *other* documents will be filtered out by ``delete_orphan_entities``.
+        """
+        result = await self._conn.query(
+            "MATCH (e:__Entity__)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-"
+            "(:Document {id: $id}) RETURN DISTINCT e.id AS eid",
+            {"id": document_id},
+        )
+        return [row[0] for row in result.result_set] if result.result_set else []
+
+    async def find_pending(
+        self, document_id: str
+    ) -> tuple[str, str, str | None] | None:
+        """Look up any ``__pending__`` Document for this id and report its
+        commit state.
+
+        Returns ``None`` if no pending exists for ``document_id``. Otherwise
+        returns ``(state, pending_id, content_hash)`` where ``state`` is one
+        of:
+
+        - ``"COMMITTED"``  — pending has ``ready_to_commit=true``. The next
+          step is rollforward; the pending must NOT be deleted.
+        - ``"WRITTEN"``    — pending exists, no marker. The new content
+          was written but commit was never reached. Safe to roll back
+          (delete the pending and its chunks); the live document is
+          untouched.
+
+        State semantics are documented in detail in
+        ``GraphRAG.update``'s docstring. The marker is the load-bearing
+        commit point — anything that can read it is the source of truth
+        for "did the prior attempt cross the commit boundary?".
+        """
+        prefix = f"{document_id}__pending__"
+        result = await self._conn.query(
+            "MATCH (p:Document) WHERE p.id STARTS WITH $prefix "
+            "RETURN p.id AS pid, p.ready_to_commit AS rtc, "
+            "p.content_hash AS hash ORDER BY p.id LIMIT 1",
+            {"prefix": prefix},
+        )
+        if not result.result_set:
+            return None
+        row = result.result_set[0]
+        pid, rtc, hash_ = row[0], row[1], row[2]
+        state = "COMMITTED" if rtc else "WRITTEN"
+        return state, pid, hash_
+
+    async def mark_pending_committed(self, pending_id: str) -> int:
+        """Set ``ready_to_commit=true`` on the pending Document — the
+        commit point for the state-machine cutover.
+
+        This single-property write is the load-bearing transition: it
+        MUST commit before any destructive Cypher touches the live
+        document. Once it commits, recovery on crash is rollforward
+        (replay rollforward_cutover); before it commits, recovery is
+        rollback (delete pending).
+
+        Returns the number of Document nodes updated (0 if the pending
+        id was not found, 1 in the normal path).
+        """
+        result = await self._conn.query(
+            "MATCH (p:Document {id: $pid}) "
+            "SET p.ready_to_commit = true RETURN count(p) AS n",
+            {"pid": pending_id},
+        )
+        return result.result_set[0][0] if result.result_set else 0
+
+    async def cleanup_pending_documents(self, document_id: str) -> int:
+        """Delete UN-COMMITTED leftover pending Document(s) for this id.
+
+        Pending nodes that have ``ready_to_commit=true`` are NEVER
+        deleted by this method — those represent a crashed-mid-cutover
+        state and the new content must be rolled forward, not discarded.
+
+        Used at the start of ``update()`` whenever ``find_pending``
+        reports state ``"WRITTEN"`` (rollback path).
+
+        Returns the number of pending Document nodes removed.
+        """
+        prefix = f"{document_id}__pending__"
+        result = await self._conn.query(
+            "MATCH (p:Document) "
+            "WHERE p.id STARTS WITH $prefix "
+            "AND (p.ready_to_commit IS NULL OR p.ready_to_commit = false) "
+            "OPTIONAL MATCH (p)-[:PART_OF]->(c:Chunk) "
+            "DETACH DELETE p, c "
+            "RETURN count(DISTINCT p) AS n",
+            {"prefix": prefix},
+        )
+        return result.result_set[0][0] if result.result_set else 0
+
+    async def rollforward_cutover(
+        self,
+        pending_id: str,
+        real_id: str,
+        path: str,
+        content_hash: str,
+    ) -> int:
+        """Replay the cutover from a (possibly partial) COMMITTED state
+        to FINAL. Idempotent — every operation is safe to re-run.
+
+        Sequence:
+          1. Delete live document's chunks (idempotent: already-gone is a no-op).
+          2. Delete live document node (idempotent).
+          3. Rename pending → canonical id, write fresh metadata, clear
+             ``ready_to_commit``. Single Cypher SET — atomic at the
+             per-statement level FalkorDB does guarantee.
+
+        After step 3 the document is in FINAL state. If the process
+        crashes between any two steps, the next call's ``find_pending``
+        still reports COMMITTED (because the pending node and its
+        marker survive until step 3 completes) and this method replays.
+
+        Returns the number of chunks removed from the (possibly already
+        empty) live document.
+        """
+        # 1. Delete live chunks (idempotent — empty result if already gone)
+        r = await self._conn.query(
+            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) "
+            "DETACH DELETE c RETURN count(c) AS n",
+            {"id": real_id},
+        )
+        chunks_removed = r.result_set[0][0] if r.result_set else 0
+
+        # 2. Delete live Document node (idempotent — no rows if already gone)
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) DETACH DELETE d",
+            {"id": real_id},
+        )
+
+        # 3. Promote pending → canonical id and clear the commit marker.
+        # Setting ready_to_commit = NULL effectively removes it; on a
+        # replay where the rename already happened, this MATCH finds
+        # nothing and the SET is a no-op.
+        await self._conn.query(
+            "MATCH (p:Document {id: $pending_id}) "
+            "SET p.id = $real_id, p.path = $path, "
+            "p.content_hash = $hash, p.ready_to_commit = NULL",
+            {
+                "pending_id": pending_id,
+                "real_id": real_id,
+                "path": path,
+                "hash": content_hash,
+            },
+        )
+        return chunks_removed
+
+    async def delete_document_chunks_and_node(self, document_id: str) -> int:
+        """Delete all chunks for a document and the Document node itself.
+
+        Used by ``delete_document()``. Returns the number of chunks removed.
+        Caller is responsible for orphan-entity cleanup (we don't snapshot
+        candidates here so callers can do it independently).
+        """
+        r = await self._conn.query(
+            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) "
+            "DETACH DELETE c RETURN count(c) AS n",
+            {"id": document_id},
+        )
+        chunks_removed = r.result_set[0][0] if r.result_set else 0
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) DETACH DELETE d",
+            {"id": document_id},
+        )
+        return chunks_removed
+
+    async def delete_orphan_entities(self, candidate_ids: list[str]) -> int:
+        """Delete entities from ``candidate_ids`` that no longer have any
+        ``MENTIONED_IN`` edge to a chunk.
+
+        Scoped to the candidate list — never touches entities outside it,
+        so a document update can never orphan an entity belonging to
+        another document. ``DETACH DELETE`` cascades incident ``RELATES``
+        edges automatically; FalkorDB drops vector-index entries for
+        deleted nodes/edges.
+        """
+        if not candidate_ids:
+            return 0
+        deleted = 0
+        # Batch to keep param size bounded.
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            r = await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid}) "
+                "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk) "
+                "DETACH DELETE e RETURN count(e) AS n",
+                {"ids": batch},
+            )
+            deleted += r.result_set[0][0] if r.result_set else 0
+        return deleted
+
     # ── Helpers ──────────────────────────────────────────────────
 
     @staticmethod

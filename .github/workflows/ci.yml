@@ -43,3 +43,45 @@ jobs:
       - name: Run tests with coverage (3.12 only)
         if: matrix.python-version == '3.12'
         run: python -m pytest tests/ --cov=src/graphrag_sdk --cov-report=term-missing -q
+
+  integration:
+    name: Integration (real FalkorDB)
+    runs-on: ubuntu-latest
+    services:
+      falkordb:
+        image: falkordb/falkordb:v4.18.0
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: graphrag_sdk
+    env:
+      RUN_INTEGRATION: "1"
+      FALKOR_HOST: localhost
+      FALKOR_PORT: "6379"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - name: Wait for FalkorDB
+        # The service container is healthchecked above, but give the
+        # graph layer an extra moment to be reachable from Python.
+        run: |
+          for _ in $(seq 1 20); do
+            python -c "import redis; redis.Redis(host='localhost', port=6379).ping()" && break
+            sleep 1
+          done
+      - name: Run incremental-update integration tests
+        # Only the v1.1.0 invariant suite needs the live database; the
+        # rest of test_integration.py is import-smoke that already runs
+        # in the unit job above.
+        run: >
+          python -m pytest -v
+          tests/test_integration.py::TestIncrementalUpdateInvariants

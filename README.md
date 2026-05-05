@@ -117,6 +117,62 @@ async with GraphRAG(
 ![document-to-provenance-answer-flow-v1](https://github.com/user-attachments/assets/afd1607e-20e1-4954-95f2-274701f5d61d)
 
 
+## Incremental Updates *(v1.1.0)*
+
+Re-sync individual documents without rebuilding the graph. The canonical
+CI use case is updating the graph on PR merge — added, modified, and
+deleted files in one batch:
+
+```python
+graph = await GraphRAG.connect(...)
+await graph.apply_changes(
+    added=["docs/new_feature.md"],
+    modified=["docs/api.md"],
+    deleted=["docs/removed_page.md"],
+)
+await graph.finalize()  # once per batch — finalize is O(graph size)
+```
+
+The three primitives behind the wrapper:
+
+| Method | When to use |
+|---|---|
+| `update(source, document_id=...)` | Document content changed. SHA-256 hash short-circuits no-op updates (touch-only PRs cost ~1 Cypher query). Pass `if_missing="ingest"` for upsert semantics. |
+| `delete_document(document_id)` | Document removed. Cleans up entities orphaned by the deletion; preserves entities still referenced by other documents. |
+| `apply_changes(added=..., modified=..., deleted=...)` | Heterogeneous batch. Per-file errors are collected, not raised. Does not call `finalize()` — caller drives that cadence. |
+
+In file mode, `document_id` defaults to `os.path.normpath(source)` so
+`update("docs/x.md")` matches the original `ingest("docs/x.md")` with
+no extra plumbing. See [`examples/06_incremental_updates.py`](graphrag_sdk/examples/06_incremental_updates.py).
+
+**Cost model.** `finalize()` runs cross-document deduplication, which
+scans the full entity table — its cost is **O(graph size)**, not
+O(change size). Embedding backfill within `finalize()` is O(change
+size) (only nodes/edges missing embeddings get touched). For CI use
+cases, batch all PR changes through `apply_changes` and call
+`finalize` **once** at the end of the run, not per file — per-file
+`finalize` multiplies the dedup constant by the number of files
+touched.
+
+**Crash safety.** `update()` uses an idempotent rollforward cutover:
+the new content is written to a `__pending__` Document, then a single
+atomic Cypher statement marks `ready_to_commit=true`, then the live
+document is replaced. A crash before the marker discards the pending
+on retry; a crash after the marker rolls forward to completion. Either
+way, retrying the same `update()` call is safe and converges on the
+correct final state.
+
+**Concurrency.** `apply_changes` exposes two knobs: `max_concurrency`
+(adds, default 3) and `update_concurrency` (modifies, default 1).
+Updates default to 1 because orphan-cleanup correctness under
+concurrent updates depends on a pipeline-ordering invariant; raising
+that default is safe only if you've verified your concurrent updates
+can never share an entity. The integration test
+`test_concurrent_updates_preserve_shared_entity` is the tripwire that
+guards the default.
+
+---
+
 ## Ingestion & Retrieval Pipeline
 
 | Area | Step | Cost |
@@ -146,6 +202,7 @@ async with GraphRAG(
 | 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | The benchmark-winning pipeline, ready to drop in |
 | 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
 | 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
+| 6 | [Incremental Updates](graphrag_sdk/examples/06_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |
 
 ---
 
