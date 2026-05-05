@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -232,3 +234,99 @@ def mock_vector_store(embedder: MockEmbedder) -> MagicMock:
     store.backfill_entity_embeddings = AsyncMock(return_value=0)
     store.embed_relationships = AsyncMock(return_value=0)
     return store
+
+
+# ── Real-FalkorDB integration helpers ───────────────────────────
+
+
+def _scripted_extraction_llm(*per_doc_entities: list[tuple[str, str, str]]):
+    """Build a MockLLM whose responses script the two-step graph_extraction
+    flow once per ingest/update call.
+
+    Each ``per_doc_entities`` arg is a list of ``(name, type, description)``
+    tuples for ONE source. The helper produces 2 LLM responses per source:
+    one step-1 NER response and one step-2 verify+rels response containing
+    the same entity set with no relationships.
+
+    The integration tests assume each source produces exactly one chunk
+    (small sentence under FixedSizeChunking's default 1000-char limit), so
+    one set of two LLM calls per source is enough.
+    """
+    responses: list[str] = []
+    for entities in per_doc_entities:
+        step1 = json.dumps(
+            [{"name": n, "type": t, "description": d} for (n, t, d) in entities]
+        )
+        step2 = json.dumps(
+            {
+                "entities": [
+                    {"name": n, "type": t, "description": d} for (n, t, d) in entities
+                ],
+                "relationships": [],
+            }
+        )
+        responses.extend([step1, step2])
+    return MockLLM(responses=responses)
+
+
+@pytest.fixture
+def scripted_llm():
+    """Test-author-supplied scripted LLM. Use as
+    ``llm = scripted_llm([("Alice", "Person", "..."), ...], [...])``.
+    Returns a callable so each test can pass its own per-doc entity sets."""
+    return _scripted_extraction_llm
+
+
+@pytest.fixture
+async def real_falkordb_rag_factory(embedder):
+    """Factory that builds a fresh ``GraphRAG`` against a real FalkorDB
+    with a unique graph_name (so parallel tests don't collide) and a
+    caller-supplied LLM + resolver. Tests must call ``await rag.close()``
+    or rely on the auto-cleanup at fixture teardown.
+
+    Skipped unless ``RUN_INTEGRATION=1`` is set. Connects to FalkorDB at
+    ``$FALKOR_HOST:$FALKOR_PORT`` (defaults ``localhost:6379``).
+    """
+    if not os.getenv("RUN_INTEGRATION"):
+        pytest.skip("Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests")
+
+    from graphrag_sdk.api.main import GraphRAG
+    from graphrag_sdk.core.connection import ConnectionConfig
+
+    created: list[Any] = []
+
+    def _make(*, llm, resolver, schema=None):
+        config = ConnectionConfig(
+            host=os.getenv("FALKOR_HOST", "localhost"),
+            port=int(os.getenv("FALKOR_PORT", "6379")),
+            username=os.getenv("FALKOR_USERNAME") or None,
+            password=os.getenv("FALKOR_PASSWORD") or None,
+            graph_name=f"test_{uuid4().hex[:8]}",
+        )
+        kwargs = dict(
+            connection=config,
+            llm=llm,
+            embedder=embedder,
+            embedding_dimension=embedder.dimension,
+        )
+        if schema is not None:
+            kwargs["schema"] = schema
+        rag = GraphRAG(**kwargs)
+        # Per-call resolver injection (apply_changes / update / ingest don't
+        # accept a default-resolver kwarg on the facade — but each call does).
+        rag._test_resolver = resolver  # marker, not used by SDK
+        created.append(rag)
+        return rag
+
+    yield _make
+
+    # Teardown — drop every test graph so reruns start clean.
+    for rag in created:
+        try:
+            await rag._graph_store.delete_all()
+        except Exception:
+            pass
+        try:
+            await rag.close()
+        except Exception:
+            pass

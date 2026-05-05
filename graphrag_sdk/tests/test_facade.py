@@ -1,6 +1,7 @@
 """Tests for api/main.py — the GraphRAG Facade."""
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,14 +9,17 @@ import pytest
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError
+from graphrag_sdk.core.exceptions import ConfigError, DocumentNotFoundError
 from graphrag_sdk.core.models import (
+    ApplyChangesResult,
     ChatMessage,
+    DeleteDocumentResult,
     IngestionResult,
     RagResult,
     RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
+    UpdateResult,
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
@@ -834,13 +838,6 @@ class TestGraphRAGBatchIngest:
         with pytest.raises(ValueError, match="Cannot pass both 'text' and 'loader'"):
             await graphrag.ingest(text="hello", loader=TextLoader())
 
-    async def test_ingest_document_id_without_text_raises(self, graphrag, tmp_path):
-        f = tmp_path / "doc.txt"
-        f.write_text("hi")
-        with pytest.raises(
-            ValueError, match="'document_id' is only valid when 'text' is provided"
-        ):
-            await graphrag.ingest(str(f), document_id="oops")
 
     async def test_ingest_text_auto_generates_document_id(self, graphrag):
         """When document_id is omitted in text mode, an id is generated."""
@@ -1070,3 +1067,477 @@ class TestGraphRAGIngestValidation:
         # Probe and DB query must not have fired.
         g._graph_store.query_raw.assert_not_called()
         g.embedder.aembed_query.assert_not_called()
+
+
+# ── v1.1.0: Path-as-id, update, delete_document, apply_changes ──
+
+
+def _stub_graph_store_for_update(
+    g: GraphRAG,
+    *,
+    existing_record: dict | None = None,
+    candidates: list[str] | None = None,
+    cutover_chunks_deleted: int = 0,
+    orphan_entities_deleted: int = 0,
+    prior_pending: tuple[str, str, str | None] | None = None,
+):
+    """Replace the graph_store's document-lifecycle methods with AsyncMocks
+    so we can drive the update/delete code paths deterministically without
+    real Cypher.
+
+    ``upsert_nodes`` / ``upsert_relationships`` are also stubbed so the
+    pipeline write step doesn't try to push through the (empty) mock
+    connection.
+
+    ``prior_pending`` simulates a leftover from a prior crashed update
+    in Phase 0 — pass ``("COMMITTED", pending_id, hash)`` to test the
+    rollforward path.
+    """
+    g._graph_store.get_document_record = AsyncMock(return_value=existing_record)
+    g._graph_store.get_document_entity_candidates = AsyncMock(
+        return_value=candidates or []
+    )
+    # State-machine surface (v1.1.0)
+    g._graph_store.find_pending = AsyncMock(return_value=prior_pending)
+    g._graph_store.mark_pending_committed = AsyncMock(return_value=1)
+    g._graph_store.cleanup_pending_documents = AsyncMock(return_value=0)
+    g._graph_store.rollforward_cutover = AsyncMock(return_value=cutover_chunks_deleted)
+    g._graph_store.delete_document_chunks_and_node = AsyncMock(
+        return_value=cutover_chunks_deleted
+    )
+    g._graph_store.delete_orphan_entities = AsyncMock(return_value=orphan_entities_deleted)
+    g._graph_store.upsert_nodes = AsyncMock(return_value=0)
+    g._graph_store.upsert_relationships = AsyncMock(return_value=0)
+    g._vector_store.ensure_indices = AsyncMock(return_value={})
+    g._vector_store.index_chunks = AsyncMock(return_value=0)
+    g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
+
+
+class TestGraphRAGIngestPathIdentity:
+    """v1.1.0: file-mode ingest derives a stable Document id from the path
+    and refuses to silently rebind an existing id to a different path."""
+
+    async def test_default_id_is_normpath_of_source(self, graphrag, tmp_path):
+        f = tmp_path / "weird" / ".." / "doc.txt"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        # Resolve the path so the file actually exists at the un-normalized location.
+        actual = tmp_path / "doc.txt"
+        actual.write_text("hello world")
+
+        # Stub out doc lookups so the conflict check sees no existing doc.
+        graphrag._graph_store.get_document_record = AsyncMock(return_value=None)
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+
+        result = await graphrag.ingest(str(actual))
+        # Default file-mode id is os.path.normpath(source).
+        assert result.document_info.uid == os.path.normpath(str(actual))
+
+    async def test_explicit_document_id_in_file_mode_no_longer_raises(self, graphrag, tmp_path):
+        """v1.0.2 rejected this with ValueError; v1.1.0 accepts it."""
+        f = tmp_path / "doc.txt"
+        f.write_text("Hi.")
+        graphrag._graph_store.get_document_record = AsyncMock(return_value=None)
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+
+        result = await graphrag.ingest(str(f), document_id="custom-id")
+        assert result.document_info.uid == "custom-id"
+
+    async def test_path_conflict_raises(self, graphrag, tmp_path):
+        """If the same document_id already maps to a different path,
+        refuse to silently rebind — push the caller to update() instead."""
+        f = tmp_path / "doc.txt"
+        f.write_text("Hi.")
+        graphrag._graph_store.get_document_record = AsyncMock(
+            return_value={"path": "previous/other_path.md", "content_hash": "abc"}
+        )
+
+        with pytest.raises(ValueError, match="already bound to path"):
+            await graphrag.ingest(str(f), document_id="reused-id")
+
+    async def test_batch_ingest_rejects_document_id(self, graphrag, tmp_path):
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("A")
+        f2.write_text("B")
+        with pytest.raises(ValueError, match="cannot be set on batch ingest"):
+            await graphrag.ingest([str(f1), str(f2)], document_id="x")
+
+
+class TestGraphRAGUpdate:
+    """v1.1.0: incremental document updates."""
+
+    async def test_no_op_on_unchanged_content(self, graphrag):
+        """Same SHA-256 → return UpdateResult(no_op=True) without running pipeline."""
+        import hashlib
+
+        text = "Stable content."
+        existing_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": existing_hash},
+        )
+
+        result = await graphrag.update(text=text, document_id="my-doc")
+        assert result.no_op is True
+        assert result.previous_document_uid == "my-doc"
+        # Pipeline write step must NOT have been invoked.
+        graphrag._graph_store.upsert_nodes.assert_not_awaited()
+        graphrag._graph_store.rollforward_cutover.assert_not_awaited()
+
+    async def test_doc_not_found_default_raises(self, graphrag):
+        """if_missing='error' (default) raises DocumentNotFoundError."""
+        _stub_graph_store_for_update(graphrag, existing_record=None)
+
+        with pytest.raises(DocumentNotFoundError, match="No Document with id"):
+            await graphrag.update(text="x", document_id="ghost")
+
+    async def test_doc_not_found_with_ingest_falls_through(self, graphrag):
+        """if_missing='ingest' upserts, returning UpdateResult with previous_document_uid=None."""
+        _stub_graph_store_for_update(graphrag, existing_record=None)
+
+        result = await graphrag.update(
+            text="brand new content", document_id="new-doc", if_missing="ingest"
+        )
+        assert isinstance(result, UpdateResult)
+        assert result.previous_document_uid is None
+        assert result.no_op is False
+        # Cutover must NOT have run — there's nothing to replace.
+        graphrag._graph_store.rollforward_cutover.assert_not_awaited()
+
+    async def test_text_mode_requires_document_id(self, graphrag):
+        with pytest.raises(ValueError, match="'document_id' is required in text mode"):
+            await graphrag.update(text="hello")
+
+    async def test_neither_source_nor_text_raises(self, graphrag):
+        with pytest.raises(ValueError, match="Either 'source'.*or 'text'"):
+            await graphrag.update(document_id="x")
+
+    async def test_both_source_and_text_raises(self, graphrag, tmp_path):
+        f = tmp_path / "a.txt"
+        f.write_text("a")
+        with pytest.raises(ValueError, match="Cannot pass both"):
+            await graphrag.update(str(f), text="x", document_id="y")
+
+    async def test_empty_document_id_raises(self, graphrag):
+        with pytest.raises(ValueError, match="must be a non-empty string"):
+            await graphrag.update(text="x", document_id="   ")
+
+    async def test_changed_content_runs_replace_flow(self, graphrag):
+        """Hash mismatch → snapshot candidates, write pending, COMMIT, rollforward, orphans."""
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old-hash"},
+            candidates=["entity-1", "entity-2"],
+            cutover_chunks_deleted=4,
+            orphan_entities_deleted=1,
+        )
+
+        result = await graphrag.update(text="brand new content", document_id="my-doc")
+
+        assert result.no_op is False
+        assert result.chunks_deleted == 4
+        assert result.entities_deleted == 1
+        assert result.previous_document_uid == "my-doc"
+
+        # State-machine sequencing — Phase 0 lookup, then snapshot, then commit, rollforward.
+        graphrag._graph_store.find_pending.assert_awaited()
+        graphrag._graph_store.get_document_entity_candidates.assert_awaited_once_with("my-doc")
+        graphrag._graph_store.mark_pending_committed.assert_awaited_once()
+        graphrag._graph_store.rollforward_cutover.assert_awaited_once()
+        graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(
+            ["entity-1", "entity-2"]
+        )
+
+    async def test_commit_precedes_rollforward(self, graphrag):
+        """Load-bearing ordering: mark_pending_committed must complete BEFORE
+        rollforward_cutover starts. Get this wrong and a recoverable error
+        becomes silent data loss (live doc gone, pending discarded as
+        abandoned write).
+        """
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old-hash"},
+            candidates=[],
+        )
+
+        call_order: list[str] = []
+
+        async def record_commit(*a, **kw):
+            call_order.append("commit")
+            return 1
+
+        async def record_rollforward(*a, **kw):
+            call_order.append("rollforward")
+            return 0
+
+        graphrag._graph_store.mark_pending_committed = AsyncMock(side_effect=record_commit)
+        graphrag._graph_store.rollforward_cutover = AsyncMock(side_effect=record_rollforward)
+
+        await graphrag.update(text="new", document_id="my-doc")
+
+        assert call_order == ["commit", "rollforward"], (
+            "mark_pending_committed MUST complete before rollforward_cutover "
+            "starts; otherwise a crash mid-cutover is unrecoverable."
+        )
+
+    async def test_phase0_rollforward_replays_committed_pending(self, graphrag):
+        """If find_pending reports COMMITTED at the start of update(), Phase 0
+        rolls forward instead of discarding — the pending content was committed
+        by a prior call that crashed before completing the cutover."""
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old-hash"},
+            candidates=[],
+            prior_pending=("COMMITTED", "my-doc__pending__abc12345", "committed-hash"),
+        )
+        # Phase 0 calls get_document_record on the pending to fetch path/hash.
+        # Since we already stub get_document_record to return the live record,
+        # rollforward will use the live path as a fallback — that's fine for
+        # the assertion here, which is "rollforward was invoked on the prior
+        # pending before any new pipeline work began".
+
+        await graphrag.update(text="new", document_id="my-doc")
+
+        # The prior-pending rollforward fires AT LEAST once before the new
+        # update's own rollforward. Easier check: rollforward_cutover was
+        # called twice (once for replay, once for the new update).
+        assert graphrag._graph_store.rollforward_cutover.await_count == 2
+        # cleanup_pending_documents must NOT have been called for the prior
+        # pending — that would have wiped the committed work.
+        graphrag._graph_store.cleanup_pending_documents.assert_not_awaited()
+
+    async def test_phase0_rollback_on_uncommitted_pending(self, graphrag):
+        """If find_pending reports WRITTEN (no commit marker), Phase 0 wipes
+        the pending — that prior attempt didn't cross the commit boundary."""
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old-hash"},
+            candidates=[],
+            prior_pending=("WRITTEN", "my-doc__pending__deadbeef", None),
+        )
+
+        await graphrag.update(text="new", document_id="my-doc")
+
+        graphrag._graph_store.cleanup_pending_documents.assert_awaited_once_with("my-doc")
+        # Only the new update's own rollforward — not a replay.
+        assert graphrag._graph_store.rollforward_cutover.await_count == 1
+
+    async def test_pending_cleanup_on_pipeline_failure(self, graphrag, monkeypatch):
+        """When pipeline.run() raises, the pending leftover is cleaned up
+        and the original document is untouched (no cutover, no orphan delete)."""
+        from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old"},
+            candidates=[],
+        )
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("extractor exploded")
+
+        monkeypatch.setattr(IngestionPipeline, "run", _boom)
+
+        with pytest.raises(RuntimeError, match="extractor exploded"):
+            await graphrag.update(text="new", document_id="my-doc")
+
+        # Critical: no commit, no rollforward (old doc still queryable).
+        graphrag._graph_store.mark_pending_committed.assert_not_awaited()
+        graphrag._graph_store.rollforward_cutover.assert_not_awaited()
+        # And no orphan cleanup either — the snapshot was never used.
+        graphrag._graph_store.delete_orphan_entities.assert_not_awaited()
+        # cleanup_pending_documents fired in the except block to remove the
+        # un-committed pending leftover.
+        graphrag._graph_store.cleanup_pending_documents.assert_awaited_once()
+
+    async def test_does_not_call_finalize(self, graphrag):
+        """update() must NOT trigger the O(graph size) dedup pass."""
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old"},
+        )
+        # Sentinel: would explode if called.
+        graphrag.deduplicate_entities = AsyncMock(
+            side_effect=AssertionError("update() must not call deduplicate_entities")
+        )
+        graphrag.finalize = AsyncMock(
+            side_effect=AssertionError("update() must not call finalize")
+        )
+
+        await graphrag.update(text="new", document_id="my-doc")
+
+        graphrag.deduplicate_entities.assert_not_awaited()
+        graphrag.finalize.assert_not_awaited()
+
+
+class TestGraphRAGDeleteDocument:
+    """v1.1.0: per-document deletion."""
+
+    async def test_deletes_and_returns_counts(self, graphrag):
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "doc-a", "content_hash": "h"},
+            candidates=["e1", "e2"],
+            cutover_chunks_deleted=3,
+            orphan_entities_deleted=2,
+        )
+
+        result = await graphrag.delete_document("doc-a")
+        assert isinstance(result, DeleteDocumentResult)
+        assert result.document_id == "doc-a"
+        assert result.chunks_deleted == 3
+        assert result.entities_deleted == 2
+        graphrag._graph_store.delete_document_chunks_and_node.assert_awaited_once_with("doc-a")
+        graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(["e1", "e2"])
+
+    async def test_missing_doc_raises(self, graphrag):
+        _stub_graph_store_for_update(graphrag, existing_record=None)
+        with pytest.raises(DocumentNotFoundError):
+            await graphrag.delete_document("ghost")
+
+    async def test_empty_id_raises(self, graphrag):
+        with pytest.raises(ValueError, match="non-empty string"):
+            await graphrag.delete_document("   ")
+
+    async def test_does_not_touch_unrelated_entities(self, graphrag):
+        """delete_orphan_entities is called ONLY with candidates from this
+        document — never global. Entities from other docs are out of scope."""
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "doc-a", "content_hash": "h"},
+            candidates=["e_a"],
+        )
+        await graphrag.delete_document("doc-a")
+        call_args = graphrag._graph_store.delete_orphan_entities.await_args
+        assert call_args.args[0] == ["e_a"]
+
+
+class TestApplyChanges:
+    """v1.1.0: heterogeneous batch dispatcher (the CI use case)."""
+
+    async def test_dispatches_to_each_primitive(self, graphrag, tmp_path):
+        """One call routes added/modified/deleted to the right method."""
+        added_path = tmp_path / "new.txt"
+        added_path.write_text("freshly added")
+        modified_path = tmp_path / "changed.txt"
+        modified_path.write_text("was changed")
+
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": str(modified_path), "content_hash": "stale"},
+            candidates=[],
+        )
+
+        # Spy on the public methods so we observe dispatch without skipping
+        # the underlying (already-mocked) graph_store calls.
+        original_ingest = graphrag.ingest
+        original_update = graphrag.update
+        original_delete = graphrag.delete_document
+        graphrag.ingest = AsyncMock(side_effect=original_ingest)
+        graphrag.update = AsyncMock(side_effect=original_update)
+        graphrag.delete_document = AsyncMock(side_effect=original_delete)
+
+        result = await graphrag.apply_changes(
+            added=[str(added_path)],
+            modified=[str(modified_path)],
+            deleted=["doc-old"],
+        )
+
+        assert isinstance(result, ApplyChangesResult)
+        # Each primitive was called once for its respective input.
+        graphrag.ingest.assert_awaited_once()
+        graphrag.update.assert_awaited_once()
+        graphrag.delete_document.assert_awaited_once_with("doc-old")
+        # Result lists align by index with the inputs.
+        assert len(result.added) == 1
+        assert len(result.modified) == 1
+        assert len(result.deleted) == 1
+
+    async def test_per_file_errors_collected_not_raised(self, graphrag):
+        """A failing delete must not abort the batch; it lands in the result."""
+        _stub_graph_store_for_update(graphrag, existing_record=None)
+        # All ids will be missing → delete raises DocumentNotFoundError per id.
+        result = await graphrag.apply_changes(deleted=["missing-1", "missing-2"])
+        assert all(isinstance(r, Exception) for r in result.deleted)
+        assert len(result.deleted) == 2
+
+    async def test_does_not_call_finalize(self, graphrag):
+        """apply_changes is the convenience wrapper, but the cost-model
+        contract is explicit: caller drives finalize cadence."""
+        _stub_graph_store_for_update(graphrag, existing_record=None)
+        graphrag.finalize = AsyncMock(
+            side_effect=AssertionError("apply_changes must not call finalize")
+        )
+
+        await graphrag.apply_changes()  # all empty
+        graphrag.finalize.assert_not_awaited()
+
+    async def test_handles_all_empty_lists(self, graphrag):
+        """No-op call returns an empty result — no errors, no work."""
+        result = await graphrag.apply_changes()
+        assert result.added == []
+        assert result.modified == []
+        assert result.deleted == []
+
+    async def test_update_concurrency_default_is_one(self, graphrag):
+        """The orphan-cleanup invariant requires updates to serialize by
+        default. If anyone changes this, the docstring tripwire test
+        below fires; if they suppress that too, the integration test
+        ``test_concurrent_updates_preserve_shared_entity`` fires."""
+        import inspect
+
+        sig = inspect.signature(graphrag.apply_changes)
+        param = sig.parameters["update_concurrency"]
+        assert param.default == 1, (
+            f"update_concurrency default must be 1 (was {param.default}). "
+            "See docstring on apply_changes for the orphan-cleanup invariant."
+        )
+
+    def test_update_concurrency_docstring_explains_invariant(self, graphrag):
+        """A future maintainer who removes the load-bearing warning from
+        the update_concurrency docstring fails this test BEFORE they can
+        silently regress concurrent-update correctness."""
+        # Normalize whitespace so phrase matching ignores docstring line wraps.
+        doc = " ".join((graphrag.apply_changes.__doc__ or "").split())
+        # The exact phrases that signal the invariant — if any go missing,
+        # someone has weakened the docstring without considering the
+        # correctness implications.
+        for phrase in (
+            "almost certainly should not raise it",
+            "MENTIONED_IN edges are persisted in the graph before it returns",
+            "test_concurrent_updates_preserve_shared_entity",
+        ):
+            assert phrase in doc, (
+                f"apply_changes docstring is missing load-bearing phrase: {phrase!r}"
+            )
+
+    async def test_update_concurrency_validation(self, graphrag):
+        with pytest.raises(ValueError, match="update_concurrency must be >= 1"):
+            await graphrag.apply_changes(update_concurrency=0)
+
+
+class TestGraphRAGUpdateSyncWrapper:
+    """v1.1.0: sync wrappers mirror the async signatures."""
+
+    def test_update_sync_invokes_async_update(self, graphrag):
+        import hashlib
+
+        text = "Same."
+        h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "doc-x", "content_hash": h},
+        )
+
+        result = graphrag.update_sync(text=text, document_id="doc-x")
+        assert result.no_op is True
+
+    def test_delete_document_sync(self, graphrag):
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "doc-y", "content_hash": "h"},
+            candidates=[],
+        )
+        result = graphrag.delete_document_sync("doc-y")
+        assert isinstance(result, DeleteDocumentResult)
+        assert result.document_id == "doc-y"

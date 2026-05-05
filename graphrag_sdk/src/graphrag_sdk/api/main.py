@@ -5,22 +5,28 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
 import re
-from typing import Any, overload
+from typing import Any, Literal, overload
 from uuid import uuid4
 
 from graphrag_sdk import __version__
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError
+from graphrag_sdk.core.exceptions import ConfigError, DocumentNotFoundError
 from graphrag_sdk.core.models import (
+    ApplyChangesResult,
     ChatMessage,
+    DeleteDocumentResult,
+    DocumentInfo,
     FinalizeResult,
     GraphSchema,
     IngestionResult,
     RagResult,
     RetrieverResult,
+    UpdateResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
@@ -296,7 +302,9 @@ class GraphRAG:
         Two input modes, mutually exclusive:
 
         - **File mode** — pass ``source`` (single path or list of paths).
-          The loader reads from disk; ``document_id`` is rejected.
+          The loader reads from disk; ``document_id`` is optional and,
+          when omitted, defaults to ``os.path.normpath(source)`` so the
+          path itself is the stable handle for ``update()`` later.
         - **Text mode** — pass ``text`` directly. Optionally pass
           ``document_id`` to label the document; if omitted, an
           identifier is generated. ``source`` and ``loader`` are rejected.
@@ -317,8 +325,11 @@ class GraphRAG:
         Args:
             source: File path (or list of paths) — file mode only.
             text: Raw text — text mode only.
-            document_id: Identifier for text-mode ingestion. Defaults
-                to an auto-generated id. Reject in file mode.
+            document_id: Stable identifier used as the Document node's
+                ``id``. In file mode, defaults to ``os.path.normpath(source)``.
+                In text mode, defaults to a generated ``text-<8hex>`` id.
+                Pass an explicit value when you want a different identity
+                scheme (e.g. content-hash, repo-relative path, slug).
             loader: Custom loader strategy. File mode only.
             chunker: Custom chunking strategy.
             extractor: Custom extraction strategy.
@@ -346,8 +357,14 @@ class GraphRAG:
                 "Cannot pass both 'source' and 'text'. Use 'source' for file "
                 "paths or 'text' (with optional 'document_id') for raw text."
             )
-        if text is None and document_id is not None:
-            raise ValueError("'document_id' is only valid when 'text' is provided")
+        if document_id is not None and not document_id.strip():
+            raise ValueError("'document_id' must be a non-empty string")
+        if isinstance(source, list) and document_id is not None:
+            raise ValueError(
+                "'document_id' cannot be set on batch ingest (list source). "
+                "Each file's id defaults to os.path.normpath(path); pass an "
+                "explicit document_id only for single-source calls."
+            )
         if text is not None and loader is not None:
             raise ValueError(
                 "Cannot pass both 'text' and 'loader'. The loader is ignored "
@@ -374,10 +391,12 @@ class GraphRAG:
         # In text mode, the resolved document id is passed down as the
         # ``source`` argument — the pipeline stores it on
         # ``DocumentInfo.path`` for provenance, and never reads from disk.
-        effective_source = source if text is None else (document_id or f"text-{uuid4().hex[:8]}")
+        resolved_id = self._resolve_document_id(source, text, document_id)
+        effective_source = source if text is None else resolved_id
         return await self._ingest_single(
             effective_source,
             text=text,
+            document_id=resolved_id,
             loader=loader,
             chunker=chunker,
             extractor=extractor,
@@ -385,11 +404,34 @@ class GraphRAG:
             ctx=ctx,
         )
 
+    @staticmethod
+    def _resolve_document_id(
+        source: str | None,
+        text: str | None,
+        document_id: str | None,
+    ) -> str:
+        """Compute the stable Document node id for an ingest/update call.
+
+        - explicit ``document_id`` → used verbatim
+        - file mode (source given, no id) → ``os.path.normpath(source)``
+        - text mode (no id) → generated ``text-<8hex>``
+
+        Path normalization collapses ``./``, ``../``, and double slashes
+        so the same logical path always yields the same id, regardless of
+        how the caller spelled it.
+        """
+        if document_id is not None:
+            return document_id
+        if text is None and source is not None:
+            return os.path.normpath(source)
+        return f"text-{uuid4().hex[:8]}"
+
     async def _ingest_single(
         self,
         source: str,
         *,
         text: str | None = None,
+        document_id: str | None = None,
         loader: LoaderStrategy | None = None,
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
@@ -400,6 +442,9 @@ class GraphRAG:
         """Ingest a single source document.
 
         Args:
+            document_id: Resolved Document node id. When None, the caller
+                hasn't pre-resolved (legacy path); we resolve here using
+                the same rules as the public ``ingest()``.
             _skip_post: Internal flag — when True, skips ensure_indices
                 and config write (caller handles them after the batch).
         """
@@ -413,6 +458,28 @@ class GraphRAG:
             else:
                 loader = TextLoader()
 
+        # Resolve and bind a stable id so the Document node anchors against
+        # a known handle that ``update()`` / ``delete_document()`` can target.
+        resolved_id = document_id or self._resolve_document_id(
+            source if text is None else None, text, None
+        )
+        # Path-conflict guard: refuse to silently rebind an existing id to a
+        # different source path. Catches accidental aliasing across files;
+        # legitimate rebinds should go through ``update()``.
+        path_for_node = source if text is None else resolved_id
+        existing = await self._graph_store.get_document_record(resolved_id)
+        if existing is not None:
+            existing_path = existing.get("path") or ""
+            if existing_path and existing_path != path_for_node:
+                raise ValueError(
+                    f"document_id '{resolved_id}' is already bound to path "
+                    f"'{existing_path}'; refusing to rebind to '{path_for_node}'. "
+                    f"Pass an explicit document_id, or call update() to replace "
+                    f"the existing document."
+                )
+
+        doc_info = DocumentInfo(uid=resolved_id, path=path_for_node)
+
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
             chunker=chunker or FixedSizeChunking(),
@@ -423,7 +490,7 @@ class GraphRAG:
             schema=self.schema,
         )
 
-        result = await pipeline.run(source, ctx, text=text)
+        result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
 
         if not _skip_post:
             # Post-ingestion: create indices only.
@@ -506,6 +573,469 @@ class GraphRAG:
         return GraphExtraction(
             llm=self.llm,
             entity_types=entity_types,
+        )
+
+    @staticmethod
+    def _default_loader_for(source: str) -> LoaderStrategy:
+        """Auto-detect loader from file extension. Mirrors ``_ingest_single``."""
+        if source.lower().endswith(".pdf"):
+            return PdfLoader()
+        return TextLoader()
+
+    # ── Incremental Updates ─────────────────────────────────────
+    #
+    # ``update()`` and ``delete_document()`` operate on a single Document
+    # node identified by its stable id (defaulting to the canonicalized
+    # source path in file mode). ``apply_changes()`` is a CI-friendly
+    # batch wrapper that dispatches to the right primitive per file.
+    #
+    # All three are intentionally separate from ``finalize()``: dedup is
+    # O(graph size) and should be amortized across a whole batch, not
+    # paid per file. See CHANGELOG 1.1.0 cost-model note.
+
+    async def update(
+        self,
+        source: str | None = None,
+        *,
+        text: str | None = None,
+        document_id: str | None = None,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
+        if_missing: Literal["error", "ingest"] = "error",
+        ctx: Context | None = None,
+    ) -> UpdateResult:
+        """Re-sync a previously-ingested document into the graph.
+
+        Replaces the document's chunks and re-extracts entities/relations
+        from the new content. Entities that become orphaned (zero remaining
+        ``MENTIONED_IN`` edges, scoped to those previously referenced by
+        this document) are removed along with their ``RELATES`` edges.
+        Entities still mentioned by other documents are preserved.
+
+        SHA-256 content-hash short-circuits no-op updates: if the new
+        text matches the stored ``Document.content_hash``, no extraction
+        runs and the call is essentially a single Cypher lookup. This is
+        the win for touch-only PRs (CRLF, formatter-only changes).
+
+        State-machine cutover (crash-safe):
+
+        +-----------+----------------+------------------+----------------------+----------------------+
+        | State     | Pending exists | ready_to_commit  | Live doc at $doc_id  | Recovery             |
+        +-----------+----------------+------------------+----------------------+----------------------+
+        | EMPTY     | no             | n/a              | maybe                | normal start         |
+        | WRITING   | partial        | absent           | unchanged            | rollback (delete)    |
+        | WRITTEN   | complete       | absent           | unchanged            | rollback (delete)    |
+        | COMMITTED | complete       | true             | maybe partial        | **rollforward**      |
+        | FINAL     | renamed away   | n/a              | new content          | normal start         |
+        +-----------+----------------+------------------+----------------------+----------------------+
+
+        The single-property write that sets ``ready_to_commit=true`` is
+        the commit point. It MUST commit before any destructive Cypher
+        touches the live document — getting that ordering wrong replaces
+        a recoverable error with silent data loss. Once committed, all
+        subsequent ops are idempotent and crash-recovery rolls forward
+        rather than back.
+
+        Args:
+            source: File path. Loader reads from disk. Mutually exclusive
+                with ``text``.
+            text: Raw text. Skips the loader. Mutually exclusive with
+                ``source``.
+            document_id: Stable id of the Document node to update. In
+                file mode, defaults to ``os.path.normpath(source)`` so
+                ``update(path)`` matches the corresponding ``ingest(path)``
+                with no extra plumbing. Required in text mode.
+            loader / chunker / extractor / resolver: Per-call strategy
+                overrides, identical to ``ingest()``.
+            if_missing: ``"error"`` (default) raises ``DocumentNotFoundError``
+                when the id is unknown. ``"ingest"`` falls through to
+                ``ingest()`` for upsert semantics.
+            ctx: Execution context.
+
+        Returns:
+            ``UpdateResult`` — extends ``IngestionResult`` with
+            ``chunks_deleted``, ``entities_deleted``, ``no_op``, and
+            ``previous_document_uid``. ``no_op=True`` means the content
+            hash matched and nothing was written.
+
+        Raises:
+            ValueError: Invalid argument combination, or the resolved id
+                refers to text-mode without an explicit ``document_id``.
+            DocumentNotFoundError: Id unknown and ``if_missing="error"``.
+        """
+        # ── Argument shape (mirror ingest() so callers get a familiar error surface) ──
+        if source is None and text is None:
+            raise ValueError("Either 'source' (file path) or 'text' must be provided")
+        if source is not None and text is not None:
+            raise ValueError(
+                "Cannot pass both 'source' and 'text'. Use 'source' for a file "
+                "path or 'text' (with required 'document_id') for raw text."
+            )
+        if text is not None and loader is not None:
+            raise ValueError(
+                "Cannot pass both 'text' and 'loader'. The loader is ignored "
+                "when text is provided directly — pass only one."
+            )
+        if document_id is not None and not document_id.strip():
+            raise ValueError("'document_id' must be a non-empty string")
+        if text is not None and document_id is None:
+            raise ValueError(
+                "'document_id' is required in text mode — there is no path "
+                "to derive a stable id from."
+            )
+
+        await self._validate_graph_config()
+
+        if ctx is None:
+            ctx = Context()
+
+        resolved_id = self._resolve_document_id(source, text, document_id)
+
+        # ── Phase 0: pre-cleanup — handle leftover from a prior crash ──
+        # find_pending reports COMMITTED for any pending whose ready_to_commit
+        # is already set. In that state, the prior call crossed the commit
+        # boundary; the only safe action is to roll forward.
+        prior = await self._graph_store.find_pending(resolved_id)
+        if prior is not None:
+            prior_state, prior_pending_id, prior_hash = prior
+            if prior_state == "COMMITTED":
+                ctx.log(
+                    f"update: detected COMMITTED pending '{prior_pending_id}' "
+                    f"from a prior crash — rolling forward"
+                )
+                # The pending node carries the "real" path/hash (set just
+                # before we crashed). Look those up before rollforward so
+                # the canonical Document ends up with the right metadata.
+                pending_record = await self._graph_store.get_document_record(prior_pending_id)
+                roll_path = (pending_record or {}).get("path") or resolved_id
+                roll_hash = prior_hash or (pending_record or {}).get("content_hash") or ""
+                await self._graph_store.rollforward_cutover(
+                    pending_id=prior_pending_id,
+                    real_id=resolved_id,
+                    path=roll_path,
+                    content_hash=roll_hash,
+                )
+            else:
+                # WRITTEN / WRITING — safe to discard.
+                await self._graph_store.cleanup_pending_documents(resolved_id)
+
+        # ── Phase 1: load text + lookup live doc + no-op short-circuit ──
+        if text is not None:
+            loaded_text = text
+            doc_path = resolved_id
+        else:
+            assert source is not None  # guaranteed by validation above
+            active_loader = loader or self._default_loader_for(source)
+            loaded = await active_loader.load(source, ctx)
+            loaded_text = loaded.text
+            doc_path = source
+
+        new_hash = hashlib.sha256(loaded_text.encode("utf-8")).hexdigest()
+
+        existing = await self._graph_store.get_document_record(resolved_id)
+        if existing is None:
+            if if_missing == "ingest":
+                ctx.log(f"update: id '{resolved_id}' not found, falling through to ingest")
+                ingest_result = await self._ingest_single(
+                    source if source is not None else resolved_id,
+                    text=loaded_text,
+                    document_id=resolved_id,
+                    chunker=chunker,
+                    extractor=extractor,
+                    resolver=resolver,
+                    ctx=ctx,
+                )
+                return UpdateResult(
+                    document_info=ingest_result.document_info,
+                    nodes_created=ingest_result.nodes_created,
+                    relationships_created=ingest_result.relationships_created,
+                    chunks_indexed=ingest_result.chunks_indexed,
+                    metadata=ingest_result.metadata,
+                    previous_document_uid=None,
+                )
+            raise DocumentNotFoundError(
+                f"No Document with id '{resolved_id}' exists. "
+                f"Pass if_missing='ingest' to upsert instead."
+            )
+
+        if existing.get("content_hash") == new_hash:
+            ctx.log(f"update: content hash matches for '{resolved_id}', no-op")
+            return UpdateResult(
+                document_info=DocumentInfo(uid=resolved_id, path=existing.get("path") or doc_path),
+                no_op=True,
+                previous_document_uid=resolved_id,
+            )
+
+        # ── Phase 2: snapshot entity candidates BEFORE topology changes ──
+        candidate_ids = await self._graph_store.get_document_entity_candidates(resolved_id)
+
+        # ── Phase 3: write new content under a fresh pending id ──
+        pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"
+        pending_doc_info = DocumentInfo(uid=pending_id, path=doc_path)
+
+        pipeline = IngestionPipeline(
+            loader=loader or TextLoader(),  # unused (text is provided below)
+            chunker=chunker or FixedSizeChunking(),
+            extractor=extractor or self._default_extractor(),
+            resolver=resolver or ExactMatchResolution(),
+            graph_store=self._graph_store,
+            vector_store=self._vector_store,
+            schema=self.schema,
+        )
+
+        try:
+            pipeline_result = await pipeline.run(
+                doc_path,
+                ctx,
+                text=loaded_text,
+                document_info=pending_doc_info,
+            )
+        except Exception:
+            # Pipeline crashed before commit — pending is in WRITING state.
+            # cleanup_pending_documents only removes pendings WITHOUT the
+            # commit marker, so this is safe even under racing retries.
+            try:
+                await self._graph_store.cleanup_pending_documents(resolved_id)
+            except Exception:
+                logger.debug("update: pending cleanup failed during exception path", exc_info=True)
+            raise
+
+        # ── Phase 4: COMMIT (load-bearing single-property atomic write) ──
+        # Sets pending.ready_to_commit = true. After this returns, recovery
+        # on crash is rollforward, not rollback. THIS IS THE COMMIT POINT.
+        # Anything destructive against the live document MUST follow this
+        # call, never precede it.
+        await self._graph_store.mark_pending_committed(pending_id)
+
+        # ── Phase 5: rollforward cutover (idempotent) ──
+        chunks_deleted = await self._graph_store.rollforward_cutover(
+            pending_id=pending_id,
+            real_id=resolved_id,
+            path=doc_path,
+            content_hash=new_hash,
+        )
+
+        # ── Phase 6: orphan-entity cleanup (scoped to candidates) ──
+        entities_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
+
+        # Index sanity (idempotent). Do NOT call finalize() — caller's responsibility.
+        await self._vector_store.ensure_indices()
+
+        ctx.log(
+            f"update: {resolved_id} — "
+            f"deleted {chunks_deleted} old chunks + {entities_deleted} orphan entities, "
+            f"wrote {pipeline_result.chunks_indexed} new chunks"
+        )
+
+        return UpdateResult(
+            document_info=DocumentInfo(uid=resolved_id, path=doc_path),
+            nodes_created=pipeline_result.nodes_created,
+            relationships_created=pipeline_result.relationships_created,
+            chunks_indexed=pipeline_result.chunks_indexed,
+            metadata=pipeline_result.metadata,
+            chunks_deleted=chunks_deleted,
+            entities_deleted=entities_deleted,
+            previous_document_uid=resolved_id,
+            no_op=False,
+        )
+
+    async def delete_document(self, document_id: str) -> DeleteDocumentResult:
+        """Remove a single document and its chunks from the graph.
+
+        Deletes:
+        - All ``Chunk`` nodes linked to the Document via ``PART_OF``.
+        - The ``Document`` node itself.
+        - Entities that the document referenced and that no longer have
+          any remaining ``MENTIONED_IN`` edges (orphan cleanup, scoped
+          to candidates from this document — never global). Their
+          incident ``RELATES`` edges go with them via ``DETACH DELETE``.
+
+        Entities still referenced by other documents are preserved.
+
+        Args:
+            document_id: The Document node id (e.g. ``os.path.normpath(path)``
+                if you used the default file-mode id).
+
+        Returns:
+            ``DeleteDocumentResult`` with chunk and orphan-entity counts.
+
+        Raises:
+            ValueError: ``document_id`` is empty.
+            DocumentNotFoundError: No Document with that id exists.
+        """
+        if not document_id or not document_id.strip():
+            raise ValueError("'document_id' must be a non-empty string")
+
+        existing = await self._graph_store.get_document_record(document_id)
+        if existing is None:
+            raise DocumentNotFoundError(
+                f"No Document with id '{document_id}' exists."
+            )
+
+        candidate_ids = await self._graph_store.get_document_entity_candidates(document_id)
+        chunks_deleted = await self._graph_store.delete_document_chunks_and_node(document_id)
+        entities_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
+
+        logger.info(
+            "delete_document: %s — removed %d chunks + %d orphan entities",
+            document_id,
+            chunks_deleted,
+            entities_deleted,
+        )
+
+        return DeleteDocumentResult(
+            document_id=document_id,
+            chunks_deleted=chunks_deleted,
+            entities_deleted=entities_deleted,
+        )
+
+    async def apply_changes(
+        self,
+        *,
+        added: list[str] | None = None,
+        modified: list[str] | None = None,
+        deleted: list[str] | None = None,
+        max_concurrency: int = 3,
+        update_concurrency: int = 1,
+        ctx: Context | None = None,
+    ) -> ApplyChangesResult:
+        """Apply a heterogeneous batch of file changes to the graph.
+
+        Convenience wrapper for CI-driven incremental ingestion. Dispatches
+        each list to the right primitive:
+
+        - ``added`` → ``ingest()``
+        - ``modified`` → ``update(if_missing="ingest")`` (so a "modified"
+          file the graph never saw is upserted, not erroring out)
+        - ``deleted`` → ``delete_document()``
+
+        Each list can independently be ``None`` or empty. Per-file errors
+        are collected as ``Exception`` objects in the result; the batch
+        never raises. This mirrors ``ingest()``'s batch contract.
+
+        Order: deletes → updates → adds. Deletes free up entity-orphan
+        candidates first; the MERGE-on-id semantics make this safe and
+        correctness-equivalent to any order, only ordering-significant
+        for transient memory footprint.
+
+        **This method does NOT call ``finalize()``.** Cross-document
+        deduplication is O(graph size); call ``finalize()`` once after
+        the whole batch (e.g. once per CI run, not once per file).
+
+        Canonical CI usage::
+
+            graph = await GraphRAG.connect(...)
+            await graph.apply_changes(**parse_git_diff(pr_sha, base_sha))
+            await graph.finalize()
+
+        Args:
+            added: New file paths to ingest.
+            modified: File paths whose content changed.
+            deleted: Document ids (typically file paths) to remove.
+            max_concurrency: Parallelism cap for ``ingest()`` of the
+                ``added`` list. Matches ``ingest()``'s own knob and the
+                ``add`` step is pure ingestion with no orphan-cleanup
+                race surface; safe to raise.
+            update_concurrency: Per-update concurrency for the ``modified``
+                list. **Default is 1, and you almost certainly should not
+                raise it.** v1.1.0's orphan cleanup is correct under
+                concurrent updates only because ``pipeline.run()``
+                guarantees MENTIONED_IN edges are persisted in the graph
+                before it returns — and therefore before any cutover
+                begins. This means concurrent updates A and B sharing
+                an entity ``e1`` will always observe ``e1`` to have at
+                least one incident MENTIONED_IN edge from B's old
+                chunks (pre-cutover) or B's new chunks
+                (post-``pipeline.run()``), so A's orphan-cleanup will
+                never wrongly delete it.
+
+                Raising this default is safe **only** if you have
+                separately verified that no two updates running in
+                parallel can ever share an entity in their candidate
+                snapshots. The integration test
+                ``test_concurrent_updates_preserve_shared_entity`` is
+                the tripwire that protects this default — break it
+                before bumping the value.
+            ctx: Execution context.
+
+        Returns:
+            ``ApplyChangesResult`` aggregating per-file results aligned
+            by index with the input lists.
+        """
+        added = added or []
+        modified = modified or []
+        deleted = deleted or []
+
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
+        if update_concurrency < 1:
+            raise ValueError("update_concurrency must be >= 1")
+
+        if ctx is None:
+            ctx = Context()
+
+        # ── 1. Deletes (sequential — fast and DB-bound; no benefit to parallel) ──
+        delete_results: list[DeleteDocumentResult | Exception] = []
+        for doc_id in deleted:
+            try:
+                delete_results.append(await self.delete_document(doc_id))
+            except Exception as exc:
+                logger.warning(
+                    "apply_changes: delete failed for %r: %s: %s",
+                    doc_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                delete_results.append(exc)
+
+        # ── 2. Updates (parallel, bounded by update_concurrency).
+        # Default 1 is forced by the orphan-cleanup invariant — see the
+        # docstring on update_concurrency above. The semaphore is
+        # *separate* from the one used for adds so callers can keep
+        # adds parallel while updates serialize.
+        update_sem = asyncio.Semaphore(update_concurrency)
+
+        async def _update_one(path: str) -> UpdateResult | Exception:
+            async with update_sem:
+                try:
+                    return await self.update(
+                        path,
+                        if_missing="ingest",
+                        ctx=ctx.child(),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "apply_changes: update failed for %r: %s: %s",
+                        path,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return exc
+
+        update_results: list[UpdateResult | Exception] = (
+            list(await asyncio.gather(*[_update_one(p) for p in modified]))
+            if modified
+            else []
+        )
+
+        # ── 3. Adds (delegate to ingest's batch path for free per-file error handling) ──
+        added_results: list[IngestionResult | Exception] = []
+        if added:
+            batch_out = await self.ingest(
+                added,
+                max_concurrency=max_concurrency,
+                ctx=ctx,
+            )
+            # ``ingest(list)`` always returns a list per its overload.
+            assert isinstance(batch_out, list)
+            added_results = batch_out
+
+        return ApplyChangesResult(
+            added=added_results,
+            modified=update_results,
+            deleted=delete_results,
         )
 
     # ── Retrieval ────────────────────────────────────────────────
@@ -1081,3 +1611,66 @@ class GraphRAG:
         Keep in sync with :meth:`finalize`.
         """
         return asyncio.run(self.finalize())
+
+    def update_sync(
+        self,
+        source: str | None = None,
+        *,
+        text: str | None = None,
+        document_id: str | None = None,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
+        if_missing: Literal["error", "ingest"] = "error",
+        ctx: Context | None = None,
+    ) -> UpdateResult:
+        """Synchronous update convenience method.
+
+        Keep in sync with :meth:`update`.
+        """
+        return asyncio.run(
+            self.update(
+                source,
+                text=text,
+                document_id=document_id,
+                loader=loader,
+                chunker=chunker,
+                extractor=extractor,
+                resolver=resolver,
+                if_missing=if_missing,
+                ctx=ctx,
+            )
+        )
+
+    def delete_document_sync(self, document_id: str) -> DeleteDocumentResult:
+        """Synchronous ``delete_document`` convenience method.
+
+        Keep in sync with :meth:`delete_document`.
+        """
+        return asyncio.run(self.delete_document(document_id))
+
+    def apply_changes_sync(
+        self,
+        *,
+        added: list[str] | None = None,
+        modified: list[str] | None = None,
+        deleted: list[str] | None = None,
+        max_concurrency: int = 3,
+        update_concurrency: int = 1,
+        ctx: Context | None = None,
+    ) -> ApplyChangesResult:
+        """Synchronous ``apply_changes`` convenience method.
+
+        Keep in sync with :meth:`apply_changes`.
+        """
+        return asyncio.run(
+            self.apply_changes(
+                added=added,
+                modified=modified,
+                deleted=deleted,
+                max_concurrency=max_concurrency,
+                update_concurrency=update_concurrency,
+                ctx=ctx,
+            )
+        )

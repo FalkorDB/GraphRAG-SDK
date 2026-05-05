@@ -259,11 +259,25 @@ class ExtractionOutput(DataModel):
 
 
 class ResolutionResult(DataModel):
-    """Result of entity resolution (deduplication)."""
+    """Result of entity resolution (deduplication).
+
+    ``remap`` records every merge decision the resolver made: keys are
+    pre-resolution entity ids that were merged away, values are the
+    survivor's id. The ingestion pipeline rewrites ``graph_data.mentions``
+    through this mapping so MENTIONED_IN edges are written against
+    surviving entity ids instead of silently failing on a MATCH-not-found
+    against a merged-away node.
+
+    ``ExactMatchResolution`` always returns ``remap={}`` because exact
+    match groups by ``(label, id)`` and can never merge across distinct
+    ids. Fuzzy resolvers (semantic, LLM-verified) populate ``remap`` with
+    every (loser_id → survivor_id) pair.
+    """
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
     merged_count: int = 0
+    remap: dict[str, str] = Field(default_factory=dict)
 
 
 # ── Retrieval Types ──────────────────────────────────────────────
@@ -362,6 +376,44 @@ class FinalizeResult(DataModel):
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
+
+
+class UpdateResult(IngestionResult):
+    """Result from ``GraphRAG.update()``.
+
+    Extends ``IngestionResult`` so callers can treat ingest and update
+    results polymorphically. ``no_op=True`` indicates the new content
+    matched the stored ``Document.content_hash`` and no work was done.
+    """
+
+    chunks_deleted: int = 0
+    entities_deleted: int = 0
+    no_op: bool = False
+    previous_document_uid: str | None = None
+
+
+class DeleteDocumentResult(DataModel):
+    """Result from ``GraphRAG.delete_document()``."""
+
+    document_id: str
+    chunks_deleted: int = 0
+    entities_deleted: int = 0
+
+
+class ApplyChangesResult(DataModel):
+    """Aggregate result from ``GraphRAG.apply_changes()``.
+
+    Each list aligns with the corresponding input list by index. Per-file
+    failures are stored as ``Exception`` objects; the batch never raises.
+    """
+
+    added: list[IngestionResult | Exception] = Field(default_factory=list)
+    modified: list[UpdateResult | Exception] = Field(default_factory=list)
+    deleted: list[DeleteDocumentResult | Exception] = Field(default_factory=list)
+
+    class Config:
+        arbitrary_types_allowed = True
+        extra = "allow"
 
 
 # ── Enums ────────────────────────────────────────────────────────

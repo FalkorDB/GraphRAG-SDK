@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Any
 
@@ -135,6 +136,19 @@ class IngestionPipeline:
             else:
                 ctx.log("Step 1/9: Loading source")
                 document = await self.loader.load(source, ctx)
+                # When the caller supplies a ``document_info`` (e.g. for
+                # stable-id ingestion or update()), prefer its uid/path
+                # over whatever the loader produced. The loader-side
+                # metadata is preserved.
+                if document_info is not None:
+                    document.document_info = DocumentInfo(
+                        uid=document_info.uid,
+                        path=document_info.path or document.document_info.path,
+                        metadata={
+                            **document.document_info.metadata,
+                            **document_info.metadata,
+                        },
+                    )
 
             # Step 2: Chunk
             ctx.log("Step 2/9: Chunking text")
@@ -144,9 +158,15 @@ class IngestionPipeline:
                 ctx.log("No chunks produced, pipeline complete")
                 return IngestionResult(document_info=document.document_info)
 
-            # Step 3: Build lexical graph (MANDATORY — not a strategy)
+            # Step 3: Build lexical graph (MANDATORY — not a strategy).
+            # Hash the loaded text so ``GraphRAG.update()`` can short-circuit
+            # when content is unchanged. SHA-256 hex; cost is negligible
+            # next to extraction.
+            content_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
             ctx.log("Step 3/9: Building lexical graph (provenance chain)")
-            await self._build_lexical_graph(document.document_info, chunks, ctx)
+            await self._build_lexical_graph(
+                document.document_info, chunks, ctx, content_hash=content_hash
+            )
 
             # Step 4: Extract entities & relationships
             ctx.log("Step 4/9: Extracting entities & relationships")
@@ -163,12 +183,45 @@ class IngestionPipeline:
             ctx.log("Step 6/9: Resolving duplicates")
             resolved = await self.resolver.resolve(graph_data, ctx)
 
+            # Step 6b: Rewrite mentions through the resolver's remap.
+            # Without this, MENTIONED_IN edges that reference an entity
+            # which was merged away during resolution would silently fail
+            # to write — graph_store.upsert_relationships does MATCH (a)
+            # MATCH (b) MERGE, and the MATCH on the merged-away id finds
+            # nothing. That would silently break update()/delete_document()
+            # orphan-cleanup correctness for fuzzy-resolver users (default
+            # ExactMatch typically has no merges to apply, so the rewrite
+            # is a no-op for the common case).
+            if resolved.remap and graph_data.mentions:
+                graph_data = self._remap_mentions(graph_data, resolved.remap)
+
             # Step 7: Write to graph (batched)
             ctx.log("Step 7/9: Writing to graph store")
             await self.graph_store.upsert_nodes(resolved.nodes)
             await self.graph_store.upsert_relationships(resolved.relationships)
 
-            # Steps 8-9: Run in parallel (independent of each other)
+            # Steps 8-9: Run in parallel (independent of each other).
+            #
+            # LOAD-BEARING ORDERING: this gather() must complete before
+            # run() returns. v1.1.0's update()/delete_document() orphan-
+            # cleanup is race-free under concurrent updates only because
+            # the new MENTIONED_IN edges produced in step 8 are persisted
+            # to the graph before pipeline.run() returns (and therefore
+            # before the caller's cutover begins). Concurrent updates A
+            # and B sharing an entity ``e1`` will then always observe
+            # ``e1`` to have at least one incident MENTIONED_IN from B's
+            # old chunks (pre-cutover) or B's new chunks (post-pipeline.
+            # run()), so A's orphan-cleanup never wrongly deletes it.
+            #
+            # If you defer step 8 to a background task, batch it across
+            # pipelines, or skip it under a flag, you must also serialize
+            # updates inside apply_changes — the current default
+            # update_concurrency=1 is what keeps concurrent updates
+            # correct otherwise.
+            #
+            # Tripwire: tests/test_integration.py::
+            #     TestIncrementalUpdateInvariants::
+            #     test_concurrent_updates_preserve_shared_entity
             async def _step_mentions() -> int:
                 ctx.log("Step 8/9: Writing mentions (uncapped)")
                 return await self._write_mentions(graph_data, ctx)
@@ -213,6 +266,8 @@ class IngestionPipeline:
         doc_info: DocumentInfo,
         chunks: TextChunks,
         ctx: Context,
+        *,
+        content_hash: str | None = None,
     ) -> None:
         """Build the mandatory provenance chain.
 
@@ -224,15 +279,22 @@ class IngestionPipeline:
 
         This is NON-OPTIONAL. The Zero-Loss Data principle requires
         that every piece of source material is traceable in the graph.
+
+        ``content_hash`` is the SHA-256 of the loaded source text. When
+        present it is written to the Document node so ``GraphRAG.update()``
+        can short-circuit no-op updates without re-running extraction.
         """
         # Document node
+        doc_props: dict[str, Any] = {
+            "path": doc_info.path or "",
+            **doc_info.metadata,
+        }
+        if content_hash is not None:
+            doc_props["content_hash"] = content_hash
         doc_node = GraphNode(
             id=doc_info.uid,
             label="Document",
-            properties={
-                "path": doc_info.path or "",
-                **doc_info.metadata,
-            },
+            properties=doc_props,
         )
         await self.graph_store.upsert_nodes([doc_node])
 
@@ -391,6 +453,28 @@ class IngestionPipeline:
             extracted_relations=graph_data.extracted_relations,
         )
         return new_gd
+
+    @staticmethod
+    def _remap_mentions(graph_data: GraphData, remap: dict[str, str]) -> GraphData:
+        """Rewrite ``graph_data.mentions`` so MENTIONED_IN edges target
+        the survivor entity, not a merged-away id.
+
+        Called between the resolver step and the write step whenever the
+        resolver reports a non-empty ``remap``. Without this, mentions
+        carrying pre-resolution ids silently fail to be written (the
+        upsert's MATCH on the merged-away id finds nothing), which would
+        invalidate the orphan-cleanup invariant for fuzzy resolvers.
+        """
+        rewritten: list[EntityMention] = []
+        seen: set[tuple[str, str]] = set()
+        for m in graph_data.mentions:
+            new_id = remap.get(m.entity_id, m.entity_id)
+            key = (new_id, m.chunk_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            rewritten.append(EntityMention(entity_id=new_id, chunk_id=m.chunk_id))
+        return graph_data.model_copy(update={"mentions": rewritten})
 
     async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> int:
         """Write MENTIONED_IN edges linking entities to their source chunks.
