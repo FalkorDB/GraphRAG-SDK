@@ -6,8 +6,8 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 
 | # | Concern | ABC | Built-in Implementations |
 |---|---------|-----|------------------------|
-| 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader` |
-| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` |
+| 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `MarkdownLoader` |
+| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking`, `StructuralChunking` |
 | 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
@@ -51,11 +51,22 @@ from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 loader = PdfLoader()
 ```
 
+### Built-in: MarkdownLoader
+
+Extracts text from Markdown files. Requires `pip install graphrag-sdk[markdown]`.
+
+```python
+from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+loader = MarkdownLoader()
+```
+
 ### Default Behavior
 
 If no loader is specified in `ingest()`:
 - `.pdf` files use `PdfLoader`
-- Everything else uses `TextLoader`
+- `.md` files use `MarkdownLoader`
+-   Everything else uses `TextLoader`
 - If `text=` is passed directly, the loader is skipped
 
 ### Writing Your Own
@@ -150,6 +161,20 @@ from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import Callabl
 # Plain function
 chunker = CallableChunking(lambda text: text.split("\n\n"))
 ```
+
+### Built-in: StructuralChunking
+
+Groups content by heading hierarchy into token-bounded chunks. Each chunk stores a breadcrumbs metadata field that is written as a property on the Chunk node in the knowledge graph, making section paths directly queryable via Cypher.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+chunker = StructuralChunking(
+    max_tokens=512,  # max tokens per chunk (default: 512)
+    overlap_sentences=2,  # sentences shared between chunks (default: 2)
+)
+```
+
 
 ### Writing Your Own
 

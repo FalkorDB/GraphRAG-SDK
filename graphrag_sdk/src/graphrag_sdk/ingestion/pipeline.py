@@ -138,7 +138,7 @@ class IngestionPipeline:
 
             # Step 2: Chunk
             ctx.log("Step 2/9: Chunking text")
-            chunks = await self.chunker.chunk(document.text, ctx)
+            chunks = await self.chunker.chunk_document(document, ctx)
 
             if not chunks.chunks:
                 ctx.log("No chunks produced, pipeline complete")

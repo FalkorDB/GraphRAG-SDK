@@ -13,16 +13,12 @@
 
 from __future__ import annotations
 
-import re
-
 import tiktoken
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.models import TextChunk, TextChunks
+from graphrag_sdk.core.models import DocumentOutput, TextChunk, TextChunks
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
-
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 _CONTEXT_PROMPT = (
     "Here is a document:\n"
@@ -41,92 +37,119 @@ _CONTEXT_PROMPT = (
 
 
 class ContextualChunking(ChunkingStrategy):
-    """Contextual chunking: sentence-boundary split + LLM-generated context prefix.
+    """Contextual chunking: chunking + LLM-generated context prefix.
 
     Each chunk gets a short LLM-generated context summary prepended to
     its text before storage and embedding.  This dramatically improves
     retrieval for questions that require cross-chunk co-reference
     resolution (e.g. pronouns, "the town", "the battle").
 
-    Chunks are first produced by sentence-boundary splitting with a token
-    cap, then enriched with LLM context in a single batched call.
+    Chunks are first produced by the ``base_chunker``, then enriched
+    with LLM context in a single batched call.
 
     Args:
         llm: LLM provider used to generate context summaries.
-        max_tokens: Token cap per chunk. Default 512.
-        overlap_sentences: Sentences shared between consecutive chunks. Default 2.
+        base_chunker: The underlying chunking strategy to use. When supplied,
+            ``max_tokens``, ``overlap_sentences``, and ``encoding_name`` must
+            **not** be passed — configure those directly on the base chunker.
+            If omitted, defaults to
+            ``SentenceTokenCapChunking(max_tokens, overlap_sentences, encoding_name)``.
+        max_tokens: Token cap per chunk for the default base chunker. Default 512.
+            Ignored (and forbidden) when *base_chunker* is provided.
+        overlap_sentences: Sentence overlap for the default base chunker. Default 2.
+            Ignored (and forbidden) when *base_chunker* is provided.
         encoding_name: tiktoken encoding for token counting. Default ``cl100k_base``.
+            Ignored (and forbidden) when *base_chunker* is provided.
         max_document_tokens: Maximum tokens of the source document included in each
             context prompt. Documents exceeding this are truncated before being sent
             to the LLM, preventing context-window overflows on large inputs. Default 16 000.
 
     Example::
 
-        chunker = ContextualChunking(llm=my_llm, max_tokens=512)
-        result = await chunker.chunk(text, ctx)
+        # No base chunker — shorthand kwargs configure the default one
+        chunker = ContextualChunking(llm=my_llm, max_tokens=256, overlap_sentences=1)
+
+        # Custom base chunker — configure it directly, pass no shorthand kwargs
+        chunker = ContextualChunking(llm=my_llm, base_chunker=StructuralChunking(max_tokens=512))
+        result = await chunker.chunk_document(doc, ctx)
     """
+
+    _UNSET = object()  # sentinel for "caller did not pass this kwarg"
 
     def __init__(
         self,
         llm: LLMInterface,
-        max_tokens: int = 512,
-        overlap_sentences: int = 2,
-        encoding_name: str = "cl100k_base",
+        base_chunker: ChunkingStrategy | None = None,
+        max_tokens: int | object = _UNSET,
+        overlap_sentences: int | object = _UNSET,
+        encoding_name: str | object = _UNSET,
         max_document_tokens: int = 16_000,
     ) -> None:
         super().__init__()
         self.llm = llm
-        self.max_tokens = max_tokens
-        self.overlap_sentences = overlap_sentences
-        self.encoding_name = encoding_name
+
+        if base_chunker is not None:
+            # Check that none of the shorthand kwargs were explicitly supplied
+            _conflicts = [
+                name
+                for name, val in (
+                    ("max_tokens", max_tokens),
+                    ("overlap_sentences", overlap_sentences),
+                    ("encoding_name", encoding_name),
+                )
+                if val is not ContextualChunking._UNSET
+            ]
+            if _conflicts:
+                raise TypeError(
+                    f"ContextualChunking: {', '.join(_conflicts)} "
+                    "cannot be used together with 'base_chunker'. "
+                    "Configure those parameters on the base_chunker directly."
+                )
+            self.base_chunker = base_chunker
+            # Use encoding_name solely for document-truncation token counting
+            _encoding_name = "cl100k_base"
+        else:
+            _max_tokens = max_tokens if max_tokens is not ContextualChunking._UNSET else 512
+            _overlap = (
+                overlap_sentences if overlap_sentences is not ContextualChunking._UNSET else 2
+            )
+            _encoding_name = (
+                encoding_name if encoding_name is not ContextualChunking._UNSET else "cl100k_base"
+            )
+
+            from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
+                SentenceTokenCapChunking,
+            )
+
+            self.base_chunker = SentenceTokenCapChunking(
+                max_tokens=_max_tokens,
+                overlap_sentences=_overlap,
+                encoding_name=_encoding_name,
+            )
+
+        self.encoding_name = _encoding_name
         self.max_document_tokens = max_document_tokens
 
     async def chunk(self, text: str, ctx: Context) -> TextChunks:
-        ctx.log(
-            f"Chunking text ({len(text)} chars) with "
-            f"ContextualChunking(max_tokens={self.max_tokens})"
-        )
+        ctx.log(f"Chunking text via base chunker: {self.base_chunker.__class__.__name__}")
+        raw_chunks = await self.base_chunker.chunk(text, ctx)
+        return await self._enrich_chunks(raw_chunks, text, ctx)
+
+    async def chunk_document(self, document: DocumentOutput, ctx: Context) -> TextChunks:
+        ctx.log(f"Chunking document via base chunker: {self.base_chunker.__class__.__name__}")
+        raw_chunks = await self.base_chunker.chunk_document(document, ctx)
+        return await self._enrich_chunks(raw_chunks, document.text, ctx)
+
+    async def _enrich_chunks(
+        self, raw_chunks: TextChunks, document_text: str, ctx: Context
+    ) -> TextChunks:
+        if not raw_chunks.chunks:
+            return raw_chunks
 
         enc = tiktoken.get_encoding(self.encoding_name)
-        # ── 1. Sentence split ────────────────────────────────────────
-        sentences = [s.strip() for s in _SENTENCE_END.split(text.strip()) if s.strip()]
-        if not sentences:
-            return TextChunks(chunks=[])
 
-        token_counts = [len(enc.encode(s)) for s in sentences]
-
-        # ── 2. Greedily merge into token-capped chunks ───────────────
-        raw_chunks: list[tuple[str, int]] = []  # (text, token_count)
-        start = 0
-
-        while start < len(sentences):
-            buf: list[str] = []
-            buf_tokens = 0
-            j = start
-
-            while j < len(sentences):
-                needed = token_counts[j] + (1 if buf else 0)
-                if buf_tokens + needed <= self.max_tokens:
-                    buf.append(sentences[j])
-                    buf_tokens += needed
-                    j += 1
-                else:
-                    break
-
-            if not buf:
-                buf = [sentences[start]]
-                buf_tokens = token_counts[start]
-                j = start + 1
-
-            raw_chunks.append((" ".join(buf), buf_tokens))
-
-            if j >= len(sentences):
-                break
-            start = max(j - self.overlap_sentences, start + 1)
-
-        # ── 3. Batch LLM call for context generation ─────────────────
         # Truncate the document reference to avoid exceeding the LLM context window.
-        doc_tokens = enc.encode(text)
+        doc_tokens = enc.encode(document_text)
         if len(doc_tokens) > self.max_document_tokens:
             ctx.log(
                 f"Document ({len(doc_tokens)} tokens) exceeds max_document_tokens "
@@ -134,13 +157,13 @@ class ContextualChunking(ChunkingStrategy):
             )
             document_ref = enc.decode(doc_tokens[: self.max_document_tokens])
         else:
-            document_ref = text
+            document_ref = document_text
 
         prompts = [
             _CONTEXT_PROMPT.replace("{full_document}", document_ref).replace(
-                "{chunk_text}", chunk_text
+                "{chunk_text}", chunk.text
             )
-            for chunk_text, _ in raw_chunks
+            for chunk in raw_chunks.chunks
         ]
 
         ctx.log(f"Generating context for {len(prompts)} chunks via LLM...")
@@ -157,28 +180,34 @@ class ContextualChunking(ChunkingStrategy):
                 )
                 context_map[item.index] = ""
 
-        # ── 4. Build final TextChunk list ────────────────────────────
-        chunks: list[TextChunk] = []
-        for i, (chunk_text, tok_count) in enumerate(raw_chunks):
+        # Build final TextChunk list
+        enriched_chunks: list[TextChunk] = []
+        for i, chunk in enumerate(raw_chunks.chunks):
             context = context_map.get(i, "")
-            # Prepend context to the chunk text for embedding/storage
-            enriched_text = f"{context}\n\n{chunk_text}" if context else chunk_text
-            chunks.append(
+            enriched_text = f"{context}\n\n{chunk.text}" if context else chunk.text
+
+            # Merge metadata
+            new_metadata = dict(chunk.metadata)
+            new_metadata.update(
+                {
+                    "contextual_enriched": bool(context),
+                    "context_prefix": context,
+                    "original_chunk": chunk.text,
+                    "token_count": len(enc.encode(enriched_text)),
+                    "char_count": len(enriched_text),
+                    "strategy": "contextual_chunking",
+                    "base_strategy": chunk.metadata.get("strategy"),
+                }
+            )
+
+            enriched_chunks.append(
                 TextChunk(
                     text=enriched_text,
-                    index=i,
-                    metadata={
-                        "strategy": "contextual_chunking",
-                        "max_tokens": self.max_tokens,
-                        "overlap_sentences": self.overlap_sentences,
-                        "token_count": len(enc.encode(enriched_text)),
-                        "raw_token_count": tok_count,
-                        "char_count": len(enriched_text),
-                        "context_prefix": context,
-                        "original_chunk": chunk_text,
-                    },
+                    index=chunk.index,
+                    metadata=new_metadata,
+                    uid=chunk.uid,  # Preserve the UID for graph provenance
                 )
             )
 
-        ctx.log(f"ContextualChunking produced {len(chunks)} enriched chunks")
-        return TextChunks(chunks=chunks)
+        ctx.log(f"ContextualChunking produced {len(enriched_chunks)} enriched chunks")
+        return TextChunks(chunks=enriched_chunks)
