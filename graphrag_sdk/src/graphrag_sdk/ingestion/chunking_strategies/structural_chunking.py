@@ -164,7 +164,7 @@ class StructuralChunking(ChunkingStrategy):
                 buf.append(el_text)
                 buf_tokens = candidate_tokens
                 # Merge this element's breadcrumbs into the buffer's breadcrumb list
-                for crumb in (el.breadcrumbs or []):
+                for crumb in el.breadcrumbs or []:
                     if crumb not in buf_breadcrumbs:
                         buf_breadcrumbs.append(crumb)
             else:
