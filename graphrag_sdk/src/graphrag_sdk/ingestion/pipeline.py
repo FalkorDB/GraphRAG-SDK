@@ -139,10 +139,13 @@ class IngestionPipeline:
                 # When the caller supplies a ``document_info`` (e.g. for
                 # stable-id ingestion or update()), prefer its uid/path
                 # over whatever the loader produced. The loader-side
-                # metadata is preserved.
+                # metadata is preserved. Each field falls back to the
+                # loader's value when the caller's is empty/missing, so
+                # a partially-populated DocumentInfo (e.g. only ``path``
+                # set) cannot accidentally clobber the loader's uid.
                 if document_info is not None:
                     document.document_info = DocumentInfo(
-                        uid=document_info.uid,
+                        uid=document_info.uid or document.document_info.uid,
                         path=document_info.path or document.document_info.path,
                         metadata={
                             **document.document_info.metadata,
@@ -162,6 +165,13 @@ class IngestionPipeline:
             # Hash the loaded text so ``GraphRAG.update()`` can short-circuit
             # when content is unchanged. SHA-256 hex; cost is negligible
             # next to extraction.
+            #
+            # Assumes the loader returns deterministic text for the same
+            # source. Loaders that inject non-deterministic content
+            # (timestamps, randomized ordering, run-id watermarks, etc.)
+            # will produce a different hash on every run and the no-op
+            # short-circuit in update() will never fire — correct, just
+            # not optimal.
             content_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
             ctx.log("Step 3/9: Building lexical graph (provenance chain)")
             await self._build_lexical_graph(
@@ -189,9 +199,11 @@ class IngestionPipeline:
             # to write — graph_store.upsert_relationships does MATCH (a)
             # MATCH (b) MERGE, and the MATCH on the merged-away id finds
             # nothing. That would silently break update()/delete_document()
-            # orphan-cleanup correctness for fuzzy-resolver users (default
-            # ExactMatch typically has no merges to apply, so the rewrite
-            # is a no-op for the common case).
+            # orphan-cleanup correctness for any resolver that merges
+            # entities (ExactMatch when same-id duplicates exist;
+            # SemanticResolution and LLMVerifiedResolution always). The
+            # ``if resolved.remap`` guard makes this a no-op when the
+            # resolver returned an empty remap.
             if resolved.remap and graph_data.mentions:
                 graph_data = self._remap_mentions(graph_data, resolved.remap)
 
@@ -200,18 +212,22 @@ class IngestionPipeline:
             await self.graph_store.upsert_nodes(resolved.nodes)
             await self.graph_store.upsert_relationships(resolved.relationships)
 
-            # Steps 8-9: Run in parallel (independent of each other).
+            # ╔══════════════════════════════════════════════════════════╗
+            # ║  LOAD-BEARING — DO NOT MAKE STEP 8 ASYNCHRONOUS WITH     ║
+            # ║  RESPECT TO run() RETURNING. READ BEFORE EDITING.        ║
+            # ╚══════════════════════════════════════════════════════════╝
             #
-            # LOAD-BEARING ORDERING: this gather() must complete before
-            # run() returns. v1.1.0's update()/delete_document() orphan-
-            # cleanup is race-free under concurrent updates only because
-            # the new MENTIONED_IN edges produced in step 8 are persisted
-            # to the graph before pipeline.run() returns (and therefore
-            # before the caller's cutover begins). Concurrent updates A
-            # and B sharing an entity ``e1`` will then always observe
-            # ``e1`` to have at least one incident MENTIONED_IN from B's
-            # old chunks (pre-cutover) or B's new chunks (post-pipeline.
-            # run()), so A's orphan-cleanup never wrongly deletes it.
+            # Steps 8-9 run in parallel with each other (they are
+            # independent), but the gather() MUST complete before run()
+            # returns. v1.1.0's update()/delete_document() orphan-cleanup
+            # is race-free under concurrent updates only because the new
+            # MENTIONED_IN edges produced in step 8 are persisted to the
+            # graph before pipeline.run() returns — and therefore before
+            # the caller's cutover begins. Concurrent updates A and B
+            # sharing an entity ``e1`` will then always observe ``e1`` to
+            # have at least one incident MENTIONED_IN edge from B's old
+            # chunks (pre-cutover) or B's new chunks (post-pipeline.run()),
+            # so A's orphan-cleanup never wrongly deletes it.
             #
             # If you defer step 8 to a background task, batch it across
             # pipelines, or skip it under a flag, you must also serialize
