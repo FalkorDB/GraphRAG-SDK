@@ -325,14 +325,25 @@ class TestStructuralChunking:
             elements=elements,
         )
 
-        # Cap tokens to a very small number to force fallback
         chunker = StructuralChunking(max_tokens=10)
         result = await chunker.chunk_document(doc, ctx)
 
         assert len(result.chunks) > 1
+
         total_parts = len(result.chunks)
         for i, chunk in enumerate(result.chunks, start=1):
             assert f"H1 [Part {i}/{total_parts}]" in chunk.text
+
+    def test_raises_on_conflicting_kwargs(self):
+        """Passing shorthand kwargs alongside fallback_chunker must raise TypeError."""
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+
+        with pytest.raises(TypeError, match="cannot be used together with 'fallback_chunker'"):
+            StructuralChunking(
+                fallback_chunker=FixedSizeChunking(chunk_size=200),
+                overlap_sentences=5,
+            )
 
     async def test_no_elements_fallback(self, ctx):
         from graphrag_sdk.core.models import DocumentInfo, DocumentOutput

@@ -27,29 +27,54 @@ class StructuralChunking(ChunkingStrategy):
         encoding_name: tiktoken encoding to use. Default ``cl100k_base``.
     """
 
+    _UNSET = object()
+
     def __init__(
         self,
         fallback_chunker: ChunkingStrategy | None = None,
-        max_tokens: int = 512,
-        encoding_name: str = "cl100k_base",
-        overlap_sentences: int = 2,
+        max_tokens: int | object = _UNSET,
+        encoding_name: str | object = _UNSET,
+        overlap_sentences: int | object = _UNSET,
     ) -> None:
         super().__init__()
-        if fallback_chunker is None:
+
+        if fallback_chunker is not None:
+            _conflicts = [
+                name
+                for name, val in [
+                    ("max_tokens", max_tokens),
+                    ("encoding_name", encoding_name),
+                    ("overlap_sentences", overlap_sentences),
+                ]
+                if val is not StructuralChunking._UNSET
+            ]
+            if _conflicts:
+                raise TypeError(
+                    f"StructuralChunking: {', '.join(_conflicts)} cannot be used together "
+                    "with 'fallback_chunker'. Configure those parameters on the "
+                    "fallback chunker directly."
+                )
+            self.fallback_chunker = fallback_chunker
+            self.max_tokens = 512
+            self.encoding_name = "cl100k_base"
+        else:
+            self.max_tokens = max_tokens if max_tokens is not StructuralChunking._UNSET else 512
+            self.encoding_name = (
+                encoding_name if encoding_name is not StructuralChunking._UNSET else "cl100k_base"
+            )
+            _overlap = (
+                overlap_sentences if overlap_sentences is not StructuralChunking._UNSET else 2
+            )
+
             from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
                 SentenceTokenCapChunking,
             )
 
             self.fallback_chunker = SentenceTokenCapChunking(
-                max_tokens=max_tokens,
-                encoding_name=encoding_name,
-                overlap_sentences=overlap_sentences,
+                max_tokens=self.max_tokens,
+                encoding_name=self.encoding_name,
+                overlap_sentences=_overlap,
             )
-        else:
-            self.fallback_chunker = fallback_chunker
-
-        self.max_tokens = max_tokens
-        self.encoding_name = encoding_name
 
     async def chunk(self, text: str, ctx: Context) -> TextChunks:
         ctx.log("StructuralChunking: No structural elements found. Delegating to fallback chunker.")
