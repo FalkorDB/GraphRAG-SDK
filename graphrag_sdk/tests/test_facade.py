@@ -1092,8 +1092,22 @@ def _stub_graph_store_for_update(
     ``prior_pending`` simulates a leftover from a prior crashed update
     in Phase 0 — pass ``("COMMITTED", pending_id, hash)`` to test the
     rollforward path.
+
+    ``existing_record`` is accepted as a plain dict for callsite ergonomics
+    and adapted to a ``DocumentRecord`` here, matching the typed return of
+    ``GraphStore.get_document_record``.
     """
-    g._graph_store.get_document_record = AsyncMock(return_value=existing_record)
+    from graphrag_sdk.core.models import DocumentRecord
+
+    record = (
+        DocumentRecord(
+            path=existing_record.get("path"),
+            content_hash=existing_record.get("content_hash"),
+        )
+        if existing_record is not None
+        else None
+    )
+    g._graph_store.get_document_record = AsyncMock(return_value=record)
     g._graph_store.get_document_entity_candidates = AsyncMock(
         return_value=candidates or []
     )
@@ -1145,10 +1159,12 @@ class TestGraphRAGIngestPathIdentity:
     async def test_path_conflict_raises(self, graphrag, tmp_path):
         """If the same document_id already maps to a different path,
         refuse to silently rebind — push the caller to update() instead."""
+        from graphrag_sdk.core.models import DocumentRecord
+
         f = tmp_path / "doc.txt"
         f.write_text("Hi.")
         graphrag._graph_store.get_document_record = AsyncMock(
-            return_value={"path": "previous/other_path.md", "content_hash": "abc"}
+            return_value=DocumentRecord(path="previous/other_path.md", content_hash="abc")
         )
 
         with pytest.raises(ValueError, match="already bound to path"):
@@ -1222,6 +1238,46 @@ class TestGraphRAGUpdate:
     async def test_empty_document_id_raises(self, graphrag):
         with pytest.raises(ValueError, match="must be a non-empty string"):
             await graphrag.update(text="x", document_id="   ")
+
+    async def test_pending_marker_in_document_id_rejected(self, graphrag):
+        """Reserved-substring guard: a document_id containing the literal
+        ``__pending__`` would prefix-collide with the state-machine cutover
+        and let find_pending() identify a real Document as a leftover
+        pending. update() must reject it before any graph_store call."""
+        with pytest.raises(ValueError, match="reserved substring '__pending__'"):
+            await graphrag.update(text="x", document_id="my_doc__pending__bar.txt")
+
+    async def test_pending_marker_rejected_by_delete_document(self, graphrag):
+        """delete_document() must enforce the same guard as update()."""
+        with pytest.raises(ValueError, match="reserved substring '__pending__'"):
+            await graphrag.delete_document("my_doc__pending__bar.txt")
+
+    async def test_pending_marker_rejected_by_ingest(self, graphrag, tmp_path):
+        """ingest() must enforce the guard too — including via path-derived
+        ids (``os.path.normpath(source)``) when the source filename itself
+        contains the marker."""
+        f = tmp_path / "weird__pending__name.txt"
+        f.write_text("hello")
+        with pytest.raises(ValueError, match="reserved substring '__pending__'"):
+            await graphrag.ingest(str(f))
+
+    async def test_mark_pending_committed_zero_count_aborts(self, graphrag):
+        """If mark_pending_committed reports 0 nodes affected (pending
+        vanished mid-flow), update() must raise rather than silently
+        no-op the rollforward and lose the new data."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old-hash"},
+            candidates=[],
+        )
+        graphrag._graph_store.mark_pending_committed = AsyncMock(return_value=0)
+
+        with pytest.raises(DatabaseError, match="affected 0 nodes"):
+            await graphrag.update(text="brand new content", document_id="my-doc")
+        # The rollforward MUST NOT have run after a failed commit.
+        graphrag._graph_store.rollforward_cutover.assert_not_awaited()
 
     async def test_changed_content_runs_replace_flow(self, graphrag):
         """Hash mismatch → snapshot candidates, write pending, COMMIT, rollforward, orphans."""

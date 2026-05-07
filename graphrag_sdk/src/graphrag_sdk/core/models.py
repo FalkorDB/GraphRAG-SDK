@@ -108,6 +108,19 @@ class DocumentOutput(DataModel):
     document_info: DocumentInfo = Field(default_factory=DocumentInfo)
 
 
+class DocumentRecord(DataModel):
+    """Persisted state of a Document node, as read back from the graph.
+
+    Returned by ``GraphStore.get_document_record()``. Pre-1.1.0 graphs
+    lack ``content_hash`` (defaults to ``None``); callers should treat
+    a ``None`` hash as "always run the full update path" since there
+    is no stored value to compare against.
+    """
+
+    path: str | None = None
+    content_hash: str | None = None
+
+
 # ── Schema Types ─────────────────────────────────────────────────
 
 

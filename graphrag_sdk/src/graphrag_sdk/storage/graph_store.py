@@ -13,7 +13,7 @@ from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
-from graphrag_sdk.core.models import GraphNode, GraphRelationship
+from graphrag_sdk.core.models import DocumentRecord, GraphNode, GraphRelationship
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
@@ -365,11 +365,13 @@ class GraphStore:
     # Used by GraphRAG.update() / delete_document() / apply_changes().
     # Cypher stays here per the repository pattern — facade calls these.
 
-    async def get_document_record(self, document_id: str) -> dict[str, Any] | None:
-        """Return ``{"path", "content_hash"}`` for a Document, or None.
+    async def get_document_record(self, document_id: str) -> DocumentRecord | None:
+        """Return persisted Document state (``path``, ``content_hash``)
+        as a typed ``DocumentRecord``, or ``None`` if no such Document.
 
-        Pre-1.1.0 Document nodes lack ``content_hash`` — callers should
-        treat a returned ``None`` hash as "always run the full update path".
+        Pre-1.1.0 Document nodes lack ``content_hash`` — the field will
+        be ``None`` on those records and callers should treat that as
+        "always run the full update path" (no stored hash to compare).
         """
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
@@ -379,7 +381,7 @@ class GraphStore:
         if not result.result_set:
             return None
         row = result.result_set[0]
-        return {"path": row[0], "content_hash": row[1]}
+        return DocumentRecord(path=row[0], content_hash=row[1])
 
     async def get_document_entity_candidates(self, document_id: str) -> list[str]:
         """Return ids of entities mentioned in this document's chunks.
@@ -387,6 +389,13 @@ class GraphStore:
         Captured before deletion so orphan cleanup can be scoped to just
         these entities — never global. Entities still mentioned by chunks
         of *other* documents will be filtered out by ``delete_orphan_entities``.
+
+        Returns the full DISTINCT id set in one round-trip with no
+        ``LIMIT`` — the assumption is that a single document's entity
+        cardinality is small (typically <1000) relative to the global
+        graph. Documents with millions of distinct entities are out of
+        scope for this design and would need a streaming/batched
+        variant.
         """
         result = await self._conn.query(
             "MATCH (e:__Entity__)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-"
@@ -414,20 +423,43 @@ class GraphStore:
         ``GraphRAG.update``'s docstring. The marker is the load-bearing
         commit point — anything that can read it is the source of truth
         for "did the prior attempt cross the commit boundary?".
+
+        Implementation note — we issue TWO queries instead of one
+        ``ORDER BY p.id LIMIT 1`` because lexicographic order on the
+        pending suffix (``__pending__<8-hex>``) is essentially random.
+        Under compounded crashes a graph can briefly hold both a
+        WRITTEN and a COMMITTED pending for the same id; if the
+        WRITTEN one sorted first, the caller would take the rollback
+        branch and ``cleanup_pending_documents`` would skip the
+        COMMITTED one (it refuses to touch ``ready_to_commit=true``)
+        — but the freshly-started replacement update would also start
+        a NEW pending, and on the *next* call the stale COMMITTED
+        would replay over the just-written live data. Querying for
+        COMMITTED explicitly first eliminates the ordering hazard.
         """
         prefix = f"{document_id}__pending__"
-        result = await self._conn.query(
+        # Phase 1: prefer COMMITTED pendings — they MUST be rolled
+        # forward; never silently replaced by a WRITTEN sibling.
+        committed = await self._conn.query(
             "MATCH (p:Document) WHERE p.id STARTS WITH $prefix "
-            "RETURN p.id AS pid, p.ready_to_commit AS rtc, "
-            "p.content_hash AS hash ORDER BY p.id LIMIT 1",
+            "AND p.ready_to_commit = true "
+            "RETURN p.id AS pid, p.content_hash AS hash LIMIT 1",
             {"prefix": prefix},
         )
-        if not result.result_set:
+        if committed.result_set:
+            row = committed.result_set[0]
+            return ("COMMITTED", row[0], row[1])
+        # Phase 2: fall back to any non-committed pending.
+        written = await self._conn.query(
+            "MATCH (p:Document) WHERE p.id STARTS WITH $prefix "
+            "AND (p.ready_to_commit IS NULL OR p.ready_to_commit = false) "
+            "RETURN p.id AS pid, p.content_hash AS hash LIMIT 1",
+            {"prefix": prefix},
+        )
+        if not written.result_set:
             return None
-        row = result.result_set[0]
-        pid, rtc, hash_ = row[0], row[1], row[2]
-        state = "COMMITTED" if rtc else "WRITTEN"
-        return state, pid, hash_
+        row = written.result_set[0]
+        return ("WRITTEN", row[0], row[1])
 
     async def mark_pending_committed(self, pending_id: str) -> int:
         """Set ``ready_to_commit=true`` on the pending Document — the
@@ -459,6 +491,19 @@ class GraphStore:
         reports state ``"WRITTEN"`` (rollback path).
 
         Returns the number of pending Document nodes removed.
+
+        **Limitation — entities introduced by the killed pending are not
+        garbage-collected here.** If the pending's pipeline ran far
+        enough to write entity nodes (step 7 of ``IngestionPipeline``)
+        before the crash, those entities live on in the global
+        ``__Entity__`` namespace. They are typically harmless: a
+        subsequent successful ``update()`` for the same document will
+        snapshot them as candidates and ``delete_orphan_entities`` will
+        sweep any that no longer have ``MENTIONED_IN`` edges. We don't
+        sweep here because doing so would require either tracking which
+        entities the pending introduced (no snapshot mechanism today)
+        or a global O(graph) orphan scan — neither acceptable on the
+        hot path.
         """
         prefix = f"{document_id}__pending__"
         result = await self._conn.query(
@@ -483,11 +528,17 @@ class GraphStore:
         to FINAL. Idempotent — every operation is safe to re-run.
 
         Sequence:
+          0. Precondition: pending_id must still exist. On a successful
+             replay (steps 1-2 ran, step 3 didn't) the pending is still
+             present because step 3 is what renames it away. If the
+             pending is missing here, something is wrong (concurrent
+             cleanup, manual delete, or upstream bug) and we refuse to
+             proceed rather than silently destroy the live document.
           1. Delete live document's chunks (idempotent: already-gone is a no-op).
           2. Delete live document node (idempotent).
           3. Rename pending → canonical id, write fresh metadata, clear
-             ``ready_to_commit``. Single Cypher SET — atomic at the
-             per-statement level FalkorDB does guarantee.
+             ``ready_to_commit``. Single Cypher statement — atomic at
+             the per-statement level FalkorDB does guarantee.
 
         After step 3 the document is in FINAL state. If the process
         crashes between any two steps, the next call's ``find_pending``
@@ -496,29 +547,40 @@ class GraphStore:
 
         Returns the number of chunks removed from the (possibly already
         empty) live document.
+
+        Raises:
+            DatabaseError: if the precondition fails (pending missing).
         """
-        # 1. Delete live chunks (idempotent — empty result if already gone)
-        r = await self._conn.query(
-            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) "
-            "DETACH DELETE c RETURN count(c) AS n",
-            {"id": real_id},
+        # 0. Precondition check — abort before any destructive op if the
+        # pending we'd promote isn't there. Without this guard a misuse
+        # of the method (or a concurrent cleanup) would delete the live
+        # document and then no-op the rename, leaving the graph empty.
+        precheck = await self._conn.query(
+            "MATCH (p:Document {id: $pid}) RETURN count(p) AS n",
+            {"pid": pending_id},
         )
-        chunks_removed = r.result_set[0][0] if r.result_set else 0
+        if not precheck.result_set or precheck.result_set[0][0] != 1:
+            from graphrag_sdk.core.exceptions import DatabaseError
 
-        # 2. Delete live Document node (idempotent — no rows if already gone)
-        await self._conn.query(
-            "MATCH (d:Document {id: $id}) DETACH DELETE d",
-            {"id": real_id},
-        )
+            raise DatabaseError(
+                f"rollforward_cutover: pending Document '{pending_id}' not found; "
+                "refusing to delete live document. The pending may have been "
+                "concurrently deleted, or this method was called with a stale id."
+            )
 
-        # 3. Promote pending → canonical id and clear the commit marker.
-        # Setting ready_to_commit = NULL effectively removes it; on a
-        # replay where the rename already happened, this MATCH finds
-        # nothing and the SET is a no-op.
+        # 1-2. Delete live chunks + Document node. Same Cypher as
+        # delete_document_chunks_and_node — share the helper so the
+        # delete pattern lives in one place.
+        chunks_removed = await self.delete_document_chunks_and_node(real_id)
+
+        # 3. Promote pending → canonical id and remove the commit marker.
+        # ``REMOVE p.ready_to_commit`` is the idiomatic way to drop a
+        # property; on a replay where the rename already happened this
+        # MATCH finds nothing and the whole statement is a no-op.
         await self._conn.query(
             "MATCH (p:Document {id: $pending_id}) "
-            "SET p.id = $real_id, p.path = $path, "
-            "p.content_hash = $hash, p.ready_to_commit = NULL",
+            "SET p.id = $real_id, p.path = $path, p.content_hash = $hash "
+            "REMOVE p.ready_to_commit",
             {
                 "pending_id": pending_id,
                 "real_id": real_id,

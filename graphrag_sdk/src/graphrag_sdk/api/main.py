@@ -15,7 +15,7 @@ from uuid import uuid4
 from graphrag_sdk import __version__
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError, DocumentNotFoundError
+from graphrag_sdk.core.exceptions import ConfigError, DatabaseError, DocumentNotFoundError
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
     BatchEntry,
@@ -406,6 +406,26 @@ class GraphRAG:
         )
 
     @staticmethod
+    def _check_no_pending_marker(document_id: str) -> None:
+        """Reject document ids containing the literal ``__pending__``
+        separator used by ``update()``'s state-machine cutover.
+
+        Without this guard, a Document with id ``foo__pending__bar.txt``
+        would be matched by ``find_pending("foo")``'s prefix scan
+        (``STARTS WITH "foo__pending__"``) and incorrectly treated as a
+        leftover pending of ``foo`` — leading to either silent rollback
+        of the user's real document or a destructive rollforward against
+        a node that was never an actual pending.
+        """
+        if "__pending__" in document_id:
+            raise ValueError(
+                f"document_id '{document_id}' contains the reserved substring "
+                "'__pending__' which is used internally by the update() "
+                "state-machine cutover. Pick a different id (or rename the "
+                "source file) to avoid prefix-collision with pending nodes."
+            )
+
+    @staticmethod
     def _resolve_document_id(
         source: str | None,
         text: str | None,
@@ -464,13 +484,14 @@ class GraphRAG:
         resolved_id = document_id or self._resolve_document_id(
             source if text is None else None, text, None
         )
+        self._check_no_pending_marker(resolved_id)
         # Path-conflict guard: refuse to silently rebind an existing id to a
         # different source path. Catches accidental aliasing across files;
         # legitimate rebinds should go through ``update()``.
         path_for_node = source if text is None else resolved_id
         existing = await self._graph_store.get_document_record(resolved_id)
         if existing is not None:
-            existing_path = existing.get("path") or ""
+            existing_path = existing.path or ""
             if existing_path and existing_path != path_for_node:
                 raise ValueError(
                     f"document_id '{resolved_id}' is already bound to path "
@@ -695,6 +716,7 @@ class GraphRAG:
             ctx = Context()
 
         resolved_id = self._resolve_document_id(source, text, document_id)
+        self._check_no_pending_marker(resolved_id)
 
         # ── Phase 0: pre-cleanup — handle leftover from a prior crash ──
         # find_pending reports COMMITTED for any pending whose ready_to_commit
@@ -712,8 +734,10 @@ class GraphRAG:
                 # before we crashed). Look those up before rollforward so
                 # the canonical Document ends up with the right metadata.
                 pending_record = await self._graph_store.get_document_record(prior_pending_id)
-                roll_path = (pending_record or {}).get("path") or resolved_id
-                roll_hash = prior_hash or (pending_record or {}).get("content_hash") or ""
+                roll_path = (pending_record.path if pending_record else None) or resolved_id
+                roll_hash = (
+                    prior_hash or (pending_record.content_hash if pending_record else None) or ""
+                )
                 await self._graph_store.rollforward_cutover(
                     pending_id=prior_pending_id,
                     real_id=resolved_id,
@@ -763,10 +787,10 @@ class GraphRAG:
                 f"Pass if_missing='ingest' to upsert instead."
             )
 
-        if existing.get("content_hash") == new_hash:
+        if existing.content_hash == new_hash:
             ctx.log(f"update: content hash matches for '{resolved_id}', no-op")
             return UpdateResult(
-                document_info=DocumentInfo(uid=resolved_id, path=existing.get("path") or doc_path),
+                document_info=DocumentInfo(uid=resolved_id, path=existing.path or doc_path),
                 no_op=True,
                 replaced_existing=True,
             )
@@ -810,7 +834,19 @@ class GraphRAG:
         # on crash is rollforward, not rollback. THIS IS THE COMMIT POINT.
         # Anything destructive against the live document MUST follow this
         # call, never precede it.
-        await self._graph_store.mark_pending_committed(pending_id)
+        committed = await self._graph_store.mark_pending_committed(pending_id)
+        if committed != 1:
+            # Pending vanished between Phase 3 and Phase 4 — most likely a
+            # concurrent cleanup, manual delete, or graph corruption. We
+            # MUST abort: the rollforward queries are idempotent so they
+            # would silently no-op (deleting nothing, renaming nothing)
+            # and the caller would think the update succeeded while the
+            # newly-ingested data is gone.
+            raise DatabaseError(
+                f"update: mark_pending_committed for '{pending_id}' affected "
+                f"{committed} nodes (expected exactly 1). The pending Document "
+                "may have been concurrently deleted; refusing to proceed."
+            )
 
         # ── Phase 5: rollforward cutover (idempotent) ──
         chunks_deleted = await self._graph_store.rollforward_cutover(
@@ -870,6 +906,7 @@ class GraphRAG:
         """
         if not document_id or not document_id.strip():
             raise ValueError("'document_id' must be a non-empty string")
+        self._check_no_pending_marker(document_id)
 
         existing = await self._graph_store.get_document_record(document_id)
         if existing is None:
