@@ -130,6 +130,8 @@ class StructuralChunking(ChunkingStrategy):
             buf_tokens = 0
             buf_breadcrumbs = []
 
+        sep_tokens = len(enc.encode("\n\n"))
+
         for el in flat_elements:
             # Build element text with context prefix
             prefix = " > ".join(el.breadcrumbs) if el.breadcrumbs else ""
@@ -184,8 +186,7 @@ class StructuralChunking(ChunkingStrategy):
                     chunk_index += 1
                 continue
 
-            candidate_text = "\n\n".join([*buf, el_text])
-            candidate_tokens = len(enc.encode(candidate_text))
+            candidate_tokens = buf_tokens + (sep_tokens + el_tokens if buf else el_tokens)
 
             if candidate_tokens <= self.max_tokens:
                 buf.append(el_text)
