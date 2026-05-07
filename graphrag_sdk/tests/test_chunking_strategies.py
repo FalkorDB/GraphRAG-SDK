@@ -361,6 +361,55 @@ class TestStructuralChunking:
         assert len(result.chunks) == 1
         assert result.chunks[0].text == "Just some text. More text."
 
+    async def test_flatten_nested_elements(self, ctx):
+        from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+        nested_elements = [
+            DocumentElement(
+                type="header",
+                content="# Root",
+                breadcrumbs=["Root"],
+                children=[
+                    DocumentElement(
+                        type="paragraph",
+                        content="Child 1.",
+                        breadcrumbs=["Root", "Child 1"],
+                        children=[
+                            DocumentElement(
+                                type="paragraph",
+                                content="Grandchild.",
+                                breadcrumbs=["Root", "Child 1", "Grandchild"],
+                            )
+                        ]
+                    ),
+                    DocumentElement(
+                        type="paragraph",
+                        content="Child 2.",
+                        breadcrumbs=["Root", "Child 2"],
+                    )
+                ]
+            )
+        ]
+
+        doc = DocumentOutput(
+            text="ignored",
+            document_info=DocumentInfo(path="test.txt"),
+            elements=nested_elements,
+        )
+
+        chunker = StructuralChunking(max_tokens=100)
+        result = await chunker.chunk_document(doc, ctx)
+
+        assert len(result.chunks) == 1
+        # The flattened elements should be: Root, Child 1, Grandchild, Child 2
+        # And they should all be in the same chunk since max_tokens=100
+        text = result.chunks[0].text
+        assert "Root\n# Root" in text or "# Root" in text
+        assert "Root > Child 1\nChild 1." in text
+        assert "Root > Child 1 > Grandchild\nGrandchild." in text
+        assert "Root > Child 2\nChild 2." in text
+
     async def test_metadata_breadcrumbs_in_normal_chunk(self, ctx):
         """Buffered chunks must carry the union of their elements' breadcrumbs.
 

@@ -175,6 +175,10 @@ chunker = StructuralChunking(
 )
 ```
 
+**Design Features:**
+- **Strict Fallback Configuration:** If you supply a custom `fallback_chunker` (to handle elements that individually exceed `max_tokens`), you **cannot** pass shorthand arguments like `overlap_sentences` or `encoding_name` to `StructuralChunking`. Those must be configured directly on your custom fallback chunker instance. This prevents configuration parameters from being silently dropped.
+- **Deep-Tree Resilience:** While loaders like `MarkdownLoader` produce flat element lists, the internal `_flatten` algorithm uses a recursive DFS approach. This guarantees future compatibility with highly nested DOM structures (like HTML or DOCX parsers) while preserving full hierarchical breadcrumbs.
+
 
 ### Writing Your Own
 

@@ -96,6 +96,8 @@ class StructuralChunking(ChunkingStrategy):
             for el in elements:
                 if el.content and el.content.strip():
                     flat_elements.append(el)
+                # Note: MarkdownLoader currently produces a flat list, but
+                # future loaders (e.g. HTML parsers) may emit nested elements.
                 if el.children:
                     _flatten(el.children)
 
