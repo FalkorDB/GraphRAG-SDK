@@ -28,6 +28,7 @@ from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunk
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -410,6 +411,8 @@ class GraphRAG:
         if loader is None and text is None:
             if source.lower().endswith(".pdf"):
                 loader = PdfLoader()
+            elif source.lower().endswith(".md"):
+                loader = MarkdownLoader()
             else:
                 loader = TextLoader()
 
