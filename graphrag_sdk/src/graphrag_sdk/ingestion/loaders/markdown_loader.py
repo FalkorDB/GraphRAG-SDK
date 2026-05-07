@@ -72,6 +72,11 @@ class MarkdownLoader(LoaderStrategy):
         current_breadcrumbs: list[tuple[int, str]] = []
 
         def get_content(t) -> str:
+            # Note: We intentionally return the raw markdown source lines here.
+            # While this includes syntax "noise" (like table pipes `|`, list dashes `-`,
+            # and code fences ```` `), it perfectly preserves structural cues like
+            # column alignment and list indentation that LLM extractors rely on
+            # to correctly understand relational and hierarchical data.
             if not t.map:
                 return ""
             start, end = t.map

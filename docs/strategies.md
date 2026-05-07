@@ -61,6 +61,9 @@ from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 loader = MarkdownLoader()
 ```
 
+**Design Note: Markup Preservation**
+For complex elements like tables, lists, and code blocks, `MarkdownLoader` intentionally outputs the raw markdown source (including pipes `|`, list dashes `-`, and code fences) rather than stripping the syntax. While this introduces minor syntax "noise", it preserves critical structural cues (such as spatial column alignment and nested indentation) that the LLM requires during the Extraction phase to accurately parse relational data.
+
 ### Default Behavior
 
 If no loader is specified in `ingest()`:
