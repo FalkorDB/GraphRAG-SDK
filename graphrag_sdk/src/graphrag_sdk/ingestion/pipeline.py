@@ -464,11 +464,24 @@ class IngestionPipeline:
         carrying pre-resolution ids silently fail to be written (the
         upsert's MATCH on the merged-away id finds nothing), which would
         invalidate the orphan-cleanup invariant for fuzzy resolvers.
+
+        Two-stage resolvers (``SemanticResolution``, ``LLMVerifiedResolution``)
+        merge dicts from successive phases without flattening, so the
+        remap can contain transitive chains like ``{A: B, B: C}`` where
+        a single ``remap.get(A)`` returns ``B`` — itself a merged-away
+        id. We follow each chain to its terminal survivor instead, so
+        MENTIONED_IN edges always land on a node that exists in the
+        graph. The ``visited`` guard makes a malformed cyclic remap
+        terminate at the cycle's entry point rather than loop forever.
         """
         rewritten: list[EntityMention] = []
         seen: set[tuple[str, str]] = set()
         for m in graph_data.mentions:
-            new_id = remap.get(m.entity_id, m.entity_id)
+            new_id = m.entity_id
+            visited: set[str] = set()
+            while new_id in remap and new_id not in visited:
+                visited.add(new_id)
+                new_id = remap[new_id]
             key = (new_id, m.chunk_id)
             if key in seen:
                 continue
