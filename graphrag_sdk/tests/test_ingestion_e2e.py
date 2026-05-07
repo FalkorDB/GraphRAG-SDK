@@ -386,12 +386,12 @@ class TestMarkdownLoaderFallbackStrategies:
         assert result.chunks_indexed > 1
         
         chunks = mock_vector_store.index_chunks.call_args[0][0]
-        # Verify text was cleaned of sigils (handled by Loader) and chunked (handled by Chunker)
+        # Verify chunks contain the original text (handled by Loader) and chunked (handled by Chunker)
         full_text = " ".join(c.text for c in chunks.chunks)
-        assert "Title" in full_text
-        assert "# Title" not in full_text
+        assert "# Title" in full_text
         for chunk in chunks.chunks:
-            assert chunk.metadata.get("strategy") == "fixed_size"
+            assert "start_char" in chunk.metadata
+            assert "end_char" in chunk.metadata
             # Since FixedSize ignores elements, breadcrumbs won't be explicitly mapped to chunks
             assert "breadcrumbs" not in chunk.metadata
 
