@@ -161,11 +161,11 @@ async def main():
     # Providers
     llm = LiteLLM(
         model=f"gemini/{os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview')}",
-        api_key=f"{os.getenv("GEMINI_API_KEY")}",
+        api_key=os.environ["GEMINI_API_KEY"],
     )
     embedder = LiteLLMEmbedder(
-        model=f"gemini/{os.getenv('GEMINI_MODEL', 'gemini-embedding-002')}",
-        api_key=f"{os.getenv("GEMINI_API_KEY")}",
+        model=f"gemini/{os.getenv('GEMINI_EMBED_MODEL', 'gemini-embedding-002')}",
+        api_key=os.environ["GEMINI_API_KEY"],
     )
 
     rag = GraphRAG(
