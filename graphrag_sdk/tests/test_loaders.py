@@ -202,6 +202,24 @@ class TestMarkdownLoader:
         with pytest.raises(LoaderError, match="File not found"):
             await loader.load("/nonexistent.md", ctx)
 
+    async def test_raises_when_markdown_it_missing(self, ctx, tmp_path, monkeypatch):
+        """When markdown-it-py is not installed, a clear install message is raised and not hidden by LoaderError."""
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+        
+        file = tmp_path / "struct.md"
+        file.write_text("# Main Title\nIntro.")
+        
+        loader = MarkdownLoader()
+        
+        def fake_parse_markdown(self, text):
+            raise ImportError("Markdown parsing requires 'markdown-it-py'. Install with:\n  pip install graphrag-sdk[markdown]")
+            
+        monkeypatch.setattr(MarkdownLoader, "_parse_markdown", fake_parse_markdown)
+        
+        with pytest.raises(ImportError, match=r"graphrag-sdk\[markdown\]"):
+            await loader.load(str(file), ctx)
+
+
     async def test_markdown_complex_structures(self, ctx, tmp_path):
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 

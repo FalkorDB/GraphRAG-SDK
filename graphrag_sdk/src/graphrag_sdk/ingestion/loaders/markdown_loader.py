@@ -36,22 +36,23 @@ class MarkdownLoader(LoaderStrategy):
 
         try:
             text = path.read_text(encoding=self.encoding)
-            elements = self._parse_markdown(text)
-
-            return DocumentOutput(
-                text=text,
-                document_info=DocumentInfo(
-                    path=str(path),
-                    metadata={
-                        "size_bytes": path.stat().st_size,
-                        "loader": "markdown",
-                        "suffix": path.suffix,
-                    },
-                ),
-                elements=elements,
-            )
-        except Exception as exc:
+        except OSError as exc:
             raise LoaderError(f"Failed to read {source}: {exc}") from exc
+
+        elements = self._parse_markdown(text)
+
+        return DocumentOutput(
+            text=text,
+            document_info=DocumentInfo(
+                path=str(path),
+                metadata={
+                    "size_bytes": path.stat().st_size,
+                    "loader": "markdown",
+                    "suffix": path.suffix,
+                },
+            ),
+            elements=elements,
+        )
 
     def _parse_markdown(self, text: str) -> list[DocumentElement]:
         """Parse raw markdown text into structural DocumentElements."""
