@@ -18,6 +18,7 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import ConfigError, DocumentNotFoundError
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
+    BatchEntry,
     ChatMessage,
     DeleteDocumentResult,
     DocumentInfo,
@@ -621,15 +622,15 @@ class GraphRAG:
 
         State-machine cutover (crash-safe):
 
-        +-----------+----------------+------------------+----------------------+----------------------+
-        | State     | Pending exists | ready_to_commit  | Live doc at $doc_id  | Recovery             |
-        +-----------+----------------+------------------+----------------------+----------------------+
-        | EMPTY     | no             | n/a              | maybe                | normal start         |
-        | WRITING   | partial        | absent           | unchanged            | rollback (delete)    |
-        | WRITTEN   | complete       | absent           | unchanged            | rollback (delete)    |
-        | COMMITTED | complete       | true             | maybe partial        | **rollforward**      |
-        | FINAL     | renamed away   | n/a              | new content          | normal start         |
-        +-----------+----------------+------------------+----------------------+----------------------+
+        +-----------+----------------+-----------------+---------------+-------------------+
+        | State     | Pending exists | ready_to_commit | Live doc      | Recovery          |
+        +-----------+----------------+-----------------+---------------+-------------------+
+        | EMPTY     | no             | n/a             | maybe         | normal start      |
+        | WRITING   | partial        | absent          | unchanged     | rollback (delete) |
+        | WRITTEN   | complete       | absent          | unchanged     | rollback (delete) |
+        | COMMITTED | complete       | true            | maybe partial | **rollforward**   |
+        | FINAL     | renamed away   | n/a             | new content   | normal start      |
+        +-----------+----------------+-----------------+---------------+-------------------+
 
         The single-property write that sets ``ready_to_commit=true`` is
         the commit point. It MUST commit before any destructive Cypher
@@ -657,8 +658,10 @@ class GraphRAG:
         Returns:
             ``UpdateResult`` — extends ``IngestionResult`` with
             ``chunks_deleted``, ``entities_deleted``, ``no_op``, and
-            ``previous_document_uid``. ``no_op=True`` means the content
-            hash matched and nothing was written.
+            ``replaced_existing``. ``no_op=True`` means the content hash
+            matched and nothing was written. ``replaced_existing=False``
+            means ``if_missing="ingest"`` fell through to a fresh ingest
+            because the id was unknown.
 
         Raises:
             ValueError: Invalid argument combination, or the resolved id
@@ -753,7 +756,7 @@ class GraphRAG:
                     relationships_created=ingest_result.relationships_created,
                     chunks_indexed=ingest_result.chunks_indexed,
                     metadata=ingest_result.metadata,
-                    previous_document_uid=None,
+                    replaced_existing=False,
                 )
             raise DocumentNotFoundError(
                 f"No Document with id '{resolved_id}' exists. "
@@ -765,7 +768,7 @@ class GraphRAG:
             return UpdateResult(
                 document_info=DocumentInfo(uid=resolved_id, path=existing.get("path") or doc_path),
                 no_op=True,
-                previous_document_uid=resolved_id,
+                replaced_existing=True,
             )
 
         # ── Phase 2: snapshot entity candidates BEFORE topology changes ──
@@ -837,7 +840,7 @@ class GraphRAG:
             metadata=pipeline_result.metadata,
             chunks_deleted=chunks_deleted,
             entities_deleted=entities_deleted,
-            previous_document_uid=resolved_id,
+            replaced_existing=True,
             no_op=False,
         )
 
@@ -870,9 +873,7 @@ class GraphRAG:
 
         existing = await self._graph_store.get_document_record(document_id)
         if existing is None:
-            raise DocumentNotFoundError(
-                f"No Document with id '{document_id}' exists."
-            )
+            raise DocumentNotFoundError(f"No Document with id '{document_id}' exists.")
 
         candidate_ids = await self._graph_store.get_document_entity_candidates(document_id)
         chunks_deleted = await self._graph_store.delete_document_chunks_and_node(document_id)
@@ -886,7 +887,7 @@ class GraphRAG:
         )
 
         return DeleteDocumentResult(
-            document_id=document_id,
+            document_uid=document_id,
             chunks_deleted=chunks_deleted,
             entities_deleted=entities_deleted,
         )
@@ -977,10 +978,10 @@ class GraphRAG:
             ctx = Context()
 
         # ── 1. Deletes (sequential — fast and DB-bound; no benefit to parallel) ──
-        delete_results: list[DeleteDocumentResult | Exception] = []
+        delete_results: list[BatchEntry[DeleteDocumentResult]] = []
         for doc_id in deleted:
             try:
-                delete_results.append(await self.delete_document(doc_id))
+                delete_results.append(BatchEntry.ok(await self.delete_document(doc_id)))
             except Exception as exc:
                 logger.warning(
                     "apply_changes: delete failed for %r: %s: %s",
@@ -988,7 +989,7 @@ class GraphRAG:
                     type(exc).__name__,
                     exc,
                 )
-                delete_results.append(exc)
+                delete_results.append(BatchEntry.fail(exc))
 
         # ── 2. Updates (parallel, bounded by update_concurrency).
         # Default 1 is forced by the orphan-cleanup invariant — see the
@@ -997,13 +998,15 @@ class GraphRAG:
         # adds parallel while updates serialize.
         update_sem = asyncio.Semaphore(update_concurrency)
 
-        async def _update_one(path: str) -> UpdateResult | Exception:
+        async def _update_one(path: str) -> BatchEntry[UpdateResult]:
             async with update_sem:
                 try:
-                    return await self.update(
-                        path,
-                        if_missing="ingest",
-                        ctx=ctx.child(),
+                    return BatchEntry.ok(
+                        await self.update(
+                            path,
+                            if_missing="ingest",
+                            ctx=ctx.child(),
+                        )
                     )
                 except Exception as exc:
                     logger.warning(
@@ -1012,16 +1015,17 @@ class GraphRAG:
                         type(exc).__name__,
                         exc,
                     )
-                    return exc
+                    return BatchEntry.fail(exc)
 
-        update_results: list[UpdateResult | Exception] = (
-            list(await asyncio.gather(*[_update_one(p) for p in modified]))
-            if modified
-            else []
+        update_results: list[BatchEntry[UpdateResult]] = (
+            list(await asyncio.gather(*[_update_one(p) for p in modified])) if modified else []
         )
 
         # ── 3. Adds (delegate to ingest's batch path for free per-file error handling) ──
-        added_results: list[IngestionResult | Exception] = []
+        # ingest(list) returns the legacy list[IngestionResult | Exception]
+        # shape — adapt at this boundary so the public ApplyChangesResult
+        # surface is uniformly BatchEntry.
+        added_results: list[BatchEntry[IngestionResult]] = []
         if added:
             batch_out = await self.ingest(
                 added,
@@ -1030,7 +1034,10 @@ class GraphRAG:
             )
             # ``ingest(list)`` always returns a list per its overload.
             assert isinstance(batch_out, list)
-            added_results = batch_out
+            added_results = [
+                BatchEntry.fail(item) if isinstance(item, Exception) else BatchEntry.ok(item)
+                for item in batch_out
+            ]
 
         return ApplyChangesResult(
             added=added_results,

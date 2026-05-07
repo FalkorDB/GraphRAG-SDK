@@ -395,9 +395,7 @@ class GraphStore:
         )
         return [row[0] for row in result.result_set] if result.result_set else []
 
-    async def find_pending(
-        self, document_id: str
-    ) -> tuple[str, str, str | None] | None:
+    async def find_pending(self, document_id: str) -> tuple[str, str, str | None] | None:
         """Look up any ``__pending__`` Document for this id and report its
         commit state.
 
@@ -445,8 +443,7 @@ class GraphStore:
         id was not found, 1 in the normal path).
         """
         result = await self._conn.query(
-            "MATCH (p:Document {id: $pid}) "
-            "SET p.ready_to_commit = true RETURN count(p) AS n",
+            "MATCH (p:Document {id: $pid}) SET p.ready_to_commit = true RETURN count(p) AS n",
             {"pid": pending_id},
         )
         return result.result_set[0][0] if result.result_set else 0

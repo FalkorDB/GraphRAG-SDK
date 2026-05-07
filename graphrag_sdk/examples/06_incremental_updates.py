@@ -88,9 +88,7 @@ async def main():
             modified=[],  # typically file paths whose content changed
             deleted=["alice_bio"],
         )
-        delete_succeeded = sum(
-            1 for r in batch.deleted if not isinstance(r, Exception)
-        )
+        delete_succeeded = sum(1 for entry in batch.deleted if entry.is_success)
         print(
             f"apply_changes: deleted {delete_succeeded}, "
             f"modified {len(batch.modified)}, "

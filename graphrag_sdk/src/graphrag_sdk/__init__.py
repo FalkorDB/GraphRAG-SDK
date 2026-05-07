@@ -22,6 +22,7 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import DocumentNotFoundError, GraphRAGError
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
+    BatchEntry,
     ChatMessage,
     DataModel,
     DeleteDocumentResult,
@@ -112,6 +113,7 @@ __all__ = [
     "GraphRAG",
     # Core
     "ApplyChangesResult",
+    "BatchEntry",
     "ChatMessage",
     "ConnectionConfig",
     "Context",

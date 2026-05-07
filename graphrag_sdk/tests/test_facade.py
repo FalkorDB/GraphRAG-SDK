@@ -1179,7 +1179,8 @@ class TestGraphRAGUpdate:
 
         result = await graphrag.update(text=text, document_id="my-doc")
         assert result.no_op is True
-        assert result.previous_document_uid == "my-doc"
+        assert result.replaced_existing is True
+        assert result.document_info.uid == "my-doc"
         # Pipeline write step must NOT have been invoked.
         graphrag._graph_store.upsert_nodes.assert_not_awaited()
         graphrag._graph_store.rollforward_cutover.assert_not_awaited()
@@ -1192,14 +1193,14 @@ class TestGraphRAGUpdate:
             await graphrag.update(text="x", document_id="ghost")
 
     async def test_doc_not_found_with_ingest_falls_through(self, graphrag):
-        """if_missing='ingest' upserts, returning UpdateResult with previous_document_uid=None."""
+        """if_missing='ingest' upserts, returning UpdateResult with replaced_existing=False."""
         _stub_graph_store_for_update(graphrag, existing_record=None)
 
         result = await graphrag.update(
             text="brand new content", document_id="new-doc", if_missing="ingest"
         )
         assert isinstance(result, UpdateResult)
-        assert result.previous_document_uid is None
+        assert result.replaced_existing is False
         assert result.no_op is False
         # Cutover must NOT have run — there's nothing to replace.
         graphrag._graph_store.rollforward_cutover.assert_not_awaited()
@@ -1237,7 +1238,8 @@ class TestGraphRAGUpdate:
         assert result.no_op is False
         assert result.chunks_deleted == 4
         assert result.entities_deleted == 1
-        assert result.previous_document_uid == "my-doc"
+        assert result.replaced_existing is True
+        assert result.document_info.uid == "my-doc"
 
         # State-machine sequencing — Phase 0 lookup, then snapshot, then commit, rollforward.
         graphrag._graph_store.find_pending.assert_awaited()
@@ -1384,7 +1386,7 @@ class TestGraphRAGDeleteDocument:
 
         result = await graphrag.delete_document("doc-a")
         assert isinstance(result, DeleteDocumentResult)
-        assert result.document_id == "doc-a"
+        assert result.document_uid == "doc-a"
         assert result.chunks_deleted == 3
         assert result.entities_deleted == 2
         graphrag._graph_store.delete_document_chunks_and_node.assert_awaited_once_with("doc-a")
@@ -1458,8 +1460,10 @@ class TestApplyChanges:
         _stub_graph_store_for_update(graphrag, existing_record=None)
         # All ids will be missing → delete raises DocumentNotFoundError per id.
         result = await graphrag.apply_changes(deleted=["missing-1", "missing-2"])
-        assert all(isinstance(r, Exception) for r in result.deleted)
         assert len(result.deleted) == 2
+        assert all(not entry.is_success for entry in result.deleted)
+        assert all(entry.error_type == "DocumentNotFoundError" for entry in result.deleted)
+        assert all(entry.result is None for entry in result.deleted)
 
     async def test_does_not_call_finalize(self, graphrag):
         """apply_changes is the convenience wrapper, but the cost-model
@@ -1540,4 +1544,4 @@ class TestGraphRAGUpdateSyncWrapper:
         )
         result = graphrag.delete_document_sync("doc-y")
         assert isinstance(result, DeleteDocumentResult)
-        assert result.document_id == "doc-y"
+        assert result.document_uid == "doc-y"

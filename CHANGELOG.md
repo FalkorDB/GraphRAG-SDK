@@ -69,9 +69,16 @@ accepted.
   the `added` list and matches `ingest()`'s existing knob.
 
 - **`UpdateResult`** (extends `IngestionResult` with `chunks_deleted`,
-  `entities_deleted`, `no_op`, `previous_document_uid`),
-  **`DeleteDocumentResult`**, and **`ApplyChangesResult`** Pydantic
-  models. All exported from the top-level package.
+  `entities_deleted`, `no_op`, `replaced_existing`),
+  **`DeleteDocumentResult`** (`document_uid`, `chunks_deleted`,
+  `entities_deleted`), **`BatchEntry[T]`** (typed `result | error |
+  error_type` wrapper with `is_success`), and **`ApplyChangesResult`**
+  (`added: list[BatchEntry[IngestionResult]]`, `modified:
+  list[BatchEntry[UpdateResult]]`, `deleted:
+  list[BatchEntry[DeleteDocumentResult]]`) Pydantic models. All
+  exported from the top-level package. The document id is consistently
+  exposed via `DocumentInfo.uid` / `DeleteDocumentResult.document_uid`
+  across all result types.
 
 - **`DocumentNotFoundError`** — raised by `update()` (when
   `if_missing="error"`, the default) and `delete_document()` when the
