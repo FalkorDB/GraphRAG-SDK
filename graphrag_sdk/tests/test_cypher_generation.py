@@ -7,6 +7,10 @@ from graphrag_sdk.retrieval.strategies.cypher_generation import (
     extract_cypher,
     validate_cypher,
     _sanitize_cypher,
+    _is_pure_aggregation,
+    _should_widen_labels,
+    _split_top_level_commas,
+    _widen_typed_labels,
 )
 
 
@@ -73,6 +77,27 @@ class TestValidateCypher:
         errors = validate_cypher("CALL db.labels() YIELD label RETURN label")
         assert any("CALL" in e for e in errors)
 
+    def test_rejects_apoc_function_calls(self):
+        # Function-style apoc / gds / db calls slip past the bare \bCALL\b
+        # check; the dotted-namespace rule should reject them.
+        for snippet in [
+            "MATCH (n) RETURN apoc.text.regexGroups(n.description, '\\d+') AS m",
+            "MATCH (n) RETURN gds.shortest.path(n) AS p",
+            "MATCH (n) WHERE db.idx.fulltext.queryNodes('x', 'y') RETURN n",
+        ]:
+            errors = validate_cypher(snippet)
+            assert any("Unsupported function namespace" in e for e in errors), \
+                f"should reject: {snippet}"
+
+    def test_accepts_bare_builtin_functions(self):
+        # Built-ins are bare (count, toInteger, substring) — no namespace.
+        for snippet in [
+            "MATCH (n:Person) RETURN count(n) AS c",
+            "MATCH (n:Person) RETURN toInteger(n.name) AS i",
+            "MATCH (n:Person) RETURN substring(n.description, 0, 4) AS s",
+        ]:
+            assert validate_cypher(snippet) == [], f"should accept: {snippet}"
+
     def test_rejects_load_csv(self):
         errors = validate_cypher("LOAD CSV FROM 'file:///data.csv' AS row RETURN row")
         assert any("LOAD CSV" in e for e in errors)
@@ -108,13 +133,33 @@ class TestValidateCypher:
 
 class TestSanitizeCypher:
     def test_adds_limit_when_missing(self):
-        result = _sanitize_cypher("MATCH (n) RETURN n")
+        # Non-aggregation query without LIMIT — should get the new default cap.
+        result = _sanitize_cypher("MATCH (n:Person) RETURN n.name")
         assert "LIMIT" in result
+        assert "100" in result  # _DEFAULT_ROW_LIMIT
 
     def test_keeps_existing_limit(self):
         cypher = "MATCH (n) RETURN n LIMIT 10"
         result = _sanitize_cypher(cypher)
         assert result.count("LIMIT") == 1
+
+    def test_does_not_inject_limit_on_pure_aggregation(self):
+        # count / sum / avg without group-by always returns one row — adding
+        # LIMIT is misleading.
+        for cypher in [
+            "MATCH (n:Person) RETURN count(n)",
+            "MATCH (n:Person) RETURN count(DISTINCT n) AS c",
+            "MATCH (n:Person) RETURN avg(toInteger(n.name)) AS a",
+        ]:
+            result = _sanitize_cypher(cypher)
+            assert "LIMIT" not in result, f"should skip LIMIT for: {cypher}"
+
+    def test_injects_limit_on_group_by(self):
+        # Group-by has a non-aggregate dimension in RETURN — LIMIT applies to
+        # the row count of the breakdown.
+        cypher = "MATCH (o:Organization)-[:RELATES]-(p:Person) RETURN o.name, count(p) AS n"
+        result = _sanitize_cypher(cypher)
+        assert "LIMIT" in result
 
     def test_removes_shortest_path(self):
         cypher = "MATCH path = shortestPath((a)-[*]-(b)) RETURN path"
@@ -130,6 +175,106 @@ class TestSanitizeCypher:
         cypher = "MATCH path = (a)-[:RELATES]->(b) RETURN a, b"
         result = _sanitize_cypher(cypher)
         assert "path =" not in result and "path=" not in result
+
+
+# ── _is_pure_aggregation ──────────────────────────────────────────
+
+
+class TestIsPureAggregation:
+    def test_count_only(self):
+        assert _is_pure_aggregation("MATCH (n) RETURN count(n)")
+
+    def test_count_distinct_with_alias(self):
+        assert _is_pure_aggregation(
+            "MATCH (n:Person) RETURN count(DISTINCT n) AS person_count"
+        )
+
+    def test_multi_aggregate(self):
+        assert _is_pure_aggregation(
+            "MATCH (n) RETURN count(n) AS c, avg(n.score) AS a"
+        )
+
+    def test_group_by_is_not_pure(self):
+        # A non-aggregate dimension in RETURN means LIMIT actually matters.
+        assert not _is_pure_aggregation(
+            "MATCH (o)-[:RELATES]-(p) RETURN o.name AS org, count(p) AS n"
+        )
+
+    def test_no_aggregate_is_not_pure(self):
+        assert not _is_pure_aggregation("MATCH (n:Person) RETURN n.name")
+
+    def test_aggregate_with_order_by_limit_clause(self):
+        # ORDER BY / LIMIT after RETURN must not confuse the regex.
+        assert _is_pure_aggregation(
+            "MATCH (n) RETURN count(n) ORDER BY count(n)"
+        )
+
+
+# ── _split_top_level_commas ───────────────────────────────────────
+
+
+class TestSplitTopLevelCommas:
+    def test_simple(self):
+        assert _split_top_level_commas("a, b, c") == ["a", "b", "c"]
+
+    def test_nested_parens_preserved(self):
+        # commas inside count(DISTINCT a, b) must NOT split projections
+        assert _split_top_level_commas("count(DISTINCT a, b) AS c, d") == [
+            "count(DISTINCT a, b) AS c",
+            "d",
+        ]
+
+
+# ── _widen_typed_labels / _should_widen_labels ────────────────────
+
+
+class TestWidenTypedLabels:
+    def test_widens_single_label(self):
+        cypher = "MATCH (p:Person) RETURN p.name"
+        assert _widen_typed_labels(cypher) == "MATCH (p:__Entity__) RETURN p.name"
+
+    def test_widens_multiple_labels(self):
+        cypher = (
+            "MATCH (p:Person)-[:RELATES]-(o:Organization) "
+            "WHERE o.name CONTAINS 'Acme' RETURN p.name"
+        )
+        widened = _widen_typed_labels(cypher)
+        assert ":Person" not in widened
+        assert ":Organization" not in widened
+        assert widened.count(":__Entity__") == 2
+
+    def test_does_not_widen_structural_labels(self):
+        # Chunk / Document / __Entity__ already are structural — leave alone.
+        cypher = "MATCH (c:Chunk)-[:PART_OF]->(d:Document) RETURN c.text"
+        assert _widen_typed_labels(cypher) == cypher
+
+    def test_idempotent(self):
+        cypher = "MATCH (p:Person) RETURN p.name"
+        once = _widen_typed_labels(cypher)
+        twice = _widen_typed_labels(once)
+        assert once == twice
+
+
+class TestShouldWidenLabels:
+    def test_widens_when_name_filter_present(self):
+        # A typed label + name filter = LLM is using label as routing hint, not
+        # as the filter itself — safe to widen.
+        assert _should_widen_labels(
+            "MATCH (p:Person)-[:RELATES]-(o:Organization) "
+            "WHERE o.name CONTAINS 'Acme' RETURN p.name"
+        )
+
+    def test_skips_when_label_is_the_filter(self):
+        # Pure aggregation over a labeled variable with NO name predicate —
+        # widening would change semantics ("count Persons" → "count Entities").
+        assert not _should_widen_labels(
+            "MATCH (p:Person) RETURN count(DISTINCT p) AS c"
+        )
+
+    def test_skips_when_no_typed_label(self):
+        assert not _should_widen_labels(
+            "MATCH (e:__Entity__) RETURN count(e)"
+        )
 
 
 # ── execute_cypher_retrieval ──────────────────────────────────────
@@ -148,9 +293,13 @@ class TestExecuteCypherRetrieval:
         mock_llm.ainvoke = AsyncMock(return_value=LLMResponse(content="I don't know"))
         mock_graph = MagicMock()
 
-        facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
+        facts, entities, metadata = await execute_cypher_retrieval(
+            mock_graph, mock_llm, "test?"
+        )
         assert facts == []
         assert entities == {}
+        assert metadata["cypher_fallback"] is None
+        assert metadata["cypher_rows"] == 0
 
     async def test_returns_empty_on_execution_error(self):
         """When Cypher execution fails, should return empty results."""
@@ -169,9 +318,12 @@ class TestExecuteCypherRetrieval:
         mock_graph = MagicMock()
         mock_graph.query_raw = AsyncMock(side_effect=Exception("connection error"))
 
-        facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
+        facts, entities, metadata = await execute_cypher_retrieval(
+            mock_graph, mock_llm, "test?"
+        )
         assert facts == []
         assert entities == {}
+        assert metadata["cypher_fallback"] is None
 
     async def test_parses_result_rows(self):
         """Successful execution should parse rows into facts and entities."""
@@ -192,8 +344,76 @@ class TestExecuteCypherRetrieval:
         mock_graph = MagicMock()
         mock_graph.query_raw = AsyncMock(return_value=result_mock)
 
-        facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
+        facts, entities, metadata = await execute_cypher_retrieval(
+            mock_graph, mock_llm, "test?"
+        )
         assert len(facts) == 2
         assert "Alice" in facts[0]
         assert "alice" in entities
         assert "bob" in entities
+        assert metadata["cypher_rows"] == 2
+        assert metadata["cypher_fallback"] is None
+
+    async def test_label_widen_fires_on_zero_rows(self):
+        """When typed-label query returns 0 rows AND a name filter is present,
+        the fallback should rewrite typed labels to __Entity__ and re-execute."""
+        from unittest.mock import AsyncMock, MagicMock
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        # Original cypher: typed label + name filter — gating allows widen.
+        original = (
+            "MATCH (p:Person)-[:RELATES]-(t:Technology) "
+            "WHERE t.name CONTAINS 'observability' RETURN p.name LIMIT 25"
+        )
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=LLMResponse(content=f"```cypher\n{original}\n```")
+        )
+
+        empty_result = MagicMock()
+        empty_result.result_set = []
+        widened_result = MagicMock()
+        widened_result.result_set = [["Carla Okafor"]]
+
+        mock_graph = MagicMock()
+        # First call: original (typed) → empty.  Second call: widened → hit.
+        mock_graph.query_raw = AsyncMock(side_effect=[empty_result, widened_result])
+
+        facts, entities, metadata = await execute_cypher_retrieval(
+            mock_graph, mock_llm, "is there an Acme employee on observability?"
+        )
+        assert facts == ["Carla Okafor"]
+        assert metadata["cypher_fallback"] == "label_widened"
+        assert ":__Entity__" in metadata["cypher"]
+        assert mock_graph.query_raw.await_count == 2
+
+    async def test_label_widen_skipped_for_pure_aggregation(self):
+        """For 'count Persons' (label IS the filter), widening would change
+        semantics — fallback must skip and return empty."""
+        from unittest.mock import AsyncMock, MagicMock
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        cypher = "MATCH (p:Person) RETURN count(DISTINCT p) AS c"
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=LLMResponse(content=f"```cypher\n{cypher}\n```")
+        )
+
+        empty_result = MagicMock()
+        empty_result.result_set = []
+        mock_graph = MagicMock()
+        mock_graph.query_raw = AsyncMock(return_value=empty_result)
+
+        facts, entities, metadata = await execute_cypher_retrieval(
+            mock_graph, mock_llm, "how many people?"
+        )
+        assert facts == []
+        assert metadata["cypher_fallback"] is None
+        # Only one execution — fallback was correctly skipped.
+        assert mock_graph.query_raw.await_count == 1

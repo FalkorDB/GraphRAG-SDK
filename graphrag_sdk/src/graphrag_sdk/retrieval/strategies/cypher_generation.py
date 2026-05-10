@@ -41,6 +41,30 @@ _WRITE_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Default row cap auto-injected when the LLM's query lacks a LIMIT.
+# Pure aggregations (count/sum/avg over no group-by) return one row, so
+# they skip injection entirely; group-by lists need enough rows that a 10-org
+# breakdown isn't truncated.
+_DEFAULT_ROW_LIMIT = 100
+
+_AGG_FN_NAMES = ("count", "sum", "avg", "min", "max", "collect",
+                 "stdev", "percentileCont", "percentileDisc")
+_AGG_FN_RE = re.compile(
+    r"^\s*(?:" + "|".join(_AGG_FN_NAMES) + r")\s*\(",
+    re.IGNORECASE,
+)
+
+# Detects FUNCTION-style calls under a dotted namespace, e.g.
+# ``apoc.text.regexGroups(...)``, ``gds.shortest.path(...)``, ``db.idx.fulltext.queryNodes(...)``.
+# FalkorDB does not implement APOC/GDS/db plugins, so any dotted-namespace
+# function call silently returns 0 rows at execution. We reject these in the
+# validator so the existing retry-with-feedback loop can correct the query.
+# Note: ``\bCALL\b`` already catches procedure-style invocations; this regex
+# specifically targets the function-style pattern that slips through.
+_DOTTED_FN_RE = re.compile(
+    r"\b([a-zA-Z_]\w*)\.([a-zA-Z_][\w.]*)\s*\(",
+)
+
 # ── Schema prompt ────────────────────────────────────────────────
 
 SCHEMA_PROMPT = """\
@@ -81,6 +105,8 @@ Instead of guessing the exact rel_type string, leverage the typed entity labels:
 - To find connections: `MATCH (a)-[:RELATES]-(b)` with entity name filters
 - To count: `RETURN count(DISTINCT e)` or `RETURN count(r)`
 - To list all of a type: `MATCH (e:Technology) RETURN e.name, e.description LIMIT 25`
+- For "BOTH X AND Y" questions, use two MATCH clauses sharing the same
+  variable to express set intersection — never UNION.
 
 ## Examples
 
@@ -122,11 +148,23 @@ RETURN p.name AS person, thing.name AS discovery, r.rel_type AS relationship, r.
 LIMIT 20
 ```
 
-Question: "What organizations are related to the technology?"
+Question: "Which city has the most employees mentioned?"
+Note: a Person and a Location are typically NOT directly connected — they
+share an organization. Use a 2-hop traversal through the intermediary so the
+group-by works on the real graph topology:
 ```cypher
-MATCH (o:Organization)-[r:RELATES]-(t:Technology)
-RETURN o.name AS organization, t.name AS technology, r.rel_type AS relation, r.fact AS evidence
-LIMIT 20
+MATCH (p:Person)-[:RELATES]-(o:Organization)-[:RELATES]-(l:Location)
+RETURN l.name AS city, count(DISTINCT p) AS employee_count
+ORDER BY employee_count DESC
+LIMIT 5
+```
+
+Question: "Who works at BOTH Acme and Globex?"
+```cypher
+MATCH (p:Person)-[:RELATES]-(o1:Organization),
+      (p)-[:RELATES]-(o2:Organization)
+WHERE o1.name CONTAINS 'Acme' AND o2.name CONTAINS 'Globex'
+RETURN DISTINCT p.name AS person
 ```
 
 ## Your task
@@ -159,6 +197,53 @@ def extract_cypher(text: str) -> str:
 # ── Cypher sanitization ─────────────────────────────────────────
 
 
+def _split_top_level_commas(s: str) -> list[str]:
+    """Split on commas that aren't inside parentheses/brackets/braces."""
+    out: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+            buf.append(ch)
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch == "," and depth == 0:
+            out.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        out.append("".join(buf).strip())
+    return [p for p in out if p]
+
+
+def _is_pure_aggregation(cypher: str) -> bool:
+    """True iff the FINAL RETURN clause projects only aggregate functions.
+
+    Pure aggregations (e.g., ``RETURN count(p)``) always return exactly one
+    row, so auto-injecting LIMIT is a no-op. Group-by patterns
+    (``RETURN o.name, count(p)``) are NOT pure — at least one projection is
+    a non-aggregate dimension that the LIMIT would actually apply to.
+    """
+    # Find the final RETURN body, stopping at ORDER BY / SKIP / LIMIT / end.
+    matches = list(re.finditer(
+        r"\bRETURN\b\s+(.+?)(?=\bORDER\s+BY\b|\bSKIP\b|\bLIMIT\b|;|$)",
+        cypher,
+        re.IGNORECASE | re.DOTALL,
+    ))
+    if not matches:
+        return False
+    body = matches[-1].group(1).strip()
+    if not body:
+        return False
+    projections = _split_top_level_commas(body)
+    if not projections:
+        return False
+    return all(_AGG_FN_RE.match(p) for p in projections)
+
+
 def _sanitize_cypher(cypher: str) -> str:
     """Fix common LLM-generated Cypher issues before execution.
 
@@ -174,9 +259,13 @@ def _sanitize_cypher(cypher: str) -> str:
     # Remove path variable assignments: "path = MATCH" -> "MATCH"
     cypher = re.sub(r"\bpath\s*=\s*", "", cypher, flags=re.IGNORECASE)
 
-    # Add LIMIT if missing (prevent runaway scans)
+    # Inject LIMIT only when the LLM didn't provide one AND the query isn't a
+    # single-row pure aggregation. Pure aggregations don't benefit from a cap;
+    # group-by lists do, but the previous default (25) was too small to fit a
+    # full 10-org breakdown. Skip on aggregations to avoid a misleading no-op.
     if not re.search(r"\bLIMIT\b", cypher, re.IGNORECASE):
-        cypher = cypher.rstrip().rstrip(";") + "\nLIMIT 25"
+        if not _is_pure_aggregation(cypher):
+            cypher = cypher.rstrip().rstrip(";") + f"\nLIMIT {_DEFAULT_ROW_LIMIT}"
 
     return cypher
 
@@ -219,6 +308,18 @@ def validate_cypher(cypher: str) -> list[str]:
         errors.append("CALL procedures are not allowed in generated queries")
     if re.search(r"\bLOAD\s+CSV\b", cypher_norm, re.IGNORECASE):
         errors.append("LOAD CSV is not allowed in generated queries")
+
+    # Reject dotted-namespace function calls (apoc.*, gds.*, db.*).
+    # FalkorDB doesn't implement these plugins; the call silently returns 0
+    # rows at execution. Surfacing it here lets the retry loop regenerate.
+    for ns, _ in _DOTTED_FN_RE.findall(cypher_norm):
+        errors.append(
+            f"Unsupported function namespace '{ns}.*' "
+            "(FalkorDB does not implement APOC/GDS/db plugin functions). "
+            "Use only built-in Cypher functions like count, sum, avg, "
+            "labels, toInteger, substring, etc."
+        )
+        break  # one error is enough — the LLM only needs to fix the pattern
 
     # No write operations
     if _WRITE_KEYWORDS.search(cypher_norm):
@@ -287,43 +388,52 @@ async def generate_cypher(
     return None
 
 
-async def execute_cypher_retrieval(
-    graph_store: Any,
-    llm: Any,
-    question: str,
-    *,
-    max_retries: int = 3,
-) -> tuple[list[str], dict[str, dict]]:
-    """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
+# Matches a typed entity label inside a node pattern so we can widen it to
+# ``__Entity__`` on a 0-row retry. Captures the prefix (open paren + optional
+# variable + colon) so ``re.sub`` keeps the surrounding shape intact.
+_TYPED_NODE_LABEL_RE = re.compile(
+    r"(\(\s*\w*\s*:)(" + "|".join(re.escape(l) for l in _ENTITY_LABELS) + r")\b"
+)
 
-    Results are intended to go DIRECTLY to the final LLM context
-    (as a dedicated "Cypher Query Results" section), NOT through
-    the cosine reranker.
 
-    Returns:
-        fact_strings: Formatted rows from Cypher execution.
-        entities: Dict of entity_id -> {name, description}.
+def _widen_typed_labels(cypher: str) -> str:
+    """Swap typed entity labels (``:Person`` etc.) inside node patterns to
+    ``:__Entity__``. Used when a typed-label query returned 0 rows because
+    the extractor labelled the entity differently than the LLM expected."""
+    return _TYPED_NODE_LABEL_RE.sub(r"\1__Entity__", cypher)
 
-    On any failure, returns empty results (silent degradation).
+
+def _should_widen_labels(cypher: str) -> bool:
+    """Gate for the 0-row label-widen fallback.
+
+    Skip widening when the typed label IS the filter — i.e. the RETURN
+    aggregates over a labeled variable AND the query has no ``WHERE … CONTAINS``
+    name predicate. In that case the user is asking "how many Persons?" and
+    widening would change the semantics. Otherwise (typical case: typed label
+    present alongside a name predicate or non-aggregate RETURN), widen.
+
+    Conservative: when in doubt we skip the fallback rather than risk a
+    semantically-different query.
     """
-    cypher = await generate_cypher(llm, question, max_retries=max_retries)
-    if not cypher:
-        return [], {}
+    if not _TYPED_NODE_LABEL_RE.search(cypher):
+        return False  # nothing to widen
+    has_contains_filter = bool(
+        re.search(r"\bWHERE\b.*\bCONTAINS\b", cypher, re.IGNORECASE | re.DOTALL)
+    )
+    if has_contains_filter:
+        return True
+    # No name filter — check whether the RETURN is an aggregate over a labeled
+    # variable. If so, widening turns "count Persons" into "count Entities".
+    if _is_pure_aggregation(cypher):
+        return False
+    return True
 
-    try:
-        result = await graph_store.query_raw(cypher)
-    except Exception as exc:
-        logger.debug("Cypher execution failed: %s — query: %s", exc, cypher)
-        return [], {}
 
-    if not result.result_set:
-        return [], {}
-
-    # Parse results into readable fact lines and entity dict
+def _parse_cypher_result_set(result_set: Any) -> tuple[list[str], dict[str, dict]]:
+    """Turn a FalkorDB result_set into (fact_strings, entities)."""
     fact_strings: list[str] = []
     entities: dict[str, dict] = {}
-
-    for row in result.result_set:
+    for row in result_set:
         parts: list[str] = []
         for val in row:
             if val is None:
@@ -333,11 +443,7 @@ async def execute_cypher_retrieval(
                 parts.append(s)
         if not parts:
             continue
-
-        line = " | ".join(parts)
-        fact_strings.append(line)
-
-        # Extract entity names (strings that look like names, not numbers/lists)
+        fact_strings.append(" | ".join(parts))
         for val in row:
             if (
                 isinstance(val, str)
@@ -349,11 +455,75 @@ async def execute_cypher_retrieval(
                 eid = val.strip().lower().replace(" ", "_")
                 if eid and eid not in entities:
                     entities[eid] = {"name": val.strip(), "description": ""}
+    return fact_strings, entities
+
+
+async def execute_cypher_retrieval(
+    graph_store: Any,
+    llm: Any,
+    question: str,
+    *,
+    max_retries: int = 3,
+) -> tuple[list[str], dict[str, dict], dict[str, Any]]:
+    """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
+
+    Results are intended to go DIRECTLY to the final LLM context
+    (as a dedicated "Cypher Query Results" section), NOT through
+    the cosine reranker.
+
+    Returns:
+        fact_strings: Formatted rows from Cypher execution.
+        entities: Dict of entity_id -> {name, description}.
+        metadata: Dict capturing diagnostic signal — ``cypher`` (final query
+            executed), ``cypher_rows`` (row count), ``cypher_fallback``
+            (``"label_widened"`` if the 0-row fallback fired, else ``None``).
+
+    On any failure, returns ``([], {}, metadata)`` — never raises.
+    """
+    metadata: dict[str, Any] = {
+        "cypher": None,
+        "cypher_rows": 0,
+        "cypher_fallback": None,
+    }
+
+    cypher = await generate_cypher(llm, question, max_retries=max_retries)
+    if not cypher:
+        return [], {}, metadata
+    metadata["cypher"] = cypher
+
+    try:
+        result = await graph_store.query_raw(cypher)
+    except Exception as exc:
+        logger.debug("Cypher execution failed: %s — query: %s", exc, cypher)
+        return [], {}, metadata
+
+    # 0-row recovery: try once with typed labels widened to __Entity__.
+    # The LLM's structural reasoning (joins, filters, aggregations) is preserved
+    # — only the label predicate is relaxed. No second LLM call.
+    if not result.result_set and _should_widen_labels(cypher):
+        widened = _widen_typed_labels(cypher)
+        if widened != cypher:
+            logger.debug("Cypher 0-row retry with widened labels: %s", widened[:120])
+            try:
+                widened_result = await graph_store.query_raw(widened)
+            except Exception as exc:
+                logger.debug("Widened cypher execution failed: %s", exc)
+            else:
+                if widened_result.result_set:
+                    result = widened_result
+                    metadata["cypher"] = widened
+                    metadata["cypher_fallback"] = "label_widened"
+
+    if not result.result_set:
+        return [], {}, metadata
+
+    fact_strings, entities = _parse_cypher_result_set(result.result_set)
+    metadata["cypher_rows"] = len(fact_strings)
 
     logger.debug(
         "Cypher retrieval: %d facts, %d entities from: %s",
         len(fact_strings),
         len(entities),
-        cypher[:120],
+        (metadata["cypher"] or "")[:120],
     )
-    return fact_strings, entities
+    return fact_strings, entities, metadata

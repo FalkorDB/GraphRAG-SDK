@@ -13,6 +13,12 @@ from graphrag_sdk.core.providers import Embedder
 
 logger = logging.getLogger(__name__)
 
+# Maximum cypher result rows passed to the final LLM context. Was 20 — too low
+# for group-by lists across the whole graph (e.g. a 10-org breakdown was being
+# silently truncated). Pure aggregations return one row anyway, so a higher cap
+# is essentially free.
+_CYPHER_RESULT_CAP = 100
+
 
 def cosine_sim(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two float vectors."""
@@ -145,11 +151,16 @@ def assemble_raw_result(
     source_passages: list[str],
     q_type_hint: str = "",
     cypher_results: list[str] | None = None,
+    cypher_metadata: dict[str, Any] | None = None,
 ) -> RawSearchResult:
     """Build structured RawSearchResult with section records.
 
     ``cypher_results`` are placed in their own section and are NOT
     subject to cosine reranking — they go directly to the final LLM.
+
+    ``cypher_metadata`` (if non-empty) is merged into the result metadata
+    so callers and metrics can see whether the 0-row fallback fired,
+    whether truncation occurred, and the final cypher that ran.
     """
     records: list[dict[str, Any]] = []
 
@@ -162,13 +173,28 @@ def assemble_raw_result(
             }
         )
 
-    # Cypher Query Results (direct to LLM — not reranked)
+    # Authoritative Graph Query Results (direct to LLM — not reranked).
+    # Heading is deliberately worded to signal authority over prose passages on
+    # quantitative questions; pair with system-prompt rule 8 in api/main.py.
+    truncated = False
     if cypher_results:
+        shown = cypher_results[:_CYPHER_RESULT_CAP]
+        body_lines = [f"- {r}" for r in shown]
+        if len(cypher_results) > _CYPHER_RESULT_CAP:
+            truncated = True
+            body_lines.append(
+                f"- … (showing {len(shown)} of {len(cypher_results)} rows; "
+                "result was truncated)"
+            )
         records.append(
             {
                 "section": "cypher_results",
-                "content": "## Graph Query Results\n"
-                + "\n".join(f"- {r}" for r in cypher_results[:20]),
+                "content": (
+                    "## Authoritative Graph Query Results "
+                    "(deterministic; trust over passages on counts and aggregates)\n"
+                    "Source: text-to-Cypher run against the knowledge graph.\n"
+                    + "\n".join(body_lines)
+                ),
             }
         )
 
@@ -218,7 +244,18 @@ def assemble_raw_result(
             }
         )
 
+    metadata: dict[str, Any] = {"strategy": "multi_path"}
+    if cypher_metadata:
+        # Surface fallback firing rate, truncation, and the final cypher to
+        # callers / metrics. Don't overwrite if multiple keys conflict — the
+        # caller-supplied values win since they reflect the actual execution.
+        metadata.update(
+            {f"cypher_{k}" if not k.startswith("cypher") else k: v
+             for k, v in cypher_metadata.items()}
+        )
+        metadata["cypher_truncated"] = truncated
+
     return RawSearchResult(
         records=records,
-        metadata={"strategy": "multi_path"},
+        metadata=metadata,
     )

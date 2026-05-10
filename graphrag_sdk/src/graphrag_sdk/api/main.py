@@ -60,7 +60,13 @@ _RAG_SYSTEM_PROMPT = (
     "6. If the context lacks sufficient information, say so briefly "
     "rather than inventing details.\n"
     "7. Respect negation: if a passage states something did NOT happen "
-    "or is NOT true, preserve that meaning."
+    "or is NOT true, preserve that meaning.\n"
+    "8. When the context contains a section labeled "
+    "'Authoritative Graph Query Results', that section is computed "
+    "deterministically from the knowledge graph. For quantitative or "
+    "'which has the most/fewest/exactly N' questions, prefer those "
+    "numbers over prose passages, even if passages mention other "
+    "entities more frequently."
 )
 
 # System prompt used with the default delimited template (``_RAG_PROMPT``).
@@ -89,7 +95,13 @@ _RAG_SYSTEM_PROMPT_DELIMITED = (
     "6. If the context lacks sufficient information, say so briefly "
     "rather than inventing details.\n"
     "7. Respect negation: if a passage states something did NOT happen "
-    "or is NOT true, preserve that meaning."
+    "or is NOT true, preserve that meaning.\n"
+    "8. When the context contains a section labeled "
+    "'Authoritative Graph Query Results', that section is computed "
+    "deterministically from the knowledge graph. For quantitative or "
+    "'which has the most/fewest/exactly N' questions, prefer those "
+    "numbers over prose passages, even if passages mention other "
+    "entities more frequently."
 )
 
 _RAG_PROMPT = "<context>\n{context}\n</context>\n\nQuestion: {question}\n\nAnswer:"
