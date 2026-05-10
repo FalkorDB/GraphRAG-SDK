@@ -389,6 +389,21 @@ class TestLiteLLMUsageInstrumentation:
         assert ctx.usage.completion_tokens == 0
 
     @pytest.mark.asyncio
+    async def test_astream_records_usage(self):
+        mock_litellm = MagicMock()
+        mock_litellm.acompletion = AsyncMock(
+            return_value=_litellm_resp(prompt_tokens=40, completion_tokens=20)
+        )
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="gpt-4")
+            ctx = Context()
+            async for chunk in llm.astream("hello", ctx=ctx):
+                pass
+        
+        assert ctx.usage.prompt_tokens == 40
+        assert ctx.usage.completion_tokens == 20
+
+    @pytest.mark.asyncio
     async def test_abatch_invoke_accumulates_all_items(self):
         call_count = {"n": 0}
 

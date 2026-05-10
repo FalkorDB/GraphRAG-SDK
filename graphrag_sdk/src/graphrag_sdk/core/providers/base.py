@@ -56,7 +56,7 @@ class Embedder(ABC):
         ...
 
     @abstractmethod
-    def embed_query(self, text: str, **kwargs: Any) -> list[float]:
+    def embed_query(self, text: str, *, ctx: Any | None = None, **kwargs: Any) -> list[float]:
         """Embed a single text string into a float vector."""
         ...
 
@@ -72,9 +72,15 @@ class Embedder(ABC):
         """
         return await asyncio.to_thread(self.embed_query, text, **kwargs)
 
-    def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
-        """Batch embed multiple texts. Default: sequential fallback."""
-        return [self.embed_query(t, **kwargs) for t in texts]
+    def embed_documents(self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any) -> list[list[float]]:
+        """Batch embed multiple texts. Default: sequential fallback.
+        
+        Args:
+            ctx: Execution context for usage tracking.
+        """
+        if ctx is None:
+            return [self.embed_query(t, **kwargs) for t in texts]
+        return [self.embed_query(t, ctx=ctx, **kwargs) for t in texts]
 
     async def aembed_documents(
         self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
@@ -107,7 +113,7 @@ class LLMInterface(ABC):
         self.max_concurrency = max_concurrency
 
     @abstractmethod
-    def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+    def invoke(self, prompt: str, *, ctx: Any | None = None, **kwargs: Any) -> LLMResponse:
         """Synchronous text-in / text-out invocation."""
         ...
 
@@ -182,9 +188,9 @@ class LLMInterface(ABC):
         prompt = "\n\n".join(parts)
         return await self.ainvoke(prompt, ctx=ctx, max_retries=max_retries, **kwargs)
 
-    async def astream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
+    async def astream(self, prompt: str, *, ctx: Any | None = None, **kwargs: Any) -> AsyncIterator[str]:
         """Async streaming — default yields the full response as one chunk."""
-        resp = await self.ainvoke(prompt, **kwargs)
+        resp = await self.ainvoke(prompt, ctx=ctx, **kwargs)
         yield resp.content
 
     def invoke_with_model(
