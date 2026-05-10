@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+
+_logger = logging.getLogger(__name__)
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.context import Context
@@ -44,19 +47,38 @@ class MockEmbedder(Embedder):
 
 
 class MockLLM(LLMInterface):
-    """Mock LLM that returns pre-configured responses."""
+    """Mock LLM that returns pre-configured responses.
+
+    By default, calls beyond the configured response list clamp to the
+    LAST response (so a default empty MockLLM can be called any number
+    of times). Pass ``strict=True`` to raise instead — useful for
+    scripted-extraction tests where over-call indicates the script no
+    longer matches the production code path (e.g. chunking now produces
+    multiple chunks so the LLM is invoked more times than scripted).
+    """
 
     def __init__(
         self,
         responses: list[str] | None = None,
         model_name: str = "mock-llm",
+        *,
+        strict: bool = False,
     ) -> None:
         super().__init__(model_name=model_name)
         self._responses = responses or ['{"nodes": [], "relationships": []}']
         self._call_index = 0
+        self._strict = strict
         self.last_messages: list | None = None  # track ainvoke_messages calls
 
     def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+        if self._strict and self._call_index >= len(self._responses):
+            raise AssertionError(
+                f"MockLLM(strict=True): call #{self._call_index + 1} exceeds "
+                f"{len(self._responses)} scripted responses. The production "
+                "code is calling the LLM more times than the test scripted "
+                "for — typically because chunking produced more chunks than "
+                "expected. Update the script or fix the chunking assumption."
+            )
         response = self._responses[min(self._call_index, len(self._responses) - 1)]
         self._call_index += 1
         return LLMResponse(content=response)
@@ -266,7 +288,10 @@ def _scripted_extraction_llm(*per_doc_entities: list[tuple[str, str, str]]):
             }
         )
         responses.extend([step1, step2])
-    return MockLLM(responses=responses)
+    # strict=True so an unexpected extra LLM call (e.g. a future change
+    # makes chunking produce multiple chunks per source) fails loudly
+    # instead of silently re-using the last scripted response.
+    return MockLLM(responses=responses, strict=True)
 
 
 @pytest.fixture
@@ -321,12 +346,26 @@ async def real_falkordb_rag_factory(embedder):
     yield _make
 
     # Teardown — drop every test graph so reruns start clean.
+    # Failures here are logged at WARNING (not silently swallowed):
+    # if delete_all or close is broken, test graphs accumulate forever
+    # in the FalkorDB instance and CI-side cleanup catches it from logs.
     for rag in created:
+        graph_name = getattr(getattr(rag, "_conn", None), "graph_name", "<unknown>")
         try:
             await rag._graph_store.delete_all()
         except Exception:
-            pass
+            _logger.warning(
+                "real_falkordb_rag_factory teardown: delete_all failed for "
+                "graph %r — test graph may persist in FalkorDB",
+                graph_name,
+                exc_info=True,
+            )
         try:
             await rag.close()
         except Exception:
-            pass
+            _logger.warning(
+                "real_falkordb_rag_factory teardown: close() failed for "
+                "graph %r — connection may leak",
+                graph_name,
+                exc_info=True,
+            )
