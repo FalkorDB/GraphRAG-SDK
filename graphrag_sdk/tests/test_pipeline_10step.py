@@ -39,7 +39,7 @@ def pipeline_components(mock_graph_store, mock_vector_store):
     )
 
     chunker = MagicMock()
-    chunker.chunk = AsyncMock(
+    chunker.chunk_document = AsyncMock(
         return_value=TextChunks(
             chunks=[
                 TextChunk(text="Alice works at Acme Corp.", index=0, uid="chunk-0"),
@@ -134,7 +134,7 @@ class TestPipeline10StepExecution:
         # Step 1: Loader called
         pipeline_components["loader"].load.assert_called_once()
         # Step 2: Chunker called
-        pipeline_components["chunker"].chunk.assert_called_once()
+        pipeline_components["chunker"].chunk_document.assert_called_once()
         # Step 3: Lexical graph written (upsert_nodes called for doc + chunks)
         # Step 4: Extractor called
         pipeline_components["extractor"].extract.assert_called_once()
@@ -187,7 +187,7 @@ class TestPipelineWithTextInput:
         )
 
         pipeline_components["loader"].load.assert_not_called()
-        pipeline_components["chunker"].chunk.assert_called_once()
+        pipeline_components["chunker"].chunk_document.assert_called_once()
 
 
 class TestPipelineEmptyChunks:
@@ -201,7 +201,7 @@ class TestPipelineEmptyChunks:
             )
         )
         chunker = MagicMock()
-        chunker.chunk = AsyncMock(return_value=TextChunks(chunks=[]))
+        chunker.chunk_document = AsyncMock(return_value=TextChunks(chunks=[]))
 
         pipeline = IngestionPipeline(
             loader=loader,

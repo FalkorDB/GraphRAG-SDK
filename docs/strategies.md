@@ -6,8 +6,8 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 
 | # | Concern | ABC | Built-in Implementations |
 |---|---------|-----|------------------------|
-| 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader` |
-| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` |
+| 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `MarkdownLoader` |
+| 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking`, `StructuralChunking` |
 | 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
 | 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
@@ -51,11 +51,25 @@ from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 loader = PdfLoader()
 ```
 
+### Built-in: MarkdownLoader
+
+Extracts text from Markdown files. Requires `pip install graphrag-sdk[markdown]`.
+
+```python
+from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+loader = MarkdownLoader()
+```
+
+**Design Note: Markup Preservation**
+For complex elements like tables, lists, and code blocks, `MarkdownLoader` intentionally outputs the raw markdown source (including pipes `|`, list dashes `-`, and code fences) rather than stripping the syntax. While this introduces minor syntax "noise", it preserves critical structural cues (such as spatial column alignment and nested indentation) that the LLM requires during the Extraction phase to accurately parse relational data.
+
 ### Default Behavior
 
 If no loader is specified in `ingest()`:
 - `.pdf` files use `PdfLoader`
-- Everything else uses `TextLoader`
+- `.md` files use `MarkdownLoader`
+-   Everything else uses `TextLoader`
 - If `text=` is passed directly, the loader is skipped
 
 ### Writing Your Own
@@ -150,6 +164,25 @@ from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import Callabl
 # Plain function
 chunker = CallableChunking(lambda text: text.split("\n\n"))
 ```
+
+### Built-in: StructuralChunking
+
+Groups content by heading hierarchy into token-bounded chunks. Each chunk stores a breadcrumbs metadata field that is written as a property on the Chunk node in the knowledge graph, making section paths directly queryable via Cypher.
+
+```python
+from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+
+chunker = StructuralChunking(
+    max_tokens=512,  # max tokens per chunk (default: 512)
+    overlap_sentences=2,  # sentences shared between chunks (default: 2)
+)
+```
+
+**Design Features:**
+- **Strict Fallback Configuration:** If you supply a custom `fallback_chunker` (to handle elements that individually exceed `max_tokens`), you **cannot** pass shorthand arguments like `overlap_sentences` or `encoding_name` to `StructuralChunking`. Those must be configured directly on your custom fallback chunker instance. This prevents configuration parameters from being silently dropped.
+- **Deep-Tree Resilience:** While loaders like `MarkdownLoader` produce flat element lists, the internal `_flatten` algorithm uses a recursive DFS approach. This guarantees future compatibility with highly nested DOM structures (like HTML or DOCX parsers) while preserving full hierarchical breadcrumbs.
+- **Graceful Raw Text Fallback:** Designed to compose safely with *any* loader. If the preceding loader does not extract structural AST elements (e.g., `PdfLoader` or `TextLoader` which output `elements=None`), the chunker gracefully bypasses its structural logic and delegates the entire raw text to the fallback chunker, without crashing or dropping content.
+
 
 ### Writing Your Own
 

@@ -10,7 +10,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "FalkorDB", email = "support@falkordb.com" }]
-keywords = ["graphrag", "rag", "falkordb", "knowledge-graph", "llm", "graph-database", "retrieval-augmented-generation", "nlp", "ai"]
+keywords = [
+    "graphrag",
+    "rag",
+    "falkordb",
+    "knowledge-graph",
+    "llm",
+    "graph-database",
+    "retrieval-augmented-generation",
+    "nlp",
+    "ai",
+]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -38,6 +48,7 @@ anthropic = ["anthropic>=0.20,<1.0"]
 cohere = ["cohere>=5.0"]
 sentence-transformers = ["sentence-transformers>=2.0"]
 pdf = ["pypdf>=6.9.2"]
+markdown = ["markdown-it-py>=3.0.0"]
 # Optional faster/table-aware PDF backend. PyMuPDF is AGPL-3.0 — if that is
 # incompatible with your project's license, stick with the default `pdf` extra.
 pdf-fast = ["pymupdf>=1.24"]
