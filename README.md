@@ -148,7 +148,7 @@ The three primitives behind the wrapper:
 
 In file mode, `document_id` defaults to `os.path.normpath(source)` so
 `update("docs/x.md")` matches the original `ingest("docs/x.md")` with
-no extra plumbing. See [`examples/06_incremental_updates.py`](graphrag_sdk/examples/06_incremental_updates.py).
+no extra plumbing. See [`examples/07_incremental_updates.py`](graphrag_sdk/examples/07_incremental_updates.py).
 
 **Cost model.** `finalize()` runs cross-document deduplication, which
 scans the full entity table — its cost is **O(graph size)**, not
@@ -207,7 +207,7 @@ guards the default.
 | 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | The benchmark-winning pipeline, ready to drop in |
 | 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
 | 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
-| 6 | [Incremental Updates](graphrag_sdk/examples/06_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |
+| 7 | [Incremental Updates](graphrag_sdk/examples/07_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |
 
 ---
 

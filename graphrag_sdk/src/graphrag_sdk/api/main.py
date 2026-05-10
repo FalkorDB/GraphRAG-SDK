@@ -35,6 +35,7 @@ from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunk
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -606,9 +607,14 @@ class GraphRAG:
 
     @staticmethod
     def _default_loader_for(source: str) -> LoaderStrategy:
-        """Auto-detect loader from file extension. Mirrors ``_ingest_single``."""
-        if source.lower().endswith(".pdf"):
+        """Auto-detect loader from file extension. Single source of truth
+        for the ``ingest`` / ``update`` loader-default rule.
+        """
+        lower = source.lower()
+        if lower.endswith(".pdf"):
             return PdfLoader()
+        if lower.endswith(".md"):
+            return MarkdownLoader()
         return TextLoader()
 
     # ── Incremental Updates ─────────────────────────────────────

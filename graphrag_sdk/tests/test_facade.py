@@ -153,6 +153,40 @@ class TestGraphRAGIngest:
             # Will fail because file doesn't exist, but would use PdfLoader
             await g.ingest("/fake/file.pdf")
 
+    async def test_ingest_auto_detects_md(self, mock_conn, embedder, llm, monkeypatch):
+        """Verifies Markdown extension triggers MarkdownLoader selection."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        
+        # Patch IngestionPipeline.run so we don't actually do anything,
+        # but we can inspect the loader that was built and passed to it.
+        from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+        
+        original_init = IngestionPipeline.__init__
+        captured_loader = None
+        
+        def fake_init(self_obj, loader, *args, **kwargs):
+            nonlocal captured_loader
+            captured_loader = loader
+            # Don't call original init, we just want to spy on the args
+        
+        from unittest.mock import AsyncMock
+        monkeypatch.setattr(IngestionPipeline, "__init__", fake_init)
+        
+        # Mock run to be awaitable
+        mock_run = AsyncMock()
+        from graphrag_sdk.core.models import IngestionResult
+        mock_run.return_value = IngestionResult(nodes_created=0, relationships_created=0, chunks_indexed=0, metadata={})
+        monkeypatch.setattr(IngestionPipeline, "run", mock_run)
+        
+        # We also need to skip the post-ingestion stuff
+        g._vector_store.ensure_indices = AsyncMock()
+        g._write_graph_config = AsyncMock()
+
+        await g.ingest("/fake/readme.md")
+        
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+        assert isinstance(captured_loader, MarkdownLoader)
+
     async def test_ingest_calls_ensure_indices(self, graphrag):
         """Ingest should call ensure_indices after pipeline.run."""
         # Patch vector_store methods
