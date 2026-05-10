@@ -615,6 +615,61 @@ class GraphRAG:
     # O(graph size) and should be amortized across a whole batch, not
     # paid per file. See CHANGELOG 1.1.0 cost-model note.
 
+    async def _phase0_recover_prior_pending(self, resolved_id: str, ctx: Context) -> None:
+        """update() Phase 0 — handle leftover from a prior crashed call.
+
+        ``find_pending`` reports COMMITTED for any pending whose
+        ``ready_to_commit`` is already set. In that state, the prior
+        call crossed the commit boundary; the only safe action is to
+        roll forward (replay the cutover sequence). Otherwise the
+        leftover is in WRITTEN state and we discard it.
+
+        Extracted from ``update()`` so the recovery branch can be
+        tested in isolation; the rest of update remains inline because
+        further extraction would require either threading 8+ kwargs
+        through every helper or introducing a per-call state container,
+        either of which obscures rather than clarifies the flow.
+        """
+        prior = await self._graph_store.find_pending(resolved_id)
+        if prior is None:
+            return
+        prior_state, prior_pending_id, prior_hash = prior
+        if prior_state != "COMMITTED":
+            # WRITTEN / WRITING — safe to discard. Pending pipeline
+            # didn't reach the commit point; the live document is intact.
+            await self._graph_store.cleanup_pending_documents(resolved_id)
+            return
+
+        ctx.log(
+            f"update: detected COMMITTED pending '{prior_pending_id}' "
+            f"from a prior crash — rolling forward"
+        )
+        # The pending node carries the "real" path/hash (set just
+        # before we crashed). Look those up before rollforward so the
+        # canonical Document ends up with the right metadata.
+        pending_record = await self._graph_store.get_document_record(prior_pending_id)
+        # A committed pending without persisted path metadata is a
+        # corruption signal — the pipeline must have completed step 7
+        # (write-graph) for the marker to be set, so the path/hash
+        # MUST be there. Refuse to silently default to the canonical
+        # id (would write a non-filesystem path) or to "" hash (would
+        # break future no-op short-circuits forever).
+        if pending_record is None or not pending_record.path:
+            raise DatabaseError(
+                f"Phase 0 rollforward: COMMITTED pending '{prior_pending_id}' "
+                "has no path metadata. Graph state is inconsistent — possible "
+                "corruption or partial write before the commit marker. Refusing "
+                "to proceed; manual intervention required."
+            )
+        roll_path = pending_record.path
+        roll_hash = prior_hash or pending_record.content_hash or ""
+        await self._graph_store.rollforward_cutover(
+            pending_id=prior_pending_id,
+            real_id=resolved_id,
+            path=roll_path,
+            content_hash=roll_hash,
+        )
+
     async def update(
         self,
         source: str | None = None,
@@ -719,34 +774,7 @@ class GraphRAG:
         self._check_no_pending_marker(resolved_id)
 
         # ── Phase 0: pre-cleanup — handle leftover from a prior crash ──
-        # find_pending reports COMMITTED for any pending whose ready_to_commit
-        # is already set. In that state, the prior call crossed the commit
-        # boundary; the only safe action is to roll forward.
-        prior = await self._graph_store.find_pending(resolved_id)
-        if prior is not None:
-            prior_state, prior_pending_id, prior_hash = prior
-            if prior_state == "COMMITTED":
-                ctx.log(
-                    f"update: detected COMMITTED pending '{prior_pending_id}' "
-                    f"from a prior crash — rolling forward"
-                )
-                # The pending node carries the "real" path/hash (set just
-                # before we crashed). Look those up before rollforward so
-                # the canonical Document ends up with the right metadata.
-                pending_record = await self._graph_store.get_document_record(prior_pending_id)
-                roll_path = (pending_record.path if pending_record else None) or resolved_id
-                roll_hash = (
-                    prior_hash or (pending_record.content_hash if pending_record else None) or ""
-                )
-                await self._graph_store.rollforward_cutover(
-                    pending_id=prior_pending_id,
-                    real_id=resolved_id,
-                    path=roll_path,
-                    content_hash=roll_hash,
-                )
-            else:
-                # WRITTEN / WRITING — safe to discard.
-                await self._graph_store.cleanup_pending_documents(resolved_id)
+        await self._phase0_recover_prior_pending(resolved_id, ctx)
 
         # ── Phase 1: load text + lookup live doc + no-op short-circuit ──
         if text is not None:
@@ -880,7 +908,12 @@ class GraphRAG:
             no_op=False,
         )
 
-    async def delete_document(self, document_id: str) -> DeleteDocumentResult:
+    async def delete_document(
+        self,
+        document_id: str,
+        *,
+        if_missing: Literal["error", "ignore"] = "error",
+    ) -> DeleteDocumentResult:
         """Remove a single document and its chunks from the graph.
 
         Deletes:
@@ -896,13 +929,20 @@ class GraphRAG:
         Args:
             document_id: The Document node id (e.g. ``os.path.normpath(path)``
                 if you used the default file-mode id).
+            if_missing: ``"error"`` (default) raises ``DocumentNotFoundError``
+                when the id is unknown. ``"ignore"`` returns an empty
+                ``DeleteDocumentResult`` (zero counts), making the call
+                idempotent — useful for CI cleanup of files removed in
+                a PR when the caller doesn't track which were ever
+                ingested.
 
         Returns:
             ``DeleteDocumentResult`` with chunk and orphan-entity counts.
 
         Raises:
             ValueError: ``document_id`` is empty.
-            DocumentNotFoundError: No Document with that id exists.
+            DocumentNotFoundError: ``if_missing="error"`` (default) and no
+                Document with that id exists.
         """
         if not document_id or not document_id.strip():
             raise ValueError("'document_id' must be a non-empty string")
@@ -910,11 +950,38 @@ class GraphRAG:
 
         existing = await self._graph_store.get_document_record(document_id)
         if existing is None:
+            if if_missing == "ignore":
+                logger.info(
+                    "delete_document: '%s' not found, if_missing=ignore — no-op",
+                    document_id,
+                )
+                return DeleteDocumentResult(document_uid=document_id)
             raise DocumentNotFoundError(f"No Document with id '{document_id}' exists.")
 
         candidate_ids = await self._graph_store.get_document_entity_candidates(document_id)
-        chunks_deleted = await self._graph_store.delete_document_chunks_and_node(document_id)
-        entities_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
+        # A3 — best-effort orphan cleanup. If chunk-and-node deletion
+        # raises mid-flight (network blip, transient Cypher error), we
+        # still attempt the orphan sweep so the candidate set doesn't
+        # leak as permanent ghost nodes. Process death between the two
+        # is unrecoverable here (no persistent recovery handle); a full
+        # state-machine for delete is left as a future enhancement.
+        chunks_deleted = 0
+        entities_deleted = 0
+        try:
+            chunks_deleted = await self._graph_store.delete_document_chunks_and_node(document_id)
+        finally:
+            try:
+                entities_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
+            except Exception:
+                logger.warning(
+                    "delete_document: orphan cleanup failed for '%s' (chunks_deleted=%d); "
+                    "candidate entities may be stranded as orphans. Re-running "
+                    "delete_document(if_missing='ignore') will not recover them — "
+                    "they require a manual sweep.",
+                    document_id,
+                    chunks_deleted,
+                    exc_info=True,
+                )
 
         logger.info(
             "delete_document: %s — removed %d chunks + %d orphan entities",
@@ -1687,12 +1754,17 @@ class GraphRAG:
             )
         )
 
-    def delete_document_sync(self, document_id: str) -> DeleteDocumentResult:
+    def delete_document_sync(
+        self,
+        document_id: str,
+        *,
+        if_missing: Literal["error", "ignore"] = "error",
+    ) -> DeleteDocumentResult:
         """Synchronous ``delete_document`` convenience method.
 
         Keep in sync with :meth:`delete_document`.
         """
-        return asyncio.run(self.delete_document(document_id))
+        return asyncio.run(self.delete_document(document_id, if_missing=if_missing))
 
     def apply_changes_sync(
         self,

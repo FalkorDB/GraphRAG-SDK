@@ -1364,6 +1364,36 @@ class TestGraphRAGUpdate:
         # pending — that would have wiped the committed work.
         graphrag._graph_store.cleanup_pending_documents.assert_not_awaited()
 
+    async def test_phase0_raises_on_committed_pending_with_no_path(self, graphrag):
+        """A1 — A committed pending without persisted path metadata is
+        a corruption signal. The pipeline must have completed step 7
+        (write-graph) for the marker to be set, so path/hash MUST be
+        there. Refuse to silently default to the canonical id (would
+        write a non-filesystem path) or to "" hash (would break future
+        no-op short-circuits forever)."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+        from graphrag_sdk.core.models import DocumentRecord
+
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old-hash"},
+            candidates=[],
+            prior_pending=("COMMITTED", "my-doc__pending__abc12345", "h"),
+        )
+        # Override get_document_record so the pending lookup returns a
+        # record with no path. The live-doc lookup happens AFTER Phase 0
+        # so this stub only affects Phase 0's pending-record fetch.
+        graphrag._graph_store.get_document_record = AsyncMock(
+            return_value=DocumentRecord(path=None, content_hash=None)
+        )
+
+        with pytest.raises(DatabaseError, match="no path metadata"):
+            await graphrag.update(text="new", document_id="my-doc")
+        # CRITICAL: rollforward must NOT have been invoked — destroying
+        # the live document with a corrupt pending would be silent
+        # data loss.
+        graphrag._graph_store.rollforward_cutover.assert_not_awaited()
+
     async def test_phase0_rollback_on_uncommitted_pending(self, graphrag):
         """If find_pending reports WRITTEN (no commit marker), Phase 0 wipes
         the pending — that prior attempt didn't cross the commit boundary."""
@@ -1452,6 +1482,39 @@ class TestGraphRAGDeleteDocument:
         _stub_graph_store_for_update(graphrag, existing_record=None)
         with pytest.raises(DocumentNotFoundError):
             await graphrag.delete_document("ghost")
+
+    async def test_missing_doc_with_if_missing_ignore_returns_empty_result(self, graphrag):
+        """if_missing='ignore' makes delete_document() idempotent — useful
+        for CI cleanup of files removed in a PR when the caller doesn't
+        track which were ever ingested."""
+        _stub_graph_store_for_update(graphrag, existing_record=None)
+
+        result = await graphrag.delete_document("ghost", if_missing="ignore")
+        assert result.document_uid == "ghost"
+        assert result.chunks_deleted == 0
+        assert result.entities_deleted == 0
+        # No graph-store ops should have run beyond the initial lookup.
+        graphrag._graph_store.delete_document_chunks_and_node.assert_not_awaited()
+        graphrag._graph_store.delete_orphan_entities.assert_not_awaited()
+
+    async def test_orphan_cleanup_runs_even_if_chunk_delete_raises(self, graphrag):
+        """A3 — best-effort orphan cleanup. If the chunk-and-node delete
+        raises mid-flight (network blip, transient Cypher error), the
+        orphan sweep must still run so candidate entities don't leak as
+        permanent ghost nodes."""
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "doc-a", "content_hash": "h"},
+            candidates=["e1", "e2"],
+        )
+        graphrag._graph_store.delete_document_chunks_and_node = AsyncMock(
+            side_effect=RuntimeError("transient cypher error")
+        )
+
+        with pytest.raises(RuntimeError, match="transient cypher error"):
+            await graphrag.delete_document("doc-a")
+        # Orphan sweep was still attempted.
+        graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(["e1", "e2"])
 
     async def test_empty_id_raises(self, graphrag):
         with pytest.raises(ValueError, match="non-empty string"):
