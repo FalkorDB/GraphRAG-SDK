@@ -81,8 +81,8 @@ async def main():
         print("Added a second document.")
 
         # ── 5. Heterogeneous batch via apply_changes ───────────────
-        # Imagine a PR diff: alice_bio renamed elsewhere (delete),
-        # acquisitions_2026 changed (modified), one new doc (added).
+        # Imagine a PR diff: alice_bio removed, plus possibly some
+        # added/modified files (left empty here for simplicity).
         batch = await rag.apply_changes(
             added=[],  # new file paths would go here in file mode
             modified=[],  # typically file paths whose content changed

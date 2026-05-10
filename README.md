@@ -124,13 +124,18 @@ CI use case is updating the graph on PR merge — added, modified, and
 deleted files in one batch:
 
 ```python
-graph = await GraphRAG.connect(...)
-await graph.apply_changes(
-    added=["docs/new_feature.md"],
-    modified=["docs/api.md"],
-    deleted=["docs/removed_page.md"],
-)
-await graph.finalize()  # once per batch — finalize is O(graph size)
+async with GraphRAG(connection=ConnectionConfig(...), llm=..., embedder=...) as graph:
+    result = await graph.apply_changes(
+        added=["docs/new_feature.md"],
+        modified=["docs/api.md"],
+        deleted=["docs/removed_page.md"],
+    )
+    await graph.finalize()  # once per batch — finalize is O(graph size)
+
+    # Per-file outcomes are wrapped in BatchEntry — the batch never raises.
+    for entry in result.added + result.modified + result.deleted:
+        if not entry.is_success:
+            print(f"failed: {entry.error_type}: {entry.error}")
 ```
 
 The three primitives behind the wrapper:
