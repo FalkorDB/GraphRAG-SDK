@@ -312,11 +312,32 @@ reranker = CosineReranker(embedder=embedder, top_k=10)
 result = await rag.completion("Your question", reranker=reranker)
 ```
 
+### Token Usage
+
+Both `retrieve()` and `completion()` attach token counters to the result:
+
+```python
+# Retrieval only
+result = await rag.retrieve("What did Professor Harmon discover?")
+print(result.usage.embedding_tokens)   # query embedding tokens
+print(result.usage.prompt_tokens)      # keyword-extraction LLM tokens
+
+# Full completion
+result = await rag.completion("What did Professor Harmon discover?")
+print(result.usage.prompt_tokens)      # retrieval + answer generation LLM input
+print(result.usage.completion_tokens)  # answer tokens
+print(result.usage.embedding_tokens)   # query embedding tokens
+```
+
+See [Token Usage](token-usage.md) for cost estimation helpers and observability patterns.
+
 ---
+
 
 ## File Reference
 
 | File | What it contains |
+
 |------|-----------------|
 | [`multi_path.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py) | Main orchestrator — coordinates all 9 steps |
 | [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py) | RELATES vector search + 2-path entity discovery |

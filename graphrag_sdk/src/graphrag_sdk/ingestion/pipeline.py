@@ -175,7 +175,7 @@ class IngestionPipeline:
 
             async def _step_index_chunks() -> None:
                 ctx.log("Step 9/9: Embedding & indexing chunks")
-                await self.vector_store.index_chunks(chunks)
+                await self.vector_store.index_chunks(chunks, ctx=ctx)
 
             mentions_written, _ = await asyncio.gather(
                 _step_mentions(),
@@ -194,6 +194,7 @@ class IngestionPipeline:
                     "raw_relationships": len(graph_data.relationships),
                     "mention_edges_created": mentions_written,
                 },
+                usage=ctx.usage.model_copy(),  # snapshot at pipeline completion
             )
             ctx.log(
                 f"Pipeline complete: {result.nodes_created} nodes, "

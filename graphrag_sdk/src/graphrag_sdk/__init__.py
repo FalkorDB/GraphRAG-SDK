@@ -40,6 +40,7 @@ from graphrag_sdk.core.models import (
     SearchType,
     TextChunk,
     TextChunks,
+    TokenUsage,
 )
 from graphrag_sdk.core.providers import (
     Embedder,
@@ -138,6 +139,7 @@ __all__ = [
     "SearchType",
     "TextChunk",
     "TextChunks",
+    "TokenUsage",
     # Ingestion
     "ChunkingStrategy",
     "CallableChunking",

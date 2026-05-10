@@ -118,12 +118,17 @@ The default is `256` (matched-Matryoshka dimensions of `text-embedding-3-large`)
 result = await rag.ingest("path/to/document.txt")
 print(f"Created {result.nodes_created} nodes, {result.relationships_created} relationships")
 print(f"Indexed {result.chunks_indexed} chunks")
+# Token costs for this ingest (extraction LLM + chunk embeddings)
+print(f"Prompt tokens: {result.usage.prompt_tokens}")
+print(f"Completion tokens: {result.usage.completion_tokens}")
+print(f"Embedding tokens: {result.usage.embedding_tokens}")
 ```
 
 ### From raw text
 
 ```python
-result = await rag.ingest("acme_doc", text="Acme Corp was founded in 1985 by Jane Doe in Austin, Texas.")
+result = await rag.ingest(text="Acme Corp was founded in 1985 by Jane Doe in Austin, Texas.",
+                          document_id="acme_doc")
 print(f"Created {result.nodes_created} nodes, {result.relationships_created} relationships")
 print(f"Indexed {result.chunks_indexed} chunks")
 ```
@@ -151,6 +156,10 @@ Use `completion()` for the full RAG pipeline — retrieval + answer generation:
 ```python
 result = await rag.completion("Who works at Acme Corp?")
 print(result.answer)
+# See what it cost
+print(f"Tokens used — prompt: {result.usage.prompt_tokens}, "
+      f"completion: {result.usage.completion_tokens}, "
+      f"embedding: {result.usage.embedding_tokens}")
 ```
 
 ### With context inspection
@@ -201,14 +210,16 @@ Supported roles: `"system"`, `"user"`, `"assistant"`. Invalid roles raise `Value
 Use `get_statistics()` to see a summary of what the graph contains:
 
 ```python
-stats = await rag.graph_store.get_statistics()
+stats = await rag.get_statistics()
 print(f"Nodes: {stats['node_count']}, Edges: {stats['edge_count']}")
 ```
 
 You can also run raw Cypher queries against the graph:
 
 ```python
-results = await rag.graph_store.query_raw("MATCH (p:Person)-[:WORKS_AT]->(o:Organization) RETURN p.name, o.name LIMIT 10")
+results = await rag.graph_store.query_raw(
+    "MATCH (p:Person)-[:WORKS_AT]->(o:Organization) RETURN p.name, o.name LIMIT 10"
+)
 for row in results.result_set:
     print(row)
 ```
@@ -221,8 +232,8 @@ After all documents have been ingested, run `finalize()` to deduplicate entities
 
 ```python
 results = await rag.finalize()
-print(f"Deduplicated: {results['entities_deduplicated']}")
-print(f"Embedded: {results['entities_embedded']} entities, {results['relationships_embedded']} relationships")
+print(f"Deduplicated: {results.entities_deduplicated}")
+print(f"Embedded: {results.entities_embedded} entities, {results.relationships_embedded} relationships")
 ```
 
 This step is important for query accuracy. It merges duplicate entities (e.g., "J. Doe" and "Jane Doe") and ensures all entities have vector embeddings for semantic search.
@@ -233,6 +244,7 @@ This step is important for query accuracy. It merges duplicate entities (e.g., "
 
 - [docs/configuration.md](configuration.md) -- Tuning connection settings, chunking parameters, and retrieval options.
 - [docs/strategies.md](strategies.md) -- Custom extraction and resolution strategies.
+- [docs/token-usage.md](token-usage.md) -- Cost tracking, billing dashboards, and observability patterns.
 - [docs/benchmark.md](benchmark.md) -- Reproducing benchmark results on the GraphRAG-Bench Novel corpus (20 novels, 2,010 questions).
 
 ---

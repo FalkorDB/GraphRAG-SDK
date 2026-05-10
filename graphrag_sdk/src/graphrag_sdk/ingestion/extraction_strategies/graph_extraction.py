@@ -253,7 +253,9 @@ class GraphExtraction(ExtractionStrategy):
             if self._max_concurrency is not None:
                 batch_kw["max_concurrency"] = self._max_concurrency
 
-            step1_results = await self.entity_extractor._llm.abatch_invoke(ner_prompts, **batch_kw)
+            step1_results = await self.entity_extractor._llm.abatch_invoke(
+                ner_prompts, ctx=ctx, **batch_kw
+            )
             for item in step1_results:
                 chunk = active_chunks[item.index]
                 if not item.ok:
@@ -324,7 +326,7 @@ class GraphExtraction(ExtractionStrategy):
         all_relations: list[ExtractedRelation] = []
 
         if step2_prompts:
-            step2_results = await self.llm.abatch_invoke(step2_prompts, **batch_kw2)
+            step2_results = await self.llm.abatch_invoke(step2_prompts, ctx=ctx, **batch_kw2)
 
             for item in step2_results:
                 chunk_idx = step2_indices[item.index]
