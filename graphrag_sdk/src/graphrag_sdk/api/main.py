@@ -371,6 +371,12 @@ class GraphRAG:
                 "Cannot pass both 'text' and 'loader'. The loader is ignored "
                 "when text is provided directly — pass only one."
             )
+        # Reserved-substring check ahead of any I/O so a bad explicit
+        # document_id fails fast without paying for a graph-config probe.
+        # _ingest_single re-checks the resolved id (covers per-file ids
+        # in batch mode), so this is a defence-in-depth early-fail.
+        if document_id is not None:
+            self._check_no_pending_marker(document_id)
 
         # ── Config validation (cached, runs at most once per session) ──
         # Catches dim/model mismatches up-front instead of mid-ingest, where
@@ -445,7 +451,10 @@ class GraphRAG:
             return document_id
         if text is None and source is not None:
             return os.path.normpath(source)
-        return f"text-{uuid4().hex[:8]}"
+        # 64-bit suffix — at 32 bits (the original [:8]), 10K text-mode
+        # ingests in one session collide with ~12% probability. 64 bits
+        # pushes that to roughly 2 in 10^11 for the same volume.
+        return f"text-{uuid4().hex[:16]}"
 
     async def _ingest_single(
         self,
@@ -472,12 +481,10 @@ class GraphRAG:
         if ctx is None:
             ctx = Context()
 
-        # Auto-detect loader from file extension
+        # Auto-detect loader from file extension. Shared with update()'s
+        # Phase 1 via _default_loader_for so the rule lives in one place.
         if loader is None and text is None:
-            if source.lower().endswith(".pdf"):
-                loader = PdfLoader()
-            else:
-                loader = TextLoader()
+            loader = self._default_loader_for(source)
 
         # Resolve and bind a stable id so the Document node anchors against
         # a known handle that ``update()`` / ``delete_document()`` can target.
@@ -1020,10 +1027,13 @@ class GraphRAG:
         are collected as ``Exception`` objects in the result; the batch
         never raises. This mirrors ``ingest()``'s batch contract.
 
-        Order: deletes → updates → adds. Deletes free up entity-orphan
-        candidates first; the MERGE-on-id semantics make this safe and
-        correctness-equivalent to any order, only ordering-significant
-        for transient memory footprint.
+        Order: deletes → updates → adds — this is part of the public
+        contract, not a happens-to-work choice. Today MERGE-on-id makes
+        any permutation equally correct, but doing deletes first
+        minimises peak entity cardinality (their orphan candidates are
+        gone before adds bring in potentially-overlapping ids), which
+        future entity-budget enforcement may rely on. Callers should
+        not assume reordering is safe.
 
         **This method does NOT call ``finalize()``.** Cross-document
         deduplication is O(graph size); call ``finalize()`` once after
@@ -1072,6 +1082,25 @@ class GraphRAG:
         added = added or []
         modified = modified or []
         deleted = deleted or []
+
+        # Overlapping ids across buckets are a caller bug (typically a
+        # broken git-diff parser). The dispatch order would silently
+        # apply them as delete-then-update-then-ingest with no error,
+        # leaving the graph in a state the caller almost certainly did
+        # not intend. Catch it here at the input boundary.
+        added_set, modified_set, deleted_set = set(added), set(modified), set(deleted)
+        for a, b, label in (
+            (added_set, modified_set, "added/modified"),
+            (added_set, deleted_set, "added/deleted"),
+            (modified_set, deleted_set, "modified/deleted"),
+        ):
+            overlap = a & b
+            if overlap:
+                raise ValueError(
+                    f"apply_changes: ids appear in multiple input lists "
+                    f"({label}): {sorted(overlap)}. Each id must appear in "
+                    "at most one of added/modified/deleted."
+                )
 
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be >= 1")
@@ -1739,6 +1768,13 @@ class GraphRAG:
         """Synchronous update convenience method.
 
         Keep in sync with :meth:`update`.
+
+        Note:
+            Backed by ``asyncio.run()``, so this method MUST NOT be
+            called from inside an already-running event loop. If you're
+            in an ``async def`` context, await :meth:`update` directly
+            instead. Calling sync from async raises a confusing
+            ``RuntimeError`` from the asyncio internals.
         """
         return asyncio.run(
             self.update(
@@ -1763,6 +1799,11 @@ class GraphRAG:
         """Synchronous ``delete_document`` convenience method.
 
         Keep in sync with :meth:`delete_document`.
+
+        Note:
+            Backed by ``asyncio.run()`` — see :meth:`update_sync` for
+            the async-context restriction. From inside ``async def``,
+            ``await delete_document(...)`` directly.
         """
         return asyncio.run(self.delete_document(document_id, if_missing=if_missing))
 
@@ -1779,6 +1820,11 @@ class GraphRAG:
         """Synchronous ``apply_changes`` convenience method.
 
         Keep in sync with :meth:`apply_changes`.
+
+        Note:
+            Backed by ``asyncio.run()`` — see :meth:`update_sync` for
+            the async-context restriction. From inside ``async def``,
+            ``await apply_changes(...)`` directly.
         """
         return asyncio.run(
             self.apply_changes(

@@ -1638,6 +1638,24 @@ class TestApplyChanges:
         with pytest.raises(ValueError, match="update_concurrency must be >= 1"):
             await graphrag.apply_changes(update_concurrency=0)
 
+    @pytest.mark.parametrize(
+        "kwargs, label_fragment",
+        [
+            ({"added": ["x"], "modified": ["x"]}, "added/modified"),
+            ({"added": ["x"], "deleted": ["x"]}, "added/deleted"),
+            ({"modified": ["x"], "deleted": ["x"]}, "modified/deleted"),
+        ],
+    )
+    async def test_overlapping_ids_across_buckets_raises(
+        self, graphrag, kwargs, label_fragment
+    ):
+        """B1 — apply_changes must reject the same id appearing in more
+        than one input list. Without this guard the dispatch order would
+        silently apply both operations (typically caused by a broken
+        git-diff parser feeding the same path into multiple buckets)."""
+        with pytest.raises(ValueError, match=label_fragment):
+            await graphrag.apply_changes(**kwargs)
+
 
 class TestGraphRAGUpdateSyncWrapper:
     """v1.1.0: sync wrappers mirror the async signatures."""
@@ -1664,3 +1682,36 @@ class TestGraphRAGUpdateSyncWrapper:
         result = graphrag.delete_document_sync("doc-y")
         assert isinstance(result, DeleteDocumentResult)
         assert result.document_uid == "doc-y"
+
+    @pytest.mark.parametrize(
+        "async_name, sync_name",
+        [
+            ("update", "update_sync"),
+            ("delete_document", "delete_document_sync"),
+            ("apply_changes", "apply_changes_sync"),
+        ],
+    )
+    def test_sync_wrapper_signature_matches_async(self, graphrag, async_name, sync_name):
+        """B3 — Each sync wrapper must mirror the parameters of its async
+        counterpart (modulo return type). Without this tripwire, adding a
+        kwarg to the async method silently leaves the sync wrapper rejecting
+        it until someone notices in production."""
+        import inspect
+
+        async_sig = inspect.signature(getattr(graphrag, async_name))
+        sync_sig = inspect.signature(getattr(graphrag, sync_name))
+
+        # Compare parameter names + defaults + kinds. Return annotations
+        # diverge intentionally (sync returns the awaited result).
+        async_params = {
+            name: (p.kind, p.default)
+            for name, p in async_sig.parameters.items()
+        }
+        sync_params = {
+            name: (p.kind, p.default)
+            for name, p in sync_sig.parameters.items()
+        }
+        assert async_params == sync_params, (
+            f"{sync_name} signature drifted from {async_name}.\n"
+            f"  async: {async_params}\n  sync:  {sync_params}"
+        )
