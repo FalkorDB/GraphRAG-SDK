@@ -638,8 +638,7 @@ class GraphStore:
         chunks are out of scope for incremental update.
         """
         result = await self._conn.query(
-            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) "
-            "RETURN c.id AS cid",
+            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) RETURN c.id AS cid",
             {"id": document_id},
         )
         return [row[0] for row in result.result_set] if result.result_set else []
@@ -678,9 +677,7 @@ class GraphStore:
             },
         )
 
-    async def get_cleanup_state(
-        self, document_id: str
-    ) -> tuple[list[str], list[str]] | None:
+    async def get_cleanup_state(self, document_id: str) -> tuple[list[str], list[str]] | None:
         """Read persisted cleanup state off a Document node.
 
         Returns ``(candidate_ids, old_chunk_ids)`` if any cleanup state
@@ -706,8 +703,7 @@ class GraphStore:
         """Remove cleanup-state properties — last step of the
         post-cutover cleanup. Idempotent."""
         await self._conn.query(
-            "MATCH (d:Document {id: $id}) "
-            "REMOVE d.cleanup_candidates, d.cleanup_old_chunk_ids",
+            "MATCH (d:Document {id: $id}) REMOVE d.cleanup_candidates, d.cleanup_old_chunk_ids",
             {"id": document_id},
         )
 

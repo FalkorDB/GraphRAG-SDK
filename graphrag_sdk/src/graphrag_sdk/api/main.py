@@ -517,9 +517,7 @@ class GraphRAG:
         existing = await self._graph_store.get_document_record(resolved_id)
         if existing is not None:
             existing_path = existing.path or ""
-            if existing_path and os.path.normpath(existing_path) != os.path.normpath(
-                path_for_node
-            ):
+            if existing_path and os.path.normpath(existing_path) != os.path.normpath(path_for_node):
                 raise ValueError(
                     f"document_id '{resolved_id}' is already bound to path "
                     f"'{existing_path}'; refusing to rebind to '{path_for_node}'. "
@@ -647,9 +645,7 @@ class GraphRAG:
     # O(graph size) and should be amortized across a whole batch, not
     # paid per file. See CHANGELOG 1.1.0 cost-model note.
 
-    async def _run_post_cutover_cleanup(
-        self, document_id: str, ctx: Context
-    ) -> tuple[int, int]:
+    async def _run_post_cutover_cleanup(self, document_id: str, ctx: Context) -> tuple[int, int]:
         """Read persisted cleanup state from a Document and execute it.
 
         Steps (all idempotent):
@@ -676,9 +672,7 @@ class GraphRAG:
         stale_deleted = await self._graph_store.delete_stale_relationships(
             candidate_ids, old_chunk_ids
         )
-        orphans_deleted = await self._graph_store.delete_orphan_entities(
-            candidate_ids
-        )
+        orphans_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
         await self._graph_store.clear_cleanup_state(document_id)
         if stale_deleted or orphans_deleted:
             ctx.log(
@@ -688,9 +682,7 @@ class GraphRAG:
             )
         return (stale_deleted, orphans_deleted)
 
-    async def _resume_pending_delete(
-        self, document_id: str, ctx: Context
-    ) -> None:
+    async def _resume_pending_delete(self, document_id: str, ctx: Context) -> None:
         """Finish a delete_document() that crashed after its commit
         marker (``pending_delete=true``) but before the Document node
         was removed.
@@ -704,9 +696,7 @@ class GraphRAG:
         ``pending_delete=true`` is detected at the top of update /
         ingest / delete.
         """
-        ctx.log(
-            f"phase0: resuming interrupted delete for '{document_id}'"
-        )
+        ctx.log(f"phase0: resuming interrupted delete for '{document_id}'")
         await self._graph_store.delete_document_chunks(document_id)
         # Cleanup state was set atomically with pending_delete=true.
         # _run_post_cutover_cleanup handles the rest and clears the
@@ -714,9 +704,7 @@ class GraphRAG:
         await self._run_post_cutover_cleanup(document_id, ctx)
         await self._graph_store.delete_document_node(document_id)
 
-    async def _phase0_recover_prior_operations(
-        self, resolved_id: str, ctx: Context
-    ) -> None:
+    async def _phase0_recover_prior_operations(self, resolved_id: str, ctx: Context) -> None:
         """Phase 0 — handle recoverable leftovers from a prior crashed
         call to update / delete_document / ingest on this id.
 
@@ -768,9 +756,7 @@ class GraphRAG:
                 # The pending node carries the "real" path/hash (set just
                 # before we crashed). Look those up before rollforward so the
                 # canonical Document ends up with the right metadata.
-                pending_record = await self._graph_store.get_document_record(
-                    prior_pending_id
-                )
+                pending_record = await self._graph_store.get_document_record(prior_pending_id)
                 # A committed pending without persisted path metadata is a
                 # corruption signal — the pipeline must have completed step 7
                 # (write-graph) for the marker to be set, so the path/hash
@@ -796,18 +782,12 @@ class GraphRAG:
                 # would be stranded permanently. We write the snapshot to
                 # the pending node so it rides along on the rename and the
                 # standard post-cutover cleanup picks it up.
-                existing_state = await self._graph_store.get_cleanup_state(
-                    prior_pending_id
-                )
+                existing_state = await self._graph_store.get_cleanup_state(prior_pending_id)
                 if existing_state is None:
-                    candidates_snapshot = (
-                        await self._graph_store.get_document_entity_candidates(
-                            resolved_id
-                        )
+                    candidates_snapshot = await self._graph_store.get_document_entity_candidates(
+                        resolved_id
                     )
-                    chunks_snapshot = (
-                        await self._graph_store.get_document_chunk_ids(resolved_id)
-                    )
+                    chunks_snapshot = await self._graph_store.get_document_chunk_ids(resolved_id)
                     if candidates_snapshot or chunks_snapshot:
                         await self._graph_store.set_pending_cleanup_state(
                             prior_pending_id,
@@ -1018,9 +998,7 @@ class GraphRAG:
 
         # ── Phase 3: write new content under a fresh pending id ──
         pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"
-        pending_doc_info = DocumentInfo(
-            uid=pending_id, path=doc_path, metadata=loaded_metadata
-        )
+        pending_doc_info = DocumentInfo(uid=pending_id, path=doc_path, metadata=loaded_metadata)
 
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),  # unused (text is provided below)
@@ -1058,9 +1036,7 @@ class GraphRAG:
         # discarding the half-written state along with the pending. The
         # only state combination that survives is "marker AND lists",
         # which is exactly what Phase 6 needs.
-        await self._graph_store.set_pending_cleanup_state(
-            pending_id, candidate_ids, old_chunk_ids
-        )
+        await self._graph_store.set_pending_cleanup_state(pending_id, candidate_ids, old_chunk_ids)
 
         # ── Phase 4: COMMIT (load-bearing single-property atomic write) ──
         # Sets pending.ready_to_commit = true. After this returns, recovery
@@ -1106,9 +1082,7 @@ class GraphRAG:
         )
 
         return UpdateResult(
-            document_info=DocumentInfo(
-                uid=resolved_id, path=doc_path, metadata=loaded_metadata
-            ),
+            document_info=DocumentInfo(uid=resolved_id, path=doc_path, metadata=loaded_metadata),
             nodes_created=pipeline_result.nodes_created,
             relationships_created=pipeline_result.relationships_created,
             chunks_indexed=pipeline_result.chunks_indexed,
