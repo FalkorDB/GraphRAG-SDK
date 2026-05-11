@@ -198,13 +198,34 @@ class GraphStore:
                 )
                 safe_src = sanitize_cypher_label(src_label)
                 safe_tgt = sanitize_cypher_label(tgt_label)
-                query = (
-                    f"UNWIND $batch AS item "
-                    f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
-                    f"(b:`{safe_tgt}` {{id: item.end_id}}) "
-                    f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
-                    f"SET r += item.properties"
-                )
+                # RELATES edges carry ``source_chunk_ids`` provenance. A
+                # plain ``SET r += item.properties`` on MERGE-found edges
+                # overwrites the survivor's list with the incoming write's,
+                # silently destroying earlier docs' contribution and
+                # breaking ``delete_stale_relationships`` (a later delete
+                # of the new doc would drop the edge even though earlier
+                # docs still support it). Special-case RELATES to UNION
+                # the lists — same idiom as the deduplicator remap path.
+                if rel_type == "RELATES":
+                    query = (
+                        f"UNWIND $batch AS item "
+                        f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
+                        f"(b:`{safe_tgt}` {{id: item.end_id}}) "
+                        f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
+                        f"WITH r, item, "
+                        f"     coalesce(r.source_chunk_ids, []) AS old, "
+                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                        f"SET r += item.properties "
+                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                    )
+                else:
+                    query = (
+                        f"UNWIND $batch AS item "
+                        f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
+                        f"(b:`{safe_tgt}` {{id: item.end_id}}) "
+                        f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
+                        f"SET r += item.properties"
+                    )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
                     count += len(batch)
@@ -222,12 +243,28 @@ class GraphStore:
                         safe_fb_src = sanitize_cypher_label(fb_src)
                         safe_fb_tgt = sanitize_cypher_label(fb_tgt)
                         safe_fb_rel = sanitize_cypher_label(rel.type)
-                        q = (
-                            f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
-                            f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
-                            f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
-                            f"SET r += $properties"
-                        )
+                        # Mirror the batch-path RELATES special case so
+                        # the per-item fallback doesn't silently regress
+                        # to overwriting source_chunk_ids when the batch
+                        # query fails (e.g. transient Cypher error).
+                        if rel.type == "RELATES":
+                            q = (
+                                f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
+                                f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
+                                f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
+                                f"WITH r, $properties AS props, "
+                                f"     coalesce(r.source_chunk_ids, []) AS old, "
+                                f"     coalesce($properties.source_chunk_ids, []) AS contrib "
+                                f"SET r += props "
+                                f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                            )
+                        else:
+                            q = (
+                                f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
+                                f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
+                                f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
+                                f"SET r += $properties"
+                            )
                         params = {
                             "start_id": sid,
                             "end_id": eid,
@@ -784,19 +821,36 @@ class GraphStore:
         deleted = 0
         for start in range(0, len(candidate_ids), self._BATCH_SIZE):
             batch = candidate_ids[start : start + self._BATCH_SIZE]
-            r = await self._conn.query(
+            # Two-query implementation. FalkorDB's planner quirks bite
+            # both ``WITH DISTINCT r, <expr> AS remaining ... SET r.X``
+            # (SET silently no-ops) and ``... SET ... WITH DISTINCT ...
+            # DELETE r`` (the SET is undone or skipped). Splitting into
+            # two queries — strip-then-delete — avoids both issues and
+            # is easier to reason about. Both are idempotent: re-running
+            # is a no-op once the list shrinks to the stable set.
+            await self._conn.query(
                 "UNWIND $ids AS eid "
                 "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
                 "WHERE r.source_chunk_ids IS NOT NULL "
                 "AND any(c IN r.source_chunk_ids WHERE c IN $old_chunks) "
-                "WITH DISTINCT r, "
+                "WITH r, "
                 "  [c IN r.source_chunk_ids WHERE NOT c IN $old_chunks] AS remaining "
-                "SET r.source_chunk_ids = remaining "
-                "WITH r, remaining "
-                "WHERE size(remaining) = 0 "
+                "SET r.source_chunk_ids = remaining",
+                {"ids": batch, "old_chunks": old_chunk_ids},
+            )
+            # Delete edges whose provenance went empty. Scoped to the
+            # same candidate set so we still avoid a global scan, and
+            # we use DISTINCT to handle the undirected-match fan-out
+            # without errors from double-deleting the same row.
+            r = await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
+                "WHERE r.source_chunk_ids IS NOT NULL "
+                "AND size(r.source_chunk_ids) = 0 "
+                "WITH DISTINCT r "
                 "DELETE r "
                 "RETURN count(r) AS n",
-                {"ids": batch, "old_chunks": old_chunk_ids},
+                {"ids": batch},
             )
             deleted += r.result_set[0][0] if r.result_set else 0
         return deleted

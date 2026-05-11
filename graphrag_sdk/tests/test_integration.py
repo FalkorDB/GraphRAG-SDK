@@ -1,4 +1,5 @@
 """Integration tests — verify top-level imports and cross-module interactions."""
+
 from __future__ import annotations
 
 import os
@@ -21,41 +22,67 @@ class TestTopLevelImports:
 
     def test_facade(self):
         from graphrag_sdk import GraphRAG
+
         assert GraphRAG is not None
 
     def test_core_models(self):
         from graphrag_sdk import (
-            DataModel, GraphNode, GraphRelationship, TextChunk, TextChunks,
-            DocumentInfo, DocumentOutput, EntityType, RelationType,
-            GraphSchema, GraphData, ResolutionResult,
-            RetrieverResult, RetrieverResultItem, RagResult, IngestionResult,
+            DataModel,
+            GraphNode,
+            GraphRelationship,
+            TextChunk,
+            TextChunks,
+            DocumentInfo,
+            DocumentOutput,
+            EntityType,
+            RelationType,
+            GraphSchema,
+            GraphData,
+            ResolutionResult,
+            RetrieverResult,
+            RetrieverResultItem,
+            RagResult,
+            IngestionResult,
             SearchType,
         )
+
         # All should be importable
         assert DataModel is not None
         assert SearchType.VECTOR == "vector"
 
     def test_core_contracts(self):
         from graphrag_sdk import (
-            Embedder, LLMInterface, Context, ConnectionConfig,
-            FalkorDBConnection, GraphRAGError,
+            Embedder,
+            LLMInterface,
+            Context,
+            ConnectionConfig,
+            FalkorDBConnection,
+            GraphRAGError,
         )
+
         assert Embedder is not None
         assert LLMInterface is not None
 
     def test_strategy_abcs(self):
         from graphrag_sdk import (
-            LoaderStrategy, ChunkingStrategy, ExtractionStrategy,
-            ResolutionStrategy, RetrievalStrategy, RerankingStrategy,
+            LoaderStrategy,
+            ChunkingStrategy,
+            ExtractionStrategy,
+            ResolutionStrategy,
+            RetrievalStrategy,
+            RerankingStrategy,
         )
+
         assert LoaderStrategy is not None
 
     def test_pipeline(self):
         from graphrag_sdk import IngestionPipeline
+
         assert IngestionPipeline is not None
 
     def test_storage(self):
         from graphrag_sdk import GraphStore, VectorStore
+
         assert GraphStore is not None
         assert VectorStore is not None
 
@@ -68,30 +95,35 @@ class TestCrossCuttingConcerns:
         from graphrag_sdk.core.context import Context
         from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
         import inspect
+
         sig = inspect.signature(ChunkingStrategy.chunk)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_extraction(self):
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         import inspect
+
         sig = inspect.signature(ExtractionStrategy.extract)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_resolution(self):
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
         import inspect
+
         sig = inspect.signature(ResolutionStrategy.resolve)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_retrieval(self):
         from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
         import inspect
+
         sig = inspect.signature(RetrievalStrategy.search)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_reranking(self):
         from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
         import inspect
+
         sig = inspect.signature(RerankingStrategy.rerank)
         assert "ctx" in sig.parameters
 
@@ -101,39 +133,48 @@ class TestSubmoduleImports:
 
     def test_text_loader(self):
         from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
         assert TextLoader is not None
 
     def test_pdf_loader(self):
         from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
+
         assert PdfLoader is not None
 
     def test_fixed_size_chunking(self):
         from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+
         assert FixedSizeChunking is not None
 
     def test_graph_extraction(self):
         from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
+
         assert GraphExtraction is not None
 
     def test_exact_match_resolution(self):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
         assert ExactMatchResolution is not None
 
     def test_local_retrieval(self):
         from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
+
         assert LocalRetrieval is not None
 
     def test_semantic_router(self):
         from graphrag_sdk.retrieval.router import SemanticRouter
+
         assert SemanticRouter is not None
 
     def test_tracer(self):
         from graphrag_sdk.telemetry.tracer import Tracer, Span
+
         assert Tracer is not None
         assert Span is not None
 
     def test_graph_visualizer(self):
         from graphrag_sdk.utils.graph_viz import GraphVisualizer
+
         assert GraphVisualizer is not None
 
 
@@ -172,6 +213,7 @@ def resolver(request, embedder):
     from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
         SemanticResolution,
     )
+
     if request.param == "ExactMatch":
         return ExactMatchResolution()
     return SemanticResolution(embedder=embedder)
@@ -211,10 +253,14 @@ class TestIncrementalUpdateInvariants:
         """
         # Two ingest calls → 2 entity sets scripted into the LLM.
         llm = scripted_llm(
-            [("Alice", "Person", "Software engineer at Acme"),
-             ("Acme Corp", "Organization", "A tech company")],
-            [("Alice", "Person", "Software engineer at Acme"),
-             ("Bob", "Person", "Alice's colleague")],
+            [
+                ("Alice", "Person", "Software engineer at Acme"),
+                ("Acme Corp", "Organization", "A tech company"),
+            ],
+            [
+                ("Alice", "Person", "Software engineer at Acme"),
+                ("Bob", "Person", "Alice's colleague"),
+            ],
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
 
@@ -254,9 +300,7 @@ class TestIncrementalUpdateInvariants:
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
 
-        await rag.ingest(
-            text="Bob is a person.", document_id="doc-A", resolver=resolver
-        )
+        await rag.ingest(text="Bob is a person.", document_id="doc-A", resolver=resolver)
         assert await _entity_count(rag, "Bob") == 1
 
         await rag.delete_document("doc-A")
@@ -276,9 +320,7 @@ class TestIncrementalUpdateInvariants:
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
 
-        await rag.ingest(
-            text="Carol is here.", document_id="doc-A", resolver=resolver
-        )
+        await rag.ingest(text="Carol is here.", document_id="doc-A", resolver=resolver)
         assert await _entity_count(rag, "Carol") == 1
 
         await rag.update(
@@ -320,23 +362,27 @@ class TestIncrementalUpdateInvariants:
         import asyncio
 
         llm = scripted_llm(
-            [("Dave", "Person", "Shared by both docs"),
-             ("Xena", "Person", "doc-A only")],   # initial doc-A
-            [("Dave", "Person", "Shared by both docs"),
-             ("Yara", "Person", "doc-B only")],   # initial doc-B
-            [("Dave", "Person", "Still in updated A"),
-             ("Xena", "Person", "Still in A")],   # updated doc-A
-            [("Dave", "Person", "Still in updated B"),
-             ("Yara", "Person", "Still in B")],   # updated doc-B
+            [
+                ("Dave", "Person", "Shared by both docs"),
+                ("Xena", "Person", "doc-A only"),
+            ],  # initial doc-A
+            [
+                ("Dave", "Person", "Shared by both docs"),
+                ("Yara", "Person", "doc-B only"),
+            ],  # initial doc-B
+            [
+                ("Dave", "Person", "Still in updated A"),
+                ("Xena", "Person", "Still in A"),
+            ],  # updated doc-A
+            [
+                ("Dave", "Person", "Still in updated B"),
+                ("Yara", "Person", "Still in B"),
+            ],  # updated doc-B
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
 
-        await rag.ingest(
-            text="Dave knows Xena.", document_id="doc-A", resolver=resolver
-        )
-        await rag.ingest(
-            text="Dave likes Yara.", document_id="doc-B", resolver=resolver
-        )
+        await rag.ingest(text="Dave knows Xena.", document_id="doc-A", resolver=resolver)
+        await rag.ingest(text="Dave likes Yara.", document_id="doc-B", resolver=resolver)
         assert await _entity_count(rag, "Dave") == 1
 
         # Now interleave two updates, both still mentioning Dave.
@@ -395,10 +441,11 @@ class TestIncrementalUpdateInvariants:
             ],
         )
         llm = scripted_llm(
-            [("Alice", "Person", "Engineer at Acme"),
-             ("Acme Corp", "Organization", "A tech company")],
-            [("Alice", "Person", "Engineer at Acme"),
-             ("Bob", "Person", "Colleague")],
+            [
+                ("Alice", "Person", "Engineer at Acme"),
+                ("Acme Corp", "Organization", "A tech company"),
+            ],
+            [("Alice", "Person", "Engineer at Acme"), ("Bob", "Person", "Colleague")],
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, schema=schema)
 
@@ -418,8 +465,7 @@ class TestIncrementalUpdateInvariants:
 
         # Same invariant under schema mode: Alice survives via doc-B.
         assert await _entity_count(rag, "Alice") == 1, (
-            "Schema-mode orphan cleanup must preserve shared entities "
-            "exactly like open mode."
+            "Schema-mode orphan cleanup must preserve shared entities exactly like open mode."
         )
         assert await _entity_count(rag, "Acme Corp") == 0
         assert await _entity_count(rag, "Bob") == 1
@@ -464,9 +510,7 @@ class TestIncrementalUpdateInvariants:
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
         graph_name = rag._conn.config.graph_name
 
-        await rag.ingest(
-            text="Original is here.", document_id="doc-A", resolver=resolver
-        )
+        await rag.ingest(text="Original is here.", document_id="doc-A", resolver=resolver)
         assert await _entity_count(rag, "Original") == 1
 
         # ── Simulate the persisted state of a crashed update() between
@@ -474,8 +518,7 @@ class TestIncrementalUpdateInvariants:
         # ready_to_commit=true, alongside the still-live original doc.
         pending_id = "doc-A__pending__sim00001"
         await rag._graph_store._conn.query(
-            "CREATE (p:Document {id: $pid, path: 'doc-A', "
-            "content_hash: 'sim-new-hash'})",
+            "CREATE (p:Document {id: $pid, path: 'doc-A', content_hash: 'sim-new-hash'})",
             {"pid": pending_id},
         )
         await rag._graph_store._conn.query(
@@ -571,9 +614,7 @@ class TestIncrementalUpdateInvariants:
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
         graph_name = rag._conn.config.graph_name
 
-        await rag.ingest(
-            text="Ghost lives here.", document_id="doc-A", resolver=resolver
-        )
+        await rag.ingest(text="Ghost lives here.", document_id="doc-A", resolver=resolver)
         assert await _entity_count(rag, "Ghost") == 1
 
         # Simulate the persisted state of an update() that committed but
@@ -594,8 +635,7 @@ class TestIncrementalUpdateInvariants:
             row[0]
             for row in (
                 await rag._graph_store._conn.query(
-                    "MATCH (:Document {id: 'doc-A'})-[:PART_OF]->(c:Chunk) "
-                    "RETURN c.id AS cid",
+                    "MATCH (:Document {id: 'doc-A'})-[:PART_OF]->(c:Chunk) RETURN c.id AS cid",
                     {},
                 )
             ).result_set
@@ -610,9 +650,7 @@ class TestIncrementalUpdateInvariants:
             "CREATE (p)-[:PART_OF]->(:Chunk {id: 'crash-chunk-1', text: 'new'})",
             {"pid": pending_id},
         )
-        await rag._graph_store.set_pending_cleanup_state(
-            pending_id, candidate_ids, old_chunk_ids
-        )
+        await rag._graph_store.set_pending_cleanup_state(pending_id, candidate_ids, old_chunk_ids)
         committed = await rag._graph_store.mark_pending_committed(pending_id)
         assert committed == 1
 
@@ -675,9 +713,7 @@ class TestIncrementalUpdateInvariants:
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
         graph_name = rag._conn.config.graph_name
 
-        await rag.ingest(
-            text="Stale was here.", document_id="doc-B", resolver=resolver
-        )
+        await rag.ingest(text="Stale was here.", document_id="doc-B", resolver=resolver)
         assert await _entity_count(rag, "Stale") == 1
 
         # Snapshot what cleanup would do, delete chunks (simulating
@@ -691,9 +727,7 @@ class TestIncrementalUpdateInvariants:
         await rag._graph_store.delete_document_chunks("doc-B")
         # Stash cleanup state on the live doc (what set_pending_cleanup_state
         # would have written + rollforward renamed onto the canonical id).
-        await rag._graph_store.set_pending_cleanup_state(
-            "doc-B", candidate_ids, old_chunk_ids
-        )
+        await rag._graph_store.set_pending_cleanup_state("doc-B", candidate_ids, old_chunk_ids)
 
         await rag.close()
 
@@ -757,24 +791,30 @@ class TestIncrementalUpdateInvariants:
         # Default `scripted_llm` produces entities-only responses; this
         # test needs an explicit RELATES on the first doc.
         def _step2(entities, relationships=()):
-            return json.dumps({
-                "entities": [
-                    {"name": n, "type": t, "description": d} for n, t, d in entities
-                ],
-                "relationships": list(relationships),
-            })
+            return json.dumps(
+                {
+                    "entities": [{"name": n, "type": t, "description": d} for n, t, d in entities],
+                    "relationships": list(relationships),
+                }
+            )
+
         entities = [
             ("Alice", "Person", "p1"),
             ("Bob", "Person", "p2"),
         ]
-        doc_a = _step2(entities, [{
-            "source": "Alice",
-            "target": "Bob",
-            "type": "KNOWS",
-            "description": "Alice knows Bob",
-            "keywords": "social",
-            "weight": 0.9,
-        }])
+        doc_a = _step2(
+            entities,
+            [
+                {
+                    "source": "Alice",
+                    "target": "Bob",
+                    "type": "KNOWS",
+                    "description": "Alice knows Bob",
+                    "keywords": "social",
+                    "weight": 0.9,
+                }
+            ],
+        )
         doc_b = _step2(entities)
         doc_a_update = _step2(entities)  # update drops the relationship
         llm = MockLLM(responses=[doc_a, doc_b, doc_a_update], strict=True)
@@ -813,9 +853,7 @@ class TestIncrementalUpdateInvariants:
             "delete_orphan_entities only touched nodes — the edge survived."
         )
 
-    async def test_dedup_remap_unions_source_chunk_ids(
-        self, real_falkordb_rag_factory, embedder
-    ):
+    async def test_dedup_remap_unions_source_chunk_ids(self, real_falkordb_rag_factory, embedder):
         """When deduplicator merges two entities, the survivor's RELATES
         edge ``source_chunk_ids`` provenance must UNION the duplicate's
         contribution rather than overwrite it. Pre-fix, ``SET nr +=
@@ -839,8 +877,7 @@ class TestIncrementalUpdateInvariants:
             {},
         )
         await conn.query(
-            "CREATE (a2:__Entity__:Person {id: 'alice-2', name: 'Alice', "
-            "description: 'short'})",
+            "CREATE (a2:__Entity__:Person {id: 'alice-2', name: 'Alice', description: 'short'})",
             {},
         )
         await conn.query(
@@ -875,4 +912,86 @@ class TestIncrementalUpdateInvariants:
             "Pre-fix, SET nr += properties(r) overwrote the survivor's "
             "list with the duplicate's, silently dropping provenance "
             "and breaking subsequent stale-RELATES cleanup."
+        )
+
+    async def test_relates_provenance_union_on_shared_fact_ingest(
+        self, real_falkordb_rag_factory, scripted_llm, resolver
+    ):
+        """Two docs both extract ``Alice KNOWS Bob`` — the RELATES edge's
+        ``source_chunk_ids`` must UNION both docs' chunks, not overwrite.
+        Deleting one doc must leave the edge intact with the surviving
+        doc's chunk in the provenance list.
+
+        Pre-fix, ``upsert_relationships`` did ``SET r += item.properties``
+        on MERGE-found edges, so doc-B's ingest replaced doc-A's chunk in
+        ``source_chunk_ids``. ``delete_document("doc-B")`` then deleted
+        the edge entirely even though doc-A still supports it. The fix
+        special-cases RELATES in the upsert path to mirror the dedup
+        remap's union idiom.
+        """
+        import json
+
+        from .conftest import MockLLM
+
+        # Both docs produce identical Alice KNOWS Bob extraction.
+        def _step2_with_knows():
+            return json.dumps(
+                {
+                    "entities": [
+                        {"name": "Alice", "type": "Person", "description": "p1"},
+                        {"name": "Bob", "type": "Person", "description": "p2"},
+                    ],
+                    "relationships": [
+                        {
+                            "source": "Alice",
+                            "target": "Bob",
+                            "type": "KNOWS",
+                            "description": "Alice knows Bob",
+                            "keywords": "social",
+                            "weight": 0.9,
+                        }
+                    ],
+                }
+            )
+
+        llm = MockLLM(responses=[_step2_with_knows(), _step2_with_knows()], strict=True)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+
+        await rag.ingest(text="Alice knows Bob.", document_id="doc-A", resolver=resolver)
+        await rag.ingest(text="Alice also knows Bob.", document_id="doc-B", resolver=resolver)
+
+        # After both ingests, the RELATES edge should carry BOTH chunk ids.
+        result = await rag._graph_store._conn.query(
+            "MATCH (:__Entity__ {name: 'Alice'})-[r:RELATES]->(:__Entity__ {name: 'Bob'}) "
+            "RETURN r.source_chunk_ids AS scids",
+            {},
+        )
+        assert result.result_set, "RELATES edge should exist after both ingests"
+        scids_after_ingest = set(result.result_set[0][0] or [])
+        assert len(scids_after_ingest) == 2, (
+            f"upsert_relationships must UNION source_chunk_ids on shared "
+            f"facts — got {scids_after_ingest!r} (expected 2 distinct chunk ids). "
+            "Pre-fix, SET r += item.properties overwrote doc-A's chunk with "
+            "doc-B's on the second ingest."
+        )
+
+        # Now delete doc-B. Its chunk leaves source_chunk_ids; the edge
+        # survives because doc-A's chunk is still in the list.
+        await rag.delete_document("doc-B")
+
+        result = await rag._graph_store._conn.query(
+            "MATCH (:__Entity__ {name: 'Alice'})-[r:RELATES]->(:__Entity__ {name: 'Bob'}) "
+            "RETURN r.source_chunk_ids AS scids",
+            {},
+        )
+        assert result.result_set, (
+            "RELATES edge must SURVIVE delete_document('doc-B') because doc-A "
+            "still supports the fact. Pre-fix, the edge would be removed: "
+            "doc-B's ingest had clobbered doc-A's chunk in source_chunk_ids, "
+            "so post-delete the list emptied and the edge dropped."
+        )
+        scids_after_delete = set(result.result_set[0][0] or [])
+        assert len(scids_after_delete) == 1, (
+            f"After deleting doc-B, RELATES.source_chunk_ids should contain "
+            f"exactly one chunk (doc-A's) — got {scids_after_delete!r}."
         )
