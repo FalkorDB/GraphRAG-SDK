@@ -277,3 +277,312 @@ class TestRelationshipLabelHints:
         cypher = mock_connection.query.call_args[0][0]
         assert "`__Entity__`" in cypher
         assert "`Chunk`" in cypher
+
+
+class TestGraphStoreDocumentLifecycle:
+    """v1.1.0: Cypher-layer methods used by GraphRAG.update() / delete_document()."""
+
+    async def test_get_document_record_returns_typed_record(self, graph_store, mock_connection):
+        from graphrag_sdk.core.models import DocumentRecord
+
+        result_mock = MagicMock()
+        result_mock.result_set = [["docs/a.md", "abc123"]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        record = await graph_store.get_document_record("docs/a.md")
+        assert isinstance(record, DocumentRecord)
+        assert record.path == "docs/a.md"
+        assert record.content_hash == "abc123"
+        cypher = mock_connection.query.call_args[0][0]
+        assert "MATCH (d:Document {id: $id})" in cypher
+        assert "content_hash" in cypher
+
+    async def test_get_document_record_returns_none_when_missing(
+        self, graph_store, mock_connection
+    ):
+        result_mock = MagicMock()
+        result_mock.result_set = []
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        record = await graph_store.get_document_record("ghost")
+        assert record is None
+
+    async def test_get_document_record_handles_pre_1_1_0_docs(
+        self, graph_store, mock_connection
+    ):
+        """Documents ingested before v1.1.0 lack content_hash; the typed
+        record carries None for the hash (the update() short-circuit then
+        falls through to a full update — fail-safe)."""
+        from graphrag_sdk.core.models import DocumentRecord
+
+        result_mock = MagicMock()
+        result_mock.result_set = [["docs/old.md", None]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        record = await graph_store.get_document_record("docs/old.md")
+        assert isinstance(record, DocumentRecord)
+        assert record.path == "docs/old.md"
+        assert record.content_hash is None
+
+    async def test_get_document_entity_candidates_returns_distinct_ids(
+        self, graph_store, mock_connection
+    ):
+        result_mock = MagicMock()
+        result_mock.result_set = [["e1"], ["e2"], ["e3"]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        candidates = await graph_store.get_document_entity_candidates("docs/a.md")
+        assert candidates == ["e1", "e2", "e3"]
+        cypher = mock_connection.query.call_args[0][0]
+        # Critical: must traverse MENTIONED_IN → Chunk → PART_OF → Document.
+        assert "MENTIONED_IN" in cypher
+        assert "PART_OF" in cypher
+        assert "DISTINCT" in cypher
+
+    async def test_cleanup_pending_documents_skips_committed(
+        self, graph_store, mock_connection
+    ):
+        """v1.1.0 state-machine: cleanup MUST NOT delete a pending whose
+        ready_to_commit=true — that pending was committed by a prior call
+        that crashed before completing the cutover. Discarding it would
+        be silent data loss; the next call's Phase 0 must roll forward."""
+        result_mock = MagicMock()
+        result_mock.result_set = [[2]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        n = await graph_store.cleanup_pending_documents("docs/a.md")
+        assert n == 2
+        cypher = mock_connection.query.call_args[0][0]
+        assert "STARTS WITH" in cypher
+        # Critical: WHERE clause excludes committed pendings.
+        assert "ready_to_commit IS NULL OR p.ready_to_commit = false" in cypher
+        assert "DETACH DELETE" in cypher
+        params = mock_connection.query.call_args[0][1]
+        assert params["prefix"] == "docs/a.md__pending__"
+
+    async def test_find_pending_returns_committed_state(
+        self, graph_store, mock_connection
+    ):
+        """find_pending checks for COMMITTED first; a hit returns immediately
+        and the WRITTEN fallback query is never issued."""
+        results = [
+            # Query 1: WHERE p.ready_to_commit = true → hit
+            MagicMock(result_set=[["docs/a.md__pending__abc12345", "newhash"]]),
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        out = await graph_store.find_pending("docs/a.md")
+        assert out is not None
+        state, pid, hash_ = out
+        assert state == "COMMITTED"
+        assert pid == "docs/a.md__pending__abc12345"
+        assert hash_ == "newhash"
+        # Only the COMMITTED-first query ran — no fallback.
+        assert mock_connection.query.await_count == 1
+        cypher = mock_connection.query.await_args_list[0][0][0]
+        assert "p.ready_to_commit = true" in cypher
+
+    async def test_find_pending_returns_written_state(
+        self, graph_store, mock_connection
+    ):
+        """When no COMMITTED pending exists, the second query falls back to
+        any non-committed pending and labels it WRITTEN."""
+        results = [
+            MagicMock(result_set=[]),  # 1: no COMMITTED
+            MagicMock(result_set=[["docs/a.md__pending__deadbeef", None]]),  # 2: WRITTEN
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        out = await graph_store.find_pending("docs/a.md")
+        assert out is not None
+        state, pid, _ = out
+        assert state == "WRITTEN"
+        assert pid == "docs/a.md__pending__deadbeef"
+        assert mock_connection.query.await_count == 2
+        # Second query explicitly excludes COMMITTED so it can never
+        # accidentally promote a committed pending into a "discard" path.
+        fallback_cypher = mock_connection.query.await_args_list[1][0][0]
+        assert "ready_to_commit IS NULL OR p.ready_to_commit = false" in fallback_cypher
+
+    async def test_find_pending_prefers_committed_over_lexicographically_first(
+        self, graph_store, mock_connection
+    ):
+        """Regression guard: under compounded crashes, the graph can hold both
+        a WRITTEN and a COMMITTED pending for the same id. The earlier
+        ``ORDER BY p.id LIMIT 1`` could return the WRITTEN one and silently
+        let the caller take the rollback path while the COMMITTED data
+        sat unattended. We now query for COMMITTED specifically first."""
+        results = [
+            # COMMITTED query returns the committed one (regardless of id sort).
+            MagicMock(result_set=[["docs/a.md__pending__zzzzzzzz", "h"]]),
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        out = await graph_store.find_pending("docs/a.md")
+        assert out is not None
+        assert out[0] == "COMMITTED"
+        assert out[1] == "docs/a.md__pending__zzzzzzzz"
+
+    async def test_find_pending_returns_none_when_no_pending(
+        self, graph_store, mock_connection
+    ):
+        results = [
+            MagicMock(result_set=[]),  # 1: no COMMITTED
+            MagicMock(result_set=[]),  # 2: no WRITTEN either
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+        assert await graph_store.find_pending("docs/a.md") is None
+        assert mock_connection.query.await_count == 2
+
+    async def test_mark_pending_committed_is_single_atomic_statement(
+        self, graph_store, mock_connection
+    ):
+        """The commit point must be ONE Cypher statement. Splitting it across
+        multiple round-trips would re-introduce the original atomicity bug."""
+        result_mock = MagicMock()
+        result_mock.result_set = [[1]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        n = await graph_store.mark_pending_committed("docs/a.md__pending__abc12345")
+        assert n == 1
+        # Exactly one query, no chained statements (no semicolons that would
+        # split into multiple statements per FalkorDB execution).
+        assert mock_connection.query.await_count == 1
+        cypher = mock_connection.query.call_args[0][0]
+        assert "SET p.ready_to_commit = true" in cypher
+
+    async def test_rollforward_cutover_runs_precondition_then_three_idempotent_ops(
+        self, graph_store, mock_connection
+    ):
+        """Rollforward is precondition-check → delete-chunks → delete-doc →
+        rename-pending. Steps 1-3 are idempotent on replay; the precondition
+        guards against deleting the live doc when the pending is missing."""
+        results = [
+            MagicMock(result_set=[[1]]),  # 0. precondition: pending exists
+            MagicMock(result_set=[[5]]),  # 1. delete chunks
+            MagicMock(result_set=[]),     # 2. delete old doc
+            MagicMock(result_set=[]),     # 3. rename pending + remove marker
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        chunks_removed = await graph_store.rollforward_cutover(
+            pending_id="docs/a.md__pending__abc12345",
+            real_id="docs/a.md",
+            path="docs/a.md",
+            content_hash="newhash",
+        )
+        assert chunks_removed == 5
+        assert mock_connection.query.await_count == 4
+
+        precheck_cypher = mock_connection.query.await_args_list[0][0][0]
+        assert "RETURN count(p)" in precheck_cypher
+
+        rename_cypher = mock_connection.query.await_args_list[3][0][0]
+        assert "SET p.id = $real_id" in rename_cypher
+        assert "p.path = $path" in rename_cypher
+        assert "p.content_hash = $hash" in rename_cypher
+        # Rename also drops the commit marker via REMOVE — otherwise the
+        # FINAL state would still report as a pending Document.
+        assert "REMOVE p.ready_to_commit" in rename_cypher
+
+    async def test_rollforward_aborts_if_pending_missing(
+        self, graph_store, mock_connection
+    ):
+        """Precondition: if the pending Document is missing, refuse to
+        proceed. Without this guard the live document would be deleted
+        and the rename would silently no-op, losing the data."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        results = [
+            MagicMock(result_set=[[0]]),  # 0. precondition: 0 nodes match → missing
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        with pytest.raises(DatabaseError, match="not found"):
+            await graph_store.rollforward_cutover(
+                pending_id="docs/a.md__pending__missing",
+                real_id="docs/a.md",
+                path="docs/a.md",
+                content_hash="h",
+            )
+        # Critical: only the precheck query ran; no destructive ops.
+        assert mock_connection.query.await_count == 1
+
+    async def test_rollforward_idempotent_when_chunks_already_gone(
+        self, graph_store, mock_connection
+    ):
+        """If a prior rollforward attempt completed step 1 (delete chunks)
+        and crashed, the replay's delete-chunks must be a no-op (count 0),
+        not an error. Precondition still passes because step 3 (rename)
+        hasn't run yet."""
+        results = [
+            MagicMock(result_set=[[1]]),  # 0. precondition: pending exists
+            MagicMock(result_set=[[0]]),  # 1. delete chunks → already gone
+            MagicMock(result_set=[]),
+            MagicMock(result_set=[]),
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        chunks_removed = await graph_store.rollforward_cutover(
+            pending_id="docs/a.md__pending__abc12345",
+            real_id="docs/a.md",
+            path="docs/a.md",
+            content_hash="newhash",
+        )
+        assert chunks_removed == 0
+        assert mock_connection.query.await_count == 4
+
+    async def test_delete_document_chunks_and_node(self, graph_store, mock_connection):
+        results = [
+            MagicMock(result_set=[[3]]),  # 1. delete chunks
+            MagicMock(result_set=[]),     # 2. delete document node
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        chunks_removed = await graph_store.delete_document_chunks_and_node("docs/a.md")
+        assert chunks_removed == 3
+        assert mock_connection.query.await_count == 2
+
+    async def test_delete_orphan_entities_skips_when_empty(
+        self, graph_store, mock_connection
+    ):
+        """No candidates → no Cypher (saves a roundtrip)."""
+        n = await graph_store.delete_orphan_entities([])
+        assert n == 0
+        mock_connection.query.assert_not_called()
+
+    async def test_delete_orphan_entities_filters_by_mentioned_in(
+        self, graph_store, mock_connection
+    ):
+        """The WHERE clause must filter to entities with NO remaining
+        MENTIONED_IN — that's how shared entities (still mentioned by
+        other documents) are preserved."""
+        result_mock = MagicMock()
+        result_mock.result_set = [[1]]  # one orphan deleted
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        n = await graph_store.delete_orphan_entities(["e1", "e2", "e3"])
+        assert n == 1
+        cypher = mock_connection.query.call_args[0][0]
+        assert "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk)" in cypher
+        assert "DETACH DELETE" in cypher
+        params = mock_connection.query.call_args[0][1]
+        assert params["ids"] == ["e1", "e2", "e3"]
+
+    async def test_delete_orphan_entities_batches_large_lists(
+        self, graph_store, mock_connection
+    ):
+        """A list larger than the batch size must split into multiple
+        round-trips so the params payload stays bounded."""
+        # 1200 ids with batch size 500 → 3 calls (500 + 500 + 200)
+        ids = [f"e{i}" for i in range(1200)]
+        results = [
+            MagicMock(result_set=[[2]]),
+            MagicMock(result_set=[[3]]),
+            MagicMock(result_set=[[1]]),
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        n = await graph_store.delete_orphan_entities(ids)
+        assert n == 6
+        assert mock_connection.query.await_count == 3

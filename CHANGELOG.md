@@ -7,6 +7,268 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-05
+
+Adds incremental ingestion primitives and a CI-friendly batch wrapper.
+Built around a crash-safe state-machine cutover (idempotent rollforward
+keyed off a `ready_to_commit` marker on the pending Document node) so
+mid-flight failures recover correctly on retry. Documents the cost
+model so consumers can pick a sensible `finalize()` cadence. Closes a
+pre-existing silent-correctness bug in fuzzy resolvers (`MENTIONED_IN`
+edges were dropped for any merged entity). No breaking changes; one
+previously-rejected argument shape (`document_id` in file mode) is now
+accepted.
+
+### Added
+
+- **`GraphRAG.update(source=..., text=..., document_id=..., if_missing=...)`**
+  and `update_sync()` — re-sync a previously-ingested document
+  without rebuilding the rest of the graph. SHA-256 content-hash
+  short-circuits no-op updates: a touch-only PR (CRLF, formatter-only
+  changes) costs roughly one Cypher lookup.
+
+  Cutover is a documented state machine
+  (`EMPTY → WRITING → WRITTEN → COMMITTED → FINAL`) with a single
+  load-bearing transition: setting `ready_to_commit = true` on the
+  pending Document node. That is the commit point — it is one Cypher
+  statement (atomic at the per-statement level FalkorDB does
+  guarantee), and it must complete before any destructive op touches
+  the live document. Once committed, recovery on crash is rollforward
+  (each post-commit op is idempotent) rather than rollback. The
+  practical effect: an `update()` interrupted by a transient failure
+  retries cleanly instead of raising `DocumentNotFoundError` against
+  a half-deleted document.
+
+  Cleans up entities orphaned by the change (zero remaining
+  `MENTIONED_IN`, scoped to entities the prior version of the document
+  referenced) along with their incident `RELATES` edges; entities
+  still referenced by other documents are preserved.
+
+- **`GraphRAG.delete_document(document_id)`** and
+  `delete_document_sync()` — remove one document's chunks and the
+  Document node, plus orphaned entities scoped to that document. Other
+  documents' data is untouched.
+
+- **`GraphRAG.apply_changes(added=..., modified=..., deleted=...,
+  max_concurrency=3, update_concurrency=1)`** and
+  `apply_changes_sync()` — convenience batch dispatcher for CI-driven
+  incremental ingestion. Routes each list to the right primitive
+  (`ingest` for added, `update(if_missing="ingest")` for modified,
+  `delete_document` for deleted). Per-file failures are collected,
+  not raised — matching `ingest()`'s batch contract. Does **not**
+  call `finalize()`; that stays the caller's responsibility so a
+  50-file batch pays one finalize cost, not 50.
+
+  `update_concurrency` defaults to 1 — forced by the orphan-cleanup
+  invariant (concurrent updates A and B sharing entity `e1` are
+  race-free only because `pipeline.run()` writes the new
+  `MENTIONED_IN` edges before returning, and therefore before any
+  cutover begins). The integration test
+  `test_concurrent_updates_preserve_shared_entity` is the tripwire
+  that protects this default. `max_concurrency` continues to control
+  the `added` list and matches `ingest()`'s existing knob.
+
+- **`UpdateResult`** (extends `IngestionResult` with `chunks_deleted`,
+  `entities_deleted`, `no_op`, `replaced_existing`),
+  **`DeleteDocumentResult`** (`document_uid`, `chunks_deleted`,
+  `entities_deleted`), **`BatchEntry[T]`** (typed `result | error |
+  error_type` wrapper with `is_success`), and **`ApplyChangesResult`**
+  (`added: list[BatchEntry[IngestionResult]]`, `modified:
+  list[BatchEntry[UpdateResult]]`, `deleted:
+  list[BatchEntry[DeleteDocumentResult]]`) Pydantic models. All
+  exported from the top-level package. The document id is consistently
+  exposed via `DocumentInfo.uid` / `DeleteDocumentResult.document_uid`
+  across all result types.
+
+- **`DocumentNotFoundError`** — raised by `update()` (when
+  `if_missing="error"`, the default) and `delete_document()` when the
+  given id is unknown. `update()` accepts `if_missing="ingest"` for
+  upsert semantics.
+
+- **`Document.content_hash` and `Document.ready_to_commit`** —
+  additive properties written by the ingestion pipeline /
+  state-machine. Pre-existing graphs are unaffected; documents
+  ingested before this release simply lack `content_hash` and
+  `update()` always runs the full path for them (fail-safe).
+
+- **Parametrized real-FalkorDB integration suite** —
+  `tests/test_integration.py::TestIncrementalUpdateInvariants` covers
+  four cases (shared-entity preservation, orphan-by-delete,
+  orphan-by-update, concurrent-updates tripwire) across both
+  `ExactMatchResolution` and `SemanticResolution`. Env-gated
+  (`RUN_INTEGRATION=1`) and exercised by a new `integration` job in
+  CI that boots a real FalkorDB service container.
+
+### Changed
+
+- **`document_id` accepted in file-mode `ingest()`.** Previously
+  rejected with `ValueError`; now optional in both modes. When
+  supplied, anchors the Document node's stable id — the handle
+  callers pass to `update()` or `delete_document()`. When omitted
+  in file mode, defaults to `os.path.normpath(source)` so
+  `update(path)` matches the corresponding `ingest(path)` call
+  with no extra plumbing. In text mode, `ingest()` auto-generates
+  a `text-<hex>` id when omitted; supplying one is recommended for
+  stability across runs and is required by `update()` /
+  `delete_document()` since there's no path to derive an id from.
+
+- **Path-conflict guard** replaces the v1.0.2 blanket rejection:
+  ingesting/updating with a `document_id` already bound to a
+  *different* path raises `ValueError`. This catches accidental
+  aliasing across files; legitimate rebinds should go through
+  `update()`.
+
+- **`IngestionPipeline.run(..., document_info=...)`** now honors the
+  caller-supplied uid in file mode (loader output is overlaid, not
+  the other way around). Required for stable-id ingest; existing
+  callers that didn't supply `document_info` are unaffected.
+
+### Fixed
+
+- **`MENTIONED_IN` edges silently dropped for entities merged by fuzzy
+  resolvers.** `pipeline._write_mentions` consumed
+  `graph_data.mentions` (pre-resolution entity ids) without rewriting
+  them through the resolver's merge decisions. With default
+  `ExactMatchResolution` this was harmless because exact-match groups
+  by `(label, id)` and never merges across distinct ids, but
+  `SemanticResolution` and `LLMVerifiedResolution` merge by embedding
+  similarity / LLM judgment, so the post-resolution
+  `upsert_relationships` `MATCH (a)` against the merged-away id
+  silently failed and the mention edge was lost. v1.1.0's orphan
+  cleanup would have inherited that breakage. The pipeline now
+  rewrites mentions through `ResolutionResult.remap` between resolve
+  and write; all bundled resolvers populate `remap`. Default-resolver
+  users see no change.
+
+### Hardening (post-review)
+
+These changes landed after the initial PR commit, addressing review
+findings that were discovered while walking the diff file-by-file.
+None changes the high-level behavior of the v1.1.0 primitives; all
+either close a latent bug or harden a contract.
+
+- **`pipeline._remap_mentions` follows transitive remap chains.** The
+  initial fix only handled single-hop remaps. Two-stage resolvers
+  (`SemanticResolution`, `LLMVerifiedResolution`) merge per-phase
+  remap dicts without flattening, so the combined dict could carry
+  chains like `{a: b, b: c}` where `b` was itself merged away. A
+  single-hop lookup pointed mentions at the now-orphan intermediate;
+  the MENTIONED_IN write then silently MATCH-failed on `b`. Now
+  follows each chain to its terminal survivor with a visited-set
+  guard against cyclic remaps.
+
+- **`GraphStore.find_pending` queries COMMITTED state explicitly first.**
+  The initial implementation used `ORDER BY p.id LIMIT 1` across the
+  pending prefix. Lexicographic order on the random pending suffix
+  meant that under compounded crashes — when the graph briefly held
+  both a WRITTEN and a COMMITTED pending — a WRITTEN one could sort
+  first, causing the caller to take the rollback path and the
+  COMMITTED pending to silently replay over freshly-written live
+  data on the next cycle. Now issues two queries: COMMITTED first
+  (which MUST be rolled forward), WRITTEN as fallback.
+
+- **`GraphStore.rollforward_cutover` precondition checks pending
+  exists.** Previously, calling rollforward with a stale `pending_id`
+  would delete the live document (steps 1-2) and then silently no-op
+  the rename (step 3 MATCH finds nothing), leaving the graph empty.
+  Now refuses to proceed unless the pending node is present.
+
+- **`GraphRAG.update` asserts `mark_pending_committed` returned exactly
+  1.** A return of 0 means the pending vanished mid-flow — the
+  rollforward queries are idempotent so they would silently no-op,
+  losing the new data while reporting success to the caller. Now
+  raises `DatabaseError` before Phase 5.
+
+- **`GraphRAG.update` Phase 0 raises on corrupt committed pending.**
+  Previously, a COMMITTED pending without persisted path metadata
+  was silently defaulted (`path = resolved_id`, `hash = ""`). The
+  empty hash broke future no-op short-circuits forever for that doc.
+  Now raises `DatabaseError` — corruption surface, not a default-and-
+  continue case.
+
+- **Reserved-substring guard on `document_id`.** A new
+  `_check_no_pending_marker` helper rejects ids containing the
+  literal `__pending__` separator at the public API boundary (in
+  `update`, `delete_document`, and `ingest`). Without this guard, a
+  Document with id `foo__pending__bar.txt` would be matched by
+  `find_pending("foo")`'s prefix scan and incorrectly treated as a
+  leftover pending of `foo`.
+
+- **`apply_changes` rejects overlapping ids across input lists.**
+  If the same id appears in two of `{added, modified, deleted}`
+  (typically a broken git-diff parser), the dispatch order would
+  silently apply both operations against the same doc. Now raises
+  `ValueError` at the input boundary listing the offending ids.
+
+- **`delete_document` gains `if_missing="ignore"`.** Closes the
+  asymmetry with `update`'s `if_missing` parameter. Useful for CI
+  cleanup of files removed in a PR when the caller doesn't track
+  which were ever ingested. Returns an empty `DeleteDocumentResult`
+  instead of raising `DocumentNotFoundError`.
+
+- **`delete_document` runs orphan cleanup as best-effort.** A
+  try/finally ensures the orphan sweep still runs even if the
+  chunk-and-node deletion raises mid-flight (network blip, transient
+  Cypher error). Process death between the two remains unrecoverable
+  here (no persistent recovery handle for delete); a full
+  state-machine for delete is left as a future enhancement.
+
+- **Result types tightened.** `UpdateResult.previous_document_uid` was
+  misleading (always equal to the current uid on both no-op and
+  success paths) — replaced with `replaced_existing: bool`. The
+  document id is uniformly available via `document_info.uid`
+  (matching `IngestionResult`) or `DeleteDocumentResult.document_uid`
+  (matching `DocumentInfo.uid` naming).
+
+- **`ApplyChangesResult` uses typed `BatchEntry[T]` wrappers.** Was
+  `list[Result | Exception]` with `arbitrary_types_allowed=True`
+  (which disabled Pydantic validation for entries). Now
+  `list[BatchEntry[T]]` where `BatchEntry` carries `result | error |
+  error_type` with an `is_success` property. JSON-serialisable; full
+  validation re-enabled. Callers branch on `entry.is_success` instead
+  of `isinstance(entry, Exception)`.
+
+- **`text-mode` document_id collision space bumped to 64 bits.**
+  Was `f"text-{uuid4().hex[:8]}"` (32 bits, ~12% birthday-collision
+  at 10K text-mode ingests). Now `[:16]` (64 bits, ~2 in 10^11 for
+  the same volume).
+
+- **Crash-recovery integration test added.** End-to-end test that
+  manually creates a COMMITTED pending via direct Cypher, drops the
+  GraphRAG (simulating process death), opens a fresh instance against
+  the same graph_name, and verifies Phase 0 rolls forward. The only
+  test that verifies the "FalkorDB persists `ready_to_commit` across
+  a connection drop" claim against a real database.
+
+### Notes
+
+- **`finalize()` cost model.** Step 1 (NULL-name stub cleanup) and
+  step 2 (`deduplicate_entities`) scan the full entity table; steps
+  3–4 (`backfill_entity_embeddings`, `embed_relationships`) only
+  touch nodes/edges missing embeddings. Net: O(graph size) for dedup,
+  O(change size) for embedding backfill. For CI use cases, batch
+  all PR changes via `apply_changes` and call `finalize` once at
+  the end of the run, not once per file.
+
+- **Pipeline step-8 ordering is load-bearing.** The `asyncio.gather`
+  that writes `MENTIONED_IN` edges in `pipeline.run()` must complete
+  before the function returns; deferring it to a background task or
+  batching it across pipelines silently re-introduces a concurrent-
+  update race even with `update_concurrency=1`. Marked with a
+  load-bearing comment in `pipeline.py` plus the
+  `test_concurrent_updates_preserve_shared_entity` integration
+  tripwire.
+
+- **Renames** (git's `R old.md -> new.md`) are out of scope for
+  v1.1.0 — treat as delete + add. The `apply_changes` signature
+  reserves room for a future `renamed=` keyword so consumers don't
+  need to refactor when that lands.
+
+- **Concurrent updates to the same `document_id`** are unsupported.
+  Each call uses a unique pending-uid so the temp graphs don't
+  collide, but the cutover races; callers must serialize updates
+  to the same id.
+
 ## [1.0.2] - 2026-05-04
 
 Patch release. One retrieval correctness fix and one default-value
