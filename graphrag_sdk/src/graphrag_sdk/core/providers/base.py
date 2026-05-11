@@ -56,7 +56,7 @@ class Embedder(ABC):
         ...
 
     @abstractmethod
-    def embed_query(self, text: str, *, ctx: Any | None = None, **kwargs: Any) -> list[float]:
+    def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         """Embed a single text string into a float vector."""
         ...
 
@@ -76,13 +76,14 @@ class Embedder(ABC):
         self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
     ) -> list[list[float]]:
         """Batch embed multiple texts. Default: sequential fallback.
-
+S
         Args:
             ctx: Execution context for usage tracking.
         """
         if ctx is None:
             return [self.embed_query(t, **kwargs) for t in texts]
-        return [self.embed_query(t, ctx=ctx, **kwargs) for t in texts]
+        return [self.embed_query(t, **kwargs) for t in texts]
+
 
     async def aembed_documents(
         self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
@@ -115,7 +116,7 @@ class LLMInterface(ABC):
         self.max_concurrency = max_concurrency
 
     @abstractmethod
-    def invoke(self, prompt: str, *, ctx: Any | None = None, **kwargs: Any) -> LLMResponse:
+    def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
         """Synchronous text-in / text-out invocation."""
         ...
 
