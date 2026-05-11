@@ -72,9 +72,11 @@ class Embedder(ABC):
         """
         return await asyncio.to_thread(self.embed_query, text, **kwargs)
 
-    def embed_documents(self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any) -> list[list[float]]:
+    def embed_documents(
+        self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[list[float]]:
         """Batch embed multiple texts. Default: sequential fallback.
-        
+
         Args:
             ctx: Execution context for usage tracking.
         """
@@ -188,7 +190,9 @@ class LLMInterface(ABC):
         prompt = "\n\n".join(parts)
         return await self.ainvoke(prompt, ctx=ctx, max_retries=max_retries, **kwargs)
 
-    async def astream(self, prompt: str, *, ctx: Any | None = None, **kwargs: Any) -> AsyncIterator[str]:
+    async def astream(
+        self, prompt: str, *, ctx: Any | None = None, **kwargs: Any
+    ) -> AsyncIterator[str]:
         """Async streaming — default yields the full response as one chunk."""
         resp = await self.ainvoke(prompt, ctx=ctx, **kwargs)
         yield resp.content
