@@ -550,7 +550,7 @@ class GraphRAG:
 
         ctx.log(f"Retrieved {len(retriever_result.items)} context items")
         # Attach accumulated token usage to the result
-        retriever_result.usage = ctx.usage
+        retriever_result.usage = ctx.usage.model_copy()
         return retriever_result
 
     # ── Completion ──────────────────────────────────────────────
