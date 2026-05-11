@@ -76,14 +76,13 @@ class Embedder(ABC):
         self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
     ) -> list[list[float]]:
         """Batch embed multiple texts. Default: sequential fallback.
-S
-        Args:
-            ctx: Execution context for usage tracking.
+        S
+                Args:
+                    ctx: Execution context for usage tracking.
         """
         if ctx is None:
             return [self.embed_query(t, **kwargs) for t in texts]
         return [self.embed_query(t, **kwargs) for t in texts]
-
 
     async def aembed_documents(
         self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
