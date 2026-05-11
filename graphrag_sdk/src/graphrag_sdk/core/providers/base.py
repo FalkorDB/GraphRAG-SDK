@@ -88,7 +88,7 @@ class Embedder(ABC):
         self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
     ) -> list[list[float]]:
         """Async batch embed. Default: sync-in-thread."""
-        return await asyncio.to_thread(self.embed_documents, texts, **kwargs)
+        return await asyncio.to_thread(self.embed_documents, texts, ctx=ctx, **kwargs)
 
 
 class LLMInterface(ABC):
