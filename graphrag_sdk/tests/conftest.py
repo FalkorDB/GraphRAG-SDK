@@ -262,23 +262,23 @@ def mock_vector_store(embedder: MockEmbedder) -> MagicMock:
 
 
 def _scripted_extraction_llm(*per_doc_entities: list[tuple[str, str, str]]):
-    """Build a MockLLM whose responses script the two-step graph_extraction
-    flow once per ingest/update call.
+    """Build a MockLLM whose responses script the verify+relations step
+    of ``GraphExtraction`` once per ingest/update call.
 
     Each ``per_doc_entities`` arg is a list of ``(name, type, description)``
-    tuples for ONE source. The helper produces 2 LLM responses per source:
-    one step-1 NER response and one step-2 verify+rels response containing
-    the same entity set with no relationships.
+    tuples for ONE source. The default ``GraphExtraction`` runs step-1
+    NER locally via GLiNER (no LLM call) and step-2 verify+rels via the
+    injected LLM — so we script exactly ONE response per source: the
+    step-2 ``{"entities": [...], "relationships": []}`` JSON, which the
+    pipeline merges with GLiNER's step-1 output to produce the final
+    entity set.
 
-    The integration tests assume each source produces exactly one chunk
-    (small sentence under FixedSizeChunking's default 1000-char limit), so
-    one set of two LLM calls per source is enough.
+    Tests assume each source produces exactly one chunk (small sentence
+    under FixedSizeChunking's default 1000-char limit), so a single LLM
+    call per source is enough.
     """
     responses: list[str] = []
     for entities in per_doc_entities:
-        step1 = json.dumps(
-            [{"name": n, "type": t, "description": d} for (n, t, d) in entities]
-        )
         step2 = json.dumps(
             {
                 "entities": [
@@ -287,10 +287,11 @@ def _scripted_extraction_llm(*per_doc_entities: list[tuple[str, str, str]]):
                 "relationships": [],
             }
         )
-        responses.extend([step1, step2])
+        responses.append(step2)
     # strict=True so an unexpected extra LLM call (e.g. a future change
-    # makes chunking produce multiple chunks per source) fails loudly
-    # instead of silently re-using the last scripted response.
+    # makes chunking produce multiple chunks per source, or restores
+    # LLM-based step-1 NER) fails loudly instead of silently re-using
+    # the last scripted response.
     return MockLLM(responses=responses, strict=True)
 
 

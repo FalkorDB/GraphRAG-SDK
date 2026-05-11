@@ -751,56 +751,33 @@ class TestIncrementalUpdateInvariants:
 
         from .conftest import MockLLM
 
-        # Hand-script the LLM responses so the relationship-extraction
-        # step emits the RELATES we care about (default scripted_llm
-        # generates entity-only responses).
-        step1_a = json.dumps([
-            {"name": "Alice", "type": "Person", "description": "p1"},
-            {"name": "Bob", "type": "Person", "description": "p2"},
-        ])
-        step2_a = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": "p1"},
-                {"name": "Bob", "type": "Person", "description": "p2"},
-            ],
-            "relationships": [
-                {
-                    "source": "Alice",
-                    "target": "Bob",
-                    "type": "KNOWS",
-                    "description": "Alice knows Bob",
-                    "keywords": "social",
-                    "weight": 0.9,
-                }
-            ],
-        })
-        step1_b = json.dumps([
-            {"name": "Alice", "type": "Person", "description": "p1"},
-            {"name": "Bob", "type": "Person", "description": "p2"},
-        ])
-        step2_b = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": "p1"},
-                {"name": "Bob", "type": "Person", "description": "p2"},
-            ],
-            "relationships": [],
-        })
-        # Update of doc-A drops the relationship.
-        step1_u = json.dumps([
-            {"name": "Alice", "type": "Person", "description": "p1"},
-            {"name": "Bob", "type": "Person", "description": "p2"},
-        ])
-        step2_u = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": "p1"},
-                {"name": "Bob", "type": "Person", "description": "p2"},
-            ],
-            "relationships": [],
-        })
-        llm = MockLLM(
-            responses=[step1_a, step2_a, step1_b, step2_b, step1_u, step2_u],
-            strict=True,
-        )
+        # Hand-script the verify+rels (step 2) response per source.
+        # Step 1 NER is handled locally by GLiNER (default extractor),
+        # so each ingest/update consumes exactly ONE MockLLM response.
+        # Default `scripted_llm` produces entities-only responses; this
+        # test needs an explicit RELATES on the first doc.
+        def _step2(entities, relationships=()):
+            return json.dumps({
+                "entities": [
+                    {"name": n, "type": t, "description": d} for n, t, d in entities
+                ],
+                "relationships": list(relationships),
+            })
+        entities = [
+            ("Alice", "Person", "p1"),
+            ("Bob", "Person", "p2"),
+        ]
+        doc_a = _step2(entities, [{
+            "source": "Alice",
+            "target": "Bob",
+            "type": "KNOWS",
+            "description": "Alice knows Bob",
+            "keywords": "social",
+            "weight": 0.9,
+        }])
+        doc_b = _step2(entities)
+        doc_a_update = _step2(entities)  # update drops the relationship
+        llm = MockLLM(responses=[doc_a, doc_b, doc_a_update], strict=True)
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
 
         await rag.ingest(text="Alice knows Bob.", document_id="doc-A", resolver=resolver)

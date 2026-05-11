@@ -787,6 +787,33 @@ class GraphRAG:
                     )
                 roll_path = pending_record.path
                 roll_hash = prior_hash or pending_record.content_hash or ""
+                # Belt-and-braces: if the pending doesn't carry cleanup
+                # state (e.g. it was committed by pre-fix code, or by a
+                # test simulation that wrote the marker directly), snapshot
+                # the live doc's candidates BEFORE rollforward deletes its
+                # chunks. Once rollforward runs we cannot reconstruct
+                # which entities belonged to the old live doc, and orphans
+                # would be stranded permanently. We write the snapshot to
+                # the pending node so it rides along on the rename and the
+                # standard post-cutover cleanup picks it up.
+                existing_state = await self._graph_store.get_cleanup_state(
+                    prior_pending_id
+                )
+                if existing_state is None:
+                    candidates_snapshot = (
+                        await self._graph_store.get_document_entity_candidates(
+                            resolved_id
+                        )
+                    )
+                    chunks_snapshot = (
+                        await self._graph_store.get_document_chunk_ids(resolved_id)
+                    )
+                    if candidates_snapshot or chunks_snapshot:
+                        await self._graph_store.set_pending_cleanup_state(
+                            prior_pending_id,
+                            candidates_snapshot,
+                            chunks_snapshot,
+                        )
                 await self._graph_store.rollforward_cutover(
                     pending_id=prior_pending_id,
                     real_id=resolved_id,
