@@ -278,6 +278,55 @@ class ResolutionResult(DataModel):
     merged_count: int = 0
 
 
+# ── Usage Tracking Types ─────────────────────────────────────────
+
+
+class TokenUsage(DataModel):
+    """Accumulated token usage for a single SDK operation.
+
+    Reported on :class:`IngestionResult`, :class:`RagResult`, and
+    :class:`RetrieverResult`.  All counts default to zero so the field
+    is always safe to read even when no LLM/embedding calls were made
+    (e.g., cached results, custom providers that don't surface usage).
+
+    Example::
+
+        result = await rag.completion("What is GraphRAG?")
+        print(result.usage.prompt_tokens)      # total LLM input tokens
+        print(result.usage.completion_tokens)  # total LLM output tokens
+        print(result.usage.embedding_tokens)   # total embedding tokens
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    embedding_tokens: int = 0
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        """Return a new TokenUsage that sums both operands."""
+        return TokenUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            embedding_tokens=self.embedding_tokens + other.embedding_tokens,
+        )
+
+    def __iadd__(self, other: TokenUsage) -> TokenUsage:
+        """Accumulate *other* into self in-place.
+
+        Used for aggregating results across batch operations::
+
+            total = TokenUsage()
+            for r in results:
+                total += r.usage
+
+        For per-call accumulation inside a pipeline, prefer
+        ``ctx.record_usage()`` instead.
+        """
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        self.embedding_tokens += other.embedding_tokens
+        return self
+
+
 # ── Retrieval Types ──────────────────────────────────────────────
 
 
@@ -294,6 +343,7 @@ class RetrieverResult(DataModel):
 
     items: list[RetrieverResultItem] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
 class RawSearchResult(DataModel):
@@ -346,6 +396,7 @@ class RagResult(DataModel):
     answer: str
     retriever_result: RetrieverResult | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
 # ── Ingestion Types ──────────────────────────────────────────────
@@ -359,6 +410,7 @@ class IngestionResult(DataModel):
     relationships_created: int = 0
     chunks_indexed: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
+    usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
 class FinalizeResult(DataModel):

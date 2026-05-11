@@ -277,6 +277,7 @@ stats = await rag.finalize()
 - **Fastest step:** Quality filter, prune, and resolve — all in-memory, sub-second.
 - **Parallelism:** Steps 8-9 run in parallel. Step 1 NER uses a semaphore (default 12 concurrent calls).
 - **Batch size:** The benchmark uses 1500-character chunks. 20 documents (~4.7 MB total) take ~47 minutes to ingest.
+- **Cost tracking:** Check `result.usage.prompt_tokens`, `result.usage.completion_tokens`, and `result.usage.embedding_tokens` after each `ingest()` call. See [Token Usage](token-usage.md) for aggregation patterns across batch ingestion.
 
 ---
 

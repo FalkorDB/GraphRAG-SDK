@@ -20,6 +20,28 @@ from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 logger = logging.getLogger(__name__)
 
 
+def _extract_openai_llm_usage(response: Any) -> tuple[int, int]:
+    """Extract (prompt_tokens, completion_tokens) from an OpenAI-style response.
+
+    Returns (0, 0) when usage is absent or incomplete.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0
+    pt = getattr(usage, "prompt_tokens", None) or 0
+    ct = getattr(usage, "completion_tokens", None) or 0
+    return int(pt), int(ct)
+
+
+def _extract_openai_embedding_usage(response: Any) -> int:
+    """Extract embedding token count from an OpenAI-style embedding response."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+    pt = getattr(usage, "prompt_tokens", None) or 0
+    return int(pt)
+
+
 class OpenRouterLLM(LLMInterface):
     """LLM provider backed by OpenRouter (uses the OpenAI SDK).
 
@@ -140,6 +162,7 @@ class OpenRouterLLM(LLMInterface):
         self,
         prompt: str,
         *,
+        ctx: Any | None = None,
         max_retries: int = 3,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -153,6 +176,9 @@ class OpenRouterLLM(LLMInterface):
             try:
                 response = await client.chat.completions.create(**create_kwargs)
                 content = response.choices[0].message.content or ""
+                if ctx is not None:
+                    pt, ct = _extract_openai_llm_usage(response)
+                    ctx.record_usage(prompt_tokens=pt, completion_tokens=ct)
                 return LLMResponse(content=content)
             except Exception as exc:
                 last_exc = exc
@@ -173,6 +199,7 @@ class OpenRouterLLM(LLMInterface):
         self,
         messages: list[ChatMessage],
         *,
+        ctx: Any | None = None,
         max_retries: int = 3,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -189,6 +216,9 @@ class OpenRouterLLM(LLMInterface):
             try:
                 response = await client.chat.completions.create(**create_kwargs)
                 content = response.choices[0].message.content or ""
+                if ctx is not None:
+                    pt, ct = _extract_openai_llm_usage(response)
+                    ctx.record_usage(prompt_tokens=pt, completion_tokens=ct)
                 return LLMResponse(content=content)
             except Exception as exc:
                 last_exc = exc
@@ -280,10 +310,14 @@ class OpenRouterEmbedder(Embedder):
         sorted_data = sorted(response.data, key=lambda x: x.index)
         return [d.embedding for d in sorted_data]
 
-    async def _raw_embed_async(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def _raw_embed_async(
+        self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[list[float]]:
         """Raw async embed without retry — called by binary_split_retry_async."""
         client = self._get_async_client()
         response = await client.embeddings.create(model=self.model, input=texts, **kwargs)
+        if ctx is not None:
+            ctx.record_usage(embedding_tokens=_extract_openai_embedding_usage(response))
         sorted_data = sorted(response.data, key=lambda x: x.index)
         return [d.embedding for d in sorted_data]
 
@@ -296,16 +330,24 @@ class OpenRouterEmbedder(Embedder):
             results.extend(binary_split_retry_sync(self._raw_embed_sync, batch, **kwargs))
         return results
 
-    async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
+    async def aembed_query(
+        self, text: str, *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[float]:
         client = self._get_async_client()
         response = await client.embeddings.create(model=self.model, input=text, **kwargs)
+        if ctx is not None:
+            ctx.record_usage(embedding_tokens=_extract_openai_embedding_usage(response))
         return response.data[0].embedding
 
-    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def aembed_documents(
+        self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[list[float]]:
         if not texts:
             return []
         results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
-            results.extend(await binary_split_retry_async(self._raw_embed_async, batch, **kwargs))
+            results.extend(
+                await binary_split_retry_async(self._raw_embed_async, batch, ctx=ctx, **kwargs)
+            )
         return results

@@ -549,6 +549,8 @@ class GraphRAG:
             retriever_result = await reranker.rerank(question, retriever_result, ctx)
 
         ctx.log(f"Retrieved {len(retriever_result.items)} context items")
+        # Attach accumulated token usage to the result
+        retriever_result.usage = ctx.usage.model_copy()
         return retriever_result
 
     # ── Completion ──────────────────────────────────────────────
@@ -608,7 +610,7 @@ class GraphRAG:
             question=question,
         )
         try:
-            resp = await self.llm.ainvoke(prompt)
+            resp = await self.llm.ainvoke(prompt, ctx=ctx)
             rewritten = (resp.content or "").strip().splitlines()[0].strip() if resp.content else ""
         except Exception as e:
             # Broad catch is intentional (see docstring) — but log at WARNING
@@ -728,7 +730,7 @@ class GraphRAG:
             ChatMessage(role="user", content=final_user_content),
         ]
 
-        llm_response = await self.llm.ainvoke_messages(messages)
+        llm_response = await self.llm.ainvoke_messages(messages, ctx=ctx)
 
         result = RagResult(
             answer=self._clean_answer(llm_response.content),
@@ -740,6 +742,7 @@ class GraphRAG:
                 "has_history": bool(history),
                 "retrieval_query": retrieval_query,
             },
+            usage=ctx.usage,
         )
 
         ctx.log(f"Generated answer ({len(result.answer)} chars)")
