@@ -96,6 +96,9 @@ from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
+from graphrag_sdk.retrieval.strategies.cypher_first import (
+    CypherFirstAggregationStrategy,
+)
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
 # ── Storage ─────────────────────────────────────────────────────
@@ -160,6 +163,7 @@ __all__ = [
     "SemanticResolution",
     # Retrieval
     "CosineReranker",
+    "CypherFirstAggregationStrategy",
     "MultiPathRetrieval",
     "RerankingStrategy",
     "RetrievalStrategy",
