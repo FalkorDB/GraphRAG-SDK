@@ -828,19 +828,23 @@ class GraphRAG:
         runs and the call is essentially a single Cypher lookup. This is
         the win for touch-only PRs (CRLF, formatter-only changes).
 
-        State-machine cutover (crash-safe):
+        State-machine cutover (crash-safe). Columns:
+        ``pend`` = pending Document exists;
+        ``r2c`` = ``ready_to_commit`` marker on the pending;
+        ``cln`` = cleanup-state props on the doc (``cleanup_candidates``
+        / ``cleanup_old_chunk_ids``);
+        ``live`` = state of the canonical Document.
 
-        +-----------------+----------------+-----------------+----------+---------------+-----------------------+
-        | State           | Pending exists | ready_to_commit | cleanup_ | Live doc      | Recovery              |
-        |                 |                |                 | props    |               |                       |
-        +-----------------+----------------+-----------------+----------+---------------+-----------------------+
-        | EMPTY           | no             | n/a             | absent   | maybe         | normal start          |
-        | WRITING         | partial        | absent          | absent   | unchanged     | rollback (delete)     |
-        | WRITTEN         | complete       | absent          | maybe    | unchanged     | rollback (delete)     |
-        | COMMITTED       | complete       | true            | present  | maybe partial | **rollforward**       |
-        | CLEANUP_PENDING | renamed away   | n/a             | present  | new content   | **resume cleanup**    |
-        | FINAL           | renamed away   | n/a             | absent   | new content   | normal start          |
-        +-----------------+----------------+-----------------+----------+---------------+-----------------------+
+        +-----------------+---------+--------+---------+---------------+-------------------+
+        | State           | pend    | r2c    | cln     | live          | Recovery          |
+        +-----------------+---------+--------+---------+---------------+-------------------+
+        | EMPTY           | no      | n/a    | absent  | maybe         | normal start      |
+        | WRITING         | partial | absent | absent  | unchanged     | rollback (delete) |
+        | WRITTEN         | done    | absent | maybe   | unchanged     | rollback (delete) |
+        | COMMITTED       | done    | true   | present | maybe partial | **rollforward**   |
+        | CLEANUP_PENDING | gone    | n/a    | present | new content   | **resume cleanup**|
+        | FINAL           | gone    | n/a    | absent  | new content   | normal start      |
+        +-----------------+---------+--------+---------+---------------+-------------------+
 
         Two load-bearing writes:
 

@@ -462,7 +462,7 @@ class TestIncrementalUpdateInvariants:
             [("Recovered", "Person", "Should appear after rollforward")],
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
-        graph_name = rag._conn.graph_name
+        graph_name = rag._conn.config.graph_name
 
         await rag.ingest(
             text="Original is here.", document_id="doc-A", resolver=resolver
@@ -569,7 +569,7 @@ class TestIncrementalUpdateInvariants:
             [("Survivor", "Person", "Replacement after recovery")],
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
-        graph_name = rag._conn.graph_name
+        graph_name = rag._conn.config.graph_name
 
         await rag.ingest(
             text="Ghost lives here.", document_id="doc-A", resolver=resolver
@@ -673,7 +673,7 @@ class TestIncrementalUpdateInvariants:
             [("Fresh", "Person", "Replacement")],
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
-        graph_name = rag._conn.graph_name
+        graph_name = rag._conn.config.graph_name
 
         await rag.ingest(
             text="Stale was here.", document_id="doc-B", resolver=resolver
@@ -749,7 +749,7 @@ class TestIncrementalUpdateInvariants:
         because delete_orphan_entities only touches nodes."""
         import json
 
-        from graphrag_sdk.tests.conftest import MockLLM  # type: ignore[import-not-found]
+        from .conftest import MockLLM
 
         # Hand-script the LLM responses so the relationship-extraction
         # step emits the RELATES we care about (default scripted_llm
