@@ -107,7 +107,10 @@ accepted.
   callers pass to `update()` or `delete_document()`. When omitted
   in file mode, defaults to `os.path.normpath(source)` so
   `update(path)` matches the corresponding `ingest(path)` call
-  with no extra plumbing. Text mode still requires an explicit id.
+  with no extra plumbing. In text mode, `ingest()` auto-generates
+  a `text-<hex>` id when omitted; supplying one is recommended for
+  stability across runs and is required by `update()` /
+  `delete_document()` since there's no path to derive an id from.
 
 - **Path-conflict guard** replaces the v1.0.2 blanket rejection:
   ingesting/updating with a `document_id` already bound to a

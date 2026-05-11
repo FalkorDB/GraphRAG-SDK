@@ -293,10 +293,15 @@ class ResolutionResult(DataModel):
     surviving entity ids instead of silently failing on a MATCH-not-found
     against a merged-away node.
 
-    ``ExactMatchResolution`` always returns ``remap={}`` because exact
-    match groups by ``(label, id)`` and can never merge across distinct
-    ids. Fuzzy resolvers (semantic, LLM-verified) populate ``remap`` with
-    every (loser_id → survivor_id) pair.
+    ``ExactMatchResolution`` groups by ``(label, resolve_property)`` and
+    populates ``remap`` whenever a group has more than one node. With the
+    default ``resolve_property='id'``, the duplicate and survivor already
+    share the same id, so any remap entry is identity (``a → a``) —
+    non-empty but a no-op when applied. With a non-id ``resolve_property``
+    (e.g. ``'name'``), genuinely distinct ids can collapse into a survivor
+    and ``remap`` captures each merge. Fuzzy resolvers (semantic,
+    LLM-verified) similarly populate ``remap`` with every
+    ``(loser_id → survivor_id)`` pair their merge produces.
     """
 
     nodes: list[GraphNode] = Field(default_factory=list)

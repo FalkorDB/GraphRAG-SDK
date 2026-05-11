@@ -501,11 +501,25 @@ class GraphRAG:
         # Path-conflict guard: refuse to silently rebind an existing id to a
         # different source path. Catches accidental aliasing across files;
         # legitimate rebinds should go through ``update()``.
-        path_for_node = source if text is None else resolved_id
+        #
+        # ``source`` is always the positional handle, never None — the
+        # dispatch in ``ingest()`` / ``update()`` substitutes ``resolved_id``
+        # for text-mode callers. Using ``source`` (rather than ``resolved_id``
+        # when ``text`` is set) preserves the real file path on the
+        # ``update(if_missing="ingest")`` file-mode fallthrough, where the
+        # caller has pre-loaded text but the on-disk path should still be
+        # the Document's provenance.
+        #
+        # Both sides of the conflict compare are normalized so a caller
+        # respelling the path (``./docs/a.md`` vs ``docs/a.md``) doesn't
+        # falsely trip the guard — they resolve to the same id anyway.
+        path_for_node = source
         existing = await self._graph_store.get_document_record(resolved_id)
         if existing is not None:
             existing_path = existing.path or ""
-            if existing_path and existing_path != path_for_node:
+            if existing_path and os.path.normpath(existing_path) != os.path.normpath(
+                path_for_node
+            ):
                 raise ValueError(
                     f"document_id '{resolved_id}' is already bound to path "
                     f"'{existing_path}'; refusing to rebind to '{path_for_node}'. "
@@ -907,6 +921,13 @@ class GraphRAG:
         await self._phase0_recover_prior_operations(resolved_id, ctx)
 
         # ── Phase 1: load text + lookup live doc + no-op short-circuit ──
+        # ``loaded_metadata`` captures loader-derived Document metadata
+        # (e.g. PDF properties, Markdown frontmatter) so it can flow
+        # into the pending Document. Without this, an update() of a
+        # file-mode doc regresses Document.metadata to {} on every
+        # call — the pipeline skips its loader step when ``text`` is
+        # supplied, so we have to carry the metadata in ourselves.
+        loaded_metadata: dict[str, Any] = {}
         if text is not None:
             loaded_text = text
             doc_path = resolved_id
@@ -916,6 +937,7 @@ class GraphRAG:
             loaded = await active_loader.load(source, ctx)
             loaded_text = loaded.text
             doc_path = source
+            loaded_metadata = dict(loaded.document_info.metadata or {})
 
         new_hash = hashlib.sha256(loaded_text.encode("utf-8")).hexdigest()
 
@@ -965,7 +987,9 @@ class GraphRAG:
 
         # ── Phase 3: write new content under a fresh pending id ──
         pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"
-        pending_doc_info = DocumentInfo(uid=pending_id, path=doc_path)
+        pending_doc_info = DocumentInfo(
+            uid=pending_id, path=doc_path, metadata=loaded_metadata
+        )
 
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),  # unused (text is provided below)
@@ -1051,7 +1075,9 @@ class GraphRAG:
         )
 
         return UpdateResult(
-            document_info=DocumentInfo(uid=resolved_id, path=doc_path),
+            document_info=DocumentInfo(
+                uid=resolved_id, path=doc_path, metadata=loaded_metadata
+            ),
             nodes_created=pipeline_result.nodes_created,
             relationships_created=pipeline_result.relationships_created,
             chunks_indexed=pipeline_result.chunks_indexed,
@@ -1195,8 +1221,12 @@ class GraphRAG:
         - ``deleted`` → ``delete_document()``
 
         Each list can independently be ``None`` or empty. Per-file errors
-        are collected as ``Exception`` objects in the result; the batch
-        never raises. This mirrors ``ingest()``'s batch contract.
+        are wrapped as ``BatchEntry`` entries with ``error`` (the formatted
+        message) and ``error_type`` (the exception class name) set, and
+        ``result=None``; the batch never raises. Storing the error as a
+        string keeps the result JSON-serialisable — callers branch on
+        ``entry.is_success`` or ``entry.error_type`` instead of catching
+        an exception. This mirrors ``ingest()``'s batch contract.
 
         Order: deletes → updates → adds — this is part of the public
         contract, not a happens-to-work choice. Today MERGE-on-id makes
@@ -1212,7 +1242,7 @@ class GraphRAG:
 
         Canonical CI usage::
 
-            graph = await GraphRAG.connect(...)
+            graph = GraphRAG(connection=..., llm=..., embedder=...)
             await graph.apply_changes(**parse_git_diff(pr_sha, base_sha))
             await graph.finalize()
 

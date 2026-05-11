@@ -73,11 +73,18 @@ jobs:
       - name: Wait for FalkorDB
         # The service container is healthchecked above, but give the
         # graph layer an extra moment to be reachable from Python.
+        # The loop MUST fail the step if readiness never arrives —
+        # otherwise pytest runs against a dead service and surfaces
+        # a much less obvious error.
         run: |
           for _ in $(seq 1 20); do
-            python -c "import redis; redis.Redis(host='localhost', port=6379).ping()" && break
+            if python -c "import redis; redis.Redis(host='localhost', port=6379).ping()"; then
+              exit 0
+            fi
             sleep 1
           done
+          echo "FalkorDB did not become reachable within 20 attempts" >&2
+          exit 1
       - name: Run incremental-update integration tests
         # Only the v1.1.0 invariant suite needs the live database; the
         # rest of test_integration.py is import-smoke that already runs
