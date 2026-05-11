@@ -1454,7 +1454,7 @@ class TestGraphRAGUpdate:
             return_value=DocumentRecord(path=None, content_hash=None)
         )
 
-        with pytest.raises(DatabaseError, match="no path metadata"):
+        with pytest.raises(DatabaseError, match="incomplete metadata"):
             await graphrag.update(text="new", document_id="my-doc")
         # CRITICAL: rollforward must NOT have been invoked — destroying
         # the live document with a corrupt pending would be silent

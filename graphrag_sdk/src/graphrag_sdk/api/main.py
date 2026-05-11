@@ -763,16 +763,24 @@ class GraphRAG:
                 # MUST be there. Refuse to silently default to the canonical
                 # id (would write a non-filesystem path) or to "" hash (would
                 # break future no-op short-circuits forever).
-                if pending_record is None or not pending_record.path:
+                # Both path AND content_hash are required for a COMMITTED
+                # pending — pipeline must have completed step 7 to write
+                # them. Refusing to fall back to ``""`` on either: a
+                # non-filesystem path is wrong, and an empty hash would
+                # permanently disable the no-op short-circuit on future
+                # updates (no real SHA-256 will ever match ``""``).
+                roll_hash = prior_hash or (pending_record.content_hash if pending_record else None)
+                if pending_record is None or not pending_record.path or not roll_hash:
                     raise DatabaseError(
                         f"Phase 0 rollforward: COMMITTED pending "
-                        f"'{prior_pending_id}' has no path metadata. Graph "
-                        "state is inconsistent — possible corruption or "
-                        "partial write before the commit marker. Refusing "
-                        "to proceed; manual intervention required."
+                        f"'{prior_pending_id}' has incomplete metadata "
+                        f"(path={pending_record.path if pending_record else None!r}, "
+                        f"hash={roll_hash!r}). Graph state is inconsistent — "
+                        "possible corruption or partial write before the "
+                        "commit marker. Refusing to proceed; manual "
+                        "intervention required."
                     )
                 roll_path = pending_record.path
-                roll_hash = prior_hash or pending_record.content_hash or ""
                 # Belt-and-braces: if the pending doesn't carry cleanup
                 # state (e.g. it was committed by pre-fix code, or by a
                 # test simulation that wrote the marker directly), snapshot
