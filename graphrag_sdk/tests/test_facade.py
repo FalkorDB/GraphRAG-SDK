@@ -1141,19 +1141,52 @@ def _stub_graph_store_for_update(
         if existing_record is not None
         else None
     )
+    candidates_list = candidates or []
     g._graph_store.get_document_record = AsyncMock(return_value=record)
     g._graph_store.get_document_entity_candidates = AsyncMock(
-        return_value=candidates or []
+        return_value=candidates_list
     )
+    g._graph_store.get_document_chunk_ids = AsyncMock(return_value=[])
     # State-machine surface (v1.1.0)
     g._graph_store.find_pending = AsyncMock(return_value=prior_pending)
     g._graph_store.mark_pending_committed = AsyncMock(return_value=1)
     g._graph_store.cleanup_pending_documents = AsyncMock(return_value=0)
-    g._graph_store.rollforward_cutover = AsyncMock(return_value=cutover_chunks_deleted)
     g._graph_store.delete_document_chunks_and_node = AsyncMock(
         return_value=cutover_chunks_deleted
     )
+    g._graph_store.delete_document_chunks = AsyncMock(return_value=cutover_chunks_deleted)
+    g._graph_store.delete_document_node = AsyncMock(return_value=None)
     g._graph_store.delete_orphan_entities = AsyncMock(return_value=orphan_entities_deleted)
+    g._graph_store.delete_stale_relationships = AsyncMock(return_value=0)
+    # Crash-safe cleanup-state surface. We stash cleanup state in a
+    # closure dict so the recovery path (get_cleanup_state) round-trips
+    # what set_pending_cleanup_state / mark_document_pending_delete
+    # wrote. rollforward_cutover gets a side_effect that simulates the
+    # rename — moves the stash key from pending_id → real_id, exactly
+    # mirroring how the real Cypher carries cleanup_candidates along
+    # on the SET p.id = $real_id property update.
+    _stashed: dict[str, tuple[list[str], list[str]]] = {}
+
+    async def _set_state(doc_id, cands, chunks):
+        _stashed[doc_id] = (list(cands), list(chunks))
+    async def _get_state(doc_id):
+        return _stashed.get(doc_id)
+    async def _clear_state(doc_id):
+        _stashed.pop(doc_id, None)
+    async def _mark_delete(doc_id, cands, chunks):
+        _stashed[doc_id] = (list(cands), list(chunks))
+        return 1
+    async def _rollforward(*, pending_id, real_id, path, content_hash):
+        if pending_id in _stashed:
+            _stashed[real_id] = _stashed.pop(pending_id)
+        return cutover_chunks_deleted
+
+    g._graph_store.set_pending_cleanup_state = AsyncMock(side_effect=_set_state)
+    g._graph_store.get_cleanup_state = AsyncMock(side_effect=_get_state)
+    g._graph_store.clear_cleanup_state = AsyncMock(side_effect=_clear_state)
+    g._graph_store.mark_document_pending_delete = AsyncMock(side_effect=_mark_delete)
+    g._graph_store.has_pending_delete = AsyncMock(return_value=False)
+    g._graph_store.rollforward_cutover = AsyncMock(side_effect=_rollforward)
     g._graph_store.upsert_nodes = AsyncMock(return_value=0)
     g._graph_store.upsert_relationships = AsyncMock(return_value=0)
     g._vector_store.ensure_indices = AsyncMock(return_value={})
@@ -1509,8 +1542,12 @@ class TestGraphRAGDeleteDocument:
         assert result.document_uid == "doc-a"
         assert result.chunks_deleted == 3
         assert result.entities_deleted == 2
-        graphrag._graph_store.delete_document_chunks_and_node.assert_awaited_once_with("doc-a")
+        # New crash-safe sequence: commit marker first, then chunks,
+        # then post-cutover cleanup, then the doc node.
+        graphrag._graph_store.mark_document_pending_delete.assert_awaited_once()
+        graphrag._graph_store.delete_document_chunks.assert_awaited_once_with("doc-a")
         graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(["e1", "e2"])
+        graphrag._graph_store.delete_document_node.assert_awaited_once_with("doc-a")
 
     async def test_missing_doc_raises(self, graphrag):
         _stub_graph_store_for_update(graphrag, existing_record=None)
@@ -1527,28 +1564,38 @@ class TestGraphRAGDeleteDocument:
         assert result.document_uid == "ghost"
         assert result.chunks_deleted == 0
         assert result.entities_deleted == 0
-        # No graph-store ops should have run beyond the initial lookup.
-        graphrag._graph_store.delete_document_chunks_and_node.assert_not_awaited()
+        # No destructive ops should have run beyond the initial lookups.
+        graphrag._graph_store.delete_document_chunks.assert_not_awaited()
+        graphrag._graph_store.delete_document_node.assert_not_awaited()
         graphrag._graph_store.delete_orphan_entities.assert_not_awaited()
+        graphrag._graph_store.mark_document_pending_delete.assert_not_awaited()
 
-    async def test_orphan_cleanup_runs_even_if_chunk_delete_raises(self, graphrag):
-        """A3 — best-effort orphan cleanup. If the chunk-and-node delete
-        raises mid-flight (network blip, transient Cypher error), the
-        orphan sweep must still run so candidate entities don't leak as
-        permanent ghost nodes."""
+    async def test_chunk_delete_failure_leaves_pending_delete_for_recovery(self, graphrag):
+        """v1.1.0 (post-Naseem-review fix): delete_document is crash-safe
+        via a commit marker, not best-effort. If a step after the commit
+        raises, the ``pending_delete=true`` marker stays on disk and
+        Phase 0 on the next call resumes the sequence. The orphan sweep
+        is no longer attempted inline on the failing call — that would
+        require partial-state cleanup that the recovery path handles
+        more correctly."""
         _stub_graph_store_for_update(
             graphrag,
             existing_record={"path": "doc-a", "content_hash": "h"},
             candidates=["e1", "e2"],
         )
-        graphrag._graph_store.delete_document_chunks_and_node = AsyncMock(
+        graphrag._graph_store.delete_document_chunks = AsyncMock(
             side_effect=RuntimeError("transient cypher error")
         )
 
         with pytest.raises(RuntimeError, match="transient cypher error"):
             await graphrag.delete_document("doc-a")
-        # Orphan sweep was still attempted.
-        graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(["e1", "e2"])
+        # Commit marker fired BEFORE the failing chunk delete — this is
+        # the load-bearing ordering that lets Phase 0 resume.
+        graphrag._graph_store.mark_document_pending_delete.assert_awaited_once()
+        # No inline best-effort sweep: orphan + node-delete come AFTER
+        # chunk-delete in the new sequence, and we crashed before them.
+        # Recovery on next call's Phase 0 handles cleanup idempotently.
+        graphrag._graph_store.delete_document_node.assert_not_awaited()
 
     async def test_empty_id_raises(self, graphrag):
         with pytest.raises(ValueError, match="non-empty string"):

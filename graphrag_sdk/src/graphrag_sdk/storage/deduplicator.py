@@ -17,20 +17,37 @@ logger = logging.getLogger(__name__)
 _MAX_PAGINATION_ITERATIONS = 10_000
 
 # Cypher queries for remapping edges from a duplicate to a survivor entity.
+#
+# The RELATES variants union ``source_chunk_ids`` rather than letting
+# ``SET nr += properties(r)`` overwrite it. Without that union, a dedup
+# merge would silently strip the survivor edge's provenance, breaking
+# ``GraphStore.delete_stale_relationships`` on the next update/delete:
+# RELATES facts originally contributed by chunks now belonging to the
+# survivor would look unrooted and could be wrongly deleted (or, more
+# commonly, wrongly retained because their list shrank to the dup's
+# contribution alone).
 _REMAP_QUERIES = [
-    # Outgoing RELATES from duplicate
+    # Outgoing RELATES from duplicate.
     "MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__) "
     "WHERE b.id <> $survivor_id "
     "MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b) "
+    "WITH r, nr, "
+    "     coalesce(nr.source_chunk_ids, []) AS old, "
+    "     coalesce(r.source_chunk_ids, []) AS contrib "
     "SET nr += properties(r) "
+    "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old] "
     "DELETE r",
-    # Incoming RELATES to duplicate
+    # Incoming RELATES to duplicate.
     "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
     "WHERE a.id <> $survivor_id "
     "MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id}) "
+    "WITH r, nr, "
+    "     coalesce(nr.source_chunk_ids, []) AS old, "
+    "     coalesce(r.source_chunk_ids, []) AS contrib "
     "SET nr += properties(r) "
+    "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old] "
     "DELETE r",
-    # MENTIONED_IN edges
+    # MENTIONED_IN edges — no source_chunk_ids on these, plain remap.
     "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "
     "MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c) "
     "DELETE r",

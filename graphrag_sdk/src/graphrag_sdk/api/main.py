@@ -493,6 +493,11 @@ class GraphRAG:
             source if text is None else None, text, None
         )
         self._check_no_pending_marker(resolved_id)
+        # Phase 0: if a prior update/delete crashed mid-cutover for this
+        # id, finish that recovery before starting a fresh ingest. Cheap
+        # (a few Cypher round-trips with empty result sets) on the common
+        # path where no recovery is needed.
+        await self._phase0_recover_prior_operations(resolved_id, ctx)
         # Path-conflict guard: refuse to silently rebind an existing id to a
         # different source path. Catches accidental aliasing across files;
         # legitimate rebinds should go through ``update()``.
@@ -628,60 +633,160 @@ class GraphRAG:
     # O(graph size) and should be amortized across a whole batch, not
     # paid per file. See CHANGELOG 1.1.0 cost-model note.
 
-    async def _phase0_recover_prior_pending(self, resolved_id: str, ctx: Context) -> None:
-        """update() Phase 0 — handle leftover from a prior crashed call.
+    async def _run_post_cutover_cleanup(
+        self, document_id: str, ctx: Context
+    ) -> tuple[int, int]:
+        """Read persisted cleanup state from a Document and execute it.
 
-        ``find_pending`` reports COMMITTED for any pending whose
-        ``ready_to_commit`` is already set. In that state, the prior
-        call crossed the commit boundary; the only safe action is to
-        roll forward (replay the cutover sequence). Otherwise the
-        leftover is in WRITTEN state and we discard it.
+        Steps (all idempotent):
+          1. ``delete_stale_relationships`` — drop RELATES facts whose
+             only chunk-provenance was the cutover-deleted chunks.
+          2. ``delete_orphan_entities`` — drop entity nodes whose
+             MENTIONED_IN went to zero after cutover.
+          3. ``clear_cleanup_state`` — remove the recovery-state
+             properties so future Phase-0 calls don't reprocess.
 
-        Extracted from ``update()`` so the recovery branch can be
-        tested in isolation; the rest of update remains inline because
-        further extraction would require either threading 8+ kwargs
-        through every helper or introducing a per-call state container,
-        either of which obscures rather than clarifies the flow.
+        Returns ``(stale_relates_deleted, orphan_entities_deleted)``.
+        Returns ``(0, 0)`` when the document has no cleanup state
+        attached — safe to call unconditionally.
+
+        Called from both update()'s Phase 6 (normal path) and
+        ``_phase0_recover_prior_operations`` (crash-recovery path).
+        Each Phase-6 step is independently re-runnable, so any
+        sub-step crash is recovered by simply re-entering this method.
         """
-        prior = await self._graph_store.find_pending(resolved_id)
-        if prior is None:
-            return
-        prior_state, prior_pending_id, prior_hash = prior
-        if prior_state != "COMMITTED":
-            # WRITTEN / WRITING — safe to discard. Pending pipeline
-            # didn't reach the commit point; the live document is intact.
-            await self._graph_store.cleanup_pending_documents(resolved_id)
+        state = await self._graph_store.get_cleanup_state(document_id)
+        if state is None:
+            return (0, 0)
+        candidate_ids, old_chunk_ids = state
+        stale_deleted = await self._graph_store.delete_stale_relationships(
+            candidate_ids, old_chunk_ids
+        )
+        orphans_deleted = await self._graph_store.delete_orphan_entities(
+            candidate_ids
+        )
+        await self._graph_store.clear_cleanup_state(document_id)
+        if stale_deleted or orphans_deleted:
+            ctx.log(
+                f"post-cutover cleanup: {document_id} — "
+                f"removed {stale_deleted} stale RELATES, "
+                f"{orphans_deleted} orphan entities"
+            )
+        return (stale_deleted, orphans_deleted)
+
+    async def _resume_pending_delete(
+        self, document_id: str, ctx: Context
+    ) -> None:
+        """Finish a delete_document() that crashed after its commit
+        marker (``pending_delete=true``) but before the Document node
+        was removed.
+
+        Replays the same post-commit sequence as ``delete_document()``:
+        delete chunks → stale RELATES → orphan entities → drop Document.
+        Each step idempotent — re-running on a partially-completed
+        delete simply skips work already done.
+
+        Called by ``_phase0_recover_prior_operations`` when a doc with
+        ``pending_delete=true`` is detected at the top of update /
+        ingest / delete.
+        """
+        ctx.log(
+            f"phase0: resuming interrupted delete for '{document_id}'"
+        )
+        await self._graph_store.delete_document_chunks(document_id)
+        # Cleanup state was set atomically with pending_delete=true.
+        # _run_post_cutover_cleanup handles the rest and clears the
+        # state properties.
+        await self._run_post_cutover_cleanup(document_id, ctx)
+        await self._graph_store.delete_document_node(document_id)
+
+    async def _phase0_recover_prior_operations(
+        self, resolved_id: str, ctx: Context
+    ) -> None:
+        """Phase 0 — handle recoverable leftovers from a prior crashed
+        call to update / delete_document / ingest on this id.
+
+        Three crash states are recoverable:
+
+        1. Live doc has ``pending_delete=true`` — a prior
+           ``delete_document()`` crossed its commit marker but didn't
+           finish. Resume the delete sequence. Takes priority over (2)
+           because a doc undergoing deletion has no business getting
+           a fresh update on top.
+        2. A ``__pending__`` Document for this id exists:
+           - State ``COMMITTED`` (``ready_to_commit=true``) — a prior
+             ``update()`` crossed the commit point. Replay cutover.
+           - State ``WRITTEN`` — pending didn't reach commit. Discard.
+        3. Live doc has cleanup-state properties (``cleanup_candidates``
+           / ``cleanup_old_chunk_ids``) but no pending — a prior
+           update or delete crashed between cutover/chunk-delete and
+           the final cleanup. Just rerun the cleanup.
+
+        The final ``_run_post_cutover_cleanup`` call at the bottom
+        handles state (3) and is also a no-op safety net after a state
+        (2.COMMITTED) replay (which itself produces cleanup state to
+        consume). State (1) returns early because the live doc no
+        longer exists once the delete completes.
+
+        Renamed from ``_phase0_recover_prior_pending`` to reflect the
+        broader recovery surface; signature is unchanged.
+        """
+        # Branch 1: prior delete_document crashed mid-finalization.
+        if await self._graph_store.has_pending_delete(resolved_id):
+            await self._resume_pending_delete(resolved_id, ctx)
             return
 
-        ctx.log(
-            f"update: detected COMMITTED pending '{prior_pending_id}' "
-            f"from a prior crash — rolling forward"
-        )
-        # The pending node carries the "real" path/hash (set just
-        # before we crashed). Look those up before rollforward so the
-        # canonical Document ends up with the right metadata.
-        pending_record = await self._graph_store.get_document_record(prior_pending_id)
-        # A committed pending without persisted path metadata is a
-        # corruption signal — the pipeline must have completed step 7
-        # (write-graph) for the marker to be set, so the path/hash
-        # MUST be there. Refuse to silently default to the canonical
-        # id (would write a non-filesystem path) or to "" hash (would
-        # break future no-op short-circuits forever).
-        if pending_record is None or not pending_record.path:
-            raise DatabaseError(
-                f"Phase 0 rollforward: COMMITTED pending '{prior_pending_id}' "
-                "has no path metadata. Graph state is inconsistent — possible "
-                "corruption or partial write before the commit marker. Refusing "
-                "to proceed; manual intervention required."
-            )
-        roll_path = pending_record.path
-        roll_hash = prior_hash or pending_record.content_hash or ""
-        await self._graph_store.rollforward_cutover(
-            pending_id=prior_pending_id,
-            real_id=resolved_id,
-            path=roll_path,
-            content_hash=roll_hash,
-        )
+        # Branch 2: prior update() left a pending Document behind.
+        prior = await self._graph_store.find_pending(resolved_id)
+        if prior is not None:
+            prior_state, prior_pending_id, prior_hash = prior
+            if prior_state != "COMMITTED":
+                # WRITTEN / WRITING — safe to discard. Pending pipeline
+                # didn't reach the commit point; the live document is intact.
+                # The half-written cleanup state on the pending (if any)
+                # dies with the pending here.
+                await self._graph_store.cleanup_pending_documents(resolved_id)
+            else:
+                ctx.log(
+                    f"update: detected COMMITTED pending '{prior_pending_id}' "
+                    f"from a prior crash — rolling forward"
+                )
+                # The pending node carries the "real" path/hash (set just
+                # before we crashed). Look those up before rollforward so the
+                # canonical Document ends up with the right metadata.
+                pending_record = await self._graph_store.get_document_record(
+                    prior_pending_id
+                )
+                # A committed pending without persisted path metadata is a
+                # corruption signal — the pipeline must have completed step 7
+                # (write-graph) for the marker to be set, so the path/hash
+                # MUST be there. Refuse to silently default to the canonical
+                # id (would write a non-filesystem path) or to "" hash (would
+                # break future no-op short-circuits forever).
+                if pending_record is None or not pending_record.path:
+                    raise DatabaseError(
+                        f"Phase 0 rollforward: COMMITTED pending "
+                        f"'{prior_pending_id}' has no path metadata. Graph "
+                        "state is inconsistent — possible corruption or "
+                        "partial write before the commit marker. Refusing "
+                        "to proceed; manual intervention required."
+                    )
+                roll_path = pending_record.path
+                roll_hash = prior_hash or pending_record.content_hash or ""
+                await self._graph_store.rollforward_cutover(
+                    pending_id=prior_pending_id,
+                    real_id=resolved_id,
+                    path=roll_path,
+                    content_hash=roll_hash,
+                )
+
+        # Branch 3 (and post-replay finishing of branch 2.COMMITTED):
+        # run cleanup if any state remains. No-op when nothing's there.
+        await self._run_post_cutover_cleanup(resolved_id, ctx)
+
+    # Backwards-compat alias — older tests / external callers may reference
+    # the prior name. Cheap to keep, single line.
+    _phase0_recover_prior_pending = _phase0_recover_prior_operations
 
     async def update(
         self,
@@ -711,22 +816,33 @@ class GraphRAG:
 
         State-machine cutover (crash-safe):
 
-        +-----------+----------------+-----------------+---------------+-------------------+
-        | State     | Pending exists | ready_to_commit | Live doc      | Recovery          |
-        +-----------+----------------+-----------------+---------------+-------------------+
-        | EMPTY     | no             | n/a             | maybe         | normal start      |
-        | WRITING   | partial        | absent          | unchanged     | rollback (delete) |
-        | WRITTEN   | complete       | absent          | unchanged     | rollback (delete) |
-        | COMMITTED | complete       | true            | maybe partial | **rollforward**   |
-        | FINAL     | renamed away   | n/a             | new content   | normal start      |
-        +-----------+----------------+-----------------+---------------+-------------------+
+        +-----------------+----------------+-----------------+----------+---------------+-----------------------+
+        | State           | Pending exists | ready_to_commit | cleanup_ | Live doc      | Recovery              |
+        |                 |                |                 | props    |               |                       |
+        +-----------------+----------------+-----------------+----------+---------------+-----------------------+
+        | EMPTY           | no             | n/a             | absent   | maybe         | normal start          |
+        | WRITING         | partial        | absent          | absent   | unchanged     | rollback (delete)     |
+        | WRITTEN         | complete       | absent          | maybe    | unchanged     | rollback (delete)     |
+        | COMMITTED       | complete       | true            | present  | maybe partial | **rollforward**       |
+        | CLEANUP_PENDING | renamed away   | n/a             | present  | new content   | **resume cleanup**    |
+        | FINAL           | renamed away   | n/a             | absent   | new content   | normal start          |
+        +-----------------+----------------+-----------------+----------+---------------+-----------------------+
 
-        The single-property write that sets ``ready_to_commit=true`` is
-        the commit point. It MUST commit before any destructive Cypher
-        touches the live document — getting that ordering wrong replaces
-        a recoverable error with silent data loss. Once committed, all
-        subsequent ops are idempotent and crash-recovery rolls forward
-        rather than back.
+        Two load-bearing writes:
+
+        1. ``set_pending_cleanup_state`` (Phase 3b) — persists the
+           candidate / old-chunk lists onto the pending node so the
+           post-cutover cleanup is recoverable. Must precede (2).
+        2. ``mark_pending_committed`` (Phase 4, the commit point) —
+           sets ``ready_to_commit=true``. After this, crash recovery
+           is rollforward; before this, it's rollback.
+
+        Getting the ordering of (1) and (2) wrong breaks crash safety:
+        if the marker flipped before the cleanup state was on disk, a
+        crash between them would leave orphan entities and stale
+        RELATES facts permanently in the graph. The integration test
+        ``test_orphans_cleaned_after_crash_between_commit_and_cleanup``
+        is the tripwire for this invariant.
 
         Args:
             source: File path. Loader reads from disk. Mutually exclusive
@@ -786,8 +902,9 @@ class GraphRAG:
         resolved_id = self._resolve_document_id(source, text, document_id)
         self._check_no_pending_marker(resolved_id)
 
-        # ── Phase 0: pre-cleanup — handle leftover from a prior crash ──
-        await self._phase0_recover_prior_pending(resolved_id, ctx)
+        # ── Phase 0: pre-cleanup — handle leftover from a prior crash
+        # of update(), delete_document(), or post-cutover cleanup. ──
+        await self._phase0_recover_prior_operations(resolved_id, ctx)
 
         # ── Phase 1: load text + lookup live doc + no-op short-circuit ──
         if text is not None:
@@ -836,8 +953,15 @@ class GraphRAG:
                 replaced_existing=True,
             )
 
-        # ── Phase 2: snapshot entity candidates BEFORE topology changes ──
+        # ── Phase 2: snapshot entity candidates AND old chunk ids BEFORE
+        # topology changes. Both feed Phase 6:
+        # - candidate_ids → delete_orphan_entities (whose MENTIONED_IN
+        #   went to zero after cutover deleted the old chunks).
+        # - old_chunk_ids → delete_stale_relationships (RELATES edges
+        #   whose source_chunk_ids only referenced these chunks become
+        #   stale facts to remove).
         candidate_ids = await self._graph_store.get_document_entity_candidates(resolved_id)
+        old_chunk_ids = await self._graph_store.get_document_chunk_ids(resolved_id)
 
         # ── Phase 3: write new content under a fresh pending id ──
         pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"
@@ -870,6 +994,19 @@ class GraphRAG:
                 logger.debug("update: pending cleanup failed during exception path", exc_info=True)
             raise
 
+        # ── Phase 3b: persist cleanup state on the pending Document ──
+        # The lists ride along on the rename in Phase 5 and are consumed
+        # by Phase 6 — i.e. cleanup is now recoverable across a crash.
+        # MUST happen before the commit marker (Phase 4): a crash before
+        # this write leaves the pending in WRITTEN state (rollback OK);
+        # a crash after this write but before Phase 4 also rolls back,
+        # discarding the half-written state along with the pending. The
+        # only state combination that survives is "marker AND lists",
+        # which is exactly what Phase 6 needs.
+        await self._graph_store.set_pending_cleanup_state(
+            pending_id, candidate_ids, old_chunk_ids
+        )
+
         # ── Phase 4: COMMIT (load-bearing single-property atomic write) ──
         # Sets pending.ready_to_commit = true. After this returns, recovery
         # on crash is rollforward, not rollback. THIS IS THE COMMIT POINT.
@@ -897,8 +1034,12 @@ class GraphRAG:
             content_hash=new_hash,
         )
 
-        # ── Phase 6: orphan-entity cleanup (scoped to candidates) ──
-        entities_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
+        # ── Phase 6: unified post-cutover cleanup (recoverable) ──
+        # Reads cleanup state off the (now canonical) Document, drops
+        # stale RELATES, drops orphan entities, clears the state. If we
+        # crash inside this block, the next call's Phase 0 finds the
+        # state still on the doc and replays — idempotent throughout.
+        _, entities_deleted = await self._run_post_cutover_cleanup(resolved_id, ctx)
 
         # Index sanity (idempotent). Do NOT call finalize() — caller's responsibility.
         await self._vector_store.ensure_indices()
@@ -936,8 +1077,18 @@ class GraphRAG:
           any remaining ``MENTIONED_IN`` edges (orphan cleanup, scoped
           to candidates from this document — never global). Their
           incident ``RELATES`` edges go with them via ``DETACH DELETE``.
+        - ``RELATES`` facts whose only chunk-provenance came from this
+          document's chunks (stale-fact cleanup, scoped via the
+          ``source_chunk_ids`` property on the edge).
 
         Entities still referenced by other documents are preserved.
+
+        Crash safety: a single atomic write
+        (``pending_delete=true`` + cleanup state) is the commit marker.
+        Before this write the live document is untouched; after it,
+        every remaining step is idempotent and recovery on next call
+        (``_phase0_recover_prior_operations``) resumes from where the
+        crash interrupted.
 
         Args:
             document_id: The Document node id (e.g. ``os.path.normpath(path)``
@@ -961,6 +1112,12 @@ class GraphRAG:
             raise ValueError("'document_id' must be a non-empty string")
         self._check_no_pending_marker(document_id)
 
+        # Phase 0: handle leftovers from any prior crashed op on this id.
+        # Mirrors update()'s Phase 0 — without it, a fresh delete on a
+        # doc that was mid-update or mid-delete would race the recovery.
+        ctx = Context()
+        await self._phase0_recover_prior_operations(document_id, ctx)
+
         existing = await self._graph_store.get_document_record(document_id)
         if existing is None:
             if if_missing == "ignore":
@@ -971,30 +1128,38 @@ class GraphRAG:
                 return DeleteDocumentResult(document_uid=document_id)
             raise DocumentNotFoundError(f"No Document with id '{document_id}' exists.")
 
+        # Snapshot BOTH entity candidates AND chunk ids (Phase 3 of the
+        # delete-side state machine, before the commit marker flips).
         candidate_ids = await self._graph_store.get_document_entity_candidates(document_id)
-        # A3 — best-effort orphan cleanup. If chunk-and-node deletion
-        # raises mid-flight (network blip, transient Cypher error), we
-        # still attempt the orphan sweep so the candidate set doesn't
-        # leak as permanent ghost nodes. Process death between the two
-        # is unrecoverable here (no persistent recovery handle); a full
-        # state-machine for delete is left as a future enhancement.
-        chunks_deleted = 0
-        entities_deleted = 0
-        try:
-            chunks_deleted = await self._graph_store.delete_document_chunks_and_node(document_id)
-        finally:
-            try:
-                entities_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
-            except Exception:
-                logger.warning(
-                    "delete_document: orphan cleanup failed for '%s' (chunks_deleted=%d); "
-                    "candidate entities may be stranded as orphans. Re-running "
-                    "delete_document(if_missing='ignore') will not recover them — "
-                    "they require a manual sweep.",
-                    document_id,
-                    chunks_deleted,
-                    exc_info=True,
-                )
+        chunk_ids = await self._graph_store.get_document_chunk_ids(document_id)
+
+        # COMMIT POINT (single atomic write):
+        # - pending_delete = true
+        # - cleanup_candidates = [...]
+        # - cleanup_old_chunk_ids = [...]
+        # After this, recovery is rollforward (finish the delete);
+        # before this, recovery is no-op (live doc intact).
+        marked = await self._graph_store.mark_document_pending_delete(
+            document_id, candidate_ids, chunk_ids
+        )
+        if marked != 1:
+            # The doc vanished between the existence check and the commit.
+            # Refuse to keep going — the remaining sequence would silently
+            # no-op and the caller would think the delete succeeded.
+            raise DatabaseError(
+                f"delete_document: mark_document_pending_delete for "
+                f"'{document_id}' affected {marked} nodes (expected 1). "
+                "The Document may have been concurrently deleted; "
+                "refusing to proceed."
+            )
+
+        # ── Post-commit, all-idempotent sequence ──
+        # Each step is independently re-runnable; a crash anywhere
+        # leaves pending_delete=true on disk and the next Phase 0
+        # call resumes via _resume_pending_delete.
+        chunks_deleted = await self._graph_store.delete_document_chunks(document_id)
+        _, entities_deleted = await self._run_post_cutover_cleanup(document_id, ctx)
+        await self._graph_store.delete_document_node(document_id)
 
         logger.info(
             "delete_document: %s — removed %d chunks + %d orphan entities",

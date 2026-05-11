@@ -1,6 +1,8 @@
 """Integration tests — verify top-level imports and cross-module interactions."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
@@ -542,3 +544,358 @@ class TestIncrementalUpdateInvariants:
                 await rag2.close()
             except Exception:
                 pass
+
+    # ── Crash-safe orphan + stale-RELATES cleanup (post-fix) ──────
+    # These tests pin the invariants Naseem's PR #247 review flagged:
+    # (1) orphan cleanup survives a crash between commit and cleanup;
+    # (2) RELATES facts whose only provenance is the updated/deleted
+    #     doc's chunks are removed even when endpoint entities live on;
+    # (3) deduplicator's RELATES remap unions source_chunk_ids rather
+    #     than overwriting (otherwise the cleanup in (2) silently
+    #     under-cleans after any dedup pass).
+
+    async def test_orphans_cleaned_after_crash_between_commit_and_cleanup(
+        self, real_falkordb_rag_factory, scripted_llm, resolver
+    ):
+        """Crash after Phase 4 (commit marker set) but before Phase 6
+        (orphan cleanup). On next call, Phase 0's COMMITTED-pending
+        rollforward must also run the cleanup — otherwise orphan
+        entities persist forever (the pre-fix bug)."""
+        from graphrag_sdk.api.main import GraphRAG
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        llm = scripted_llm(
+            [("Ghost", "Person", "Will be orphaned by simulated crash")],
+            [("Survivor", "Person", "Replacement after recovery")],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        graph_name = rag._conn.graph_name
+
+        await rag.ingest(
+            text="Ghost lives here.", document_id="doc-A", resolver=resolver
+        )
+        assert await _entity_count(rag, "Ghost") == 1
+
+        # Simulate the persisted state of an update() that committed but
+        # crashed before Phase 5/6: a __pending__ Document with chunks +
+        # ready_to_commit=true AND cleanup_candidates persisted.
+        pending_id = "doc-A__pending__crash001"
+        candidate_ids = [
+            row[0]
+            for row in (
+                await rag._graph_store._conn.query(
+                    "MATCH (e:__Entity__)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-"
+                    "(:Document {id: 'doc-A'}) RETURN DISTINCT e.id AS eid",
+                    {},
+                )
+            ).result_set
+        ]
+        old_chunk_ids = [
+            row[0]
+            for row in (
+                await rag._graph_store._conn.query(
+                    "MATCH (:Document {id: 'doc-A'})-[:PART_OF]->(c:Chunk) "
+                    "RETURN c.id AS cid",
+                    {},
+                )
+            ).result_set
+        ]
+        assert candidate_ids, "test setup: doc-A should have entity candidates"
+        await rag._graph_store._conn.query(
+            "CREATE (p:Document {id: $pid, path: 'doc-A', content_hash: 'h'})",
+            {"pid": pending_id},
+        )
+        await rag._graph_store._conn.query(
+            "MATCH (p:Document {id: $pid}) "
+            "CREATE (p)-[:PART_OF]->(:Chunk {id: 'crash-chunk-1', text: 'new'})",
+            {"pid": pending_id},
+        )
+        await rag._graph_store.set_pending_cleanup_state(
+            pending_id, candidate_ids, old_chunk_ids
+        )
+        committed = await rag._graph_store.mark_pending_committed(pending_id)
+        assert committed == 1
+
+        await rag.close()
+
+        rag2 = GraphRAG(
+            connection=ConnectionConfig(
+                host=os.getenv("FALKOR_HOST", "localhost"),
+                port=int(os.getenv("FALKOR_PORT", "6379")),
+                username=os.getenv("FALKOR_USERNAME") or None,
+                password=os.getenv("FALKOR_PASSWORD") or None,
+                graph_name=graph_name,
+            ),
+            llm=llm,
+            embedder=rag.embedder,
+            embedding_dimension=rag.embedder.dimension,
+        )
+        try:
+            # Trigger Phase 0 via update(). Recovery must:
+            # 1. Roll forward the COMMITTED pending → doc-A canonical content
+            #    is the simulated-crash chunk.
+            # 2. Run post-cutover cleanup → Ghost is orphan-deleted because
+            #    it had no MENTIONED_IN edge from the crash-chunk.
+            # Then the fresh update overwrites doc-A with Survivor content.
+            await rag2.update(
+                text="Survivor replaces everything.",
+                document_id="doc-A",
+                resolver=resolver,
+            )
+            assert await _entity_count(rag2, "Ghost") == 0, (
+                "Phase 0 recovery must run orphan cleanup after rolling "
+                "forward the committed pending. Pre-fix, candidate ids "
+                "lived only in Python memory and were lost on crash — "
+                "leaving Ghost permanently orphaned."
+            )
+        finally:
+            try:
+                await rag2._graph_store.delete_all()
+            except Exception:
+                pass
+            try:
+                await rag2.close()
+            except Exception:
+                pass
+
+    async def test_orphans_cleaned_after_crash_between_rollforward_and_cleanup(
+        self, real_falkordb_rag_factory, scripted_llm, resolver
+    ):
+        """Crash AFTER rollforward_cutover but before _run_post_cutover_cleanup.
+        The canonical Document survives with cleanup_candidates set; Phase 0's
+        CLEANUP_PENDING branch (the no-pending-but-state-present case) must
+        resume the cleanup."""
+        from graphrag_sdk.api.main import GraphRAG
+        from graphrag_sdk.core.connection import ConnectionConfig
+
+        llm = scripted_llm(
+            [("Stale", "Person", "Should be cleaned up post-rollforward")],
+            [("Fresh", "Person", "Replacement")],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        graph_name = rag._conn.graph_name
+
+        await rag.ingest(
+            text="Stale was here.", document_id="doc-B", resolver=resolver
+        )
+        assert await _entity_count(rag, "Stale") == 1
+
+        # Snapshot what cleanup would do, delete chunks (simulating
+        # rollforward), then attach cleanup state to the doc — mimicking
+        # "rollforward succeeded but cleanup never ran."
+        candidate_ids = await rag._graph_store.get_document_entity_candidates("doc-B")
+        old_chunk_ids = await rag._graph_store.get_document_chunk_ids("doc-B")
+        assert candidate_ids, "test setup: doc-B should have candidates"
+        # Delete the old chunks (this is what rollforward_cutover's
+        # step 1+2 does).
+        await rag._graph_store.delete_document_chunks("doc-B")
+        # Stash cleanup state on the live doc (what set_pending_cleanup_state
+        # would have written + rollforward renamed onto the canonical id).
+        await rag._graph_store.set_pending_cleanup_state(
+            "doc-B", candidate_ids, old_chunk_ids
+        )
+
+        await rag.close()
+
+        rag2 = GraphRAG(
+            connection=ConnectionConfig(
+                host=os.getenv("FALKOR_HOST", "localhost"),
+                port=int(os.getenv("FALKOR_PORT", "6379")),
+                username=os.getenv("FALKOR_USERNAME") or None,
+                password=os.getenv("FALKOR_PASSWORD") or None,
+                graph_name=graph_name,
+            ),
+            llm=llm,
+            embedder=rag.embedder,
+            embedding_dimension=rag.embedder.dimension,
+        )
+        try:
+            # delete_document also runs Phase 0 first. Either route must
+            # consume the leftover cleanup state. Use update() so the
+            # final state is well-defined and we can assert Stale is gone.
+            await rag2.update(
+                text="Fresh is here now.",
+                document_id="doc-B",
+                resolver=resolver,
+                if_missing="ingest",
+            )
+            assert await _entity_count(rag2, "Stale") == 0, (
+                "CLEANUP_PENDING recovery branch must run when a live "
+                "doc has cleanup_candidates set but no pending — i.e. "
+                "the crash happened between rollforward and cleanup."
+            )
+            state = await rag2._graph_store.get_cleanup_state("doc-B")
+            assert state is None, (
+                "cleanup state must be cleared after recovery — otherwise "
+                "every subsequent call would re-run the cleanup."
+            )
+        finally:
+            try:
+                await rag2._graph_store.delete_all()
+            except Exception:
+                pass
+            try:
+                await rag2.close()
+            except Exception:
+                pass
+
+    async def test_stale_relates_removed_when_shared_entity_doc_updated(
+        self, real_falkordb_rag_factory, scripted_llm, resolver
+    ):
+        """Two docs both mention Alice and Bob, but only doc-A asserts
+        ``Alice KNOWS Bob``. Updating doc-A to drop that fact must
+        remove the RELATES edge even though Alice and Bob remain
+        (still mentioned by doc-B). Pre-fix, the edge would survive
+        because delete_orphan_entities only touches nodes."""
+        import json
+
+        from graphrag_sdk.tests.conftest import MockLLM  # type: ignore[import-not-found]
+
+        # Hand-script the LLM responses so the relationship-extraction
+        # step emits the RELATES we care about (default scripted_llm
+        # generates entity-only responses).
+        step1_a = json.dumps([
+            {"name": "Alice", "type": "Person", "description": "p1"},
+            {"name": "Bob", "type": "Person", "description": "p2"},
+        ])
+        step2_a = json.dumps({
+            "entities": [
+                {"name": "Alice", "type": "Person", "description": "p1"},
+                {"name": "Bob", "type": "Person", "description": "p2"},
+            ],
+            "relationships": [
+                {
+                    "source": "Alice",
+                    "target": "Bob",
+                    "type": "KNOWS",
+                    "description": "Alice knows Bob",
+                    "keywords": "social",
+                    "weight": 0.9,
+                }
+            ],
+        })
+        step1_b = json.dumps([
+            {"name": "Alice", "type": "Person", "description": "p1"},
+            {"name": "Bob", "type": "Person", "description": "p2"},
+        ])
+        step2_b = json.dumps({
+            "entities": [
+                {"name": "Alice", "type": "Person", "description": "p1"},
+                {"name": "Bob", "type": "Person", "description": "p2"},
+            ],
+            "relationships": [],
+        })
+        # Update of doc-A drops the relationship.
+        step1_u = json.dumps([
+            {"name": "Alice", "type": "Person", "description": "p1"},
+            {"name": "Bob", "type": "Person", "description": "p2"},
+        ])
+        step2_u = json.dumps({
+            "entities": [
+                {"name": "Alice", "type": "Person", "description": "p1"},
+                {"name": "Bob", "type": "Person", "description": "p2"},
+            ],
+            "relationships": [],
+        })
+        llm = MockLLM(
+            responses=[step1_a, step2_a, step1_b, step2_b, step1_u, step2_u],
+            strict=True,
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+
+        await rag.ingest(text="Alice knows Bob.", document_id="doc-A", resolver=resolver)
+        await rag.ingest(text="Alice and Bob exist.", document_id="doc-B", resolver=resolver)
+
+        # Pre-update: one RELATES edge between Alice and Bob.
+        r = await rag._graph_store._conn.query(
+            "MATCH (a:__Entity__ {name: 'Alice'})-[r:RELATES]-(b:__Entity__ {name: 'Bob'}) "
+            "RETURN count(r) AS n",
+            {},
+        )
+        assert r.result_set[0][0] == 1, "test setup: expected one RELATES edge from doc-A"
+
+        await rag.update(
+            text="Alice and Bob are mentioned but no longer related.",
+            document_id="doc-A",
+            resolver=resolver,
+        )
+
+        # Both entities preserved (doc-B still mentions them).
+        assert await _entity_count(rag, "Alice") == 1
+        assert await _entity_count(rag, "Bob") == 1
+        # But the stale RELATES is gone — its only provenance was
+        # doc-A's old chunks, which the cutover removed.
+        r = await rag._graph_store._conn.query(
+            "MATCH (a:__Entity__ {name: 'Alice'})-[r:RELATES]-(b:__Entity__ {name: 'Bob'}) "
+            "RETURN count(r) AS n",
+            {},
+        )
+        assert r.result_set[0][0] == 0, (
+            "RELATES edge whose only source_chunk_ids were doc-A's old chunks "
+            "must be deleted by post-cutover stale-RELATES cleanup. Pre-fix, "
+            "delete_orphan_entities only touched nodes — the edge survived."
+        )
+
+    async def test_dedup_remap_unions_source_chunk_ids(
+        self, real_falkordb_rag_factory, embedder
+    ):
+        """When deduplicator merges two entities, the survivor's RELATES
+        edge ``source_chunk_ids`` provenance must UNION the duplicate's
+        contribution rather than overwrite it. Pre-fix, ``SET nr +=
+        properties(r)`` clobbered the survivor's list, breaking the
+        stale-RELATES cleanup invariant on any subsequent update/delete.
+        """
+        from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+
+        rag = real_falkordb_rag_factory(
+            llm=None,  # dedup doesn't call the LLM
+            resolver=None,
+        )
+        conn = rag._graph_store._conn
+
+        # Hand-construct two entities with the same normalized name+label
+        # (so dedup will merge them) and outgoing RELATES to a common
+        # target — each edge with a distinct source_chunk_ids list.
+        await conn.query(
+            "CREATE (a1:__Entity__:Person {id: 'alice-1', name: 'Alice', "
+            "description: 'longer description that wins survivor'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (a2:__Entity__:Person {id: 'alice-2', name: 'Alice', "
+            "description: 'short'})",
+            {},
+        )
+        await conn.query(
+            "CREATE (b:__Entity__:Person {id: 'bob', name: 'Bob', description: ''})",
+            {},
+        )
+        await conn.query(
+            "MATCH (a:__Entity__ {id: 'alice-1'}), (b:__Entity__ {id: 'bob'}) "
+            "CREATE (a)-[:RELATES {source_chunk_ids: ['chunk-A'], rel_type: 'KNOWS'}]->(b)",
+            {},
+        )
+        await conn.query(
+            "MATCH (a:__Entity__ {id: 'alice-2'}), (b:__Entity__ {id: 'bob'}) "
+            "CREATE (a)-[:RELATES {source_chunk_ids: ['chunk-B'], rel_type: 'KNOWS'}]->(b)",
+            {},
+        )
+
+        dedup = EntityDeduplicator(rag._graph_store, embedder)
+        merged = await dedup.deduplicate(fuzzy=False)
+        assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
+
+        # Survivor edge should carry BOTH chunk ids — the union.
+        result = await conn.query(
+            "MATCH (:__Entity__ {name: 'Alice'})-[r:RELATES]->(:__Entity__ {name: 'Bob'}) "
+            "RETURN r.source_chunk_ids AS scids",
+            {},
+        )
+        assert result.result_set, "survivor RELATES edge should exist"
+        scids = result.result_set[0][0] or []
+        assert set(scids) == {"chunk-A", "chunk-B"}, (
+            f"dedup remap must UNION source_chunk_ids — got {scids}. "
+            "Pre-fix, SET nr += properties(r) overwrote the survivor's "
+            "list with the duplicate's, silently dropping provenance "
+            "and breaking subsequent stale-RELATES cleanup."
+        )
