@@ -3,11 +3,15 @@
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.cypher_first import (
     CypherFirstAggregationStrategy,
+    DefaultPhraseExtractor,
+    PhraseExtractor,
 )
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
 __all__ = [
     "CypherFirstAggregationStrategy",
+    "DefaultPhraseExtractor",
     "MultiPathRetrieval",
+    "PhraseExtractor",
     "RetrievalStrategy",
 ]

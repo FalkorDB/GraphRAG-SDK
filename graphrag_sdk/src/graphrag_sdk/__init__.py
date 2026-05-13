@@ -98,6 +98,8 @@ from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.cypher_first import (
     CypherFirstAggregationStrategy,
+    DefaultPhraseExtractor,
+    PhraseExtractor,
 )
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
@@ -164,7 +166,9 @@ __all__ = [
     # Retrieval
     "CosineReranker",
     "CypherFirstAggregationStrategy",
+    "DefaultPhraseExtractor",
     "MultiPathRetrieval",
+    "PhraseExtractor",
     "RerankingStrategy",
     "RetrievalStrategy",
     # Storage

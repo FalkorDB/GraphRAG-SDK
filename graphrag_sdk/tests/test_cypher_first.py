@@ -591,3 +591,79 @@ class TestStrategyRouting:
         # The topology-violation warning fired.
         assert any("zero (Organization)<-[:RELATES]-(Person) tuples" in r.message
                    for r in caplog.records)
+
+
+# ── Pluggable phrase extractor (R8) ──────────────────────────────
+
+
+class TestPhraseExtractor:
+    """Domain-specific extractors can replace the default role/project
+    regexes without forking the strategy."""
+
+    def test_default_extractor_matches_module_regexes(self):
+        from graphrag_sdk.retrieval.strategies.cypher_first import (
+            DefaultPhraseExtractor,
+        )
+        ext = DefaultPhraseExtractor()
+        assert "senior engineer" in ext.extract(
+            "Anna is a senior engineer at Acme.", "role"
+        )
+        assert any("pipeline rewrite" in p for p in ext.extract(
+            "contributes to the pipeline rewrite", "project"
+        ))
+        # Unknown kinds return an empty set, not an exception.
+        assert ext.extract("anything", "city") == set()
+
+    async def test_strategy_uses_custom_extractor_in_hybrid_path(self):
+        """A custom extractor passed to the strategy is consulted by the
+        shared-property hybrid instead of the default regexes."""
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.retrieval.strategies.cypher_first import PhraseExtractor
+
+        class _UpperCaseRoleExtractor(PhraseExtractor):
+            """Match exactly the literal strings 'ALPHA' and 'BETA' as roles
+            — clearly distinguishable from the default regex output."""
+            def extract(self, text, kind):
+                if kind == "role":
+                    return {w for w in ("ALPHA", "BETA") if w in text}
+                return set()
+
+        # Both orgs have one person whose chunk text mentions the same
+        # custom token. With the default extractor, none of these phrases
+        # would match (no role suffix). With our custom one, ALPHA is
+        # common to both.
+        from unittest.mock import AsyncMock, MagicMock
+
+        graph = MagicMock()
+        batch_rows = [
+            ["Acme",    "Alice", "no description", ["Alice does ALPHA at Acme."]],
+            ["Acme",    "Anna",  "no description", ["Anna does BETA at Acme."]],
+            ["Globex",  "Bob",   "no description", ["Bob does ALPHA at Globex."]],
+            ["Globex",  "Bea",   "no description", ["Bea does GAMMA at Globex."]],
+        ]
+        async def _query_raw(_cypher):
+            return SimpleNamespace(
+                header=[[1, "org"], [1, "person"], [1, "desc"], [1, "chunks"]],
+                result_set=batch_rows,
+            )
+        graph.query_raw = AsyncMock(side_effect=_query_raw)
+
+        from graphrag_sdk.retrieval.strategies.cypher_first import (
+            CypherFirstAggregationStrategy,
+        )
+        strat = CypherFirstAggregationStrategy(
+            graph_store=graph,
+            vector_store=MagicMock(),
+            embedder=MagicMock(),
+            llm=MagicMock(),
+            k_candidates=1,
+            rag_fallback=MagicMock(),
+            phrase_extractor=_UpperCaseRoleExtractor(),
+        )
+        result = await strat._execute(
+            "Which roles are held by employees at BOTH Acme and Globex?",
+            Context(),
+        )
+        # Hybrid fired (not a fallback) and computed the right intersection.
+        assert result.metadata["cypher_first_path"] == PATH_SHARED_PROPERTY_HYBRID
+        assert result.metadata["common"] == ["ALPHA"]

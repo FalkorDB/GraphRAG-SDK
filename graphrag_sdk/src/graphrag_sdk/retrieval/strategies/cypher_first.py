@@ -39,6 +39,7 @@ import asyncio
 import logging
 import re
 import statistics
+from abc import ABC, abstractmethod
 from typing import Any
 
 from graphrag_sdk.core.context import Context
@@ -197,6 +198,47 @@ def _extract_phrases(text: str, kind: str) -> set[str]:
     if kind == "project":
         return _extract_projects(text)
     return set()
+
+
+# ─────────────────────────────────────────────────────────────────
+# Pluggable phrase extractor (R8)
+# ─────────────────────────────────────────────────────────────────
+
+
+class PhraseExtractor(ABC):
+    """Pluggable phrase extractor for the shared-property hybrid path.
+
+    The default implementation targets the prose patterns the SDK's
+    ``GraphExtraction`` pipeline produces (``"works at X as a <role>"``,
+    ``"contributes to <project>"``). Domain-specific subclasses can
+    override ``extract`` to recognize medical / legal / e-commerce /
+    non-English vocabularies without forking the strategy.
+
+    Pass an instance via ``CypherFirstAggregationStrategy(..., phrase_extractor=MyExtractor())``.
+    """
+
+    @abstractmethod
+    def extract(self, text: str, kind: str) -> set[str]:
+        """Return phrases of ``kind`` found in ``text``.
+
+        ``kind`` is typically ``"role"`` or ``"project"`` but extractors
+        may define additional kinds. Unknown kinds should return an empty
+        set rather than raise.
+        """
+
+
+class DefaultPhraseExtractor(PhraseExtractor):
+    """The default role/project extractor used by
+    ``CypherFirstAggregationStrategy``. Targets the prose patterns
+    produced by the SDK's default ``GraphExtraction`` pipeline.
+
+    See module-level ``_ROLE_RE`` and ``_PROJECT_RE`` for the exact
+    regexes; the role suffix vocabulary is enumerated in the
+    ``CypherFirstAggregationStrategy`` docstring.
+    """
+
+    def extract(self, text: str, kind: str) -> set[str]:
+        return _extract_phrases(text, kind)
 
 
 def _detect_property_kind(question: str) -> str | None:
@@ -388,6 +430,444 @@ def _tag_path(result: RawSearchResult, path: str) -> RawSearchResult:
 
 
 # ─────────────────────────────────────────────────────────────────
+# Sub-paths
+#
+# Each path is a small, focused class with a single ``maybe_handle()``
+# method that either produces a final ``RawSearchResult`` or returns
+# ``None`` to defer to the next path. The strategy's ``_execute()``
+# dispatches by intent and iterates the relevant paths in order.
+# Splitting this way makes the routing trivial to follow, each path
+# trivially unit-testable in isolation, and adding new shapes (medical /
+# legal / e-commerce) a matter of dropping in a new path class.
+# ─────────────────────────────────────────────────────────────────
+
+
+class _AggregationPath(ABC):
+    """Base class for CypherFirstAggregationStrategy sub-paths.
+
+    Holds a reference to the parent strategy so subclasses can reach the
+    shared LLM / graph / fallback / k_candidates state without dragging
+    around a long argument list.
+    """
+
+    def __init__(self, strategy: CypherFirstAggregationStrategy) -> None:
+        self._s = strategy
+
+    @abstractmethod
+    async def maybe_handle(
+        self,
+        query: str,
+        ctx: Context,
+    ) -> RawSearchResult | None:
+        """Return a final retrieval result, or ``None`` to defer."""
+
+
+class _RagDelegationPath(_AggregationPath):
+    """Hands the query to the RAG fallback verbatim. Used for intent="rag"."""
+
+    async def maybe_handle(
+        self,
+        query: str,
+        ctx: Context,
+    ) -> RawSearchResult | None:
+        return _tag_path(
+            await self._s._fallback._execute(query, ctx),
+            PATH_RAG_FALLBACK,
+        )
+
+
+class _NumericMathPath(_AggregationPath):
+    """For "average / total / sum of YEARS / NUMBERS" — extract values via
+    Cypher, do the arithmetic in Python. Avoids LLM-arithmetic errors."""
+
+    async def maybe_handle(
+        self,
+        query: str,
+        ctx: Context,
+    ) -> RawSearchResult | None:
+        extraction_prompt = SCHEMA_PROMPT.format(
+            question=(
+                f"Generate a cypher that returns the RAW NUMERIC VALUES "
+                f"needed to answer this question (one value per row). "
+                f"Do NOT compute averages or sums in cypher; just return "
+                f"the raw numbers. Use Date entities if the question is "
+                f"about years.\n\n"
+                f"Question: {query}"
+            )
+        )
+        cypher: str | None = None
+        values: list[float] = []
+        try:
+            resp = await self._s._llm.ainvoke(extraction_prompt)
+            cypher = extract_cypher(resp.content)
+            errors = validate_cypher(cypher) if cypher else ["empty"]
+            if errors:
+                logger.debug("Numeric-math cypher validation failed: %s", errors)
+                cypher = None
+            else:
+                cypher = _sanitize_cypher(cypher)
+                result = await self._s._graph.query_raw(cypher)
+                for row in (result.result_set or []):
+                    for cell in row:
+                        v = _coerce_number(cell)
+                        if v is not None:
+                            values.append(v)
+        except Exception as exc:
+            logger.debug("Numeric-math extraction failed: %s", exc)
+
+        if not values:
+            # Fall back to standard retrieval — the LLM may still be able
+            # to extract the numbers from chunks.
+            ctx.log("CypherFirst numeric_math: no values extracted, "
+                    "falling back to RAG")
+            return _tag_path(
+                await self._s._fallback._execute(query, ctx),
+                PATH_RAG_FALLBACK_NUMERIC_FAIL,
+            )
+
+        q_lower = query.lower()
+        if "median" in q_lower:
+            ans = statistics.median(values)
+            op = "median"
+        elif "total" in q_lower or "sum" in q_lower:
+            ans = float(sum(values))
+            op = "sum"
+        else:  # average / mean / default for "average-like" questions
+            ans = sum(values) / len(values)
+            op = "average"
+
+        ans_str = f"{int(ans)}" if ans == int(ans) else f"{ans:.1f}"
+        body = (
+            f"computed {op} = {ans_str}\n"
+            f"source_values ({len(values)} rows): "
+            f"{', '.join(str(int(v)) if v == int(v) else f'{v:.2f}' for v in values)}\n"
+            f"cypher: {cypher}"
+        )
+        return RawSearchResult(
+            records=[{
+                "section": "cypher_results",
+                "content": _wrap_authoritative(
+                    body,
+                    source_note="numeric extraction + Python arithmetic",
+                ),
+            }],
+            metadata={
+                "strategy": "cypher_first",
+                "cypher_first_path": PATH_NUMERIC_MATH,
+                "op": op,
+                "value": ans,
+                "n_values": len(values),
+                "cypher": cypher,
+            },
+        )
+
+
+class _SharedPropertyHybridPath(_AggregationPath):
+    """For "BOTH A and B" / "same X as Z" questions over free-text
+    properties (role, project) that aren't first-class entities. Parses
+    Person chunks via regex and computes the set operation in Python
+    with fuzzy token matching."""
+
+    async def maybe_handle(
+        self,
+        query: str,
+        ctx: Context,
+    ) -> RawSearchResult | None:
+        kind = _detect_property_kind(query)
+        if kind is None:
+            return None
+        shape1 = _BOTH_AB_RE.search(query)
+        shape2 = _SAME_AS_RE.search(query)
+        if not (shape1 or shape2):
+            return None
+
+        batch_cypher = (
+            "MATCH (o:Organization)<-[:RELATES]-(p:Person) "
+            "OPTIONAL MATCH (p)-[:MENTIONED_IN]->(c:Chunk) "
+            "RETURN o.name AS org, p.name AS person, "
+            "  p.description AS desc, collect(DISTINCT c.text) AS chunks"
+        )
+        try:
+            batch_res = await self._s._graph.query_raw(batch_cypher)
+        except Exception as exc:
+            logger.debug("Shared-property hybrid batch query failed: %s", exc)
+            return None
+
+        # Topology check: if the batched ``(Org)<-[:RELATES]-(Person)`` query
+        # returns zero tuples, the graph doesn't match the assumptions M5
+        # was tuned on (Person ↔ Organization edges + MENTIONED_IN chunks).
+        # Surface this loudly once per call so operators using custom
+        # extractors get a fast signal rather than silent wrong answers.
+        if not (batch_res.result_set or []):
+            logger.warning(
+                "CypherFirst shared-property hybrid found zero "
+                "(Organization)<-[:RELATES]-(Person) tuples; falling through. "
+                "If your graph uses different edge shapes or doesn't extract "
+                "Person/Organization labels, this hybrid will never fire — "
+                "see the strategy docstring's 'Assumptions and known limits' "
+                "section."
+            )
+            return None
+
+        org_phrase_map: dict[str, set[str]] = {}
+        for row in (batch_res.result_set or []):
+            org = row[0] or ""
+            person = row[1] or ""
+            desc = row[2] or ""
+            chunks = row[3] or []
+            text_blob = desc + "\n" + "\n".join(chunks)
+            phrases = org_phrase_map.setdefault(org, set())
+            for sent in re.split(r"(?<=[.\n])\s+", text_blob):
+                # Sentence-restrict to this person to avoid cross-paragraph
+                # contamination from chunks that contain multiple people.
+                if person and person.split()[0] not in sent:
+                    continue
+                phrases |= self._s._phrase_extractor.extract(sent, kind)
+
+        def _gather(org_name: str) -> set[str]:
+            out: set[str] = set()
+            for name, phrases in org_phrase_map.items():
+                if org_name.lower() in (name or "").lower():
+                    out |= phrases
+            return out
+
+        if shape1:
+            org_a, org_b = (shape1.group(1).strip(), shape1.group(2).strip())
+            if not org_a or not org_b:
+                return None
+            a_phrases = _gather(org_a)
+            b_phrases = _gather(org_b)
+            common = sorted(_fuzzy_intersect(a_phrases, b_phrases))
+            if not common:
+                return None
+            ctx.log(f"CypherFirst hybrid shape1: {len(common)} shared {kind}s")
+            body = (
+                f"The {kind}s held by employees at both {org_a} and "
+                f"{org_b}: " + ", ".join(common)
+            )
+            return RawSearchResult(
+                records=[{
+                    "section": "cypher_results",
+                    "content": _wrap_authoritative(
+                        body,
+                        source_note=(
+                            "Person chunks + description regex; "
+                            "fuzzy-intersected by content tokens"
+                        ),
+                    ),
+                }],
+                metadata={
+                    "strategy": "cypher_first",
+                    "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
+                    "shape": "both_a_and_b",
+                    "kind": kind,
+                    "common": common,
+                },
+            )
+
+        # shape2
+        target = shape2.group(1).strip().rstrip(",")
+        target_phrases = _gather(target)
+        if not target_phrases:
+            return None
+        sharing: list[str] = []
+        for org_name, org_phrases in org_phrase_map.items():
+            if not org_name:
+                continue
+            if (
+                target.lower() in org_name.lower()
+                or org_name.lower() in target.lower()
+            ):
+                continue
+            if _fuzzy_intersect(org_phrases, target_phrases):
+                sharing.append(org_name)
+        sharing.sort()
+        if not sharing:
+            return None
+        ctx.log(f"CypherFirst hybrid shape2: {len(sharing)} sharing orgs")
+        body = (
+            "The organizations that have at least one employee working on "
+            f"the same {kind} as someone at {target}: " + ", ".join(sharing)
+        )
+        return RawSearchResult(
+            records=[{
+                "section": "cypher_results",
+                "content": _wrap_authoritative(
+                    body,
+                    source_note=(
+                        "Person chunks + description regex; fuzzy-matched "
+                        "across orgs"
+                    ),
+                ),
+            }],
+            metadata={
+                "strategy": "cypher_first",
+                "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
+                "shape": "same_as",
+                "kind": kind,
+                "sharing": sharing,
+            },
+        )
+
+
+class _MultiCandidateCypherPath(_AggregationPath):
+    """Generates K parallel cypher candidates, executes them all, renders
+    the highest-row-count result as a markdown table with column headers.
+
+    Also handles the empty-result branches:
+        - negation-existential ("are there any X without Y?") → return No
+        - everything else → delegate to the RAG fallback
+    Always returns a result (never ``None``) — this path is the last
+    line of defense for aggregation intent.
+    """
+
+    async def maybe_handle(
+        self,
+        query: str,
+        ctx: Context,
+    ) -> RawSearchResult | None:
+        # Pass 1: structural.
+        candidates = await self._generate_k_candidates(query)
+        cypher, table_md, parsed, truncated = await self._execute_and_pick(
+            candidates,
+        )
+
+        # Pass 2 (description hint): if pass 1 was sparse for a "which X"
+        # or "shared X" question, try again with the description hint
+        # enabled. Cheap because cypher-gen runs in parallel.
+        expects_many = is_which_list(query) or re.search(
+            r"\bboth\b|\bshared\b|\bsame\b|\bcommon\b|\bin\s+common\b",
+            query, re.IGNORECASE,
+        )
+        if expects_many and (parsed is None or len(parsed) < 3):
+            more = await self._generate_k_candidates(query, with_desc_hint=True)
+            combined = list({*(candidates or []), *(more or [])})
+            cypher2, table_md2, parsed2, truncated2 = await self._execute_and_pick(combined)
+            if parsed2 and len(parsed2) > len(parsed or []):
+                cypher, table_md, parsed, truncated = (
+                    cypher2, table_md2, parsed2, truncated2,
+                )
+
+        rows = len(parsed) if parsed else 0
+        ctx.log(f"CypherFirst cypher_table: {rows} rows from "
+                f"{len(candidates)} candidates")
+
+        if cypher and parsed:
+            directive = ""
+            if is_which_list(query):
+                directive = (
+                    "\nNOTE: This is a 'which / list' question. Enumerate "
+                    "EVERY DISTINCT VALUE from the first column in your "
+                    "answer — do not summarize, truncate, or pick a "
+                    "subset unless the question explicitly asked for the "
+                    "top/most/fewest one."
+                )
+            body = table_md + directive
+            return RawSearchResult(
+                records=[{
+                    "section": "cypher_results",
+                    "content": _wrap_authoritative(body),
+                }],
+                metadata={
+                    "strategy": "cypher_first",
+                    "cypher_first_path": PATH_CYPHER_TABLE,
+                    "cypher": cypher,
+                    "cypher_rows": rows,
+                    "cypher_truncated": truncated,
+                },
+            )
+
+        # Cypher returned 0 / no candidate succeeded.
+        if is_yes_no(query) and _is_negation_existential(query):
+            ctx.log("CypherFirst empty-result branch: negation-existential = No")
+            return RawSearchResult(
+                records=[{
+                    "section": "cypher_results",
+                    "content": _wrap_authoritative(
+                        "No matching items: the cypher query returned 0 "
+                        "rows. For a negation-existential question of "
+                        "this shape, that means no such items exist.",
+                        source_note="Cypher returned 0 rows (definitive)",
+                    ),
+                }],
+                metadata={
+                    "strategy": "cypher_first",
+                    "cypher_first_path": PATH_NEGATION_EMPTY_NO,
+                    "cypher": cypher,
+                },
+            )
+
+        # Vector fallback for everything else.
+        ctx.log("CypherFirst cypher empty — falling back to RAG")
+        return _tag_path(
+            await self._s._fallback._execute(query, ctx),
+            PATH_RAG_FALLBACK_CYPHER_EMPTY,
+        )
+
+    async def _generate_k_candidates(
+        self,
+        query: str,
+        *,
+        with_desc_hint: bool = False,
+    ) -> list[str]:
+        prompt = SCHEMA_PROMPT.format(question=query) + _AGG_SCHEMA_SUFFIX
+        if with_desc_hint:
+            prompt += _DESC_HINT_SUFFIX
+
+        async def _one() -> str | None:
+            try:
+                resp = await self._s._llm.ainvoke(prompt)
+                cypher = extract_cypher(resp.content)
+                if not cypher:
+                    return None
+                errors = validate_cypher(cypher)
+                if errors:
+                    return None
+                return _sanitize_cypher(cypher)
+            except Exception as exc:
+                logger.debug("Candidate generation failed: %s", exc)
+                return None
+
+        results = await asyncio.gather(*[_one() for _ in range(self._s._k)])
+        # Dedupe while preserving order.
+        seen: set[str] = set()
+        out: list[str] = []
+        for c in results:
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+        return out
+
+    async def _execute_and_pick(
+        self,
+        candidates: list[str],
+    ) -> tuple[str | None, str, list[dict[str, Any]], bool]:
+        """Run all candidates in parallel; pick the one with most rows.
+
+        Returns ``(cypher, table_md, parsed_rows, truncated)``.
+        """
+        if not candidates:
+            return None, "(no candidate cypher)", [], False
+        results = await asyncio.gather(
+            *[self._s._graph.query_raw(c) for c in candidates],
+            return_exceptions=True,
+        )
+        scored: list[tuple[int, int, str, Any]] = []
+        for cypher, res in zip(candidates, results):
+            if isinstance(res, BaseException):
+                continue
+            rows = len(res.result_set) if res.result_set else 0
+            cols = len(res.result_set[0]) if (res.result_set and res.result_set[0]) else 0
+            scored.append((rows, cols, cypher, res))
+        if not scored:
+            return None, "(no candidate executed successfully)", [], False
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        _, _, best_cypher, best_result = scored[0]
+        table_md, parsed, truncated = format_result_as_markdown_table(best_result)
+        return best_cypher, table_md, parsed, truncated
+
+
+# ─────────────────────────────────────────────────────────────────
 # Strategy
 # ─────────────────────────────────────────────────────────────────
 
@@ -484,6 +964,7 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
         *,
         k_candidates: int = 3,
         rag_fallback: RetrievalStrategy | None = None,
+        phrase_extractor: PhraseExtractor | None = None,
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
@@ -495,6 +976,17 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
             embedder=embedder,
             llm=llm,
         )
+        # Pluggable phrase extractor for the shared-property hybrid path.
+        # Override with a domain-specific subclass to recognize roles /
+        # projects beyond the default English-prose vocabulary.
+        self._phrase_extractor = phrase_extractor or DefaultPhraseExtractor()
+        # Sub-paths — each handles one shape of question. The order in
+        # which they're consulted is encoded in ``_execute`` below; the
+        # paths themselves don't know about each other.
+        self._rag_path = _RagDelegationPath(self)
+        self._numeric_path = _NumericMathPath(self)
+        self._hybrid_path = _SharedPropertyHybridPath(self)
+        self._cypher_table_path = _MultiCandidateCypherPath(self)
 
     # -- Template Method hook -------------------------------------
 
@@ -508,408 +1000,32 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
         ctx.log(f"CypherFirst intent={intent}")
 
         if intent == "rag":
-            # Delegate verbatim — non-aggregation questions don't benefit
-            # from any of the cypher-first mechanics.
-            return _tag_path(
-                await self._fallback._execute(query, ctx, **kwargs),
-                PATH_RAG_FALLBACK,
-            )
+            # Non-aggregation questions don't benefit from any of the
+            # cypher-first mechanics — hand straight to the fallback.
+            return await self._rag_path.maybe_handle(query, ctx)
 
         if intent == "numeric_math":
-            return await self._numeric_math_path(query, ctx)
+            return await self._numeric_path.maybe_handle(query, ctx)
 
-        # intent == "aggregation"
-        # Try the description+chunk hybrid for "shared X" shapes first.
-        # When it fires, it generally produces better answers than the
-        # multi-candidate cypher because chunks preserve the original
-        # corpus phrasing that extraction may have summarized away.
-        hybrid_result = await self._shared_property_hybrid(query, ctx)
+        # intent == "aggregation":
+        # Try the description+chunk hybrid for "shared X" shapes first —
+        # when it fires it generally produces better answers than the
+        # multi-candidate cypher because chunks preserve original corpus
+        # phrasing that extraction may have summarized away.
+        hybrid_result = await self._hybrid_path.maybe_handle(query, ctx)
         if hybrid_result is not None:
             return hybrid_result
 
-        return await self._cypher_table_path(query, ctx)
+        # The multi-candidate cypher path always returns a result; it
+        # internally handles its own empty / negation / fallback branches.
+        return await self._cypher_table_path.maybe_handle(query, ctx)
 
-    # -- Numeric-math path (M6) -----------------------------------
-
-    async def _numeric_math_path(
-        self,
-        query: str,
-        ctx: Context,
-    ) -> RawSearchResult:
-        """For 'average/total/sum of YEARS/NUMBERS' — extract values via
-        Cypher, do the arithmetic in Python."""
-        extraction_prompt = SCHEMA_PROMPT.format(
-            question=(
-                f"Generate a cypher that returns the RAW NUMERIC VALUES "
-                f"needed to answer this question (one value per row). "
-                f"Do NOT compute averages or sums in cypher; just return "
-                f"the raw numbers. Use Date entities if the question is "
-                f"about years.\n\n"
-                f"Question: {query}"
-            )
-        )
-        cypher: str | None = None
-        values: list[float] = []
-        try:
-            resp = await self._llm.ainvoke(extraction_prompt)
-            cypher = extract_cypher(resp.content)
-            errors = validate_cypher(cypher) if cypher else ["empty"]
-            if errors:
-                logger.debug("Numeric-math cypher validation failed: %s", errors)
-                cypher = None
-            else:
-                cypher = _sanitize_cypher(cypher)
-                result = await self._graph.query_raw(cypher)
-                for row in (result.result_set or []):
-                    for cell in row:
-                        v = _coerce_number(cell)
-                        if v is not None:
-                            values.append(v)
-        except Exception as exc:
-            logger.debug("Numeric-math extraction failed: %s", exc)
-
-        if not values:
-            # Fall back to standard retrieval — the LLM may still be able
-            # to extract the numbers from chunks.
-            ctx.log("CypherFirst numeric_math: no values extracted, "
-                    "falling back to RAG")
-            return _tag_path(
-                await self._fallback._execute(query, ctx),
-                PATH_RAG_FALLBACK_NUMERIC_FAIL,
-            )
-
-        q_lower = query.lower()
-        if "median" in q_lower:
-            ans = statistics.median(values)
-            op = "median"
-        elif "total" in q_lower or "sum" in q_lower:
-            ans = float(sum(values))
-            op = "sum"
-        else:  # average / mean / default for "average-like" questions
-            ans = sum(values) / len(values)
-            op = "average"
-
-        ans_str = f"{int(ans)}" if ans == int(ans) else f"{ans:.1f}"
-        body = (
-            f"computed {op} = {ans_str}\n"
-            f"source_values ({len(values)} rows): "
-            f"{', '.join(str(int(v)) if v == int(v) else f'{v:.2f}' for v in values)}\n"
-            f"cypher: {cypher}"
-        )
-        record = {
-            "section": "cypher_results",
-            "content": _wrap_authoritative(
-                body,
-                source_note="numeric extraction + Python arithmetic",
-            ),
-        }
-        return RawSearchResult(
-            records=[record],
-            metadata={
-                "strategy": "cypher_first",
-                "cypher_first_path": PATH_NUMERIC_MATH,
-                "op": op,
-                "value": ans,
-                "n_values": len(values),
-                "cypher": cypher,
-            },
-        )
-
-    # -- Description + chunk hybrid (M5) --------------------------
-
-    async def _shared_property_hybrid(
-        self,
-        query: str,
-        ctx: Context,
-    ) -> RawSearchResult | None:
-        """Hybrid path for "shared X" / "BOTH A and B" questions where X
-        is a free-text property (role, project) not extracted as a typed
-        node. Returns None if the question shape doesn't match.
-        """
-        kind = _detect_property_kind(query)
-        if kind is None:
-            return None
-        shape1 = _BOTH_AB_RE.search(query)
-        shape2 = _SAME_AS_RE.search(query)
-        if not (shape1 or shape2):
-            return None
-
-        batch_cypher = (
-            "MATCH (o:Organization)<-[:RELATES]-(p:Person) "
-            "OPTIONAL MATCH (p)-[:MENTIONED_IN]->(c:Chunk) "
-            "RETURN o.name AS org, p.name AS person, "
-            "  p.description AS desc, collect(DISTINCT c.text) AS chunks"
-        )
-        try:
-            batch_res = await self._graph.query_raw(batch_cypher)
-        except Exception as exc:
-            logger.debug("Shared-property hybrid batch query failed: %s", exc)
-            return None
-
-        # Topology check: if the batched ``(Org)<-[:RELATES]-(Person)`` query
-        # returns zero tuples, the graph doesn't match the assumptions M5
-        # was tuned on (Person ↔ Organization edges + MENTIONED_IN chunks).
-        # Surface this loudly once per call so operators using custom
-        # extractors get a fast signal rather than silent wrong answers.
-        if not (batch_res.result_set or []):
-            logger.warning(
-                "CypherFirst shared-property hybrid found zero "
-                "(Organization)<-[:RELATES]-(Person) tuples; falling through. "
-                "If your graph uses different edge shapes or doesn't extract "
-                "Person/Organization labels, this hybrid will never fire — "
-                "see the strategy docstring's 'Assumptions and known limits' "
-                "section."
-            )
-            return None
-
-        org_phrase_map: dict[str, set[str]] = {}
-        for row in (batch_res.result_set or []):
-            org = row[0] or ""
-            person = row[1] or ""
-            desc = row[2] or ""
-            chunks = row[3] or []
-            text_blob = desc + "\n" + "\n".join(chunks)
-            phrases = org_phrase_map.setdefault(org, set())
-            for sent in re.split(r"(?<=[.\n])\s+", text_blob):
-                # Sentence-restrict to this person to avoid cross-paragraph
-                # contamination from chunks that contain multiple people.
-                if person and person.split()[0] not in sent:
-                    continue
-                phrases |= _extract_phrases(sent, kind)
-
-        def _gather(org_name: str) -> set[str]:
-            out: set[str] = set()
-            for name, phrases in org_phrase_map.items():
-                if org_name.lower() in (name or "").lower():
-                    out |= phrases
-            return out
-
-        if shape1:
-            org_a, org_b = (shape1.group(1).strip(), shape1.group(2).strip())
-            if not org_a or not org_b:
-                return None
-            a_phrases = _gather(org_a)
-            b_phrases = _gather(org_b)
-            common = sorted(_fuzzy_intersect(a_phrases, b_phrases))
-            if not common:
-                return None
-            ctx.log(f"CypherFirst hybrid shape1: {len(common)} shared {kind}s")
-            body = (
-                f"The {kind}s held by employees at both {org_a} and "
-                f"{org_b}: " + ", ".join(common)
-            )
-            return RawSearchResult(
-                records=[{
-                    "section": "cypher_results",
-                    "content": _wrap_authoritative(
-                        body,
-                        source_note=(
-                            "Person chunks + description regex; "
-                            "fuzzy-intersected by content tokens"
-                        ),
-                    ),
-                }],
-                metadata={
-                    "strategy": "cypher_first",
-                    "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
-                    "shape": "both_a_and_b",
-                    "kind": kind,
-                    "common": common,
-                },
-            )
-
-        # shape2
-        target = shape2.group(1).strip().rstrip(",")
-        target_phrases = _gather(target)
-        if not target_phrases:
-            return None
-        sharing: list[str] = []
-        for org_name, org_phrases in org_phrase_map.items():
-            if not org_name:
-                continue
-            if (
-                target.lower() in org_name.lower()
-                or org_name.lower() in target.lower()
-            ):
-                continue
-            if _fuzzy_intersect(org_phrases, target_phrases):
-                sharing.append(org_name)
-        sharing.sort()
-        if not sharing:
-            return None
-        ctx.log(f"CypherFirst hybrid shape2: {len(sharing)} sharing orgs")
-        body = (
-            "The organizations that have at least one employee working on "
-            f"the same {kind} as someone at {target}: " + ", ".join(sharing)
-        )
-        return RawSearchResult(
-            records=[{
-                "section": "cypher_results",
-                "content": _wrap_authoritative(
-                    body,
-                    source_note=(
-                        "Person chunks + description regex; fuzzy-matched "
-                        "across orgs"
-                    ),
-                ),
-            }],
-            metadata={
-                "strategy": "cypher_first",
-                "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
-                "shape": "same_as",
-                "kind": kind,
-                "sharing": sharing,
-            },
-        )
-
-    # -- Multi-candidate cypher path (M2 + M3) --------------------
-
-    async def _cypher_table_path(
-        self,
-        query: str,
-        ctx: Context,
-    ) -> RawSearchResult:
-        """K parallel Cypher samples → execute all → pick highest row count
-        → render as markdown table with column headers."""
-        # Pass 1: structural.
-        candidates = await self._generate_k_candidates(query)
-        cypher, table_md, parsed, truncated = await self._execute_and_pick(
-            candidates,
-        )
-
-        # Pass 2 (description hint): if pass 1 was sparse for a "which X"
-        # or "shared X" question, try again with the description hint
-        # enabled. Cheap because cypher-gen runs in parallel.
-        expects_many = is_which_list(query) or re.search(
-            r"\bboth\b|\bshared\b|\bsame\b|\bcommon\b|\bin\s+common\b",
-            query, re.IGNORECASE,
-        )
-        if expects_many and (parsed is None or len(parsed) < 3):
-            more = await self._generate_k_candidates(query, with_desc_hint=True)
-            combined = list({*(candidates or []), *(more or [])})
-            cypher2, table_md2, parsed2, truncated2 = await self._execute_and_pick(combined)
-            if parsed2 and len(parsed2) > len(parsed or []):
-                cypher, table_md, parsed, truncated = (
-                    cypher2, table_md2, parsed2, truncated2,
-                )
-
-        rows = len(parsed) if parsed else 0
-        ctx.log(f"CypherFirst cypher_table: {rows} rows from "
-                f"{len(candidates)} candidates")
-
-        if cypher and parsed:
-            directive = ""
-            if is_which_list(query):
-                directive = (
-                    "\nNOTE: This is a 'which / list' question. Enumerate "
-                    "EVERY DISTINCT VALUE from the first column in your "
-                    "answer — do not summarize, truncate, or pick a "
-                    "subset unless the question explicitly asked for the "
-                    "top/most/fewest one."
-                )
-            body = table_md + directive
-            return RawSearchResult(
-                records=[{
-                    "section": "cypher_results",
-                    "content": _wrap_authoritative(body),
-                }],
-                metadata={
-                    "strategy": "cypher_first",
-                    "cypher_first_path": PATH_CYPHER_TABLE,
-                    "cypher": cypher,
-                    "cypher_rows": rows,
-                    "cypher_truncated": truncated,
-                },
-            )
-
-        # Cypher returned 0 / no candidate succeeded.
-        if is_yes_no(query) and _is_negation_existential(query):
-            ctx.log("CypherFirst empty-result branch: negation-existential = No")
-            return RawSearchResult(
-                records=[{
-                    "section": "cypher_results",
-                    "content": _wrap_authoritative(
-                        "No matching items: the cypher query returned 0 "
-                        "rows. For a negation-existential question of "
-                        "this shape, that means no such items exist.",
-                        source_note="Cypher returned 0 rows (definitive)",
-                    ),
-                }],
-                metadata={
-                    "strategy": "cypher_first",
-                    "cypher_first_path": PATH_NEGATION_EMPTY_NO,
-                    "cypher": cypher,
-                },
-            )
-
-        # Vector fallback for everything else.
-        ctx.log("CypherFirst cypher empty — falling back to RAG")
-        return _tag_path(
-            await self._fallback._execute(query, ctx),
-            PATH_RAG_FALLBACK_CYPHER_EMPTY,
-        )
-
-    async def _generate_k_candidates(
-        self,
-        query: str,
-        *,
-        with_desc_hint: bool = False,
-    ) -> list[str]:
-        prompt = SCHEMA_PROMPT.format(question=query) + _AGG_SCHEMA_SUFFIX
-        if with_desc_hint:
-            prompt += _DESC_HINT_SUFFIX
-
-        async def _one() -> str | None:
-            try:
-                resp = await self._llm.ainvoke(prompt)
-                cypher = extract_cypher(resp.content)
-                if not cypher:
-                    return None
-                errors = validate_cypher(cypher)
-                if errors:
-                    return None
-                return _sanitize_cypher(cypher)
-            except Exception as exc:
-                logger.debug("Candidate generation failed: %s", exc)
-                return None
-
-        results = await asyncio.gather(*[_one() for _ in range(self._k)])
-        # Dedupe while preserving order.
-        seen: set[str] = set()
-        out: list[str] = []
-        for c in results:
-            if c and c not in seen:
-                seen.add(c)
-                out.append(c)
-        return out
-
-    async def _execute_and_pick(
-        self,
-        candidates: list[str],
-    ) -> tuple[str | None, str, list[dict[str, Any]], bool]:
-        """Run all candidates in parallel; pick the one with most rows.
-
-        Returns ``(cypher, table_md, parsed_rows, truncated)``.
-        """
-        if not candidates:
-            return None, "(no candidate cypher)", [], False
-        results = await asyncio.gather(
-            *[self._graph.query_raw(c) for c in candidates],
-            return_exceptions=True,
-        )
-        scored: list[tuple[int, int, str, Any]] = []
-        for cypher, res in zip(candidates, results):
-            if isinstance(res, BaseException):
-                continue
-            rows = len(res.result_set) if res.result_set else 0
-            cols = len(res.result_set[0]) if (res.result_set and res.result_set[0]) else 0
-            scored.append((rows, cols, cypher, res))
-        if not scored:
-            return None, "(no candidate executed successfully)", [], False
-        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
-        _, _, best_cypher, best_result = scored[0]
-        table_md, parsed, truncated = format_result_as_markdown_table(best_result)
-        return best_cypher, table_md, parsed, truncated
+    # NOTE: the per-path logic (numeric math, shared-property hybrid,
+    # multi-candidate cypher, etc.) lives in the ``_AggregationPath``
+    # subclasses above this strategy. Keeping each path in its own class
+    # keeps the dispatch above readable and makes it trivial to swap one
+    # implementation out (e.g., a medical-prose phrase extractor) without
+    # touching the strategy itself.
 
     # -- Custom _format ------------------------------------------
 
@@ -928,6 +1044,7 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
                     )
                 )
         return RetrieverResult(items=items, metadata=raw.metadata)
+
 
 
 def _coerce_number(cell: Any) -> float | None:
