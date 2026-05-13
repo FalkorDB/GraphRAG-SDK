@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-05-13
+
+Closes a usability gap in v1.1.0's `apply_changes` convenience wrapper:
+per-call strategy overrides (`loader` / `chunker` / `extractor` /
+`resolver`) now reach the inner `ingest()` and `update()` dispatches.
+Previously callers who passed strategies to `apply_changes` got SDK
+defaults silently — the only escape was to bypass the wrapper and loop
+over the primitives directly. Default behaviour is unchanged.
+
+### Added
+
+- **`GraphRAG.apply_changes(*, loader=, chunker=, extractor=, resolver=, ...)`**
+  and `apply_changes_sync()` — strategy overrides are now forwarded to
+  the inner `ingest()` (for `added`) and `update()` (for `modified`)
+  calls. `delete_document` does not take strategies and is unaffected.
+  All four kwargs default to `None`, preserving v1.1.0 behaviour for
+  callers that don't pass them.
+
 ## [1.1.0] - 2026-05-05
 
 Adds incremental ingestion primitives and a CI-friendly batch wrapper.
