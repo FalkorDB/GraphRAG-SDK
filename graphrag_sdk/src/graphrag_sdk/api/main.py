@@ -1219,6 +1219,10 @@ class GraphRAG:
         added: list[str] | None = None,
         modified: list[str] | None = None,
         deleted: list[str] | None = None,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
         max_concurrency: int = 3,
         update_concurrency: int = 1,
         ctx: Context | None = None,
@@ -1263,6 +1267,15 @@ class GraphRAG:
             added: New file paths to ingest.
             modified: File paths whose content changed.
             deleted: Document ids (typically file paths) to remove.
+            loader: Override the loader for ``added``/``modified`` (forwarded
+                to ``ingest()`` and ``update()``). Defaults to per-extension
+                auto-selection. ``deleted`` ignores this.
+            chunker: Override the chunking strategy for ``added``/``modified``.
+                Defaults to ``FixedSizeChunking``. ``deleted`` ignores this.
+            extractor: Override the entity-extraction strategy for
+                ``added``/``modified``. ``deleted`` ignores this.
+            resolver: Override the resolution strategy for ``added``/
+                ``modified``. ``deleted`` ignores this.
             max_concurrency: Parallelism cap for ``ingest()`` of the
                 ``added`` list. Matches ``ingest()``'s own knob and the
                 ``add`` step is pure ingestion with no orphan-cleanup
@@ -1351,6 +1364,10 @@ class GraphRAG:
                     return BatchEntry.ok(
                         await self.update(
                             path,
+                            loader=loader,
+                            chunker=chunker,
+                            extractor=extractor,
+                            resolver=resolver,
                             if_missing="ingest",
                             ctx=ctx.child(),
                         )
@@ -1376,6 +1393,10 @@ class GraphRAG:
         if added:
             batch_out = await self.ingest(
                 added,
+                loader=loader,
+                chunker=chunker,
+                extractor=extractor,
+                resolver=resolver,
                 max_concurrency=max_concurrency,
                 ctx=ctx,
             )
@@ -2027,6 +2048,10 @@ class GraphRAG:
         added: list[str] | None = None,
         modified: list[str] | None = None,
         deleted: list[str] | None = None,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None = None,
+        extractor: ExtractionStrategy | None = None,
+        resolver: ResolutionStrategy | None = None,
         max_concurrency: int = 3,
         update_concurrency: int = 1,
         ctx: Context | None = None,
@@ -2045,6 +2070,10 @@ class GraphRAG:
                 added=added,
                 modified=modified,
                 deleted=deleted,
+                loader=loader,
+                chunker=chunker,
+                extractor=extractor,
+                resolver=resolver,
                 max_concurrency=max_concurrency,
                 update_concurrency=update_concurrency,
                 ctx=ctx,

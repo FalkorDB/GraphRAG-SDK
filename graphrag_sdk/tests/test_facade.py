@@ -1737,6 +1737,78 @@ class TestApplyChanges:
         with pytest.raises(ValueError, match=label_fragment):
             await graphrag.apply_changes(**kwargs)
 
+    async def test_strategy_overrides_forward_to_ingest_and_update(
+        self, graphrag, monkeypatch
+    ):
+        """``loader``/``chunker``/``extractor``/``resolver`` must reach the
+        inner ``ingest()`` and ``update()`` calls. Without forwarding,
+        CI callers using ``apply_changes`` as their single entrypoint
+        silently lose per-graph strategy customisation — the SDK falls
+        back to defaults instead."""
+        from graphrag_sdk.core.models import IngestionResult, UpdateResult
+        from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+
+        loader = MarkdownLoader()
+        chunker = FixedSizeChunking(chunk_size=500, chunk_overlap=50)
+        extractor = MagicMock()
+        resolver = ExactMatchResolution()
+
+        captured: dict[str, dict] = {"ingest": {}, "update": {}}
+
+        async def fake_ingest(source, **kwargs):
+            captured["ingest"] = dict(kwargs, source=source)
+            return [IngestionResult(document_id="a.md", chunks=0, entities=0, relations=0)]
+
+        async def fake_update(source, **kwargs):
+            captured["update"] = dict(kwargs, source=source)
+            return UpdateResult(
+                document_id="m.md", action="updated", chunks=0, entities=0, relations=0,
+            )
+
+        monkeypatch.setattr(graphrag, "ingest", fake_ingest)
+        monkeypatch.setattr(graphrag, "update", fake_update)
+
+        await graphrag.apply_changes(
+            added=["a.md"], modified=["m.md"],
+            loader=loader, chunker=chunker, extractor=extractor, resolver=resolver,
+        )
+
+        for inner in ("ingest", "update"):
+            assert captured[inner]["loader"] is loader
+            assert captured[inner]["chunker"] is chunker
+            assert captured[inner]["extractor"] is extractor
+            assert captured[inner]["resolver"] is resolver
+
+    async def test_strategy_overrides_default_to_none(
+        self, graphrag, monkeypatch
+    ):
+        """Default behaviour is unchanged: callers who don't pass strategies
+        get ``None`` forwarded, which the SDK reads as "use defaults"."""
+        from graphrag_sdk.core.models import IngestionResult, UpdateResult
+
+        captured: dict[str, dict] = {"ingest": {}, "update": {}}
+
+        async def fake_ingest(source, **kwargs):
+            captured["ingest"] = dict(kwargs)
+            return [IngestionResult(document_id="a.md", chunks=0, entities=0, relations=0)]
+
+        async def fake_update(source, **kwargs):
+            captured["update"] = dict(kwargs)
+            return UpdateResult(
+                document_id="m.md", action="updated", chunks=0, entities=0, relations=0,
+            )
+
+        monkeypatch.setattr(graphrag, "ingest", fake_ingest)
+        monkeypatch.setattr(graphrag, "update", fake_update)
+
+        await graphrag.apply_changes(added=["a.md"], modified=["m.md"])
+
+        for inner in ("ingest", "update"):
+            for k in ("loader", "chunker", "extractor", "resolver"):
+                assert captured[inner][k] is None
+
 
 class TestGraphRAGUpdateSyncWrapper:
     """v1.1.0: sync wrappers mirror the async signatures."""
