@@ -1104,3 +1104,66 @@ class TestGraphRAGIngestValidation:
         # Probe and DB query must not have fired.
         g._graph_store.query_raw.assert_not_called()
         g.embedder.aembed_query.assert_not_called()
+
+
+# ── Cypher authority rule injection (R1) ──────────────────────────
+
+
+class TestCypherAuthorityRuleInjection:
+    """The cypher-authority rule is appended to the system prompt only when
+    the retriever produced an authoritative-results section. Callers who
+    don't use cypher retrieval keep the unchanged base prompt."""
+
+    def test_helper_returns_false_for_empty_items(self):
+        from graphrag_sdk.api.main import _has_authoritative_cypher_results
+        assert not _has_authoritative_cypher_results(RetrieverResult(items=[]))
+
+    def test_helper_returns_false_for_non_cypher_items(self):
+        from graphrag_sdk.api.main import _has_authoritative_cypher_results
+        items = [
+            RetrieverResultItem(
+                content="## Source Document Passages\n- foo",
+                metadata={"section": "passages"},
+            ),
+            RetrieverResultItem(
+                content="## Key Entities\n- Acme",
+                metadata={"section": "entities"},
+            ),
+        ]
+        assert not _has_authoritative_cypher_results(RetrieverResult(items=items))
+
+    def test_helper_returns_true_on_section_metadata(self):
+        from graphrag_sdk.api.main import _has_authoritative_cypher_results
+        item = RetrieverResultItem(
+            content="<deterministic count payload>",
+            metadata={"section": "cypher_results"},
+        )
+        assert _has_authoritative_cypher_results(RetrieverResult(items=[item]))
+
+    def test_helper_returns_true_on_heading_marker_in_content(self):
+        # Defensive path — third-party strategies that don't tag metadata
+        # but use the canonical heading still trigger the rule.
+        from graphrag_sdk.api.main import _has_authoritative_cypher_results
+        item = RetrieverResultItem(
+            content=(
+                "## Authoritative Graph Query Results "
+                "(deterministic; trust over passages on counts and aggregates)\n"
+                "- Boston | 10"
+            ),
+            metadata={},
+        )
+        assert _has_authoritative_cypher_results(RetrieverResult(items=[item]))
+
+    def test_base_system_prompt_does_not_contain_rule_8(self):
+        # The rule has been moved out of the base prompts. Callers who
+        # don't surface cypher results keep the original 7-rule prompt.
+        from graphrag_sdk.api.main import (
+            _CYPHER_AUTH_RULE,
+            _RAG_SYSTEM_PROMPT,
+            _RAG_SYSTEM_PROMPT_DELIMITED,
+        )
+        for base in (_RAG_SYSTEM_PROMPT, _RAG_SYSTEM_PROMPT_DELIMITED):
+            assert "Authoritative Graph Query Results" not in base
+            assert "\n8." not in base
+        # The addendum, on its own, mentions the heading.
+        assert "Authoritative Graph Query Results" in _CYPHER_AUTH_RULE

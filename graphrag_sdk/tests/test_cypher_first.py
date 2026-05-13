@@ -11,7 +11,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.retrieval.strategies.cypher_first import (
+    PATH_CYPHER_TABLE,
+    PATH_NEGATION_EMPTY_NO,
+    PATH_NUMERIC_MATH,
+    PATH_RAG_FALLBACK,
+    PATH_RAG_FALLBACK_CYPHER_EMPTY,
+    PATH_RAG_FALLBACK_NUMERIC_FAIL,
+    PATH_SHARED_PROPERTY_HYBRID,
     _coerce_number,
     _detect_property_kind,
     _extract_phrases,
@@ -19,12 +27,12 @@ from graphrag_sdk.retrieval.strategies.cypher_first import (
     _extract_roles,
     _fuzzy_intersect,
     _is_negation_existential,
+    _tag_path,
     detect_aggregation_intent,
     format_result_as_markdown_table,
     is_which_list,
     is_yes_no,
 )
-
 
 # ── Intent classifier ────────────────────────────────────────────
 
@@ -304,3 +312,282 @@ class TestCoerceNumber:
 
     def test_negative(self):
         assert _coerce_number("-42") == -42.0
+
+
+# ── Path-tag contract (R2) ───────────────────────────────────────
+
+
+class TestPathTag:
+    """``_tag_path`` enforces the contract that every result emitted by
+    ``CypherFirstAggregationStrategy`` carries a ``cypher_first_path``
+    label, so operators can route metrics on which sub-path fired."""
+
+    def test_labels_match_known_paths(self):
+        # If we add a new path later, this list should grow in lockstep.
+        assert PATH_NUMERIC_MATH == "numeric_math"
+        assert PATH_SHARED_PROPERTY_HYBRID == "shared_property_hybrid"
+        assert PATH_CYPHER_TABLE == "cypher_table"
+        assert PATH_NEGATION_EMPTY_NO == "negation_empty_no"
+        assert PATH_RAG_FALLBACK == "rag_fallback"
+        assert PATH_RAG_FALLBACK_NUMERIC_FAIL == "rag_fallback_numeric_fail"
+        assert PATH_RAG_FALLBACK_CYPHER_EMPTY == "rag_fallback_cypher_empty"
+
+    def test_tag_path_adds_label_to_empty_metadata(self):
+        result = RawSearchResult(records=[{"section": "x", "content": "y"}],
+                                 metadata={})
+        out = _tag_path(result, PATH_CYPHER_TABLE)
+        assert out.metadata["cypher_first_path"] == PATH_CYPHER_TABLE
+        assert out.metadata["strategy"] == "cypher_first"
+
+    def test_tag_path_overwrites_existing_path_label(self):
+        # When a sub-path delegates to another that already tagged the
+        # result, the outer tag should win — it reflects the actual path
+        # taken from the caller's perspective.
+        result = RawSearchResult(
+            records=[],
+            metadata={"cypher_first_path": "earlier", "extra": 1},
+        )
+        out = _tag_path(result, PATH_RAG_FALLBACK)
+        assert out.metadata["cypher_first_path"] == PATH_RAG_FALLBACK
+        # Other metadata is preserved.
+        assert out.metadata["extra"] == 1
+
+    def test_tag_path_preserves_existing_strategy_label_if_set(self):
+        # If a delegated strategy already tagged itself (e.g. "multi_path"),
+        # don't clobber it — setdefault.
+        result = RawSearchResult(
+            records=[],
+            metadata={"strategy": "multi_path"},
+        )
+        out = _tag_path(result, PATH_RAG_FALLBACK)
+        assert out.metadata["strategy"] == "multi_path"
+        assert out.metadata["cypher_first_path"] == PATH_RAG_FALLBACK
+
+    def test_tag_path_returns_new_object_not_mutating_input(self):
+        original_meta = {"strategy": "multi_path"}
+        result = RawSearchResult(records=[], metadata=original_meta)
+        out = _tag_path(result, PATH_RAG_FALLBACK)
+        # Don't surprise callers by mutating their dict in place.
+        assert "cypher_first_path" not in original_meta
+        assert out.metadata is not original_meta
+
+
+# ── End-to-end routing with mocks (R4) ───────────────────────────
+
+
+class _FakeResult:
+    """Mimics FalkorDB's query_raw return: ``result_set`` rows + a ``header``
+    list of ``[type_int, name]`` pairs (we only use the name)."""
+    def __init__(self, header, result_set):
+        self.header = [[1, name] for name in header]
+        self.result_set = result_set
+
+
+class _FakeFallback:
+    """Stand-in for MultiPathRetrieval — records the call and returns a
+    well-formed RawSearchResult so we can verify delegation + tagging."""
+    def __init__(self, records=None, metadata=None):
+        self._records = records or [{"section": "passages", "content": "## ..."}]
+        self._metadata = metadata or {"strategy": "multi_path"}
+        self.calls = []
+
+    async def _execute(self, query, ctx, **kwargs):
+        self.calls.append(query)
+        return RawSearchResult(records=list(self._records),
+                               metadata=dict(self._metadata))
+
+
+def _make_strategy(*, llm_responses=None, graph_results=None, fallback=None):
+    """Build a CypherFirstAggregationStrategy with stubbed LLM + graph.
+
+    ``llm_responses`` is a sequence of strings; each LLM call pops one.
+    ``graph_results`` is a sequence of _FakeResult objects (or exceptions
+    to raise); each ``query_raw`` call pops one.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from graphrag_sdk.core.models import LLMResponse
+    from graphrag_sdk.retrieval.strategies.cypher_first import (
+        CypherFirstAggregationStrategy,
+    )
+
+    llm = MagicMock()
+    responses = list(llm_responses or [])
+    async def _ainvoke(_prompt, **_kw):
+        return LLMResponse(content=responses.pop(0) if responses else "")
+    llm.ainvoke = AsyncMock(side_effect=_ainvoke)
+
+    graph = MagicMock()
+    results = list(graph_results or [])
+    async def _query_raw(_cypher):
+        nxt = results.pop(0) if results else _FakeResult([], [])
+        if isinstance(nxt, BaseException):
+            raise nxt
+        return nxt
+    graph.query_raw = AsyncMock(side_effect=_query_raw)
+
+    return CypherFirstAggregationStrategy(
+        graph_store=graph,
+        vector_store=MagicMock(),
+        embedder=MagicMock(),
+        llm=llm,
+        k_candidates=1,  # one candidate is enough for routing tests
+        rag_fallback=fallback or _FakeFallback(),
+    )
+
+
+class TestStrategyRouting:
+    """Behavioural tests: assert which sub-path fires for each intent +
+    graph-state combination by inspecting ``metadata.cypher_first_path``."""
+
+    async def test_rag_intent_delegates_to_fallback(self):
+        # "Who is the lighthouse keeper?" doesn't match any aggregation
+        # pattern — strategy must hand the query to the fallback verbatim
+        # and tag the result with PATH_RAG_FALLBACK.
+        from graphrag_sdk.core.context import Context
+        fallback = _FakeFallback()
+        strat = _make_strategy(fallback=fallback)
+        ctx = Context()
+        result = await strat._execute("Who is the lighthouse keeper?", ctx)
+        assert result.metadata["cypher_first_path"] == PATH_RAG_FALLBACK
+        assert fallback.calls == ["Who is the lighthouse keeper?"]
+
+    async def test_aggregation_with_cypher_rows_takes_cypher_table(self):
+        # Multi-candidate cypher returns a non-empty table → strategy
+        # picks the table path and emits a single "cypher_results" item.
+        from graphrag_sdk.core.context import Context
+        cypher_code = (
+            "```cypher\n"
+            "MATCH (p:Person)-[:RELATES]-(o:Organization)\n"
+            "RETURN o.name AS org, count(DISTINCT p) AS n\n"
+            "ORDER BY n DESC LIMIT 5\n"
+            "```"
+        )
+        strat = _make_strategy(
+            llm_responses=[cypher_code],
+            graph_results=[
+                _FakeResult(["org", "n"], [["Acme", 10], ["Globex", 8]])
+            ],
+        )
+        result = await strat._execute(
+            "Which org has the most employees mentioned?", Context(),
+        )
+        assert result.metadata["cypher_first_path"] == PATH_CYPHER_TABLE
+        assert result.metadata["cypher_rows"] == 2
+        assert "Acme | 10" in result.records[0]["content"]
+
+    async def test_numeric_intent_does_python_arithmetic(self):
+        # Question asks for an average; cypher returns raw year values;
+        # strategy computes 1989.9 in Python and tags PATH_NUMERIC_MATH.
+        from graphrag_sdk.core.context import Context
+        cypher_code = (
+            "```cypher\nMATCH (d:Date) RETURN d.name AS year\n```"
+        )
+        years = [[str(y)] for y in
+                 [1939, 1968, 1973, 1984, 1995, 1998, 2003, 2009, 2011, 2019]]
+        strat = _make_strategy(
+            llm_responses=[cypher_code],
+            graph_results=[_FakeResult(["year"], years)],
+        )
+        result = await strat._execute(
+            "What is the average year of founding across all 10 organizations?",
+            Context(),
+        )
+        assert result.metadata["cypher_first_path"] == PATH_NUMERIC_MATH
+        assert result.metadata["op"] == "average"
+        assert result.metadata["value"] == pytest.approx(1989.9, abs=0.1)
+
+    async def test_numeric_empty_extraction_falls_back_to_rag(self):
+        # Cypher generated for the numeric path returns 0 numeric values
+        # → strategy falls through to the RAG fallback and tags
+        # PATH_RAG_FALLBACK_NUMERIC_FAIL.
+        from graphrag_sdk.core.context import Context
+        fallback = _FakeFallback()
+        strat = _make_strategy(
+            llm_responses=["```cypher\nMATCH (n:Person) RETURN n.name\n```"],
+            graph_results=[_FakeResult(["name"], [["Alice"], ["Bob"]])],
+            fallback=fallback,
+        )
+        result = await strat._execute(
+            "What is the average year of founding?", Context(),
+        )
+        assert result.metadata["cypher_first_path"] == PATH_RAG_FALLBACK_NUMERIC_FAIL
+        assert fallback.calls  # fallback was invoked
+
+    async def test_negation_existential_empty_returns_no(self):
+        # "Are there any orgs WITHOUT employees?" + cypher returns 0 rows
+        # → strategy emits an authoritative "No" and tags
+        # PATH_NEGATION_EMPTY_NO. No fallback delegation.
+        from graphrag_sdk.core.context import Context
+        cypher_code = (
+            "```cypher\n"
+            "MATCH (o:Organization) WHERE NOT EXISTS { "
+            "MATCH (o)<-[:RELATES]-(p:Person) } RETURN o.name\n"
+            "```"
+        )
+        fallback = _FakeFallback()
+        strat = _make_strategy(
+            llm_responses=[cypher_code],
+            graph_results=[
+                _FakeResult([], []),  # hybrid batch query (no shape match)
+                _FakeResult(["name"], []),  # the actual cypher
+            ],
+            fallback=fallback,
+        )
+        result = await strat._execute(
+            "Are there any organizations for which NO employees are listed?",
+            Context(),
+        )
+        assert result.metadata["cypher_first_path"] == PATH_NEGATION_EMPTY_NO
+        # Negation path must NOT delegate to the fallback.
+        assert fallback.calls == []
+
+    async def test_positive_existential_empty_falls_back_to_rag(self):
+        # "Is there any employee at Acme on observability?" + cypher returns
+        # 0 rows (typed label mismatch) → strategy falls through to RAG and
+        # tags PATH_RAG_FALLBACK_CYPHER_EMPTY.
+        from graphrag_sdk.core.context import Context
+        cypher_code = (
+            "```cypher\n"
+            "MATCH (p:Person)-[:RELATES]-(t:Technology) RETURN p.name\n"
+            "```"
+        )
+        fallback = _FakeFallback()
+        strat = _make_strategy(
+            llm_responses=[cypher_code],
+            graph_results=[_FakeResult(["name"], [])],
+            fallback=fallback,
+        )
+        result = await strat._execute(
+            "Is there any employee at Acme working on observability?",
+            Context(),
+        )
+        assert result.metadata["cypher_first_path"] == PATH_RAG_FALLBACK_CYPHER_EMPTY
+        assert len(fallback.calls) == 1
+
+    async def test_hybrid_warns_when_topology_assumption_violated(self, caplog):
+        # The batched (Org)<-[:RELATES]-(Person) query returns zero tuples
+        # → strategy emits a warning and falls through (returns None from
+        # the hybrid; the rest of _execute keeps going).
+        import logging
+
+        from graphrag_sdk.core.context import Context
+        cypher_code = (
+            "```cypher\nMATCH (p:Person) RETURN p.name AS name\n```"
+        )
+        strat = _make_strategy(
+            llm_responses=[cypher_code],
+            graph_results=[
+                _FakeResult([], []),  # hybrid batch — zero topology tuples
+                _FakeResult(["name"], [["Alice"]]),  # cypher_table cypher
+            ],
+        )
+        with caplog.at_level(logging.WARNING,
+                             logger="graphrag_sdk.retrieval.strategies.cypher_first"):
+            await strat._execute(
+                "Which roles are held by employees at BOTH Acme and Globex?",
+                Context(),
+            )
+        # The topology-violation warning fired.
+        assert any("zero (Organization)<-[:RELATES]-(Person) tuples" in r.message
+                   for r in caplog.records)

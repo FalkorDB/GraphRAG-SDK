@@ -60,13 +60,7 @@ _RAG_SYSTEM_PROMPT = (
     "6. If the context lacks sufficient information, say so briefly "
     "rather than inventing details.\n"
     "7. Respect negation: if a passage states something did NOT happen "
-    "or is NOT true, preserve that meaning.\n"
-    "8. When the context contains a section labeled "
-    "'Authoritative Graph Query Results', that section is computed "
-    "deterministically from the knowledge graph. For quantitative or "
-    "'which has the most/fewest/exactly N' questions, prefer those "
-    "numbers over prose passages, even if passages mention other "
-    "entities more frequently."
+    "or is NOT true, preserve that meaning."
 )
 
 # System prompt used with the default delimited template (``_RAG_PROMPT``).
@@ -95,14 +89,29 @@ _RAG_SYSTEM_PROMPT_DELIMITED = (
     "6. If the context lacks sufficient information, say so briefly "
     "rather than inventing details.\n"
     "7. Respect negation: if a passage states something did NOT happen "
-    "or is NOT true, preserve that meaning.\n"
-    "8. When the context contains a section labeled "
+    "or is NOT true, preserve that meaning."
+)
+
+# Optional addendum appended to the system prompt only when the retriever
+# produced an "Authoritative Graph Query Results" section (currently emitted
+# by ``CypherFirstAggregationStrategy`` and by ``MultiPathRetrieval`` with
+# ``enable_cypher=True``). Kept out of the base prompts so callers who never
+# use cypher retrieval don't pay the prompt-token cost or risk subtle
+# behavior changes on factoid questions.
+_CYPHER_AUTH_RULE = (
+    "\n8. When the context contains a section labeled "
     "'Authoritative Graph Query Results', that section is computed "
     "deterministically from the knowledge graph. For quantitative or "
     "'which has the most/fewest/exactly N' questions, prefer those "
     "numbers over prose passages, even if passages mention other "
     "entities more frequently."
 )
+
+# Marker the retriever uses in section content / metadata to signal that an
+# authoritative cypher result is present. Kept as a module-level constant so
+# tests can pin the contract.
+_CYPHER_RESULTS_SECTION = "cypher_results"
+_AUTH_RESULTS_HEADING_MARKER = "Authoritative Graph Query Results"
 
 _RAG_PROMPT = "<context>\n{context}\n</context>\n\nQuestion: {question}\n\nAnswer:"
 
@@ -115,6 +124,23 @@ _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
 def _neutralize_context_close_tag(text: str) -> str:
     """Disarm any literal ``</context>`` that appears inside untrusted text."""
     return _CONTEXT_CLOSE_RE.sub("</ context>", text)
+
+
+def _has_authoritative_cypher_results(retriever_result: RetrieverResult) -> bool:
+    """True when any retrieved item is an authoritative graph-query result.
+
+    Used to decide whether to append the cypher-authority rule to the
+    default system prompt. We check both the section metadata (preferred,
+    cheap) and the heading marker in the content (defensive — covers
+    third-party strategies that don't tag the metadata).
+    """
+    for item in retriever_result.items or []:
+        section = (item.metadata or {}).get("section") if item.metadata else None
+        if section == _CYPHER_RESULTS_SECTION:
+            return True
+        if isinstance(item.content, str) and _AUTH_RESULTS_HEADING_MARKER in item.content:
+            return True
+    return False
 
 
 _QUESTION_REWRITE_PROMPT = (
@@ -720,6 +746,12 @@ class GraphRAG:
         else:
             context_str = "\n---\n".join(item.content for item in retriever_result.items)
             default_system_content = _RAG_SYSTEM_PROMPT
+
+        # Conditionally append the cypher-authority rule. Only fires when the
+        # retriever produced an authoritative-results section — keeps the base
+        # system prompt unchanged for callers who don't use cypher retrieval.
+        if _has_authoritative_cypher_results(retriever_result):
+            default_system_content = default_system_content + _CYPHER_AUTH_RULE
 
         # Step 4: Build messages — unified path for single-turn and multi-turn.
         # If history starts with role="system", honor it as-is (trust the

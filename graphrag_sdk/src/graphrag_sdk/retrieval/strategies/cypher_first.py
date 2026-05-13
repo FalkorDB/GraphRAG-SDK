@@ -42,9 +42,7 @@ import statistics
 from typing import Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import RetrieverError
 from graphrag_sdk.core.models import (
-    ChatMessage,
     RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
@@ -364,6 +362,31 @@ def _wrap_authoritative(body: str, *, source_note: str = "") -> str:
     return f"{_AUTH_HEADING}{note}\n\n{body}"
 
 
+# Canonical labels for the sub-path metadata key ``cypher_first_path``.
+# Operators / metrics dashboards can group on these to see which path
+# fires for each query.
+PATH_NUMERIC_MATH = "numeric_math"
+PATH_SHARED_PROPERTY_HYBRID = "shared_property_hybrid"
+PATH_CYPHER_TABLE = "cypher_table"
+PATH_NEGATION_EMPTY_NO = "negation_empty_no"
+PATH_RAG_FALLBACK = "rag_fallback"
+PATH_RAG_FALLBACK_NUMERIC_FAIL = "rag_fallback_numeric_fail"
+PATH_RAG_FALLBACK_CYPHER_EMPTY = "rag_fallback_cypher_empty"
+
+
+def _tag_path(result: RawSearchResult, path: str) -> RawSearchResult:
+    """Attach the ``cypher_first_path`` label to a strategy result.
+
+    Used both for results we construct ourselves and for results returned
+    from the delegated RAG fallback strategy — operators get a uniform
+    signal regardless of which branch handled the query.
+    """
+    meta = dict(result.metadata or {})
+    meta.setdefault("strategy", "cypher_first")
+    meta["cypher_first_path"] = path
+    return RawSearchResult(records=result.records, metadata=meta)
+
+
 # ─────────────────────────────────────────────────────────────────
 # Strategy
 # ─────────────────────────────────────────────────────────────────
@@ -383,6 +406,46 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
 
     Safe as the top-level strategy on ``GraphRAG``: non-aggregation
     questions get the existing pipeline unchanged.
+
+    Every returned :class:`RawSearchResult` carries a ``cypher_first_path``
+    metadata key whose value is one of ``PATH_*`` module constants — useful
+    for operator dashboards that want to see which sub-path fired.
+
+    Assumptions and known limits
+    ----------------------------
+    The shared-property hybrid (M5) was tuned on graphs produced by the
+    SDK's default ``GraphExtraction`` pipeline. It makes the following
+    assumptions; when they're violated, the hybrid silently returns
+    ``None`` and the strategy falls back to the multi-candidate Cypher
+    path (which still works, just without free-text recovery):
+
+    - **Graph topology.** Organizations are connected to Persons via
+      ``[:RELATES]``, and Persons are connected to ``Chunk`` nodes via
+      ``[:MENTIONED_IN]``. This is the canonical shape the SDK builds.
+      Custom extractors that use different edge types or skip chunk
+      provenance will not benefit from M5 — the strategy logs a warning
+      and continues.
+    - **Prose shape.** Role and project values are extracted by regex
+      from Person descriptions and chunk text. The regexes target the
+      phrasing patterns ``"works at X as a <role>"`` and ``"contributes
+      to <project>"``. Domains whose prose departs from these patterns
+      (medical / legal / e-commerce / non-English) will not match — the
+      result is empty role/project sets, not wrong answers, but the
+      hybrid won't help.
+    - **Role vocabulary.** The role extractor anchors on the suffixes
+      ``engineer | scientist | manager | architect | researcher |
+      developer | analyst | specialist | designer | consultant``. Other
+      job titles ("director", "VP", "lead") won't match.
+
+    Accuracy ceiling
+    ----------------
+    The strategy faithfully returns what is in the graph. Duplicate
+    entities ("Wayne En" vs "Wayne Enterprises"), chunk-boundary-truncated
+    names, or non-deduplicated short-form references ("Carla" vs "Carla
+    Okafor") all flow through into the answer. Cypher counts will be
+    inflated; "which X" lists will contain duplicates. These are
+    extraction-quality issues — not strategy bugs — and should be
+    addressed in the ingestion pipeline (resolver, coref, dedup).
 
     Args:
         graph_store: Required for Cypher execution.
@@ -447,7 +510,10 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
         if intent == "rag":
             # Delegate verbatim — non-aggregation questions don't benefit
             # from any of the cypher-first mechanics.
-            return await self._fallback._execute(query, ctx, **kwargs)
+            return _tag_path(
+                await self._fallback._execute(query, ctx, **kwargs),
+                PATH_RAG_FALLBACK,
+            )
 
         if intent == "numeric_math":
             return await self._numeric_math_path(query, ctx)
@@ -507,7 +573,10 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
             # to extract the numbers from chunks.
             ctx.log("CypherFirst numeric_math: no values extracted, "
                     "falling back to RAG")
-            return await self._fallback._execute(query, ctx)
+            return _tag_path(
+                await self._fallback._execute(query, ctx),
+                PATH_RAG_FALLBACK_NUMERIC_FAIL,
+            )
 
         q_lower = query.lower()
         if "median" in q_lower:
@@ -538,7 +607,7 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
             records=[record],
             metadata={
                 "strategy": "cypher_first",
-                "mode": "numeric_math",
+                "cypher_first_path": PATH_NUMERIC_MATH,
                 "op": op,
                 "value": ans,
                 "n_values": len(values),
@@ -575,6 +644,22 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
             batch_res = await self._graph.query_raw(batch_cypher)
         except Exception as exc:
             logger.debug("Shared-property hybrid batch query failed: %s", exc)
+            return None
+
+        # Topology check: if the batched ``(Org)<-[:RELATES]-(Person)`` query
+        # returns zero tuples, the graph doesn't match the assumptions M5
+        # was tuned on (Person ↔ Organization edges + MENTIONED_IN chunks).
+        # Surface this loudly once per call so operators using custom
+        # extractors get a fast signal rather than silent wrong answers.
+        if not (batch_res.result_set or []):
+            logger.warning(
+                "CypherFirst shared-property hybrid found zero "
+                "(Organization)<-[:RELATES]-(Person) tuples; falling through. "
+                "If your graph uses different edge shapes or doesn't extract "
+                "Person/Organization labels, this hybrid will never fire — "
+                "see the strategy docstring's 'Assumptions and known limits' "
+                "section."
+            )
             return None
 
         org_phrase_map: dict[str, set[str]] = {}
@@ -626,7 +711,7 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
                 }],
                 metadata={
                     "strategy": "cypher_first",
-                    "mode": "shared_property_hybrid",
+                    "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
                     "shape": "both_a_and_b",
                     "kind": kind,
                     "common": common,
@@ -670,7 +755,7 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
             }],
             metadata={
                 "strategy": "cypher_first",
-                "mode": "shared_property_hybrid",
+                "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
                 "shape": "same_as",
                 "kind": kind,
                 "sharing": sharing,
@@ -730,7 +815,7 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
                 }],
                 metadata={
                     "strategy": "cypher_first",
-                    "mode": "cypher_table",
+                    "cypher_first_path": PATH_CYPHER_TABLE,
                     "cypher": cypher,
                     "cypher_rows": rows,
                     "cypher_truncated": truncated,
@@ -752,14 +837,17 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
                 }],
                 metadata={
                     "strategy": "cypher_first",
-                    "mode": "negation_empty_no",
+                    "cypher_first_path": PATH_NEGATION_EMPTY_NO,
                     "cypher": cypher,
                 },
             )
 
         # Vector fallback for everything else.
         ctx.log("CypherFirst cypher empty — falling back to RAG")
-        return await self._fallback._execute(query, ctx)
+        return _tag_path(
+            await self._fallback._execute(query, ctx),
+            PATH_RAG_FALLBACK_CYPHER_EMPTY,
+        )
 
     async def _generate_k_candidates(
         self,
