@@ -31,7 +31,9 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
-from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
+    SentenceTokenCapChunking,
+)
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
@@ -325,7 +327,10 @@ class GraphRAG:
 
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
-        - Chunker: FixedSizeChunking(chunk_size=1000)
+        - Chunker: SentenceTokenCapChunking(max_tokens=512, overlap_sentences=2)
+          — sentence-aware, never splits entity names at chunk boundaries.
+          Override with ``chunker=FixedSizeChunking(...)`` if you need
+          character-window chunking.
         - Extractor: GraphExtraction with configured LLM
         - Resolver: ExactMatchResolution
 
@@ -534,7 +539,7 @@ class GraphRAG:
 
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
-            chunker=chunker or FixedSizeChunking(),
+            chunker=chunker or SentenceTokenCapChunking(),
             extractor=extractor or self._default_extractor(),
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
@@ -1025,7 +1030,7 @@ class GraphRAG:
 
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),  # unused (text is provided below)
-            chunker=chunker or FixedSizeChunking(),
+            chunker=chunker or SentenceTokenCapChunking(),
             extractor=extractor or self._default_extractor(),
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
@@ -1286,7 +1291,7 @@ class GraphRAG:
                 to ``ingest()`` and ``update()``). Defaults to per-extension
                 auto-selection. ``deleted`` ignores this.
             chunker: Override the chunking strategy for ``added``/``modified``.
-                Defaults to ``FixedSizeChunking``. ``deleted`` ignores this.
+                Defaults to ``SentenceTokenCapChunking``. ``deleted`` ignores this.
             extractor: Override the entity-extraction strategy for
                 ``added``/``modified``. ``deleted`` ignores this.
             resolver: Override the resolution strategy for ``added``/
