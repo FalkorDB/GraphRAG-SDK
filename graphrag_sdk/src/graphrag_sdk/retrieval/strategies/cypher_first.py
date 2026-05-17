@@ -927,6 +927,39 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
     extraction-quality issues — not strategy bugs — and should be
     addressed in the ingestion pipeline (resolver, coref, dedup).
 
+    Recommended ingestion config
+    ----------------------------
+    For aggregation accuracy, ingest with a **sentence- or paragraph-aware
+    chunker**, not the default :class:`FixedSizeChunking`. Character-window
+    chunking can split entity names mid-token at chunk boundaries
+    (``"Wayne Enterprises"`` → ``"Wayne En"``), and the resulting stub
+    entities never merge with their full forms during resolution. On the
+    internal 7-question aggregation benchmark, switching from
+    ``FixedSizeChunking(chunk_size=1000)`` to
+    ``SentenceTokenCapChunking(max_tokens=512, overlap_sentences=2)``
+    moved the score from 6/7 (intermittent) to 7/7 (stable across runs)
+    by eliminating every truncation stub and almost every short-form
+    duplicate (the latter benefit because per-chunk FastCoref binds
+    references to antecedents that now reliably land in the same chunk)::
+
+        from graphrag_sdk import (
+            CypherFirstAggregationStrategy,
+            FastCorefResolver,
+            GraphExtraction,
+            LLMVerifiedResolution,
+            SentenceTokenCapChunking,
+        )
+
+        chunker = SentenceTokenCapChunking(max_tokens=512, overlap_sentences=2)
+        extractor = GraphExtraction(llm=llm, coref_resolver=FastCorefResolver())
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder)
+
+        await rag.ingest(text=doc, chunker=chunker,
+                         extractor=extractor, resolver=resolver)
+
+    ``StructuralChunking`` is a reasonable alternative when the source
+    text has explicit paragraph/header structure (e.g. Markdown).
+
     Args:
         graph_store: Required for Cypher execution.
         vector_store: Required for the RAG fallback.
