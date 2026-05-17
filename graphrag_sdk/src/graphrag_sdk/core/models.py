@@ -136,6 +136,27 @@ class DocumentRecord(DataModel):
 # ── Schema Types ─────────────────────────────────────────────────
 
 
+_PROPERTY_TYPES: frozenset[str] = frozenset(
+    {"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"}
+)
+
+# Property names reserved by the SDK; user schemas may not declare them.
+RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
+    {
+        "name",
+        "type",
+        "description",
+        "source_chunk_ids",
+        "spans",
+        "rel_type",
+        "fact",
+        "src_name",
+        "tgt_name",
+        "id",
+    }
+)
+
+
 class PropertyType(DataModel):
     """A property definition for a node or relationship type."""
 
@@ -143,6 +164,17 @@ class PropertyType(DataModel):
     type: str = "STRING"  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
     required: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_type(self) -> PropertyType:
+        normalized = (self.type or "STRING").strip().upper()
+        if normalized not in _PROPERTY_TYPES:
+            raise ValueError(
+                f"PropertyType '{self.name}' has unsupported type "
+                f"{self.type!r}. Allowed: {sorted(_PROPERTY_TYPES)}"
+            )
+        self.type = normalized
+        return self
 
 
 class EntityType(DataModel):
@@ -185,6 +217,7 @@ class RelationType(DataModel):
     label: str
     description: str | None = None
     patterns: list[tuple[str, str]] = Field(default_factory=list)
+    properties: list[PropertyType] = Field(default_factory=list)
 
     # Identity is by label only — two RelationType instances with the same
     # label but different patterns compare/hash equal. Schemas are expected
@@ -209,29 +242,104 @@ class GraphSchema(DataModel):
     relations: list[RelationType] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _warn_on_undeclared_pattern_labels(self) -> GraphSchema:
-        """Warn when a ``RelationType.patterns`` references undeclared entity labels.
+    def _validate_schema(self) -> GraphSchema:
+        """Validate the schema at config time.
 
-        Catches typos like ``("Persn", "Company")`` at config time, before any
-        extraction has run. We warn rather than raise: open-schema setups may
-        legitimately reference labels not (yet) listed in ``entities``.
+        - Rejects user-declared property names that collide with SDK-reserved
+          keys (``name``, ``description``, ``source_chunk_ids``, ``spans``,
+          ``rel_type``, ``fact``, ``src_name``, ``tgt_name``, ``id``, ``type``).
+        - Warns when a ``RelationType.patterns`` references undeclared entity
+          labels (typo guard) — open-schema setups may legitimately reference
+          labels not yet listed in ``entities``, so this is a warning, not an
+          error.
         """
-        if not self.entities:
-            return self
-        declared = {e.label for e in self.entities}
-        for rel in self.relations:
-            for src, tgt in rel.patterns:
-                missing = [lbl for lbl in (src, tgt) if lbl not in declared]
-                if missing:
-                    logger.warning(
-                        "RelationType '%s' pattern (%s, %s) references "
-                        "entity label(s) not declared in schema.entities: %s",
-                        rel.label,
-                        src,
-                        tgt,
-                        ", ".join(missing),
+        for et in self.entities:
+            for prop in et.properties:
+                if prop.name in RESERVED_PROPERTY_NAMES:
+                    raise ValueError(
+                        f"EntityType '{et.label}' declares property "
+                        f"'{prop.name}', which is reserved by the SDK. "
+                        f"Reserved names: {sorted(RESERVED_PROPERTY_NAMES)}"
                     )
+        for rt in self.relations:
+            for prop in rt.properties:
+                if prop.name in RESERVED_PROPERTY_NAMES:
+                    raise ValueError(
+                        f"RelationType '{rt.label}' declares property "
+                        f"'{prop.name}', which is reserved by the SDK. "
+                        f"Reserved names: {sorted(RESERVED_PROPERTY_NAMES)}"
+                    )
+
+        if self.entities:
+            declared = {e.label for e in self.entities}
+            for rel in self.relations:
+                for src, tgt in rel.patterns:
+                    missing = [lbl for lbl in (src, tgt) if lbl not in declared]
+                    if missing:
+                        logger.warning(
+                            "RelationType '%s' pattern (%s, %s) references "
+                            "entity label(s) not declared in schema.entities: %s",
+                            rel.label,
+                            src,
+                            tgt,
+                            ", ".join(missing),
+                        )
         return self
+
+    def merge(self, other: GraphSchema) -> GraphSchema:
+        """Return a new ``GraphSchema`` that is the union of ``self`` and ``other``.
+
+        - Entity / relation types are unioned by ``label``.
+        - For each type, ``properties`` are unioned by ``name``. When the same
+          property name appears in both, the incoming type/description/required
+          overrides — last-write-wins, matching the persisted ontology's
+          register() semantics.
+        - For relations, ``patterns`` are unioned (order-preserving, deduped).
+        """
+
+        def _merge_props(
+            existing: list[PropertyType], incoming: list[PropertyType]
+        ) -> list[PropertyType]:
+            by_name: dict[str, PropertyType] = {p.name: p for p in existing}
+            for p in incoming:
+                by_name[p.name] = p
+            return list(by_name.values())
+
+        ent_by_label: dict[str, EntityType] = {e.label: e for e in self.entities}
+        for e in other.entities:
+            if e.label in ent_by_label:
+                cur = ent_by_label[e.label]
+                ent_by_label[e.label] = EntityType(
+                    label=cur.label,
+                    description=e.description or cur.description,
+                    properties=_merge_props(cur.properties, e.properties),
+                )
+            else:
+                ent_by_label[e.label] = e
+
+        rel_by_label: dict[str, RelationType] = {r.label: r for r in self.relations}
+        for r in other.relations:
+            if r.label in rel_by_label:
+                cur = rel_by_label[r.label]
+                seen: set[tuple[str, str]] = set()
+                merged_patterns: list[tuple[str, str]] = []
+                for pat in list(cur.patterns) + list(r.patterns):
+                    if pat not in seen:
+                        seen.add(pat)
+                        merged_patterns.append(pat)
+                rel_by_label[r.label] = RelationType(
+                    label=cur.label,
+                    description=r.description or cur.description,
+                    patterns=merged_patterns,
+                    properties=_merge_props(cur.properties, r.properties),
+                )
+            else:
+                rel_by_label[r.label] = r
+
+        return GraphSchema(
+            entities=list(ent_by_label.values()),
+            relations=list(rel_by_label.values()),
+        )
 
 
 # ── Extraction / Resolution Output Types ─────────────────────────
@@ -254,6 +362,7 @@ class ExtractedEntity(DataModel):
     type: str
     description: str = ""
     source_chunk_ids: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExtractedRelation(DataModel):
@@ -266,6 +375,7 @@ class ExtractedRelation(DataModel):
     description: str = ""
     weight: float = 1.0
     source_chunk_ids: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class EntityMention(DataModel):

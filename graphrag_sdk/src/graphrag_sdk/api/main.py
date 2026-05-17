@@ -46,6 +46,7 @@ from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
+from graphrag_sdk.storage.ontology_store import OntologyStore
 from graphrag_sdk.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -192,12 +193,21 @@ class GraphRAG:
         # Deduplication engine
         self._deduplicator = EntityDeduplicator(self._graph_store, self.embedder)
 
+        # Persistent ontology lives in `<data_graph>__ontology`. Stays in sync
+        # across multiple ingest passes that may declare different schemas.
+        self._ontology_store = OntologyStore(self._conn, self._conn.config.graph_name)
+        # Global ontology used at retrieval time. Initially the user-supplied
+        # local schema; refreshed from the persisted ontology after each ingest
+        # (see refresh_ontology()) and on demand.
+        self._global_schema: GraphSchema = self.schema
+
         # Default retrieval strategy
         self._retrieval_strategy = retrieval_strategy or MultiPathRetrieval(
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             embedder=self.embedder,
             llm=self.llm,
+            schema=self._global_schema,
         )
 
     # -- Async context manager -------------------------------------------
@@ -230,6 +240,37 @@ class GraphRAG:
     async def close(self) -> None:
         """Close the underlying database connection."""
         await self._conn.close()
+
+    # ── Ontology ─────────────────────────────────────────────────
+
+    async def get_ontology(self) -> GraphSchema:
+        """Return the persisted **global** ontology (union of every schema
+        ever registered against this graph).
+
+        Reads from the dedicated ``<data_graph>__ontology`` graph. Returns an
+        empty schema before the first ingest has run.
+        """
+        return await self._ontology_store.load()
+
+    async def refresh_ontology(self) -> GraphSchema:
+        """Reload the global ontology and propagate it to the retrieval path.
+
+        Called automatically after each ``ingest()``. Call explicitly when
+        another process has registered new schema and you want the next
+        retrieval to see it without re-ingesting first.
+        """
+        loaded = await self._ontology_store.load()
+        if loaded.entities or loaded.relations:
+            self._global_schema = loaded
+        else:
+            # No persisted ontology yet — keep the user-provided local schema.
+            self._global_schema = self.schema
+        # Best-effort propagation to the retrieval strategy. Built-in
+        # MultiPathRetrieval honours this; custom strategies opt in by exposing
+        # a ``_schema`` attribute or accepting it via constructor.
+        if hasattr(self._retrieval_strategy, "_schema"):
+            self._retrieval_strategy._schema = self._global_schema
+        return self._global_schema
 
     # ── Graph admin ──────────────────────────────────────────────
 
@@ -527,6 +568,17 @@ class GraphRAG:
 
         doc_info = DocumentInfo(uid=resolved_id, path=path_for_node)
 
+        # Register this run's local schema into the persisted ontology so the
+        # global ontology is the union of every schema ever registered. The
+        # local schema continues to drive *this* run's extraction.
+        if self.schema.entities or self.schema.relations:
+            try:
+                await self._ontology_store.register(self.schema)
+            except Exception as exc:
+                logger.warning(
+                    "Ontology registration failed (continuing ingest): %s", exc
+                )
+
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
             chunker=chunker or FixedSizeChunking(),
@@ -538,6 +590,13 @@ class GraphRAG:
         )
 
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
+
+        # Refresh the global ontology so the next retrieval call sees any
+        # new properties declared by this run.
+        try:
+            await self.refresh_ontology()
+        except Exception as exc:
+            logger.warning("Ontology refresh failed (continuing): %s", exc)
 
         if not _skip_post:
             # Post-ingestion: create indices only.

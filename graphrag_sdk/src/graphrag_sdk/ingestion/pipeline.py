@@ -188,6 +188,8 @@ class IngestionPipeline:
             # Step 5: Prune against schema
             ctx.log("Step 5/9: Pruning against schema")
             graph_data = self._prune(graph_data, self.schema)
+            graph_data = self._validate_attributes(graph_data, self.schema)
+            graph_data = self._filter_quality(graph_data)
 
             # Step 6: Resolve duplicate entities
             ctx.log("Step 6/9: Resolving duplicates")
@@ -444,6 +446,119 @@ class IngestionPipeline:
         return GraphData(
             nodes=pruned_nodes,
             relationships=pruned_rels,
+            mentions=graph_data.mentions,
+            extracted_entities=graph_data.extracted_entities,
+            extracted_relations=graph_data.extracted_relations,
+        )
+
+    def _validate_attributes(
+        self, graph_data: GraphData, schema: GraphSchema
+    ) -> GraphData:
+        """Validate node / relationship attributes against the declared schema.
+
+        - Attribute keys not declared in the schema are dropped (debug-logged).
+        - Nodes / relationships missing a ``required=True`` declared attribute
+          are dropped entirely, with a single aggregated warning per type.
+        - Skips ``"Unknown"`` nodes (the low-confidence label preserved by
+          :py:meth:`_prune`).
+
+        Reserved SDK keys (``name``, ``description``, ``source_chunk_ids``,
+        ``spans``, ``rel_type``, ``fact``, ``src_name``, ``tgt_name``,
+        ``type``, ``id``) are always preserved.
+        """
+        if not schema.entities and not schema.relations:
+            return graph_data
+
+        from graphrag_sdk.core.models import RESERVED_PROPERTY_NAMES
+
+        ent_declared: dict[str, dict[str, Any]] = {
+            e.label: {p.name: p for p in e.properties} for e in schema.entities
+        }
+        rel_declared: dict[str, dict[str, Any]] = {
+            r.label: {p.name: p for p in r.properties} for r in schema.relations
+        }
+
+        kept_nodes: list[GraphNode] = []
+        required_missing_by_label: dict[str, int] = {}
+        unknown_dropped_by_label: dict[str, int] = {}
+        for node in graph_data.nodes:
+            if node.label == "Unknown" or node.label not in ent_declared:
+                kept_nodes.append(node)
+                continue
+            declared = ent_declared[node.label]
+            # Drop unknown attribute keys (debug only — high volume).
+            unknown_keys = [
+                k
+                for k in list(node.properties.keys())
+                if k not in declared and k not in RESERVED_PROPERTY_NAMES
+            ]
+            for k in unknown_keys:
+                node.properties.pop(k, None)
+                unknown_dropped_by_label[node.label] = (
+                    unknown_dropped_by_label.get(node.label, 0) + 1
+                )
+            # Drop record on missing required attribute.
+            missing = [
+                name
+                for name, prop in declared.items()
+                if prop.required and node.properties.get(name) is None
+            ]
+            if missing:
+                required_missing_by_label[node.label] = (
+                    required_missing_by_label.get(node.label, 0) + 1
+                )
+                continue
+            kept_nodes.append(node)
+
+        for label, count in unknown_dropped_by_label.items():
+            logger.debug(
+                "Dropped %d undeclared attribute key(s) on %s nodes",
+                count,
+                label,
+            )
+        for label, count in required_missing_by_label.items():
+            logger.warning(
+                "Dropped %d %s node(s) with missing required attribute(s)",
+                count,
+                label,
+            )
+
+        kept_rels: list[GraphRelationship] = []
+        rel_required_missing_by_label: dict[str, int] = {}
+        for rel in graph_data.relationships:
+            rel_label = rel.properties.get("rel_type", rel.type)
+            if rel_label not in rel_declared:
+                kept_rels.append(rel)
+                continue
+            declared = rel_declared[rel_label]
+            for k in [
+                k
+                for k in list(rel.properties.keys())
+                if k not in declared and k not in RESERVED_PROPERTY_NAMES
+            ]:
+                rel.properties.pop(k, None)
+            missing = [
+                name
+                for name, prop in declared.items()
+                if prop.required and rel.properties.get(name) is None
+            ]
+            if missing:
+                rel_required_missing_by_label[rel_label] = (
+                    rel_required_missing_by_label.get(rel_label, 0) + 1
+                )
+                continue
+            kept_rels.append(rel)
+
+        for label, count in rel_required_missing_by_label.items():
+            logger.warning(
+                "Dropped %d [%s] relationship(s) with missing required attribute(s)",
+                count,
+                label,
+            )
+
+        return GraphData(
+            nodes=kept_nodes,
+            relationships=kept_rels,
             mentions=graph_data.mentions,
             extracted_entities=graph_data.extracted_entities,
             extracted_relations=graph_data.extracted_relations,

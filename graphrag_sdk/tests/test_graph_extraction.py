@@ -712,3 +712,129 @@ class TestFormatRelationPatterns:
         step2_prompt = captured_prompts[1]
         assert "## Allowed Relationships" in step2_prompt
         assert "WORKS_AT (Person \u2192 Company): Works at" in step2_prompt
+
+
+class TestGraphExtractionSchemaAttributes:
+    """Coverage for schema-declared attributes flowing through extraction."""
+
+    def test_parse_step2_coerces_declared_attributes(self):
+        from graphrag_sdk.core.models import PropertyType
+        content = json.dumps({
+            "entities": [
+                {
+                    "name": "Marie Curie",
+                    "type": "Person",
+                    "description": "Scientist",
+                    "attributes": {"age": "56", "birth_date": "1867-11-07"},
+                },
+            ],
+            "relationships": [],
+        })
+        schema = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[
+                        PropertyType(name="age", type="INTEGER"),
+                        PropertyType(name="birth_date", type="DATE"),
+                    ],
+                )
+            ]
+        )
+        ents, _ = GraphExtraction._parse_step2_response(
+            content, ["Person"], "c1", schema
+        )
+        assert len(ents) == 1
+        assert ents[0].attributes == {"age": 56, "birth_date": "1867-11-07"}
+
+    def test_parse_step2_drops_entity_missing_required_attribute(self):
+        from graphrag_sdk.core.models import PropertyType
+        content = json.dumps({
+            "entities": [
+                {
+                    "name": "Marie Curie",
+                    "type": "Person",
+                    "description": "",
+                    "attributes": {"age": 56},
+                },
+                {
+                    "name": "Pierre Curie",
+                    "type": "Person",
+                    "description": "",
+                    "attributes": {"age": 39, "birth_date": "1859-05-15"},
+                },
+            ],
+            "relationships": [],
+        })
+        schema = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[
+                        PropertyType(name="age", type="INTEGER"),
+                        PropertyType(name="birth_date", type="DATE", required=True),
+                    ],
+                )
+            ]
+        )
+        ents, _ = GraphExtraction._parse_step2_response(
+            content, ["Person"], "c1", schema
+        )
+        assert [e.name for e in ents] == ["Pierre Curie"]
+
+    def test_aggregator_carries_attributes_with_last_write_wins(self):
+        from graphrag_sdk.core.models import ExtractedEntity
+        e1 = ExtractedEntity(
+            name="Marie Curie",
+            type="Person",
+            description="",
+            source_chunk_ids=["c1"],
+            attributes={"age": 56, "country": "France"},
+        )
+        e2 = ExtractedEntity(
+            name="Marie Curie",
+            type="Person",
+            description="",
+            source_chunk_ids=["c2"],
+            attributes={"age": 58, "birth_year": 1867},
+        )
+        merged = GraphExtraction._aggregate_entities([e1, e2])
+        assert len(merged) == 1
+        # `age` is overwritten last-write-wins; the other keys are unioned.
+        assert merged[0].attributes == {
+            "age": 58,
+            "country": "France",
+            "birth_year": 1867,
+        }
+
+    def test_attributes_merged_into_node_properties(self):
+        from graphrag_sdk.core.models import ExtractedEntity
+        ent = ExtractedEntity(
+            name="Marie Curie",
+            type="Person",
+            description="d",
+            source_chunk_ids=["c1"],
+            attributes={"age": 56, "birth_date": "1867-11-07"},
+        )
+        nodes = GraphExtraction._entities_to_nodes([ent])
+        assert nodes[0].properties["age"] == 56
+        assert nodes[0].properties["birth_date"] == "1867-11-07"
+        # Reserved keys still present.
+        assert nodes[0].properties["name"] == "Marie Curie"
+
+    def test_property_less_schema_keeps_attributes_empty(self):
+        """Deterministic-extractor regression: schema declares no
+        properties \u2192 records have empty attributes \u2192 storage gets only the
+        reserved keys."""
+        content = json.dumps({
+            "entities": [
+                {"name": "Alice", "type": "Person", "description": "A person"},
+            ],
+            "relationships": [],
+        })
+        schema = GraphSchema(entities=[EntityType(label="Person")])
+        ents, _ = GraphExtraction._parse_step2_response(
+            content, ["Person"], "c1", schema
+        )
+        assert len(ents) == 1
+        assert ents[0].attributes == {}
