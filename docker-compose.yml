@@ -3,6 +3,7 @@ services:
     image: falkordb/falkordb:v4.18.0
     ports:
       - "6379:6379"
+      - "3000:3000"
     volumes:
       - falkordb_data:/data
     healthcheck:
@@ -10,6 +11,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 5s
 
 volumes:
   falkordb_data:
