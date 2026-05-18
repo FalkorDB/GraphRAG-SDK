@@ -194,6 +194,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         query_vector = await self._embedder.aembed_query(query)
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
+        cypher_metadata: dict[str, Any] = {}
         if self._enable_cypher:
             results = await asyncio.gather(
                 search_relates_edges(self._vector, query_vector, self._rel_top_k),
@@ -205,11 +206,11 @@ class MultiPathRetrieval(RetrievalStrategy):
                 fact_strings_scored, rel_entities = [], {}
             else:
                 fact_strings_scored, rel_entities = results[0]
-            # Unpack Cypher results
+            # Unpack Cypher results (3-tuple: facts, entities, metadata)
             cypher_facts: list[str] = []
             cypher_entities: dict[str, dict] = {}
             if not isinstance(results[1], BaseException):
-                cypher_facts, cypher_entities = results[1]
+                cypher_facts, cypher_entities, cypher_metadata = results[1]
         else:
             fact_strings_scored, rel_entities = await search_relates_edges(
                 self._vector, query_vector, self._rel_top_k
@@ -303,6 +304,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             source_passages,
             q_type_hint,
             cypher_results=cypher_facts if cypher_facts else None,
+            cypher_metadata=cypher_metadata or None,
         )
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
