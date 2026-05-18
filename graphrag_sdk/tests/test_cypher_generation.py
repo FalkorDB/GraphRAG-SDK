@@ -89,6 +89,26 @@ class TestValidateCypher:
             assert any("Unsupported function namespace" in e for e in errors), \
                 f"should reject: {snippet}"
 
+    def test_does_not_reject_blocklisted_tokens_inside_string_literals(self):
+        # Predicates that quote a blocklisted token must not trigger the
+        # validator — only actual code references should. LLM-generated regex
+        # / CONTAINS predicates commonly look like ``'apoc.foo('`` or
+        # ``"CALL me"``, and rejecting these forces a useless retry loop.
+        for snippet in [
+            # Dotted-namespace token in a single-quoted literal.
+            "MATCH (n) WHERE n.text CONTAINS 'apoc.foo(' RETURN n",
+            # Dotted-namespace token in a double-quoted literal.
+            'MATCH (n) WHERE n.text CONTAINS "gds.shortest.path(" RETURN n',
+            # CALL inside a string predicate.
+            "MATCH (n) WHERE n.title = 'CALL me maybe' RETURN n",
+            # Escaped quote inside the literal — the regex must honor escapes
+            # and not terminate the match early.
+            "MATCH (n) WHERE n.text = 'apoc\\'s db.foo(' RETURN n",
+            # LOAD CSV inside a string literal.
+            "MATCH (n) WHERE n.text CONTAINS 'LOAD CSV here' RETURN n",
+        ]:
+            assert validate_cypher(snippet) == [], f"should accept: {snippet}"
+
     def test_accepts_bare_builtin_functions(self):
         # Built-ins are bare (count, toInteger, substring) — no namespace.
         for snippet in [

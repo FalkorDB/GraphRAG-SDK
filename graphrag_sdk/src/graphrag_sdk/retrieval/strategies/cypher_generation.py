@@ -65,6 +65,23 @@ _DOTTED_FN_RE = re.compile(
     r"\b([a-zA-Z_]\w*)\.([a-zA-Z_][\w.]*)\s*\(",
 )
 
+# Matches single- or double-quoted Cypher string literals, honoring backslash
+# escapes so embedded quotes don't terminate the match early.
+_STRING_LITERAL_RE = re.compile(
+    r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"",
+    re.DOTALL,
+)
+
+
+def _strip_string_literals(cypher: str) -> str:
+    """Replace quoted string literals with empty quotes.
+
+    Keyword/function blocklists (CALL, dotted-namespace fn calls, LOAD CSV,
+    write keywords) must not match against text that lives inside a string
+    predicate — e.g., ``WHERE n.text CONTAINS 'apoc.foo('``.
+    """
+    return _STRING_LITERAL_RE.sub("''", cypher)
+
 # ── Schema prompt ────────────────────────────────────────────────
 
 SCHEMA_PROMPT = """\
@@ -295,24 +312,29 @@ def validate_cypher(cypher: str) -> list[str]:
         errors.append("Cypher query is empty after removing comments")
         return errors
 
+    # Strip quoted string literals so keyword/function pattern checks don't
+    # match against text inside predicates (e.g. ``WHERE n.text CONTAINS
+    # 'apoc.foo('`` must not trip the APOC blocklist).
+    cypher_code = _strip_string_literals(cypher_norm)
+
     # Allowlist: must start with a read-only keyword
     if not re.match(r"^(MATCH|OPTIONAL\s+MATCH|UNWIND|WITH)\b", cypher_norm, re.IGNORECASE):
         errors.append("Query must start with MATCH, OPTIONAL MATCH, UNWIND, or WITH")
 
     # Reject multi-statement queries
-    if ";" in cypher_norm:
+    if ";" in cypher_code:
         errors.append("Multiple Cypher statements are not allowed")
 
     # Reject procedures and bulk import
-    if re.search(r"\bCALL\b", cypher_norm, re.IGNORECASE):
+    if re.search(r"\bCALL\b", cypher_code, re.IGNORECASE):
         errors.append("CALL procedures are not allowed in generated queries")
-    if re.search(r"\bLOAD\s+CSV\b", cypher_norm, re.IGNORECASE):
+    if re.search(r"\bLOAD\s+CSV\b", cypher_code, re.IGNORECASE):
         errors.append("LOAD CSV is not allowed in generated queries")
 
     # Reject dotted-namespace function calls (apoc.*, gds.*, db.*).
     # FalkorDB doesn't implement these plugins; the call silently returns 0
     # rows at execution. Surfacing it here lets the retry loop regenerate.
-    for ns, _ in _DOTTED_FN_RE.findall(cypher_norm):
+    for ns, _ in _DOTTED_FN_RE.findall(cypher_code):
         errors.append(
             f"Unsupported function namespace '{ns}.*' "
             "(FalkorDB does not implement APOC/GDS/db plugin functions). "
@@ -322,7 +344,7 @@ def validate_cypher(cypher: str) -> list[str]:
         break  # one error is enough — the LLM only needs to fix the pattern
 
     # No write operations
-    if _WRITE_KEYWORDS.search(cypher_norm):
+    if _WRITE_KEYWORDS.search(cypher_code):
         errors.append("Write operation detected — query must be read-only")
 
     # Must have RETURN
