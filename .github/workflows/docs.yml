@@ -1,11 +1,13 @@
 name: Deploy Docs
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, staging]
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "README.md"
 
 permissions:
   contents: read
