@@ -233,6 +233,55 @@ class TestMultiPathRetrieval:
         ]
         assert len(twohop_chunk_queries) >= 1
 
+    async def test_mentioned_in_ranks_chunks_by_cosine(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+        """The MENTIONED_IN path must rank chunks per entity by cosine
+        distance to the query embedding — not pick an arbitrary 3.
+
+        Hub entities can be MENTIONED_IN hundreds of chunks; arbitrary
+        selection almost never surfaces the chunks relevant to the
+        current query (regression: see PR referencing issue #258).
+        """
+        # Seed entity discovery so Path C runs (mirrors the setup in
+        # ``test_mentioned_in_and_2hop_chunk_paths``).
+        mp_vector_store.search_relationships = AsyncMock(return_value=[
+            {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "engineer", "score": 0.9},
+        ])
+
+        captured: list[tuple[str, dict]] = []
+
+        async def capture_query(cypher, params=None):
+            captured.append((cypher, params or {}))
+            result = MagicMock()
+            result.result_set = []
+            return result
+
+        mp_graph_store.query_raw = AsyncMock(side_effect=capture_query)
+
+        s = MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=mp_llm,
+        )
+        await s.search("Who is Alice?")
+
+        # Find the direct MENTIONED_IN query (entity -> chunk, not 2-hop)
+        direct_mention = [
+            (q, p) for q, p in captured
+            if "MENTIONED_IN" in q and "Chunk" in q and "neighbor" not in q.lower()
+        ]
+        assert direct_mention, "expected at least one direct MENTIONED_IN chunk query"
+
+        cypher, params = direct_mention[0]
+        # The fix: rank by cosine distance to the query vector before
+        # COLLECT, so per-entity chunk selection is query-relevant.
+        assert "vec.cosineDistance" in cypher, (
+            "MENTIONED_IN chunk query must rank by cosine distance to the "
+            "query vector (regression of issue #258)"
+        )
+        assert "ORDER BY" in cypher, "expected ORDER BY to make COLLECT[..3] meaningful"
+        assert "qv" in params, "query vector must be passed as a parameter"
+
     async def test_format_produces_sections(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Output should include structured sections when data is available."""
         mp_vector_store.search_relationships = AsyncMock(return_value=[
