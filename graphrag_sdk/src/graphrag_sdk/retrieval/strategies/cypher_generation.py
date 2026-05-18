@@ -47,8 +47,17 @@ _WRITE_KEYWORDS = re.compile(
 # breakdown isn't truncated.
 _DEFAULT_ROW_LIMIT = 100
 
-_AGG_FN_NAMES = ("count", "sum", "avg", "min", "max", "collect",
-                 "stdev", "percentileCont", "percentileDisc")
+_AGG_FN_NAMES = (
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "collect",
+    "stdev",
+    "percentileCont",
+    "percentileDisc",
+)
 _AGG_FN_RE = re.compile(
     r"^\s*(?:" + "|".join(_AGG_FN_NAMES) + r")\s*\(",
     re.IGNORECASE,
@@ -81,6 +90,7 @@ def _strip_string_literals(cypher: str) -> str:
     predicate — e.g., ``WHERE n.text CONTAINS 'apoc.foo('``.
     """
     return _STRING_LITERAL_RE.sub("''", cypher)
+
 
 # ── Schema prompt ────────────────────────────────────────────────
 
@@ -245,11 +255,13 @@ def _is_pure_aggregation(cypher: str) -> bool:
     a non-aggregate dimension that the LIMIT would actually apply to.
     """
     # Find the final RETURN body, stopping at ORDER BY / SKIP / LIMIT / end.
-    matches = list(re.finditer(
-        r"\bRETURN\b\s+(.+?)(?=\bORDER\s+BY\b|\bSKIP\b|\bLIMIT\b|;|$)",
-        cypher,
-        re.IGNORECASE | re.DOTALL,
-    ))
+    matches = list(
+        re.finditer(
+            r"\bRETURN\b\s+(.+?)(?=\bORDER\s+BY\b|\bSKIP\b|\bLIMIT\b|;|$)",
+            cypher,
+            re.IGNORECASE | re.DOTALL,
+        )
+    )
     if not matches:
         return False
     body = matches[-1].group(1).strip()

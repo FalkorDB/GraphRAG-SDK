@@ -183,8 +183,7 @@ def assemble_raw_result(
         if len(cypher_results) > _CYPHER_RESULT_CAP:
             truncated = True
             body_lines.append(
-                f"- … (showing {len(shown)} of {len(cypher_results)} rows; "
-                "result was truncated)"
+                f"- … (showing {len(shown)} of {len(cypher_results)} rows; result was truncated)"
             )
         records.append(
             {
@@ -250,8 +249,10 @@ def assemble_raw_result(
         # callers / metrics. Don't overwrite if multiple keys conflict — the
         # caller-supplied values win since they reflect the actual execution.
         metadata.update(
-            {f"cypher_{k}" if not k.startswith("cypher") else k: v
-             for k, v in cypher_metadata.items()}
+            {
+                f"cypher_{k}" if not k.startswith("cypher") else k: v
+                for k, v in cypher_metadata.items()
+            }
         )
         metadata["cypher_truncated"] = truncated
 

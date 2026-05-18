@@ -66,21 +66,27 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────
 
 _AGG_INTENT_PATTERNS = [
-    r"\bhow\s+many\b", r"\bhow\s+much\b",
+    r"\bhow\s+many\b",
+    r"\bhow\s+much\b",
     r"\bwhich\s+\w+\b",
     r"\bwhat\s+(?:is\s+the\s+)?(?:average|mean|median|total|sum|count|number)\b",
-    r"\baverage\b", r"\bmedian\b", r"\btotal\b",
-    r"\bcount\s+of\b", r"\bnumber\s+of\b",
+    r"\baverage\b",
+    r"\bmedian\b",
+    r"\btotal\b",
+    r"\bcount\s+of\b",
+    r"\bnumber\s+of\b",
     r"\blist\s+(?:all|the|every)\b",
     r"\blist\s+\w+\s+(?:that|with|where|who)\b",
-    r"\bare\s+there\s+any\b", r"\bis\s+there\s+any\b",
+    r"\bare\s+there\s+any\b",
+    r"\bis\s+there\s+any\b",
     # `more X than` / `fewer X than` — allow up to 4 words between
     r"\bmore(?:\s+\S+){1,4}\s+than\b",
     r"\bfewer(?:\s+\S+){0,4}\s+than\b",
     r"\bless(?:\s+\S+){0,4}\s+than\b",
     r"\bboth\s+\w+(?:\s+\S+)*?\s+and\s+\w+\b",
     r"\bbetween\s+\w+\s+and\s+\w+\b",
-    r"\bexactly\s+\d+\b", r"\bat\s+least\s+\d+\b",
+    r"\bexactly\s+\d+\b",
+    r"\bat\s+least\s+\d+\b",
     r"\b(?:does|do|has|have|is|are)\s+(?:[A-Z]\w*\s+){1,4}(?:have|has|contain|own|run|host)\b",
     r"\bwho\s+(?:works|live|is)\s+(?:at|in|on)\b",
 ]
@@ -129,9 +135,7 @@ def is_which_list(question: str) -> bool:
 
 def _is_negation_existential(question: str) -> bool:
     """True for "are there any X without/no Y?" — empty Cypher = definitive No."""
-    has_negation = bool(
-        re.search(r"\b(?:no|not|without|never|none)\b", question, re.IGNORECASE)
-    )
+    has_negation = bool(re.search(r"\b(?:no|not|without|never|none)\b", question, re.IGNORECASE))
     has_existential = bool(
         re.search(r"\b(?:any|are\s+there|is\s+there)\b", question, re.IGNORECASE)
     )
@@ -277,8 +281,7 @@ def _fuzzy_intersect(a: set[str], b: set[str]) -> set[str]:
     stop = {"the", "a", "an", "to", "of", "for", "in", "on", "and", "or"}
 
     def _tokens(s: str) -> set[str]:
-        return {t.lower() for t in re.findall(r"\w+", s)
-                if t.lower() not in stop and len(t) > 2}
+        return {t.lower() for t in re.findall(r"\w+", s) if t.lower() not in stop and len(t) > 2}
 
     out: set[str] = set()
     for x in a:
@@ -299,6 +302,7 @@ def _fuzzy_intersect(a: set[str], b: set[str]) -> set[str]:
 # ─────────────────────────────────────────────────────────────────
 # Cypher result → markdown table (M3)
 # ─────────────────────────────────────────────────────────────────
+
 
 def format_result_as_markdown_table(
     result: Any,
@@ -349,8 +353,7 @@ def format_result_as_markdown_table(
         lines.append(sep.join(cells))
     if truncated:
         lines.append(
-            f"... (showing {len(rows)} of {len(result.result_set)} rows; "
-            "result truncated)"
+            f"... (showing {len(rows)} of {len(result.result_set)} rows; result truncated)"
         )
     return "\n".join(lines), parsed_rows, truncated
 
@@ -411,8 +414,9 @@ _AUTH_HEADING = (
 
 def _wrap_authoritative(body: str, *, source_note: str = "") -> str:
     note = (
-        f"\nSource: {source_note}." if source_note else
-        "\nSource: text-to-Cypher run against the knowledge graph."
+        f"\nSource: {source_note}."
+        if source_note
+        else "\nSource: text-to-Cypher run against the knowledge graph."
     )
     return f"{_AUTH_HEADING}{note}\n\n{body}"
 
@@ -520,7 +524,7 @@ class _NumericMathPath(_AggregationPath):
             else:
                 cypher = _sanitize_cypher(cypher)
                 result = await self._s._graph.query_raw(cypher)
-                for row in (result.result_set or []):
+                for row in result.result_set or []:
                     for cell in row:
                         v = _coerce_number(cell)
                         if v is not None:
@@ -531,8 +535,7 @@ class _NumericMathPath(_AggregationPath):
         if not values:
             # Fall back to standard retrieval — the LLM may still be able
             # to extract the numbers from chunks.
-            ctx.log("CypherFirst numeric_math: no values extracted, "
-                    "falling back to RAG")
+            ctx.log("CypherFirst numeric_math: no values extracted, falling back to RAG")
             return _tag_path(
                 await self._s._fallback._execute(query, ctx),
                 PATH_RAG_FALLBACK_NUMERIC_FAIL,
@@ -557,13 +560,15 @@ class _NumericMathPath(_AggregationPath):
             f"cypher: {cypher}"
         )
         return RawSearchResult(
-            records=[{
-                "section": "cypher_results",
-                "content": _wrap_authoritative(
-                    body,
-                    source_note="numeric extraction + Python arithmetic",
-                ),
-            }],
+            records=[
+                {
+                    "section": "cypher_results",
+                    "content": _wrap_authoritative(
+                        body,
+                        source_note="numeric extraction + Python arithmetic",
+                    ),
+                }
+            ],
             metadata={
                 "strategy": "cypher_first",
                 "cypher_first_path": PATH_NUMERIC_MATH,
@@ -645,7 +650,7 @@ class _SharedPropertyHybridPath(_AggregationPath):
             return None
 
         org_phrase_map: dict[str, set[str]] = {}
-        for row in (batch_res.result_set or []):
+        for row in batch_res.result_set or []:
             org = row[0] or ""
             person = row[1] or ""
             desc = row[2] or ""
@@ -676,21 +681,22 @@ class _SharedPropertyHybridPath(_AggregationPath):
             if not common:
                 return None
             ctx.log(f"CypherFirst hybrid shape1: {len(common)} shared {kind}s")
-            body = (
-                f"The {kind}s held by employees at both {org_a} and "
-                f"{org_b}: " + ", ".join(common)
+            body = f"The {kind}s held by employees at both {org_a} and {org_b}: " + ", ".join(
+                common
             )
             return RawSearchResult(
-                records=[{
-                    "section": "cypher_results",
-                    "content": _wrap_authoritative(
-                        body,
-                        source_note=(
-                            "Person chunks + description regex; "
-                            "fuzzy-intersected by content tokens"
+                records=[
+                    {
+                        "section": "cypher_results",
+                        "content": _wrap_authoritative(
+                            body,
+                            source_note=(
+                                "Person chunks + description regex; "
+                                "fuzzy-intersected by content tokens"
+                            ),
                         ),
-                    ),
-                }],
+                    }
+                ],
                 metadata={
                     "strategy": "cypher_first",
                     "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
@@ -709,10 +715,7 @@ class _SharedPropertyHybridPath(_AggregationPath):
         for org_name, org_phrases in org_phrase_map.items():
             if not org_name:
                 continue
-            if (
-                target.lower() in org_name.lower()
-                or org_name.lower() in target.lower()
-            ):
+            if target.lower() in org_name.lower() or org_name.lower() in target.lower():
                 continue
             if _fuzzy_intersect(org_phrases, target_phrases):
                 sharing.append(org_name)
@@ -725,16 +728,17 @@ class _SharedPropertyHybridPath(_AggregationPath):
             f"the same {kind} as someone at {target}: " + ", ".join(sharing)
         )
         return RawSearchResult(
-            records=[{
-                "section": "cypher_results",
-                "content": _wrap_authoritative(
-                    body,
-                    source_note=(
-                        "Person chunks + description regex; fuzzy-matched "
-                        "across orgs"
+            records=[
+                {
+                    "section": "cypher_results",
+                    "content": _wrap_authoritative(
+                        body,
+                        source_note=(
+                            "Person chunks + description regex; fuzzy-matched across orgs"
+                        ),
                     ),
-                ),
-            }],
+                }
+            ],
             metadata={
                 "strategy": "cypher_first",
                 "cypher_first_path": PATH_SHARED_PROPERTY_HYBRID,
@@ -772,7 +776,8 @@ class _MultiCandidateCypherPath(_AggregationPath):
         # enabled. Cheap because cypher-gen runs in parallel.
         expects_many = is_which_list(query) or re.search(
             r"\bboth\b|\bshared\b|\bsame\b|\bcommon\b|\bin\s+common\b",
-            query, re.IGNORECASE,
+            query,
+            re.IGNORECASE,
         )
         if expects_many and (parsed is None or len(parsed) < 3):
             more = await self._generate_k_candidates(query, with_desc_hint=True)
@@ -780,12 +785,14 @@ class _MultiCandidateCypherPath(_AggregationPath):
             cypher2, table_md2, parsed2, truncated2 = await self._execute_and_pick(combined)
             if parsed2 and len(parsed2) > len(parsed or []):
                 cypher, table_md, parsed, truncated = (
-                    cypher2, table_md2, parsed2, truncated2,
+                    cypher2,
+                    table_md2,
+                    parsed2,
+                    truncated2,
                 )
 
         rows = len(parsed) if parsed else 0
-        ctx.log(f"CypherFirst cypher_table: {rows} rows from "
-                f"{len(candidates)} candidates")
+        ctx.log(f"CypherFirst cypher_table: {rows} rows from {len(candidates)} candidates")
 
         if cypher and parsed:
             directive = ""
@@ -799,10 +806,12 @@ class _MultiCandidateCypherPath(_AggregationPath):
                 )
             body = table_md + directive
             return RawSearchResult(
-                records=[{
-                    "section": "cypher_results",
-                    "content": _wrap_authoritative(body),
-                }],
+                records=[
+                    {
+                        "section": "cypher_results",
+                        "content": _wrap_authoritative(body),
+                    }
+                ],
                 metadata={
                     "strategy": "cypher_first",
                     "cypher_first_path": PATH_CYPHER_TABLE,
@@ -816,15 +825,17 @@ class _MultiCandidateCypherPath(_AggregationPath):
         if is_yes_no(query) and _is_negation_existential(query):
             ctx.log("CypherFirst empty-result branch: negation-existential = No")
             return RawSearchResult(
-                records=[{
-                    "section": "cypher_results",
-                    "content": _wrap_authoritative(
-                        "No matching items: the cypher query returned 0 "
-                        "rows. For a negation-existential question of "
-                        "this shape, that means no such items exist.",
-                        source_note="Cypher returned 0 rows (definitive)",
-                    ),
-                }],
+                records=[
+                    {
+                        "section": "cypher_results",
+                        "content": _wrap_authoritative(
+                            "No matching items: the cypher query returned 0 "
+                            "rows. For a negation-existential question of "
+                            "this shape, that means no such items exist.",
+                            source_note="Cypher returned 0 rows (definitive)",
+                        ),
+                    }
+                ],
                 metadata={
                     "strategy": "cypher_first",
                     "cypher_first_path": PATH_NEGATION_EMPTY_NO,
@@ -905,6 +916,7 @@ class _MultiCandidateCypherPath(_AggregationPath):
 # ─────────────────────────────────────────────────────────────────
 # Strategy
 # ─────────────────────────────────────────────────────────────────
+
 
 class CypherFirstAggregationStrategy(RetrievalStrategy):
     """Aggregation-aware retrieval strategy.
@@ -1112,7 +1124,6 @@ class CypherFirstAggregationStrategy(RetrievalStrategy):
                     )
                 )
         return RetrieverResult(items=items, metadata=raw.metadata)
-
 
 
 def _coerce_number(cell: Any) -> float | None:
