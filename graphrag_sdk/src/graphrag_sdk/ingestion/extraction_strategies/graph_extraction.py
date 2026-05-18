@@ -7,14 +7,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import date, datetime
 from typing import Any
 
 from graphrag_sdk.core.context import Context
-from datetime import date, datetime
-
 from graphrag_sdk.core.models import (
     EntityMention,
-    EntityType,
     ExtractedEntity,
     ExtractedRelation,
     GraphData,
@@ -646,7 +644,8 @@ class GraphExtraction(ExtractionStrategy):
             declared = ent_props_by_label.get(etype, {})
             attributes: dict[str, Any] = {}
             if declared:
-                raw_attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+                _raw = item.get("attributes")
+                raw_attrs = _raw if isinstance(_raw, dict) else {}
                 attributes, missing = _coerce_attributes(raw_attrs, declared)
                 if missing:
                     dropped_required[f"entity:{etype}"] = (
@@ -687,7 +686,8 @@ class GraphExtraction(ExtractionStrategy):
             declared_rel = rel_props_by_label.get(rel_type, {})
             attributes_rel: dict[str, Any] = {}
             if declared_rel:
-                raw_attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+                _raw = item.get("attributes")
+                raw_attrs = _raw if isinstance(_raw, dict) else {}
                 attributes_rel, missing = _coerce_attributes(raw_attrs, declared_rel)
                 if missing:
                     dropped_required[f"relation:{rel_type}"] = (

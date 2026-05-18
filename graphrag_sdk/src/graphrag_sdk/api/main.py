@@ -258,7 +258,9 @@ class GraphRAG:
         Returns an empty schema when both are empty.
         """
         inferred = await self._ontology_store.infer()
-        return inferred.merge(self.schema) if inferred.entities or inferred.relations else self.schema
+        if inferred.entities or inferred.relations:
+            return inferred.merge(self.schema)
+        return self.schema
 
     async def refresh_ontology(self) -> GraphSchema:
         """Recompute the global ontology and propagate it to the retrieval path.
