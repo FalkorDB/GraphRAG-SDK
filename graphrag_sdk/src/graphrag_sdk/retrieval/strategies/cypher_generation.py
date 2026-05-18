@@ -414,7 +414,7 @@ async def generate_cypher(
 # ``__Entity__`` on a 0-row retry. Captures the prefix (open paren + optional
 # variable + colon) so ``re.sub`` keeps the surrounding shape intact.
 _TYPED_NODE_LABEL_RE = re.compile(
-    r"(\(\s*\w*\s*:)(" + "|".join(re.escape(l) for l in _ENTITY_LABELS) + r")\b"
+    r"(\(\s*\w*\s*:)(" + "|".join(re.escape(label) for label in _ENTITY_LABELS) + r")\b"
 )
 
 
