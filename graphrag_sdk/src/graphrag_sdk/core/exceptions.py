@@ -85,6 +85,18 @@ class IndexError_(GraphRAGError):
     pass
 
 
+# ── Document Lifecycle Errors ────────────────────────────────────
+
+
+class DocumentNotFoundError(GraphRAGError):
+    """Raised when an operation references a Document node id that does
+    not exist in the graph (e.g. ``update`` or ``delete_document`` with
+    an unknown id and ``if_missing="error"``).
+    """
+
+    pass
+
+
 # ── Schema Errors ────────────────────────────────────────────────
 
 

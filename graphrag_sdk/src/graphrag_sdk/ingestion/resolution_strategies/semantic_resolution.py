@@ -117,6 +117,7 @@ class SemanticResolution(ResolutionStrategy):
             nodes=deduplicated_nodes,
             relationships=deduplicated_rels,
             merged_count=merged_count,
+            remap=id_remap,
         )
 
     async def _fuzzy_merge(
