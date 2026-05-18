@@ -120,12 +120,13 @@ class TestGraphRAGInit:
         mock_conn.close = AsyncMock(side_effect=RuntimeError("close failed"))
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
 
-        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
-            with pytest.raises(ValueError, match="inner failure"):
-                async with g:
-                    raise ValueError("inner failure")
-
-        mock_conn.close.assert_awaited_once()
+        try:
+            with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
+                with pytest.raises(ValueError, match="inner failure"):
+                    async with g:
+                        raise ValueError("inner failure")
+        finally:
+            mock_conn.close.assert_awaited_once()
         assert "Error closing connection during __aexit__" in caplog.text
 
     async def test_async_context_manager_raises_close_failure_without_inner_exception(
