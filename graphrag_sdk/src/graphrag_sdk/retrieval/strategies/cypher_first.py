@@ -172,6 +172,19 @@ _SAME_AS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Caps for ``_SharedPropertyHybridPath`` batch query, applied in Cypher so the
+# server never streams an unbounded full-graph scan to the SDK.
+#
+# - ``_HYBRID_BATCH_ROW_CAP``: (org, person) tuples returned. The "both A and B"
+#   path is already filtered to two orgs so this only matters as a safety net;
+#   "same X as Z" compares the target against every other org, so the cap is
+#   what bounds it on a large graph.
+# - ``_HYBRID_CHUNK_TEXT_CAP``: per-chunk text length. Person chunks above this
+#   are truncated before being collected — phrase extraction runs locally on
+#   sentence fragments, so the head of each chunk is what carries signal.
+_HYBRID_BATCH_ROW_CAP = 500
+_HYBRID_CHUNK_TEXT_CAP = 2000
+
 
 def _extract_roles(text: str) -> set[str]:
     out: set[str] = set()
@@ -581,14 +594,36 @@ class _SharedPropertyHybridPath(_AggregationPath):
         if not (shape1 or shape2):
             return None
 
+        # Scope the batch as tightly as the question allows. For "both A and B"
+        # we already know the two org names, so push them into the WHERE clause
+        # rather than scanning every (Org)<-[:RELATES]-(Person) pair. For
+        # "same X as Z" we still need every other org to compare against the
+        # target, so the row LIMIT and per-chunk text cap below are the only
+        # guardrails.
+        params: dict[str, Any] = {"max_chunk_len": _HYBRID_CHUNK_TEXT_CAP}
+        where_clause = ""
+        if shape1:
+            org_a = shape1.group(1).strip()
+            org_b = shape1.group(2).strip()
+            if not org_a or not org_b:
+                return None
+            where_clause = (
+                "WHERE toLower(o.name) CONTAINS toLower($org_a) "
+                "OR toLower(o.name) CONTAINS toLower($org_b) "
+            )
+            params["org_a"] = org_a
+            params["org_b"] = org_b
+
         batch_cypher = (
             "MATCH (o:Organization)<-[:RELATES]-(p:Person) "
+            f"{where_clause}"
             "OPTIONAL MATCH (p)-[:MENTIONED_IN]->(c:Chunk) "
-            "RETURN o.name AS org, p.name AS person, "
-            "  p.description AS desc, collect(DISTINCT c.text) AS chunks"
+            "RETURN o.name AS org, p.name AS person, p.description AS desc, "
+            "  collect(DISTINCT substring(c.text, 0, $max_chunk_len)) AS chunks "
+            f"LIMIT {_HYBRID_BATCH_ROW_CAP}"
         )
         try:
-            batch_res = await self._s._graph.query_raw(batch_cypher)
+            batch_res = await self._s._graph.query_raw(batch_cypher, params)
         except Exception as exc:
             logger.debug("Shared-property hybrid batch query failed: %s", exc)
             return None

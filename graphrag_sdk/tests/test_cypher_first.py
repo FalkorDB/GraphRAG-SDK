@@ -419,7 +419,7 @@ def _make_strategy(*, llm_responses=None, graph_results=None, fallback=None):
 
     graph = MagicMock()
     results = list(graph_results or [])
-    async def _query_raw(_cypher):
+    async def _query_raw(_cypher, _params=None):
         nxt = results.pop(0) if results else _FakeResult([], [])
         if isinstance(nxt, BaseException):
             raise nxt
@@ -592,6 +592,61 @@ class TestStrategyRouting:
         assert any("zero (Organization)<-[:RELATES]-(Person) tuples" in r.message
                    for r in caplog.records)
 
+    async def test_hybrid_batch_query_is_scoped_and_capped(self):
+        # The shared-property hybrid batch must not full-scan
+        # (Org)<-[:RELATES]-(Person): for "both A and B" it scopes by the two
+        # org names, caps the row count, and truncates chunk text length. For
+        # "same X as Z" the org filter doesn't apply (we need every other org
+        # to compare against the target) but the LIMIT and substring cap
+        # still apply.
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.retrieval.strategies.cypher_first import (
+            _HYBRID_BATCH_ROW_CAP,
+            _HYBRID_CHUNK_TEXT_CAP,
+            CypherFirstAggregationStrategy,
+        )
+
+        for query, expect_scoped in [
+            ("Which roles are held by employees at BOTH Acme and Globex?", True),
+            ("Which employees have the same role as someone at Acme?", False),
+        ]:
+            graph = MagicMock()
+            captured: list[tuple[str, dict | None]] = []
+            async def _query_raw(cypher, params=None, _cap=captured):
+                _cap.append((cypher, params))
+                return _FakeResult([], [])
+            graph.query_raw = AsyncMock(side_effect=_query_raw)
+
+            strat = CypherFirstAggregationStrategy(
+                graph_store=graph,
+                vector_store=MagicMock(),
+                embedder=MagicMock(),
+                llm=MagicMock(),
+                k_candidates=1,
+                rag_fallback=MagicMock(),
+            )
+            await strat._hybrid_path.maybe_handle(query, Context())
+
+            assert captured, f"hybrid batch query did not fire for: {query}"
+            batch_cypher, batch_params = captured[0]
+            assert batch_params is not None, "params must be passed to query_raw"
+            assert batch_params["max_chunk_len"] == _HYBRID_CHUNK_TEXT_CAP
+            assert "substring(c.text, 0, $max_chunk_len)" in batch_cypher
+            assert f"LIMIT {_HYBRID_BATCH_ROW_CAP}" in batch_cypher
+            if expect_scoped:
+                # "Both A and B" — org names are pushed into the WHERE clause
+                # rather than scanned across the full graph.
+                assert "WHERE toLower(o.name) CONTAINS toLower($org_a)" in batch_cypher
+                assert batch_params.get("org_a", "").lower() == "acme"
+                assert batch_params.get("org_b", "").lower() == "globex"
+            else:
+                # "Same X as Z" — no org_a/org_b in params; LIMIT + substring
+                # cap are the guardrails.
+                assert "org_a" not in batch_params
+                assert "org_b" not in batch_params
+
 
 # ── Pluggable phrase extractor (R8) ──────────────────────────────
 
@@ -641,7 +696,7 @@ class TestPhraseExtractor:
             ["Globex",  "Bob",   "no description", ["Bob does ALPHA at Globex."]],
             ["Globex",  "Bea",   "no description", ["Bea does GAMMA at Globex."]],
         ]
-        async def _query_raw(_cypher):
+        async def _query_raw(_cypher, _params=None):
             return SimpleNamespace(
                 header=[[1, "org"], [1, "person"], [1, "desc"], [1, "chunks"]],
                 result_set=batch_rows,
