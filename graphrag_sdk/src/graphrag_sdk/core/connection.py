@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
+from graphrag_sdk.core.exceptions import DatabaseError
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,7 +182,13 @@ class FalkorDBConnection:
                 last_exc = exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
-                    raise
+                    logger.error(
+                        "Non-transient FalkorDB query failure: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
+                    raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
                 await self._breaker.record_failure()
                 logger.warning(
                     "Query attempt %d/%d failed: %s",
@@ -193,7 +201,18 @@ class FalkorDBConnection:
                         break
                     base_delay = self.config.retry_delay * (2**attempt)
                     await asyncio.sleep(base_delay * (0.5 + random.random()))
-        raise last_exc  # type: ignore[misc]
+        logger.error(
+            "FalkorDB query failed after %d attempts: %s: %s",
+            self.config.retry_count,
+            type(last_exc).__name__ if last_exc is not None else "UnknownError",
+            last_exc,
+        )
+        if last_exc is not None:
+            logger.debug(
+                "FalkorDB query failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
+        raise DatabaseError(f"FalkorDB query failed: {last_exc}") from last_exc
 
     # Substrings that indicate a non-transient (permanent) error —
     # retrying will never succeed.

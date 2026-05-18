@@ -46,4 +46,6 @@ class TextLoader(LoaderStrategy):
                 ),
             )
         except Exception as exc:
+            logger.error("Failed to read text file %s: %s", source, exc)
+            logger.debug("Text file read failure details", exc_info=True)
             raise LoaderError(f"Failed to read {source}: {exc}") from exc

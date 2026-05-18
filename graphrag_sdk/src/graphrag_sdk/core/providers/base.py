@@ -188,6 +188,16 @@ class LLMInterface(ABC):
                     )
                     logger.debug("LLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
+        logger.error(
+            "LLM call failed after %d attempts: %s",
+            max_retries,
+            summarize_exception(last_exc) if last_exc is not None else "UnknownError",
+        )
+        if last_exc is not None:
+            logger.debug(
+                "LLM call final failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
         raise last_exc  # type: ignore[misc]
 
     async def ainvoke_messages(
@@ -299,6 +309,12 @@ class LLMInterface(ABC):
                     )
                     return LLMBatchItem(index=i, response=resp)
                 except Exception as exc:
+                    logger.error(
+                        "Batch LLM item %d failed: %s",
+                        i,
+                        summarize_exception(exc),
+                    )
+                    logger.debug("Batch LLM item failure details", exc_info=True)
                     return LLMBatchItem(index=i, error=exc)
 
         return list(await asyncio.gather(*[_call(i, p) for i, p in enumerate(prompts)]))

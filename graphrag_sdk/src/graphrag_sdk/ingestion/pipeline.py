@@ -275,6 +275,8 @@ class IngestionPipeline:
         except IngestionError:
             raise
         except Exception as exc:
+            logger.error("Pipeline failed with unexpected error: %s", exc)
+            logger.debug("Pipeline failure details", exc_info=True)
             raise IngestionError(f"Pipeline failed: {exc}") from exc
 
     async def _build_lexical_graph(

@@ -1480,13 +1480,16 @@ class GraphRAG:
                         f"history[{i}]: each message must have 'role' and "
                         f"'content' keys, got {sorted(msg.keys())}"
                     )
-                try:
-                    validated.append(ChatMessage(role=msg["role"], content=msg["content"]))
-                except Exception:
+                role = msg["role"]
+                content = msg["content"]
+                if role not in {"system", "user", "assistant"}:
                     raise ValueError(
-                        f"history[{i}]: invalid role '{msg['role']}'. "
+                        f"history[{i}]: invalid role '{role}'. "
                         f"Must be one of: 'system', 'user', 'assistant'"
                     )
+                if not isinstance(content, str):
+                    raise ValueError(f"history[{i}]: content must be a string")
+                validated.append(ChatMessage(role=role, content=content))
             else:
                 raise TypeError(
                     f"history[{i}]: expected ChatMessage or dict, got {type(msg).__name__}"

@@ -200,6 +200,30 @@ class TestLLMInterface:
         # Single-line invariant
         assert "\n" not in msg
 
+    async def test_ainvoke_exhaustion_logs_error_without_exception_body(self, caplog):
+        secret_body = "Authorization: Bearer SECRET_KEY_xyz\nproxy=https://internal"
+
+        class FailingLLM(LLMInterface):
+            def __init__(self) -> None:
+                super().__init__(model_name="fail")
+
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                raise RuntimeError(f"upstream 500\n{secret_body}")
+
+        import logging
+
+        llm = FailingLLM()
+        with caplog.at_level(logging.ERROR, logger="graphrag_sdk.core.providers.base"):
+            with pytest.raises(RuntimeError):
+                await llm.ainvoke("hi", max_retries=1)
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert errors
+        msg = errors[0].getMessage()
+        assert "LLM call failed after 1 attempts" in msg
+        assert "upstream 500" in msg
+        assert "SECRET_KEY_xyz" not in msg
+        assert "proxy=" not in msg
+
 
 class TestSummarizeException:
     """S6: WARNING-level exception logs must be single-line and length-bounded."""

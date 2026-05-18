@@ -534,6 +534,19 @@ class TestGraphRAGCompletion:
         with pytest.raises(TypeError, match="expected ChatMessage or dict"):
             await g.completion("test?", history=["not a dict"])
 
+    async def test_completion_history_non_string_content_raises(self, mock_conn, embedder):
+        """History dict content must be a string."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(ValueError, match="content must be a string"):
+            await g.completion("test?", history=[{"role": "user", "content": 123}])
+
     async def test_completion_no_history_uses_messages_api(self, mock_conn, embedder):
         """Without history, completion still uses ainvoke_messages (unified path)."""
         llm = MockLLM(responses=["Single-turn answer."])

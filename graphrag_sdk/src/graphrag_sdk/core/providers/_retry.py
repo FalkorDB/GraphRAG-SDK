@@ -71,6 +71,8 @@ def binary_split_retry_sync(
         raise
     except Exception as exc:
         if not is_transient_embedding_error(exc):
+            logger.error("Non-transient embedding failure: %s", summarize_exception(exc))
+            logger.debug("Non-transient embedding failure details", exc_info=True)
             raise
         if len(texts) == 1:
             logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))
@@ -93,6 +95,8 @@ async def binary_split_retry_async(
         raise
     except Exception as exc:
         if not is_transient_embedding_error(exc):
+            logger.error("Non-transient embedding failure: %s", summarize_exception(exc))
+            logger.debug("Non-transient embedding failure details", exc_info=True)
             raise
         if len(texts) == 1:
             logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))

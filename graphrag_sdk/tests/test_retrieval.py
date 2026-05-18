@@ -53,10 +53,12 @@ class TestRetrievalStrategyBase:
         with pytest.raises(RetrieverError, match="Empty query"):
             await strategy.search("   ", ctx)
 
-    async def test_search_wraps_exception(self, ctx):
+    async def test_search_wraps_exception(self, ctx, caplog):
         strategy = StubRetrieval(should_fail=True)
-        with pytest.raises(RetrieverError, match="failed"):
-            await strategy.search("valid query", ctx)
+        with caplog.at_level("ERROR", logger="graphrag_sdk.retrieval.strategies.base"):
+            with pytest.raises(RetrieverError, match="failed"):
+                await strategy.search("valid query", ctx)
+        assert "Retrieval [StubRetrieval] failed" in caplog.text
 
     async def test_search_default_context(self):
         """search() creates default Context if none provided."""

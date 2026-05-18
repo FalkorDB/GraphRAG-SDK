@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.exceptions import DatabaseError
 
 
 class TestConnectionConfig:
@@ -105,7 +106,7 @@ class TestFalkorDBConnection:
         assert result == "success"
         assert mock_graph.query.call_count == 3
 
-    async def test_query_exhausts_retries(self):
+    async def test_query_exhausts_retries(self, caplog):
         conn = FalkorDBConnection(ConnectionConfig(retry_count=2, retry_delay=0.0))
 
         mock_graph = MagicMock()
@@ -113,9 +114,25 @@ class TestFalkorDBConnection:
         conn._graph = mock_graph
         conn._driver = MagicMock()
 
-        with pytest.raises(Exception, match="always fails"):
-            await conn.query("MATCH (n) RETURN n")
+        with caplog.at_level("ERROR", logger="graphrag_sdk.core.connection"):
+            with pytest.raises(DatabaseError, match="always fails"):
+                await conn.query("MATCH (n) RETURN n")
+        assert "FalkorDB query failed after 2 attempts" in caplog.text
         assert mock_graph.query.call_count == 2
+
+    async def test_query_non_transient_failure_is_typed_and_logged(self, caplog):
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.0))
+
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=Exception("already indexed"))
+        conn._graph = mock_graph
+        conn._driver = MagicMock()
+
+        with caplog.at_level("ERROR", logger="graphrag_sdk.core.connection"):
+            with pytest.raises(DatabaseError, match="already indexed"):
+                await conn.query("CREATE INDEX idx")
+        assert "Non-transient FalkorDB query failure" in caplog.text
+        assert mock_graph.query.call_count == 1
 
     async def test_query_with_params(self):
         conn = FalkorDBConnection(ConnectionConfig(retry_count=1))

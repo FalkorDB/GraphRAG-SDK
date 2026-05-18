@@ -184,6 +184,16 @@ class OpenRouterLLM(LLMInterface):
                     )
                     logger.debug("OpenRouter call failure details", exc_info=True)
                     await asyncio.sleep(delay)
+        logger.error(
+            "OpenRouter call failed after %d attempts: %s",
+            max_retries,
+            summarize_exception(last_exc) if last_exc is not None else "UnknownError",
+        )
+        if last_exc is not None:
+            logger.debug(
+                "OpenRouter call final failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
         raise last_exc  # type: ignore[misc]
 
     async def ainvoke_messages(
@@ -229,6 +239,16 @@ class OpenRouterLLM(LLMInterface):
                     )
                     logger.debug("OpenRouter call failure details", exc_info=True)
                     await asyncio.sleep(delay)
+        logger.error(
+            "OpenRouter messages call failed after %d attempts: %s",
+            max_retries,
+            summarize_exception(last_exc) if last_exc is not None else "UnknownError",
+        )
+        if last_exc is not None:
+            logger.debug(
+                "OpenRouter messages call final failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
         raise last_exc  # type: ignore[misc]
 
 
