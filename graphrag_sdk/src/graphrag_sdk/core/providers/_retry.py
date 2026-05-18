@@ -7,6 +7,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from graphrag_sdk.core.exceptions import EmbeddingTimeoutError
+
 logger = logging.getLogger(__name__)
 
 _MAX_EXC_SUMMARY_LEN = 200
@@ -65,6 +67,8 @@ def binary_split_retry_sync(
     """
     try:
         return embed_fn(texts, **kwargs)
+    except EmbeddingTimeoutError:
+        raise
     except Exception as exc:
         if not is_transient_embedding_error(exc):
             raise
@@ -85,6 +89,8 @@ async def binary_split_retry_async(
     """Async variant of :func:`binary_split_retry_sync`."""
     try:
         return await embed_fn(texts, **kwargs)
+    except EmbeddingTimeoutError:
+        raise
     except Exception as exc:
         if not is_transient_embedding_error(exc):
             raise

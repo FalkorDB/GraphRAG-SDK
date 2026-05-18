@@ -8,11 +8,13 @@ from graphrag_sdk.core.exceptions import (
     ConfigError,
     DatabaseError,
     EmbeddingError,
+    EmbeddingTimeoutError,
     ExtractionError,
     GraphRAGError,
     IndexError_,
     IngestionError,
     LLMError,
+    LLMTimeoutError,
     LoaderError,
     ResolutionError,
     RetrieverError,
@@ -29,9 +31,17 @@ class TestExceptionHierarchy:
         with pytest.raises(GraphRAGError):
             raise LLMError("llm failed")
 
+    def test_llm_timeout_error_is_llm_error(self):
+        with pytest.raises(LLMError):
+            raise LLMTimeoutError("llm timed out")
+
     def test_embedding_error_is_graphrag_error(self):
         with pytest.raises(GraphRAGError):
             raise EmbeddingError("embedding failed")
+
+    def test_embedding_timeout_error_is_embedding_error(self):
+        with pytest.raises(EmbeddingError):
+            raise EmbeddingTimeoutError("embedding timed out")
 
     def test_ingestion_error_hierarchy(self):
         assert issubclass(IngestionError, GraphRAGError)

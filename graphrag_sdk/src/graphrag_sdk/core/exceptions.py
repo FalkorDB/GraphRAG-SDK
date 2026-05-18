@@ -19,8 +19,20 @@ class LLMError(GraphRAGError):
     pass
 
 
+class LLMTimeoutError(LLMError):
+    """Raised when an LLM provider call exceeds its configured timeout."""
+
+    pass
+
+
 class EmbeddingError(GraphRAGError):
     """Raised when an embedding provider call fails."""
+
+    pass
+
+
+class EmbeddingTimeoutError(EmbeddingError):
+    """Raised when an embedding provider call exceeds its configured timeout."""
 
     pass
 
