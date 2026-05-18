@@ -127,7 +127,7 @@ class TestGraphRAGInit:
                         raise ValueError("inner failure")
         finally:
             mock_conn.close.assert_awaited_once()
-        assert "Error closing connection during __aexit__" in caplog.text
+            assert "Error closing connection during __aexit__" in caplog.text
 
     async def test_async_context_manager_raises_close_failure_without_inner_exception(
         self, mock_conn, embedder, llm
