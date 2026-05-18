@@ -193,12 +193,14 @@ class GraphRAG:
         # Deduplication engine
         self._deduplicator = EntityDeduplicator(self._graph_store, self.embedder)
 
-        # Persistent ontology lives in `<data_graph>__ontology`. Stays in sync
-        # across multiple ingest passes that may declare different schemas.
-        self._ontology_store = OntologyStore(self._conn, self._conn.config.graph_name)
-        # Global ontology used at retrieval time. Initially the user-supplied
-        # local schema; refreshed from the persisted ontology after each ingest
-        # (see refresh_ontology()) and on demand.
+        # Ontology is inferred from the live data graph (no separate
+        # persistent graph). User-supplied ``schema`` is merged on top at
+        # retrieval time so declared descriptions / required flags / not-yet-
+        # extracted properties survive.
+        self._ontology_store = OntologyStore(self._conn)
+        # Global ontology used at retrieval time. Initially just the local
+        # schema; refresh_ontology() merges in the inferred view on demand
+        # and after each ingest.
         self._global_schema: GraphSchema = self.schema
 
         # Default retrieval strategy
@@ -244,33 +246,44 @@ class GraphRAG:
     # ── Ontology ─────────────────────────────────────────────────
 
     async def get_ontology(self) -> GraphSchema:
-        """Return the persisted **global** ontology (union of every schema
-        ever registered against this graph).
+        """Return the **global** ontology used at retrieval time.
 
-        Reads from the dedicated ``<data_graph>__ontology`` graph. Returns an
-        empty schema before the first ingest has run.
+        The global ontology is the union of:
+        - the ontology inferred from the live data graph
+          (``db.labels()`` / ``db.relationshipTypes()`` + property sampling), and
+        - the user-supplied ``schema`` passed to :py:class:`GraphRAG`
+          (carries descriptions, ``required`` flags, properties not yet
+          present in the data).
+
+        Returns an empty schema when both are empty.
         """
-        return await self._ontology_store.load()
+        inferred = await self._ontology_store.infer()
+        return inferred.merge(self.schema) if inferred.entities or inferred.relations else self.schema
 
     async def refresh_ontology(self) -> GraphSchema:
-        """Reload the global ontology and propagate it to the retrieval path.
+        """Recompute the global ontology and propagate it to the retrieval path.
 
         Called automatically after each ``ingest()``. Call explicitly when
-        another process has registered new schema and you want the next
-        retrieval to see it without re-ingesting first.
+        the data graph has changed under your feet (concurrent writer,
+        manual edits) and the next retrieval should see it.
         """
-        loaded = await self._ontology_store.load()
-        if loaded.entities or loaded.relations:
-            self._global_schema = loaded
-        else:
-            # No persisted ontology yet — keep the user-provided local schema.
-            self._global_schema = self.schema
+        self._global_schema = await self.get_ontology()
         # Best-effort propagation to the retrieval strategy. Built-in
         # MultiPathRetrieval honours this; custom strategies opt in by exposing
         # a ``_schema`` attribute or accepting it via constructor.
         if hasattr(self._retrieval_strategy, "_schema"):
             self._retrieval_strategy._schema = self._global_schema
         return self._global_schema
+
+    async def save_ontology(self, path: str, *, indent: int = 2) -> None:
+        """Write the current global ontology to ``path`` as JSON.
+
+        Convenience for the schema-as-config workflow: ``rag.save_ontology(
+        "ontology.json")``, hand-edit / version-control it, then load with
+        ``GraphSchema.from_file("ontology.json")`` on the next run.
+        """
+        ontology = await self.get_ontology()
+        ontology.save_to_file(path, indent=indent)
 
     # ── Graph admin ──────────────────────────────────────────────
 
@@ -567,17 +580,6 @@ class GraphRAG:
                 )
 
         doc_info = DocumentInfo(uid=resolved_id, path=path_for_node)
-
-        # Register this run's local schema into the persisted ontology so the
-        # global ontology is the union of every schema ever registered. The
-        # local schema continues to drive *this* run's extraction.
-        if self.schema.entities or self.schema.relations:
-            try:
-                await self._ontology_store.register(self.schema)
-            except Exception as exc:
-                logger.warning(
-                    "Ontology registration failed (continuing ingest): %s", exc
-                )
 
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),

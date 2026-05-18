@@ -286,6 +286,24 @@ class GraphSchema(DataModel):
                         )
         return self
 
+    @classmethod
+    def from_file(cls, path: str) -> GraphSchema:
+        """Load a ``GraphSchema`` from a JSON file.
+
+        The schema-as-config workflow: keep the canonical schema in a JSON
+        file under version control, load it into the SDK with one call. See
+        :py:meth:`save_to_file` for the reverse direction.
+        """
+        from pathlib import Path
+
+        return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+    def save_to_file(self, path: str, *, indent: int = 2) -> None:
+        """Write this schema to ``path`` as JSON (overwrites existing files)."""
+        from pathlib import Path
+
+        Path(path).write_text(self.model_dump_json(indent=indent), encoding="utf-8")
+
     def merge(self, other: GraphSchema) -> GraphSchema:
         """Return a new ``GraphSchema`` that is the union of ``self`` and ``other``.
 

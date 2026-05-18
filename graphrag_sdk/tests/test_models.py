@@ -183,6 +183,36 @@ class TestSchemaTypes:
                 ]
             )
 
+    def test_graph_schema_roundtrips_through_json_file(self, tmp_path):
+        schema = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    description="A human",
+                    properties=[
+                        PropertyType(name="age", type="INTEGER", required=True),
+                        PropertyType(name="birth_date", type="DATE"),
+                    ],
+                )
+            ],
+            relations=[
+                RelationType(
+                    label="WORKS_AT",
+                    patterns=[("Person", "Company")],
+                    properties=[PropertyType(name="since", type="DATE")],
+                ),
+            ],
+        )
+        path = tmp_path / "ontology.json"
+        schema.save_to_file(str(path))
+        # File is real JSON and round-trippable.
+        loaded = GraphSchema.from_file(str(path))
+        assert loaded == schema
+        # Indentation default is set so files are diff-friendly.
+        text = path.read_text()
+        assert "\n" in text
+        assert "  " in text
+
     def test_graph_schema_merge_unions_entities_relations_and_properties(self):
         a = GraphSchema(
             entities=[
