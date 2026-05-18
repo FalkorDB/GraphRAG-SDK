@@ -10,6 +10,12 @@ class GraphRAGError(Exception):
     pass
 
 
+class LatencyBudgetExceededError(GraphRAGError):
+    """Raised when an operation cannot start within the remaining latency budget."""
+
+    pass
+
+
 # ── Provider Errors ──────────────────────────────────────────────
 
 

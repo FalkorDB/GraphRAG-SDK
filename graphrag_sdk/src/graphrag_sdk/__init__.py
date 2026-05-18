@@ -19,7 +19,11 @@ from graphrag_sdk.api.main import GraphRAG
 # ── Core Contracts ───────────────────────────────────────────────
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import DocumentNotFoundError, GraphRAGError
+from graphrag_sdk.core.exceptions import (
+    DocumentNotFoundError,
+    GraphRAGError,
+    LatencyBudgetExceededError,
+)
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
     BatchEntry,
@@ -134,6 +138,7 @@ __all__ = [
     "GraphRelationship",
     "GraphSchema",
     "IngestionResult",
+    "LatencyBudgetExceededError",
     "LLMBatchItem",
     "LLMInterface",
     "LiteLLM",

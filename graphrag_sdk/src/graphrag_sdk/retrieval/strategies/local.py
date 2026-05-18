@@ -52,9 +52,11 @@ class LocalRetrieval(RetrievalStrategy):
         top_k = kwargs.get("top_k", self._top_k)
 
         # Step 1: Embed the query
+        ctx.ensure_budget("LocalRetrieval query embedding")
         query_vector = await self._embedder.aembed_query(query)
 
         # Step 2: Vector search for matching chunks
+        ctx.ensure_budget("LocalRetrieval chunk vector search")
         chunk_results = await self._vector.search_chunks(
             query_vector=query_vector,
             top_k=top_k,
@@ -74,6 +76,7 @@ class LocalRetrieval(RetrievalStrategy):
 
             if self._include_entities and self._graph:
                 # 1-hop: find entities extracted from this chunk
+                ctx.ensure_budget("LocalRetrieval entity expansion")
                 entities = await self._graph.get_connected_entities(
                     chunk_id=chunk.get("id", ""),
                 )

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import RetrieverError
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError, RetrieverError
 from graphrag_sdk.core.models import RawSearchResult, RetrieverResult, RetrieverResultItem
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
@@ -157,3 +157,45 @@ class TestLocalRetrieval:
     async def test_local_chunk_id_in_metadata(self, ctx, local_strategy):
         result = await local_strategy.search("test", ctx)
         assert result.items[0].metadata["chunk_id"] == "chunk-1"
+
+    async def test_local_budget_checked_before_embedding(
+        self, local_strategy, embedder, mock_vector_store
+    ):
+        with pytest.raises(LatencyBudgetExceededError, match="query embedding"):
+            await local_strategy.search("test", Context(latency_budget_ms=0.0))
+
+        assert embedder.call_count == 0
+        mock_vector_store.search_chunks.assert_not_awaited()
+
+    async def test_local_budget_checked_before_vector_search(
+        self, local_strategy, embedder, mock_vector_store
+    ):
+        ctx = Context(latency_budget_ms=1000.0)
+
+        def exhaust_budget(operation: str) -> None:
+            if operation == "LocalRetrieval chunk vector search":
+                raise LatencyBudgetExceededError("budget exhausted before vector search")
+
+        ctx.ensure_budget = exhaust_budget  # type: ignore[method-assign]
+        with pytest.raises(LatencyBudgetExceededError, match="vector search"):
+            await local_strategy.search("test", ctx)
+
+        assert embedder.call_count == 1
+        mock_vector_store.search_chunks.assert_not_awaited()
+
+    async def test_local_budget_checked_before_entity_expansion(
+        self, local_strategy, embedder, mock_vector_store, mock_graph_store
+    ):
+        ctx = Context(latency_budget_ms=1000.0)
+
+        def exhaust_budget(operation: str) -> None:
+            if operation == "LocalRetrieval entity expansion":
+                raise LatencyBudgetExceededError("budget exhausted before entity expansion")
+
+        ctx.ensure_budget = exhaust_budget  # type: ignore[method-assign]
+        with pytest.raises(LatencyBudgetExceededError, match="entity expansion"):
+            await local_strategy.search("test", ctx)
+
+        assert embedder.call_count == 1
+        mock_vector_store.search_chunks.assert_awaited_once()
+        mock_graph_store.get_connected_entities.assert_not_awaited()

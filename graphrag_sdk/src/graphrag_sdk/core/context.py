@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +53,16 @@ class Context:
         """True if the latency budget has been exceeded."""
         remaining = self.remaining_budget_ms
         return remaining is not None and remaining <= 0
+
+    def ensure_budget(self, operation: str) -> None:
+        """Raise if the latency budget is already exhausted before *operation* starts."""
+        if not self.budget_exceeded:
+            return
+        budget = self.latency_budget_ms if self.latency_budget_ms is not None else 0.0
+        raise LatencyBudgetExceededError(
+            f"Latency budget exceeded before {operation} "
+            f"(elapsed={self.elapsed_ms:.1f}ms, budget={budget:.1f}ms)"
+        )
 
     def child(self, **overrides: Any) -> Context:
         """Create a child context inheriting tenant/trace but with optional overrides.

@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     RawSearchResult,
     RetrieverResult,
@@ -186,21 +187,26 @@ class MultiPathRetrieval(RetrievalStrategy):
         **kwargs: Any,
     ) -> RawSearchResult:
         # 1. Extract keywords
-        simple_kw, llm_kw = await self._extract_keywords(query)
+        ctx.ensure_budget("MultiPath keyword extraction")
+        simple_kw, llm_kw = await self._extract_keywords(query, ctx)
         all_keywords = llm_kw[:8] + simple_kw
         ctx.log(f"MultiPath [1/9]: {len(all_keywords)} keywords extracted")
 
         # 2. Embed question only
+        ctx.ensure_budget("MultiPath question embedding")
         query_vector = await self._embedder.aembed_query(query)
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
+        ctx.ensure_budget("MultiPath relationship vector search")
         if self._enable_cypher:
             results = await asyncio.gather(
-                search_relates_edges(self._vector, query_vector, self._rel_top_k),
-                execute_cypher_retrieval(self._graph, self._llm, query),
+                search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx),
+                execute_cypher_retrieval(self._graph, self._llm, query, ctx=ctx),
                 return_exceptions=True,
             )
             # Unpack RELATES results
+            if isinstance(results[0], LatencyBudgetExceededError):
+                raise results[0]
             if isinstance(results[0], BaseException):
                 fact_strings_scored, rel_entities = [], {}
             else:
@@ -208,11 +214,13 @@ class MultiPathRetrieval(RetrievalStrategy):
             # Unpack Cypher results
             cypher_facts: list[str] = []
             cypher_entities: dict[str, dict] = {}
+            if isinstance(results[1], LatencyBudgetExceededError):
+                raise results[1]
             if not isinstance(results[1], BaseException):
                 cypher_facts, cypher_entities = results[1]
         else:
             fact_strings_scored, rel_entities = await search_relates_edges(
-                self._vector, query_vector, self._rel_top_k
+                self._vector, query_vector, self._rel_top_k, ctx=ctx
             )
             cypher_facts, cypher_entities = [], {}
 
@@ -227,8 +235,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         )
 
         # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
+        ctx.ensure_budget("MultiPath entity discovery")
         found_entities, entity_sources = await discover_entities(
-            self._graph, self._vector, llm_kw, all_keywords
+            self._graph, self._vector, llm_kw, all_keywords, ctx=ctx
         )
         for eid, einfo in rel_entities.items():
             if eid not in found_entities:
@@ -242,7 +251,13 @@ class MultiPathRetrieval(RetrievalStrategy):
 
         # 4b. Sibling expansion for enumeration queries
         if is_enumeration_query(query):
-            n_siblings = await expand_sibling_entities(self._graph, found_entities, entity_sources)
+            ctx.ensure_budget("MultiPath sibling entity expansion")
+            n_siblings = await expand_sibling_entities(
+                self._graph,
+                found_entities,
+                entity_sources,
+                ctx=ctx,
+            )
             if n_siblings:
                 ctx.log(
                     f"MultiPath [4b/9]: +{n_siblings} sibling entities "
@@ -250,13 +265,15 @@ class MultiPathRetrieval(RetrievalStrategy):
                 )
 
         # 5. Relationship expansion
+        ctx.ensure_budget("MultiPath relationship expansion")
         entity_list = list(found_entities.items())[: self._max_entities]
         relationship_strings = await expand_relationships(
-            self._graph, entity_list, self._max_relationships
+            self._graph, entity_list, self._max_relationships, ctx=ctx
         )
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
 
         # 6. Chunk retrieval (4 paths)
+        ctx.ensure_budget("MultiPath chunk retrieval")
         candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
             self._vector,
             self._graph,
@@ -265,6 +282,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             llm_kw,
             simple_kw,
             entity_list,
+            ctx=ctx,
         )
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
@@ -272,15 +290,22 @@ class MultiPathRetrieval(RetrievalStrategy):
         )
 
         # 7. Source document names
-        chunk_doc_map = await fetch_chunk_documents(self._graph, list(candidate_chunks.keys()))
+        ctx.ensure_budget("MultiPath source document fetch")
+        chunk_doc_map = await fetch_chunk_documents(
+            self._graph,
+            list(candidate_chunks.keys()),
+            ctx=ctx,
+        )
 
         # 8. Cosine rerank (uses stored embeddings when available)
+        ctx.ensure_budget("MultiPath chunk reranking")
         source_passages = await rerank_chunks(
             self._embedder,
             query_vector,
             candidate_chunks,
             self._chunk_top_k,
             stored_embeddings=chunk_embeddings,
+            ctx=ctx,
         )
 
         # Tag with source docs
@@ -295,6 +320,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx.log(f"MultiPath [8/9]: {len(source_passages)} passages after rerank")
 
         # 9. Detect question type + assemble
+        ctx.ensure_budget("MultiPath result assembly")
         q_type_hint = detect_question_type(query)
         return assemble_raw_result(
             entity_list,
@@ -322,13 +348,19 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     # -- Internal: keyword extraction (stays in orchestrator) --
 
-    async def _extract_keywords(self, query: str) -> tuple[list[str], list[str]]:
+    async def _extract_keywords(
+        self,
+        query: str,
+        ctx: Context | None = None,
+    ) -> tuple[list[str], list[str]]:
         """Extract simple + LLM-based keywords from the query."""
         words = re.sub(r"[?.!,;:'\"\-()\[\]]", " ", query.lower()).split()
         simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][:12]
 
         llm_kw: list[str] = []
         try:
+            if ctx is not None:
+                ctx.ensure_budget("MultiPath keyword extraction LLM call")
             response = await self._llm.ainvoke(
                 "Extract ALL proper nouns, character names, person names, place names, "
                 "book titles, and specific terms from this question. "
@@ -340,6 +372,8 @@ class MultiPathRetrieval(RetrievalStrategy):
                 for k in response.content.split(",")
                 if k.strip() and len(k.strip()) > 1
             ]
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug(f"LLM keyword extraction failed: {exc}")
 

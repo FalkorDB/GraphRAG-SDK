@@ -12,6 +12,9 @@ import logging
 import re
 from typing import Any
 
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
 logger = logging.getLogger(__name__)
 
 # ── Valid labels for our graph schema ────────────────────────────
@@ -245,6 +248,7 @@ async def generate_cypher(
     question: str,
     *,
     max_retries: int = 3,
+    ctx: Context | None = None,
 ) -> str | None:
     """Generate a Cypher query from a natural language question.
 
@@ -255,6 +259,8 @@ async def generate_cypher(
 
     for attempt in range(max_retries):
         try:
+            if ctx is not None:
+                ctx.ensure_budget("Cypher generation LLM call")
             if attempt > 0 and last_error:
                 prompt_with_feedback = (
                     prompt + f"\n\nPrevious attempt failed with error: {last_error}\n"
@@ -279,6 +285,8 @@ async def generate_cypher(
             cypher = _sanitize_cypher(cypher)
             return cypher
 
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             last_error = str(exc)
             logger.debug("Cypher generation attempt %d failed: %s", attempt + 1, exc)
@@ -293,6 +301,7 @@ async def execute_cypher_retrieval(
     question: str,
     *,
     max_retries: int = 3,
+    ctx: Context | None = None,
 ) -> tuple[list[str], dict[str, dict]]:
     """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
 
@@ -306,12 +315,16 @@ async def execute_cypher_retrieval(
 
     On any failure, returns empty results (silent degradation).
     """
-    cypher = await generate_cypher(llm, question, max_retries=max_retries)
+    cypher = await generate_cypher(llm, question, max_retries=max_retries, ctx=ctx)
     if not cypher:
         return [], {}
 
     try:
+        if ctx is not None:
+            ctx.ensure_budget("Cypher execution")
         result = await graph_store.query_raw(cypher)
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("Cypher execution failed: %s — query: %s", exc, cypher)
         return [], {}

@@ -13,6 +13,7 @@ from graphrag_sdk.core.exceptions import (
     GraphRAGError,
     IndexError_,
     IngestionError,
+    LatencyBudgetExceededError,
     LLMError,
     LLMTimeoutError,
     LoaderError,
@@ -26,6 +27,10 @@ class TestExceptionHierarchy:
     def test_base_exception(self):
         with pytest.raises(GraphRAGError):
             raise GraphRAGError("base error")
+
+    def test_latency_budget_error_is_graphrag_error(self):
+        with pytest.raises(GraphRAGError):
+            raise LatencyBudgetExceededError("budget exceeded")
 
     def test_llm_error_is_graphrag_error(self):
         with pytest.raises(GraphRAGError):
