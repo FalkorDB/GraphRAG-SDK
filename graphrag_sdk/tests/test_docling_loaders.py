@@ -21,8 +21,14 @@ class TestDoclingBaseLoader:
         loader = MockDocxLoader()
 
         # Mocking the import to raise ImportError
-        with patch("builtins.__import__", side_effect=lambda name, *args, **kwargs:
-                   (exec('raise ImportError("module not found")') if name == "docling.document_converter" else None)):
+        real_import = __import__
+
+        def _import(name, *args, **kwargs):
+            if name == "docling.document_converter":
+                raise ImportError("module not found")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_import):
             with pytest.raises(LoaderError, match=r"DOCX parsing requires 'docling'"):
                 await loader.load(str(file), ctx)
 
