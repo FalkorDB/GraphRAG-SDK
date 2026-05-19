@@ -750,8 +750,10 @@ class TestValidateAttributes:
         # Reserved keys preserved.
         assert kept["name"] == "Marie"
 
-    def test_missing_required_drops_node(self, caplog):
-        import logging
+    def test_missing_attribute_keeps_node(self):
+        """Missing declared attributes don't drop the node — they stay
+        missing on the graph, which is the right null semantics for
+        retrieval (``WHERE p.age > N`` naturally excludes them)."""
         from graphrag_sdk.core.models import PropertyType
         pipe = self._pipeline()
         schema = GraphSchema(
@@ -760,31 +762,25 @@ class TestValidateAttributes:
                     label="Person",
                     properties=[
                         PropertyType(name="age", type="INTEGER"),
-                        PropertyType(name="birth_date", type="DATE", required=True),
+                        PropertyType(name="birth_date", type="DATE"),
                     ],
                 )
             ]
         )
         nodes = [
             GraphNode(
-                id="ok",
+                id="full",
                 label="Person",
                 properties={"name": "Marie", "age": 56, "birth_date": "1867-11-07"},
             ),
             GraphNode(
-                id="missing",
+                id="partial",
                 label="Person",
                 properties={"name": "Pierre", "age": 39},
             ),
         ]
-        with caplog.at_level(logging.WARNING, logger="graphrag_sdk.ingestion.pipeline"):
-            out = pipe._validate_attributes(GraphData(nodes=nodes), schema)
-        assert [n.id for n in out.nodes] == ["ok"]
-        assert any(
-            "missing required attribute" in r.getMessage()
-            for r in caplog.records
-            if r.levelno == logging.WARNING
-        )
+        out = pipe._validate_attributes(GraphData(nodes=nodes), schema)
+        assert sorted(n.id for n in out.nodes) == ["full", "partial"]
 
     def test_unknown_node_label_passes_through(self):
         """``"Unknown"`` typed nodes (preserved by ``_prune``) must not be
@@ -795,9 +791,7 @@ class TestValidateAttributes:
             entities=[
                 EntityType(
                     label="Person",
-                    properties=[
-                        PropertyType(name="age", type="INTEGER", required=True)
-                    ],
+                    properties=[PropertyType(name="age", type="INTEGER")],
                 )
             ]
         )
@@ -806,7 +800,7 @@ class TestValidateAttributes:
         assert len(out.nodes) == 1
         assert out.nodes[0].id == "u"
 
-    def test_drops_relationship_missing_required_attribute(self):
+    def test_undeclared_relationship_attribute_keys_are_stripped(self):
         from graphrag_sdk.core.models import PropertyType
         pipe = self._pipeline()
         schema = GraphSchema(
@@ -814,7 +808,7 @@ class TestValidateAttributes:
             relations=[
                 RelationType(
                     label="WORKS_AT",
-                    properties=[PropertyType(name="since", type="DATE", required=True)],
+                    properties=[PropertyType(name="since", type="DATE")],
                 )
             ],
         )
@@ -823,15 +817,19 @@ class TestValidateAttributes:
                 start_node_id="a",
                 end_node_id="b",
                 type="RELATES",
-                properties={"rel_type": "WORKS_AT", "fact": "f1", "since": "2020-01-01"},
-            ),
-            GraphRelationship(
-                start_node_id="a",
-                end_node_id="c",
-                type="RELATES",
-                properties={"rel_type": "WORKS_AT", "fact": "f2"},
+                properties={
+                    "rel_type": "WORKS_AT",
+                    "fact": "f1",
+                    "since": "2020-01-01",
+                    "leaked_key": "noise",
+                },
             ),
         ]
         out = pipe._validate_attributes(GraphData(relationships=rels), schema)
-        kept = [r.properties.get("fact") for r in out.relationships]
-        assert kept == ["f1"]
+        assert len(out.relationships) == 1
+        props = out.relationships[0].properties
+        assert "leaked_key" not in props
+        assert props["since"] == "2020-01-01"
+        # Reserved keys still preserved.
+        assert props["rel_type"] == "WORKS_AT"
+        assert props["fact"] == "f1"

@@ -49,20 +49,6 @@ class TestRenderAttributeSchemaBlock:
         # in the rendered output would be as part of an entity bullet.
         assert "- Company:" not in block
 
-    def test_marks_required_attributes(self):
-        s = GraphSchema(
-            entities=[
-                EntityType(
-                    label="Person",
-                    properties=[
-                        PropertyType(name="birth_date", type="DATE", required=True)
-                    ],
-                ),
-            ],
-        )
-        block = _render_attribute_schema_block(s)
-        assert "(required)" in block
-
     def test_renders_relation_attributes(self):
         s = GraphSchema(
             entities=[EntityType(label="Person"), EntityType(label="Company")],
@@ -137,31 +123,27 @@ class TestCoerceAttributeValue:
 
 
 class TestCoerceAttributes:
-    def test_drops_unknown_and_optional_invalid(self):
+    def test_every_declared_property_appears_in_result(self):
+        """Result shape is uniform: every declared key is present, with the
+        coerced value or None. Never drop the enclosing record."""
         declared = {
-            "age": PropertyType(name="age", type="INTEGER", required=False),
+            "age": PropertyType(name="age", type="INTEGER"),
+            "birth_date": PropertyType(name="birth_date", type="DATE"),
+            "nickname": PropertyType(name="nickname", type="STRING"),
         }
-        result, missing = _coerce_attributes(
-            {"age": "abc", "unknown": "x"}, declared
+        result = _coerce_attributes(
+            {"age": "56", "birth_date": "1867-11-07"}, declared
         )
-        # 'unknown' is not in declared so it never enters the result.
-        assert result == {}
-        # 'age' was optional, so coercion failure does NOT flag it as missing.
-        assert missing == []
+        assert result == {"age": 56, "birth_date": "1867-11-07", "nickname": None}
 
-    def test_required_missing_when_value_absent(self):
-        declared = {
-            "birth_date": PropertyType(name="birth_date", type="DATE", required=True),
-        }
-        _, missing = _coerce_attributes({}, declared)
-        assert missing == ["birth_date"]
+    def test_uncoercible_value_becomes_none(self):
+        declared = {"age": PropertyType(name="age", type="INTEGER")}
+        assert _coerce_attributes({"age": "abc"}, declared) == {"age": None}
 
-    def test_required_missing_when_value_uncoercible(self):
-        declared = {
-            "age": PropertyType(name="age", type="INTEGER", required=True),
-        }
-        _, missing = _coerce_attributes({"age": "abc"}, declared)
-        assert missing == ["age"]
+    def test_undeclared_keys_are_ignored(self):
+        declared = {"age": PropertyType(name="age", type="INTEGER")}
+        result = _coerce_attributes({"age": 56, "unknown": "x"}, declared)
+        assert result == {"age": 56}
 
 
 # ── prompt template integration ──────────────────────────────────

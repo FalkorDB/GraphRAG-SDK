@@ -747,7 +747,10 @@ class TestGraphExtractionSchemaAttributes:
         assert len(ents) == 1
         assert ents[0].attributes == {"age": 56, "birth_date": "1867-11-07"}
 
-    def test_parse_step2_drops_entity_missing_required_attribute(self):
+    def test_parse_step2_missing_attribute_becomes_none(self):
+        """Missing values are represented as ``None`` in attributes — the
+        entity is NEVER dropped. Storage strips ``None`` before writing so
+        the graph sees "key missing", which is the right null semantics."""
         from graphrag_sdk.core.models import PropertyType
         content = json.dumps({
             "entities": [
@@ -756,12 +759,6 @@ class TestGraphExtractionSchemaAttributes:
                     "type": "Person",
                     "description": "",
                     "attributes": {"age": 56},
-                },
-                {
-                    "name": "Pierre Curie",
-                    "type": "Person",
-                    "description": "",
-                    "attributes": {"age": 39, "birth_date": "1859-05-15"},
                 },
             ],
             "relationships": [],
@@ -772,7 +769,7 @@ class TestGraphExtractionSchemaAttributes:
                     label="Person",
                     properties=[
                         PropertyType(name="age", type="INTEGER"),
-                        PropertyType(name="birth_date", type="DATE", required=True),
+                        PropertyType(name="birth_date", type="DATE"),
                     ],
                 )
             ]
@@ -780,7 +777,8 @@ class TestGraphExtractionSchemaAttributes:
         ents, _ = GraphExtraction._parse_step2_response(
             content, ["Person"], "c1", schema
         )
-        assert [e.name for e in ents] == ["Pierre Curie"]
+        assert len(ents) == 1
+        assert ents[0].attributes == {"age": 56, "birth_date": None}
 
     def test_aggregator_carries_attributes_with_last_write_wins(self):
         from graphrag_sdk.core.models import ExtractedEntity

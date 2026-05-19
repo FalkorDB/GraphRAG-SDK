@@ -98,8 +98,7 @@ _JSON_EXAMPLE_WITH_ATTRS = (
 
 def _format_property_for_prompt(prop: PropertyType) -> str:
     desc = f" — {prop.description}" if prop.description else ""
-    req = " (required)" if prop.required else ""
-    return f"    - {prop.name} ({prop.type}){req}{desc}"
+    return f"    - {prop.name} ({prop.type}){desc}"
 
 
 def _render_attribute_schema_block(schema: GraphSchema) -> str:
@@ -213,28 +212,24 @@ def _coerce_attribute_value(value: Any, prop_type: str) -> tuple[bool, Any]:
 def _coerce_attributes(
     raw: dict[str, Any] | None,
     declared: dict[str, PropertyType],
-) -> tuple[dict[str, Any], list[str]]:
+) -> dict[str, Any]:
     """Apply per-type coercion against declared properties.
 
-    Returns ``(coerced, missing_required)``. ``missing_required`` lists names of
-    declared ``required=True`` properties whose value is absent or failed to
-    coerce — callers use it to decide whether to drop the whole record.
+    Every declared property name appears in the result. Values that are absent
+    from ``raw`` or fail to coerce are recorded as ``None`` — never drop the
+    enclosing record. Downstream storage strips ``None`` before writing, so
+    these turn into "key missing" on the graph node, which is the right
+    behavior for retrieval (``WHERE p.age > N`` naturally excludes them).
     """
     coerced: dict[str, Any] = {}
     raw = raw or {}
-    missing_required: list[str] = []
     for prop_name, prop in declared.items():
         if prop_name not in raw or raw[prop_name] is None:
-            if prop.required:
-                missing_required.append(prop_name)
+            coerced[prop_name] = None
             continue
         ok, val = _coerce_attribute_value(raw[prop_name], prop.type)
-        if not ok:
-            if prop.required:
-                missing_required.append(prop_name)
-            continue
-        coerced[prop_name] = val
-    return coerced, missing_required
+        coerced[prop_name] = val if ok else None
+    return coerced
 
 
 def _optional_extras(obj: Any) -> dict[str, Any]:
@@ -599,10 +594,11 @@ class GraphExtraction(ExtractionStrategy):
     ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
         """Parse the step 2 LLM response (verified entities + relationships).
 
-        When ``schema`` declares attributes for an entity / relation type, the
-        response's ``attributes`` object is coerced to the declared types.
-        Records whose ``required=True`` properties fail coercion are dropped
-        and counted in an aggregated warning per type.
+        When ``schema`` declares attributes for an entity / relation type, every
+        declared attribute appears in the record's ``attributes`` dict, with
+        ``None`` for values the LLM didn't supply or couldn't coerce. Records
+        are never dropped — downstream storage strips ``None`` so the graph
+        sees "key missing" for the unfilled slots.
         """
         text = _strip_markdown_fences(content)
 
@@ -625,8 +621,6 @@ class GraphExtraction(ExtractionStrategy):
                 if rt.properties:
                     rel_props_by_label[rt.label] = {p.name: p for p in rt.properties}
 
-        dropped_required: dict[str, int] = {}
-
         # Parse entities
         entities: list[ExtractedEntity] = []
         for item in data.get("entities", []):
@@ -646,12 +640,7 @@ class GraphExtraction(ExtractionStrategy):
             if declared:
                 _raw = item.get("attributes")
                 raw_attrs = _raw if isinstance(_raw, dict) else {}
-                attributes, missing = _coerce_attributes(raw_attrs, declared)
-                if missing:
-                    dropped_required[f"entity:{etype}"] = (
-                        dropped_required.get(f"entity:{etype}", 0) + 1
-                    )
-                    continue
+                attributes = _coerce_attributes(raw_attrs, declared)
 
             entities.append(
                 ExtractedEntity(
@@ -688,12 +677,7 @@ class GraphExtraction(ExtractionStrategy):
             if declared_rel:
                 _raw = item.get("attributes")
                 raw_attrs = _raw if isinstance(_raw, dict) else {}
-                attributes_rel, missing = _coerce_attributes(raw_attrs, declared_rel)
-                if missing:
-                    dropped_required[f"relation:{rel_type}"] = (
-                        dropped_required.get(f"relation:{rel_type}", 0) + 1
-                    )
-                    continue
+                attributes_rel = _coerce_attributes(raw_attrs, declared_rel)
 
             relations.append(
                 ExtractedRelation(
@@ -706,15 +690,6 @@ class GraphExtraction(ExtractionStrategy):
                     **extra,
                 )
             )
-
-        if dropped_required:
-            for key, n in dropped_required.items():
-                logger.warning(
-                    "Dropped %d %s record(s) with missing required attribute(s) for chunk %s",
-                    n,
-                    key,
-                    source_chunk_id,
-                )
 
         return entities, relations
 

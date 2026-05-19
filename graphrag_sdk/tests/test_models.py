@@ -136,10 +136,9 @@ class TestDocumentModels:
 
 class TestSchemaTypes:
     def test_property_type(self):
-        pt = PropertyType(name="age", type="INTEGER", required=True)
+        pt = PropertyType(name="age", type="INTEGER")
         assert pt.name == "age"
         assert pt.type == "INTEGER"
-        assert pt.required is True
 
     def test_property_type_normalizes_case(self):
         pt = PropertyType(name="age", type="integer")
@@ -190,7 +189,7 @@ class TestSchemaTypes:
                     label="Person",
                     description="A human",
                     properties=[
-                        PropertyType(name="age", type="INTEGER", required=True),
+                        PropertyType(name="age", type="INTEGER"),
                         PropertyType(name="birth_date", type="DATE"),
                     ],
                 )

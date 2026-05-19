@@ -8,10 +8,10 @@ Two consumers:
 - Retrieval reads the inferred schema each session to build the Cypher prompt.
 - ``GraphRAG.get_ontology()`` returns it for inspection.
 
-Users who want a curated, declarative schema (descriptions, required flags,
-not-yet-extracted properties) pass a ``local_schema`` to ``GraphRAG`` — it's
-unioned with the inferred schema at retrieval time so declared metadata
-survives. ``GraphSchema.save_to_file`` / ``GraphSchema.from_file`` cover the
+Users who want a curated, declarative schema (descriptions, not-yet-extracted
+properties) pass a ``local_schema`` to ``GraphRAG`` — it's unioned with the
+inferred schema at retrieval time so declared metadata survives.
+``GraphSchema.save_to_file`` / ``GraphSchema.from_file`` cover the
 schema-as-config workflow.
 """
 

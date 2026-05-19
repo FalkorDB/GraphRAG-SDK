@@ -163,7 +163,6 @@ class PropertyType(DataModel):
     name: str
     type: str = "STRING"  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
-    required: bool = False
 
     @model_validator(mode="after")
     def _normalize_type(self) -> PropertyType:
@@ -309,9 +308,8 @@ class GraphSchema(DataModel):
 
         - Entity / relation types are unioned by ``label``.
         - For each type, ``properties`` are unioned by ``name``. When the same
-          property name appears in both, the incoming type/description/required
-          overrides — last-write-wins, matching the persisted ontology's
-          register() semantics.
+          property name appears in both, the incoming type/description overrides
+          (last-write-wins).
         - For relations, ``patterns`` are unioned (order-preserving, deduped).
         """
 
