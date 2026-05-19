@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class DoclingBaseLoader(LoaderStrategy):
     """Base loader using docling for advanced document parsing.
-    
+
     Subclasses should define the `extension_name` property.
     """
 
@@ -26,8 +26,9 @@ class DoclingBaseLoader(LoaderStrategy):
         """Initialize the loader.
 
         Args:
-            **docling_kwargs: Arbitrary keyword arguments passed to 
-                `docling.document_converter.DocumentConverter` (e.g., pipeline_options).
+            **docling_kwargs: Arbitrary keyword arguments passed to
+                `docling.document_converter.DocumentConverter` (e.g.,
+                pipeline_options).
         """
         self.docling_kwargs = docling_kwargs
 
@@ -46,8 +47,8 @@ class DoclingBaseLoader(LoaderStrategy):
             raise LoaderError(f"File not found: {source}")
 
         try:
-            from docling.document_converter import DocumentConverter
             from docling.datamodel.document import DocItemLabel
+            from docling.document_converter import DocumentConverter
         except ImportError:
             raise LoaderError(
                 f"{self.extension_name.upper()} parsing requires 'docling'. Install with:\n"
