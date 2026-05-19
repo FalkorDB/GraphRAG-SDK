@@ -1,18 +1,22 @@
-"""Ontology inference from the live data graph.
+"""Persistent ontology storage in a dedicated FalkorDB graph.
 
-The schema is **derived** from what's in the data graph, not maintained in a
-separate persistent graph. This keeps the architecture honest: the source of
-truth for "what entities and relations exist" is the data itself.
+The ontology lives in a separate FalkorDB graph named ``<data_graph>__ontology``
+and is the **anchor** for the working schema:
 
-Two consumers:
-- Retrieval reads the inferred schema each session to build the Cypher prompt.
-- ``GraphRAG.get_ontology()`` returns it for inspection.
+- Always-on: every :py:class:`GraphRAG` has exactly one ontology graph,
+  created lazily on first use, dropped on ``delete_all()``.
+- Single source of truth: retrieval, ``get_ontology()``, and any cross-process
+  worker all read from the same graph.
+- Additive only: :py:meth:`register` validates incoming schema against what's
+  already persisted and refuses **type contradictions** on existing properties.
+  New entity types, relation types, properties, and relation patterns are all
+  welcome. Re-typing an existing property is not.
 
-Users who want a curated, declarative schema (descriptions, not-yet-extracted
-properties) pass a ``local_schema`` to ``GraphRAG`` — it's unioned with the
-inferred schema at retrieval time so declared metadata survives.
-``GraphSchema.save_to_file`` / ``GraphSchema.from_file`` cover the
-schema-as-config workflow.
+Users who want a curated, declarative schema (descriptions, future flags,
+properties not yet observed in the data) supply a ``schema`` to ``GraphRAG``;
+it gets registered into the ontology graph on first connection. JSON
+import/export via :py:meth:`GraphSchema.save_to_file` / ``from_file`` is a
+review / version-control bridge — the ontology graph is the canonical copy.
 """
 
 from __future__ import annotations
@@ -22,7 +26,6 @@ from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.models import (
-    RESERVED_PROPERTY_NAMES,
     EntityType,
     GraphSchema,
     PropertyType,
@@ -32,209 +35,270 @@ from graphrag_sdk.core.models import (
 logger = logging.getLogger(__name__)
 
 
-# Labels created by the SDK that are not user entities.
-_STRUCTURAL_LABELS: frozenset[str] = frozenset({"Chunk", "Document", "__Entity__"})
+class OntologyContradictionError(ValueError):
+    """Raised when an incoming schema redefines an existing property's type.
 
-# Edge labels created by the SDK that are not user relations.
-_STRUCTURAL_REL_TYPES: frozenset[str] = frozenset({"PART_OF", "NEXT_CHUNK", "MENTIONED_IN"})
-
-# Property keys we never want to expose to the LLM as "custom attributes".
-# These are SDK-internal or reserved meanings; the Cypher prompt already
-# emits the reserved ones it cares about (``name``, ``description``, etc.).
-_INFER_SKIP_KEYS: frozenset[str] = RESERVED_PROPERTY_NAMES | frozenset(
-    {"content_hash", "path", "text", "uid", "index", "metadata", "embedding"}
-)
+    The ontology is additive: new labels, properties, and relation patterns are
+    welcome, but re-typing a property already registered on a label is
+    explicitly rejected so downstream Cypher queries don't break silently.
+    """
 
 
-# FalkorDB ``typeof()`` returns lowercase strings; map to our PropertyType vocabulary.
-_TYPE_MAP: dict[str, str] = {
-    "string": "STRING",
-    "integer": "INTEGER",
-    "double": "FLOAT",
-    "float": "FLOAT",
-    "boolean": "BOOLEAN",
-    "array": "LIST",
-    "list": "LIST",
-}
+def _encode_patterns(patterns: list[tuple[str, str]]) -> list[str]:
+    return [f"{src}|{tgt}" for src, tgt in patterns]
 
 
-def _normalize_type(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    return _TYPE_MAP.get(raw.strip().lower())
+def _decode_patterns(encoded: list[str] | None) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for s in encoded or []:
+        if not isinstance(s, str) or "|" not in s:
+            continue
+        src, tgt = s.split("|", 1)
+        out.append((src, tgt))
+    return out
+
+
+def _props_from_rows(rows: list[Any] | None) -> list[PropertyType]:
+    """Reconstruct PropertyType objects from a ``collect(...)`` query result.
+
+    Filters out the null-keyed dict FalkorDB returns for an OPTIONAL MATCH
+    with no matches.
+    """
+    out: list[PropertyType] = []
+    for row in rows or []:
+        if not row or not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not name:
+            continue
+        out.append(
+            PropertyType(
+                name=name,
+                type=row.get("type") or "STRING",
+                description=row.get("description"),
+            )
+        )
+    return out
 
 
 class OntologyStore:
-    """Infers the working :py:class:`GraphSchema` from the data graph.
+    """Persists and loads :py:class:`GraphSchema` in a dedicated FalkorDB graph.
 
-    No separate FalkorDB graph: this introspects the data graph directly via
-    ``db.labels()`` / ``db.relationshipTypes()`` plus per-label sampling of
-    property keys and types.
+    Owns its own graph handle, derived from the data-graph connection's
+    driver. Queries go directly to the FalkorDB driver and bypass the
+    connection's retry / circuit-breaker — ontology operations are
+    infrequent, idempotent, and tolerant of a single failure.
     """
 
-    def __init__(self, connection: FalkorDBConnection) -> None:
+    ONTOLOGY_GRAPH_SUFFIX = "__ontology"
+
+    def __init__(self, connection: FalkorDBConnection, data_graph_name: str) -> None:
         self._conn = connection
+        self._graph_name = f"{data_graph_name}{self.ONTOLOGY_GRAPH_SUFFIX}"
+        self._graph: Any | None = None
 
-    async def infer(self, *, sample_size: int = 200) -> GraphSchema:
-        """Build a :py:class:`GraphSchema` from what is currently in the data graph.
+    @property
+    def graph_name(self) -> str:
+        return self._graph_name
 
-        ``sample_size`` caps the per-label scan used to discover property keys
-        and types. Returns an empty schema on any introspection failure.
+    def _ensure_graph(self) -> Any:
+        if self._graph is not None:
+            return self._graph
+        self._conn._ensure_client()
+        driver = self._conn._driver
+        if driver is None:
+            raise RuntimeError("FalkorDB driver not initialised on connection")
+        self._graph = driver.select_graph(self._graph_name)
+        return self._graph
+
+    async def _query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
+        graph = self._ensure_graph()
+        return await graph.query(cypher, params=params)
+
+    # ── Load ─────────────────────────────────────────────────────
+
+    async def load(self) -> GraphSchema:
+        """Read the ontology graph and reconstruct a :py:class:`GraphSchema`.
+
+        Returns an empty schema if the ontology graph does not yet exist or
+        introspection fails. Failure is logged at DEBUG so we don't spam an
+        unconfigured GraphRAG instance with warnings.
         """
         try:
-            labels_result = await self._conn.query("CALL db.labels()")
-            rel_types_result = await self._conn.query("CALL db.relationshipTypes()")
+            ent_result = await self._query(
+                "MATCH (e:OntologyEntityType) "
+                "OPTIONAL MATCH (e)-[:HAS_PROPERTY]->(p:OntologyProperty) "
+                "RETURN e.label AS label, e.description AS description, "
+                "collect({name: p.name, type: p.type, description: p.description}) AS properties"
+            )
+            rel_result = await self._query(
+                "MATCH (r:OntologyRelationType) "
+                "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:OntologyProperty) "
+                "RETURN r.label AS label, r.description AS description, "
+                "r.patterns AS patterns, "
+                "collect({name: p.name, type: p.type, description: p.description}) AS properties"
+            )
         except Exception as exc:
-            logger.debug("Ontology inference: labels/types query failed: %s", exc)
+            logger.debug("Ontology load failed (returning empty schema): %s", exc)
             return GraphSchema()
 
-        labels: list[str] = [
-            row[0]
-            for row in (labels_result.result_set or [])
-            if row and row[0] and row[0] not in _STRUCTURAL_LABELS
-        ]
-        rel_types: list[str] = [
-            row[0]
-            for row in (rel_types_result.result_set or [])
-            if row and row[0] and row[0] not in _STRUCTURAL_REL_TYPES
-        ]
+        ent_rows = getattr(ent_result, "result_set", None) or []
+        rel_rows = getattr(rel_result, "result_set", None) or []
+        if not isinstance(ent_rows, list):
+            ent_rows = []
+        if not isinstance(rel_rows, list):
+            rel_rows = []
 
         entities = [
             EntityType(
-                label=label,
-                properties=await self._properties_for_node(label, sample_size),
+                label=row[0],
+                description=row[1],
+                properties=_props_from_rows(row[2]),
             )
-            for label in labels
+            for row in ent_rows
+            if isinstance(row, list) and len(row) >= 3 and row[0]
         ]
-        # The unified data model writes every user relation as a ``RELATES``
-        # edge whose ``rel_type`` property carries the original label; the
-        # SDK's structural edges (PART_OF/NEXT_CHUNK/MENTIONED_IN) are excluded
-        # above. We surface the distinct ``rel_type`` values as RelationTypes
-        # so the Cypher prompt knows the allowed values, and expose their
-        # property keys + endpoint patterns.
-        relations: list[RelationType] = []
-        if "RELATES" in rel_types:
-            relations = await self._infer_relates_subtypes(sample_size)
-
+        relations = [
+            RelationType(
+                label=row[0],
+                description=row[1],
+                patterns=_decode_patterns(row[2]),
+                properties=_props_from_rows(row[3]),
+            )
+            for row in rel_rows
+            if isinstance(row, list) and len(row) >= 4 and row[0]
+        ]
         return GraphSchema(entities=entities, relations=relations)
 
-    async def _properties_for_node(self, label: str, sample_size: int) -> list[PropertyType]:
+    # ── Register ─────────────────────────────────────────────────
+
+    async def register(self, schema: GraphSchema) -> GraphSchema:
+        """Merge ``schema`` into the persisted ontology and return the union.
+
+        Validates first: if ``schema`` redefines the type of a property
+        already registered on the same entity/relation label, raises
+        :py:class:`OntologyContradictionError` before any partial state is
+        persisted.
+
+        Additive operations — new entity types, new relations, new properties,
+        new relation patterns — go through unchanged.
+        """
+        if not schema.entities and not schema.relations:
+            return await self.load()
+
+        existing = await self.load()
+        self._check_no_contradictions(existing, schema)
+
+        for et in schema.entities:
+            await self._upsert_entity_type(et)
+        for rt in schema.relations:
+            await self._upsert_relation_type(rt)
+
+        return await self.load()
+
+    @staticmethod
+    def _check_no_contradictions(existing: GraphSchema, incoming: GraphSchema) -> None:
+        """Raise :py:class:`OntologyContradictionError` on any type re-declaration."""
+        existing_ent_types: dict[tuple[str, str], str] = {
+            (e.label, p.name): p.type for e in existing.entities for p in e.properties
+        }
+        for et in incoming.entities:
+            for p in et.properties:
+                prior = existing_ent_types.get((et.label, p.name))
+                if prior is not None and prior != p.type:
+                    raise OntologyContradictionError(
+                        f"Property '{et.label}.{p.name}' is already registered as "
+                        f"{prior}; refusing to redefine as {p.type}. The ontology "
+                        f"is additive — drop the data graph and start fresh if you "
+                        f"need to change a property's type."
+                    )
+
+        existing_rel_types: dict[tuple[str, str], str] = {
+            (r.label, p.name): p.type for r in existing.relations for p in r.properties
+        }
+        for rt in incoming.relations:
+            for p in rt.properties:
+                prior = existing_rel_types.get((rt.label, p.name))
+                if prior is not None and prior != p.type:
+                    raise OntologyContradictionError(
+                        f"Property '{rt.label}.{p.name}' (on relation) is already "
+                        f"registered as {prior}; refusing to redefine as {p.type}."
+                    )
+
+    async def _upsert_entity_type(self, et: EntityType) -> None:
+        await self._query(
+            "MERGE (e:OntologyEntityType {label: $label}) "
+            "SET e.description = coalesce($description, e.description)",
+            {"label": et.label, "description": et.description},
+        )
+        for prop in et.properties:
+            await self._upsert_property(et.label, prop, owner_label="OntologyEntityType")
+
+    async def _upsert_relation_type(self, rt: RelationType) -> None:
+        new_patterns = _encode_patterns(rt.patterns)
+        result = await self._query(
+            "MATCH (r:OntologyRelationType {label: $label}) RETURN r.patterns AS patterns",
+            {"label": rt.label},
+        )
+        existing_patterns: list[str] = []
+        rows = getattr(result, "result_set", None) or []
+        if isinstance(rows, list) and rows and isinstance(rows[0], list) and rows[0]:
+            existing_patterns = list(rows[0][0] or [])
+        seen: set[str] = set()
+        merged: list[str] = []
+        for s in existing_patterns + new_patterns:
+            if s not in seen:
+                seen.add(s)
+                merged.append(s)
+        await self._query(
+            "MERGE (r:OntologyRelationType {label: $label}) "
+            "SET r.description = coalesce($description, r.description), "
+            "r.patterns = $patterns",
+            {"label": rt.label, "description": rt.description, "patterns": merged},
+        )
+        for prop in rt.properties:
+            await self._upsert_property(rt.label, prop, owner_label="OntologyRelationType")
+
+    async def _upsert_property(
+        self, owner_label_value: str, prop: PropertyType, *, owner_label: str
+    ) -> None:
+        # Property nodes are keyed by ``(owner_label_kind, owner_label, name)``
+        # so two different types can declare the same property name without
+        # trampling each other's metadata.
+        owner_alias = "ent" if owner_label == "OntologyEntityType" else "rel"
+        await self._query(
+            f"MATCH ({owner_alias}:{owner_label} {{label: $owner}}) "
+            f"MERGE ({owner_alias})-[:HAS_PROPERTY]->"
+            f"(p:OntologyProperty {{name: $name, owner: $owner_kind, owner_label: $owner}}) "
+            "SET p.type = $type, "
+            "p.description = coalesce($description, p.description)",
+            {
+                "owner": owner_label_value,
+                "owner_kind": owner_label,
+                "name": prop.name,
+                "type": prop.type,
+                "description": prop.description,
+            },
+        )
+
+    # ── Clear ────────────────────────────────────────────────────
+
+    async def clear(self) -> None:
+        """Drop the ontology graph (``GRAPH.DELETE``). Idempotent.
+
+        Called from ``GraphRAG.delete_all()`` so the ontology graph never
+        outlives the data graph.
+        """
+        self._conn._ensure_client()
+        from redis.asyncio import Redis
+
+        redis: Redis = Redis(connection_pool=self._conn._pool)
         try:
-            result = await self._conn.query(
-                f"MATCH (n:`{label}`) "
-                "WITH n LIMIT $limit "
-                "UNWIND keys(n) AS k "
-                "WITH k, typeof(n[k]) AS t "
-                "RETURN k AS key, t AS type, count(*) AS c "
-                "ORDER BY c DESC",
-                {"limit": sample_size},
-            )
+            await redis.execute_command("GRAPH.DELETE", self._graph_name)
         except Exception as exc:
-            logger.debug("Ontology inference: properties query failed for %s: %s", label, exc)
-            return []
-        return _props_from_rows(result.result_set)
-
-    async def _infer_relates_subtypes(self, sample_size: int) -> list[RelationType]:
-        """Group ``RELATES`` edges by ``rel_type`` and infer per-subtype properties."""
-        try:
-            subtypes_result = await self._conn.query(
-                "MATCH ()-[r:RELATES]->() "
-                "WITH r LIMIT $limit "
-                "WITH DISTINCT r.rel_type AS rel_type "
-                "WHERE rel_type IS NOT NULL "
-                "RETURN rel_type",
-                {"limit": sample_size * 5},  # broader pool to capture rare subtypes
-            )
-        except Exception as exc:
-            logger.debug("Ontology inference: RELATES subtypes query failed: %s", exc)
-            return []
-
-        relations: list[RelationType] = []
-        for row in subtypes_result.result_set or []:
-            subtype = row[0]
-            if not subtype:
-                continue
-            properties = await self._properties_for_relates_subtype(subtype, sample_size)
-            patterns = await self._patterns_for_relates_subtype(subtype)
-            relations.append(RelationType(label=subtype, patterns=patterns, properties=properties))
-        return relations
-
-    async def _properties_for_relates_subtype(
-        self, subtype: str, sample_size: int
-    ) -> list[PropertyType]:
-        try:
-            result = await self._conn.query(
-                "MATCH ()-[r:RELATES {rel_type: $sub}]->() "
-                "WITH r LIMIT $limit "
-                "UNWIND keys(r) AS k "
-                "WITH k, typeof(r[k]) AS t "
-                "RETURN k AS key, t AS type, count(*) AS c "
-                "ORDER BY c DESC",
-                {"sub": subtype, "limit": sample_size},
-            )
-        except Exception as exc:
-            logger.debug(
-                "Ontology inference: relation properties query failed for %s: %s",
-                subtype,
-                exc,
-            )
-            return []
-        return _props_from_rows(result.result_set)
-
-    async def _patterns_for_relates_subtype(self, subtype: str) -> list[tuple[str, str]]:
-        try:
-            result = await self._conn.query(
-                "MATCH (a)-[r:RELATES {rel_type: $sub}]->(b) "
-                "WITH labels(a) AS la, labels(b) AS lb "
-                "RETURN DISTINCT la, lb LIMIT 25",
-                {"sub": subtype},
-            )
-        except Exception as exc:
-            logger.debug(
-                "Ontology inference: endpoint patterns query failed for %s: %s",
-                subtype,
-                exc,
-            )
-            return []
-        patterns: list[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for row in result.result_set or []:
-            src_labels, tgt_labels = row[0] or [], row[1] or []
-            src = next(
-                (lbl for lbl in src_labels if lbl not in _STRUCTURAL_LABELS),
-                None,
-            )
-            tgt = next(
-                (lbl for lbl in tgt_labels if lbl not in _STRUCTURAL_LABELS),
-                None,
-            )
-            if not src or not tgt:
-                continue
-            key = (src, tgt)
-            if key in seen:
-                continue
-            seen.add(key)
-            patterns.append(key)
-        return patterns
-
-
-def _props_from_rows(rows: list[list[Any]] | None) -> list[PropertyType]:
-    """Turn ``(key, typeof, count)`` rows into :py:class:`PropertyType` objects.
-
-    Skips reserved/system keys and unmappable types so they never leak into the
-    LLM-facing schema.
-    """
-    out: list[PropertyType] = []
-    seen: set[str] = set()
-    for row in rows or []:
-        if not row or len(row) < 2:
-            continue
-        key, raw_type = row[0], row[1]
-        if not isinstance(key, str) or key in _INFER_SKIP_KEYS or key in seen:
-            continue
-        normalized = _normalize_type(raw_type if isinstance(raw_type, str) else None)
-        if not normalized:
-            continue
-        seen.add(key)
-        out.append(PropertyType(name=key, type=normalized))
-    return out
+            msg = str(exc).lower()
+            if "empty" in msg or "invalid" in msg or "key" in msg:
+                logger.debug("Ontology graph '%s' already empty", self._graph_name)
+            else:
+                raise
+        self._graph = None
