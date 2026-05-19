@@ -327,8 +327,6 @@ class GraphRAG:
 
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
-        - Loader: auto-detected from file extension
-          (PDF, Markdown, DOCX, XLSX, PPTX, HTML/XHTML, CSV, or text fallback)
         - Chunker: SentenceTokenCapChunking(max_tokens=512, overlap_sentences=2)
           — sentence-aware, never splits entity names at chunk boundaries.
           Override with ``chunker=FixedSizeChunking(...)`` if you need
