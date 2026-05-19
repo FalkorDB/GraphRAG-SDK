@@ -22,6 +22,7 @@ from graphrag_sdk.core.models import (
     ChatMessage,
     DeleteDocumentResult,
     DocumentInfo,
+    EntityType,
     FinalizeResult,
     GraphSchema,
     IngestionResult,
@@ -35,6 +36,9 @@ from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    DEFAULT_ENTITY_TYPES,
+)
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -251,18 +255,30 @@ class GraphRAG:
         """Lazy first-touch: load the persisted ontology and register the
         user-supplied :py:attr:`schema` into it.
 
-        Idempotent. The first async call that touches the ontology (ingest,
-        get_ontology, retrieval) fires this; subsequent calls are no-ops.
-        Raises :py:class:`OntologyContradictionError` if ``self.schema``
-        re-defines an existing property's type.
+        Three states:
+
+        - ``self.schema`` is non-empty → register it (validate + persist).
+        - ``self.schema`` empty but the ontology graph already has content
+          (previous session, another writer) → use it as-is.
+        - Both empty (first connection, no user schema) → register the
+          built-in :py:data:`DEFAULT_ENTITY_TYPES` so the ontology graph
+          accurately reflects the labels the extractor will produce.
+
+        Idempotent. Raises :py:class:`OntologyContradictionError` if
+        ``self.schema`` re-defines an existing property's type.
         """
         if self._ontology_initialized:
             return
         loaded = await self._ontology_store.load()
         if self.schema.entities or self.schema.relations:
             self._global_schema = await self._ontology_store.register(self.schema)
-        else:
+        elif loaded.entities or loaded.relations:
             self._global_schema = loaded
+        else:
+            default_schema = GraphSchema(
+                entities=[EntityType(label=label) for label in DEFAULT_ENTITY_TYPES],
+            )
+            self._global_schema = await self._ontology_store.register(default_schema)
         if hasattr(self._retrieval_strategy, "_schema"):
             self._retrieval_strategy._schema = self._global_schema
         self._ontology_initialized = True

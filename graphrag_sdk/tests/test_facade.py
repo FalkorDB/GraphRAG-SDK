@@ -35,6 +35,15 @@ def mock_conn():
     result_mock.result_set = []
     conn.query = AsyncMock(return_value=result_mock)
     conn.config = ConnectionConfig()
+    # OntologyStore reaches into the connection's driver to open a handle on
+    # the paired ``<graph_name>__ontology`` graph. Stub the chain so the
+    # ontology graph appears as a writable async-query target whose queries
+    # return empty result sets.
+    ontology_graph = MagicMock()
+    ontology_graph.query = AsyncMock(return_value=result_mock)
+    conn._driver = MagicMock()
+    conn._driver.select_graph = MagicMock(return_value=ontology_graph)
+    conn._ensure_client = MagicMock()
     return conn
 
 
