@@ -199,9 +199,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         if self._enable_cypher:
             results = await asyncio.gather(
                 search_relates_edges(self._vector, query_vector, self._rel_top_k),
-                execute_cypher_retrieval(
-                    self._graph, self._llm, query, schema=self._schema
-                ),
+                execute_cypher_retrieval(self._graph, self._llm, query, schema=self._schema),
                 return_exceptions=True,
             )
             # Unpack RELATES results

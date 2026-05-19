@@ -36,9 +36,7 @@ logger = logging.getLogger(__name__)
 _STRUCTURAL_LABELS: frozenset[str] = frozenset({"Chunk", "Document", "__Entity__"})
 
 # Edge labels created by the SDK that are not user relations.
-_STRUCTURAL_REL_TYPES: frozenset[str] = frozenset(
-    {"PART_OF", "NEXT_CHUNK", "MENTIONED_IN"}
-)
+_STRUCTURAL_REL_TYPES: frozenset[str] = frozenset({"PART_OF", "NEXT_CHUNK", "MENTIONED_IN"})
 
 # Property keys we never want to expose to the LLM as "custom attributes".
 # These are SDK-internal or reserved meanings; the Cypher prompt already
@@ -120,9 +118,7 @@ class OntologyStore:
 
         return GraphSchema(entities=entities, relations=relations)
 
-    async def _properties_for_node(
-        self, label: str, sample_size: int
-    ) -> list[PropertyType]:
+    async def _properties_for_node(self, label: str, sample_size: int) -> list[PropertyType]:
         try:
             result = await self._conn.query(
                 f"MATCH (n:`{label}`) "
@@ -134,9 +130,7 @@ class OntologyStore:
                 {"limit": sample_size},
             )
         except Exception as exc:
-            logger.debug(
-                "Ontology inference: properties query failed for %s: %s", label, exc
-            )
+            logger.debug("Ontology inference: properties query failed for %s: %s", label, exc)
             return []
         return _props_from_rows(result.result_set)
 
@@ -162,9 +156,7 @@ class OntologyStore:
                 continue
             properties = await self._properties_for_relates_subtype(subtype, sample_size)
             patterns = await self._patterns_for_relates_subtype(subtype)
-            relations.append(
-                RelationType(label=subtype, patterns=patterns, properties=properties)
-            )
+            relations.append(RelationType(label=subtype, patterns=patterns, properties=properties))
         return relations
 
     async def _properties_for_relates_subtype(

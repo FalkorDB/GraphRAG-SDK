@@ -710,8 +710,7 @@ class GraphExtraction(ExtractionStrategy):
         if dropped_required:
             for key, n in dropped_required.items():
                 logger.warning(
-                    "Dropped %d %s record(s) with missing required attribute(s) "
-                    "for chunk %s",
+                    "Dropped %d %s record(s) with missing required attribute(s) for chunk %s",
                     n,
                     key,
                     source_chunk_id,

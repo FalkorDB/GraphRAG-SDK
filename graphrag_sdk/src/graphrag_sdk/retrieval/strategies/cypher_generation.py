@@ -121,9 +121,7 @@ def render_schema_block(schema: GraphSchema | None) -> str:
         d = f" — {desc}" if desc else ""
         lines.append(f"      - {name} ({typ}){d}  # declared on RELATES via rel_type filters")
     if rel_labels:
-        lines.append(
-            "    Allowed `rel_type` values: " + ", ".join(rel_labels)
-        )
+        lines.append("    Allowed `rel_type` values: " + ", ".join(rel_labels))
     lines.append("- MENTIONED_IN: connects entity to Chunk node (provenance)")
     lines.append("- PART_OF: connects Document to Chunk")
     lines.append("- NEXT_CHUNK: connects Chunk to next sequential Chunk")
@@ -145,7 +143,7 @@ def _render_attribute_examples(schema: GraphSchema | None) -> str:
             if p.type in _NUMERIC_TYPES and len(examples) < 2:
                 var = et.label[0].lower()
                 examples.append(
-                    f"Question: \"Which {et.label} has the highest {p.name}?\"\n"
+                    f'Question: "Which {et.label} has the highest {p.name}?"\n'
                     f"```cypher\n"
                     f"MATCH ({var}:{et.label})\n"
                     f"WHERE {var}.{p.name} IS NOT NULL\n"
@@ -157,6 +155,7 @@ def _render_attribute_examples(schema: GraphSchema | None) -> str:
     if not examples:
         return ""
     return "\n\n" + "\n\n".join(examples)
+
 
 # ── Schema prompt ────────────────────────────────────────────────
 
@@ -442,9 +441,7 @@ async def execute_cypher_retrieval(
 
     On any failure, returns empty results (silent degradation).
     """
-    cypher = await generate_cypher(
-        llm, question, schema=schema, max_retries=max_retries
-    )
+    cypher = await generate_cypher(llm, question, schema=schema, max_retries=max_retries)
     if not cypher:
         return [], {}
 

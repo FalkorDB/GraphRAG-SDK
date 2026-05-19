@@ -451,9 +451,7 @@ class IngestionPipeline:
             extracted_relations=graph_data.extracted_relations,
         )
 
-    def _validate_attributes(
-        self, graph_data: GraphData, schema: GraphSchema
-    ) -> GraphData:
+    def _validate_attributes(self, graph_data: GraphData, schema: GraphSchema) -> GraphData:
         """Validate node / relationship attributes against the declared schema.
 
         - Attribute keys not declared in the schema are dropped (debug-logged).
