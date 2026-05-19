@@ -51,17 +51,25 @@ async def retrieve_chunks(
     except Exception as exc:
         logger.debug("Chunk vector search failed: %s", exc)
 
-    # Path C: MENTIONED_IN — 3 chunks per entity (batched UNWIND)
+    # Path C: MENTIONED_IN — top-3 chunks per entity, ranked by cosine
+    # distance to the query embedding. Hub entities (e.g. the main
+    # product name) can be MENTIONED_IN hundreds of chunks; the previous
+    # COLLECT(c)[..3] picked an arbitrary 3, almost never including the
+    # chunks most relevant to the current query. Ranking by cosine here
+    # surfaces the chunks closest to the query intent.
     eids_mention = [eid for eid, _ in entity_list[:15]]
     if eids_mention:
         try:
             result = await graph_store.query_raw(
                 "UNWIND $eids AS eid "
                 "MATCH (e:__Entity__ {id: eid})-[:MENTIONED_IN]->(c:Chunk) "
+                "WHERE c.embedding IS NOT NULL "
+                "WITH eid, c, vec.cosineDistance(c.embedding, vecf32($qv)) AS dist "
+                "ORDER BY eid, dist ASC "
                 "WITH eid, COLLECT(c)[..3] AS chunks "
                 "UNWIND chunks AS c "
                 "RETURN eid, c.id AS id, c.text AS text",
-                {"eids": eids_mention},
+                {"eids": eids_mention, "qv": query_vector},
             )
             for row in result.result_set:
                 cid = row[1]
