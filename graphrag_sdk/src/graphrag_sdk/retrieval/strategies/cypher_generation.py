@@ -12,6 +12,8 @@ import logging
 import re
 from typing import Any
 
+from graphrag_sdk.core.models import GraphSchema
+
 logger = logging.getLogger(__name__)
 
 # ── Valid labels for our graph schema ────────────────────────────
@@ -36,31 +38,133 @@ _STRUCTURAL_LABELS = frozenset({"Chunk", "Document", "__Entity__"})
 
 _ALL_LABELS = _ENTITY_LABELS | _STRUCTURAL_LABELS
 
+_RESERVED_ENTITY_PROPS = (
+    ("name", "STRING", "entity name"),
+    ("description", "STRING", "entity description"),
+)
+_RESERVED_REL_PROPS = (
+    ("rel_type", "STRING", "original relation type as a string"),
+    ("fact", "STRING", "evidence text for the relation"),
+    ("src_name", "STRING", "source entity name"),
+    ("tgt_name", "STRING", "target entity name"),
+)
+
+_NUMERIC_TYPES = frozenset({"INTEGER", "FLOAT"})
+
 _WRITE_KEYWORDS = re.compile(
     r"\b(CREATE|DELETE|DETACH|SET|REMOVE|MERGE|DROP|CALL\s+db\.idx)\b",
     re.IGNORECASE,
 )
 
+
+def _labels_from_schema(schema: GraphSchema | None) -> frozenset[str]:
+    """Return the entity labels declared in ``schema``, falling back to the
+    historical hardcoded set when the schema is empty (open-schema mode).
+    """
+    if schema is None or not schema.entities:
+        return _ENTITY_LABELS
+    return frozenset(e.label for e in schema.entities)
+
+
+def render_schema_block(schema: GraphSchema | None) -> str:
+    """Render a Markdown schema block listing declared entity / relation
+    properties, derived from the live ``GraphSchema``.
+
+    Mirrors LangChain's ``Neo4jGraph.get_schema()`` and LlamaIndex's
+    ``Neo4jPropertyGraphStore.get_schema_str()``. Always emits the reserved
+    SDK keys (``name``, ``description`` on entities; ``rel_type``, ``fact``,
+    ``src_name``, ``tgt_name`` on RELATES) so the LLM still knows about them
+    even when the schema declares no custom properties.
+    """
+    labels: list[str]
+    rel_labels: list[str]
+    ent_props: dict[str, list[tuple[str, str, str | None]]] = {}
+    rel_props: dict[str, list[tuple[str, str, str | None]]] = {}
+
+    if schema is not None and schema.entities:
+        labels = [e.label for e in schema.entities]
+        for e in schema.entities:
+            ent_props[e.label] = [(p.name, p.type, p.description) for p in e.properties]
+    else:
+        labels = sorted(_ENTITY_LABELS)
+
+    if schema is not None and schema.relations:
+        rel_labels = [r.label for r in schema.relations]
+        for r in schema.relations:
+            rel_props[r.label] = [(p.name, p.type, p.description) for p in r.properties]
+    else:
+        rel_labels = []
+
+    lines: list[str] = []
+    lines.append("### Entity node labels (all entities also carry `__Entity__`):")
+    for label in labels:
+        lines.append(f"- {label}")
+        lines.append("    Properties:")
+        for name, typ, desc in _RESERVED_ENTITY_PROPS:
+            lines.append(f"      - {name} ({typ}) — {desc}")
+        for name, typ, desc in ent_props.get(label, []):
+            d = f" — {desc}" if desc else ""
+            lines.append(f"      - {name} ({typ}){d}")
+
+    lines.append("")
+    lines.append("### Edge types:")
+    lines.append("- RELATES: connects any entity to any entity.")
+    lines.append("    Properties:")
+    for name, typ, desc in _RESERVED_REL_PROPS:
+        lines.append(f"      - {name} ({typ}) — {desc}")
+    union_rel_props: dict[str, tuple[str, str | None]] = {}
+    for label in rel_labels:
+        for name, typ, desc in rel_props.get(label, []):
+            if name not in union_rel_props:
+                union_rel_props[name] = (typ, desc)
+    for name, (typ, desc) in union_rel_props.items():
+        d = f" — {desc}" if desc else ""
+        lines.append(f"      - {name} ({typ}){d}  # declared on RELATES via rel_type filters")
+    if rel_labels:
+        lines.append("    Allowed `rel_type` values: " + ", ".join(rel_labels))
+    lines.append("- MENTIONED_IN: connects entity to Chunk node (provenance)")
+    lines.append("- PART_OF: connects Document to Chunk")
+    lines.append("- NEXT_CHUNK: connects Chunk to next sequential Chunk")
+    return "\n".join(lines)
+
+
+def _render_attribute_examples(schema: GraphSchema | None) -> str:
+    """Synthesize one filter example per declared numeric attribute.
+
+    Helps the LLM learn that custom numeric properties exist and can be used
+    in ``WHERE`` / ``ORDER BY`` / aggregations. Returns ``""`` when no
+    numeric attributes are declared.
+    """
+    if schema is None:
+        return ""
+    examples: list[str] = []
+    for et in schema.entities:
+        for p in et.properties:
+            if p.type in _NUMERIC_TYPES and len(examples) < 2:
+                var = et.label[0].lower()
+                examples.append(
+                    f'Question: "Which {et.label} has the highest {p.name}?"\n'
+                    f"```cypher\n"
+                    f"MATCH ({var}:{et.label})\n"
+                    f"WHERE {var}.{p.name} IS NOT NULL\n"
+                    f"RETURN {var}.name AS name, {var}.{p.name} AS {p.name}\n"
+                    f"ORDER BY {var}.{p.name} DESC\n"
+                    f"LIMIT 10\n"
+                    f"```"
+                )
+    if not examples:
+        return ""
+    return "\n\n" + "\n\n".join(examples)
+
+
 # ── Schema prompt ────────────────────────────────────────────────
 
-SCHEMA_PROMPT = """\
+_SCHEMA_PROMPT_TEMPLATE = """\
 You are a Cypher query generator for a FalkorDB graph database.
 
 ## Graph Schema
 
-### Entity node labels (all entities also carry the label `__Entity__`):
-Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method
-
-### Entity node properties:
-- name (string) — entity name
-- description (string) — entity description
-
-### Edge types:
-- RELATES: connects any entity to any entity.
-  Properties: rel_type (string), fact (string — evidence text), src_name (string), tgt_name (string)
-- MENTIONED_IN: connects entity to Chunk node (provenance)
-- PART_OF: connects Document to Chunk
-- NEXT_CHUNK: connects Chunk to next sequential Chunk
+{schema_block}
 
 ## FalkorDB-specific rules (CRITICAL — violating these causes execution errors):
 1. Do NOT use shortestPath() or allShortestPaths() — FalkorDB returns
@@ -127,7 +231,7 @@ Question: "What organizations are related to the technology?"
 MATCH (o:Organization)-[r:RELATES]-(t:Technology)
 RETURN o.name AS organization, t.name AS technology, r.rel_type AS relation, r.fact AS evidence
 LIMIT 20
-```
+```{attribute_examples}
 
 ## Your task
 
@@ -137,6 +241,27 @@ Return ONLY the Cypher query inside triple backticks.
 
 Question: {question}
 """
+
+
+def build_schema_prompt(schema: GraphSchema | None, question: str) -> str:
+    """Build the full Cypher generation prompt for ``question`` from ``schema``.
+
+    When ``schema`` is empty, the prompt falls back to the historical
+    hardcoded label set and matches today's behavior bit-for-bit aside from
+    the new schema block formatting.
+    """
+    return _SCHEMA_PROMPT_TEMPLATE.format(
+        schema_block=render_schema_block(schema),
+        attribute_examples=_render_attribute_examples(schema),
+        question=question,
+    )
+
+
+# Backwards-compatible alias for callers that import SCHEMA_PROMPT.
+# It exposes the template form (still expects ``{schema_block}``,
+# ``{attribute_examples}``, and ``{question}`` placeholders) — direct
+# ``.format(question=...)`` callers should migrate to ``build_schema_prompt``.
+SCHEMA_PROMPT = _SCHEMA_PROMPT_TEMPLATE
 
 
 # ── Cypher extraction ────────────────────────────────────────────
@@ -184,11 +309,15 @@ def _sanitize_cypher(cypher: str) -> str:
 # ── Cypher validation ────────────────────────────────────────────
 
 
-def validate_cypher(cypher: str) -> list[str]:
+def validate_cypher(cypher: str, schema: GraphSchema | None = None) -> list[str]:
     """Validate generated Cypher for safety and correctness.
 
     Uses an allowlist approach: the query must start with a read-only
     keyword, and dangerous constructs are explicitly rejected.
+
+    When ``schema`` is provided, label validation uses the labels declared
+    in the schema (plus structural labels); otherwise it falls back to the
+    historical hardcoded label set.
 
     Returns list of error strings; empty list means valid.
     """
@@ -229,9 +358,10 @@ def validate_cypher(cypher: str) -> list[str]:
         errors.append("Missing RETURN clause")
 
     # Check referenced labels exist in schema
+    allowed_labels = _labels_from_schema(schema) | _STRUCTURAL_LABELS
     label_pattern = re.findall(r"\((?:\w+)?:(\w+)", cypher_norm)
     for label in label_pattern:
-        if label not in _ALL_LABELS:
+        if label not in allowed_labels:
             errors.append(f"Unknown label: {label}")
 
     return errors
@@ -244,13 +374,17 @@ async def generate_cypher(
     llm: Any,
     question: str,
     *,
+    schema: GraphSchema | None = None,
     max_retries: int = 3,
 ) -> str | None:
     """Generate a Cypher query from a natural language question.
 
+    When ``schema`` is provided, the prompt and validator both use the
+    declared labels and properties.
+
     Returns the Cypher string, or None if all retries fail.
     """
-    prompt = SCHEMA_PROMPT.format(question=question)
+    prompt = build_schema_prompt(schema, question)
     last_error = ""
 
     for attempt in range(max_retries):
@@ -270,7 +404,7 @@ async def generate_cypher(
                 last_error = "Empty query generated"
                 continue
 
-            errors = validate_cypher(cypher)
+            errors = validate_cypher(cypher, schema)
             if errors:
                 last_error = "; ".join(errors)
                 continue
@@ -292,6 +426,7 @@ async def execute_cypher_retrieval(
     llm: Any,
     question: str,
     *,
+    schema: GraphSchema | None = None,
     max_retries: int = 3,
 ) -> tuple[list[str], dict[str, dict]]:
     """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
@@ -306,7 +441,7 @@ async def execute_cypher_retrieval(
 
     On any failure, returns empty results (silent degradation).
     """
-    cypher = await generate_cypher(llm, question, max_retries=max_retries)
+    cypher = await generate_cypher(llm, question, schema=schema, max_retries=max_retries)
     if not cypher:
         return [], {}
 

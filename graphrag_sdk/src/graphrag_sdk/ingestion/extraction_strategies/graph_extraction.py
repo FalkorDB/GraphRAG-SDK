@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import date, datetime
 from typing import Any
 
 from graphrag_sdk.core.context import Context
@@ -18,6 +19,7 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
     GraphSchema,
+    PropertyType,
     RelationType,
     TextChunks,
 )
@@ -48,6 +50,7 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "## Entity Types\n"
     "{entity_types}\n\n"
     "{relation_patterns}"
+    "{attribute_schema_block}"
     "## Pre-extracted Entities\n"
     "{entities_json}\n\n"
     "## Text\n"
@@ -74,11 +77,159 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "sentence for this relationship starts.\n"
     "- span_end: the character offset where the evidence sentence ends.\n\n"
     "Return ONLY a JSON object with two arrays:\n"
-    '{{"entities": [{{"name": "...", "type": "...", "description": "..."}}], '
-    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
-    '"description": "...", "span_start": 0, "span_end": 50}}]}}\n\n'
+    "{json_example}\n\n"
     "Return ONLY valid JSON, nothing else."
 )
+
+_DEFAULT_JSON_EXAMPLE = (
+    '{{"entities": [{{"name": "...", "type": "...", "description": "..."}}], '
+    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
+    '"description": "...", "span_start": 0, "span_end": 50}}]}}'
+)
+
+_JSON_EXAMPLE_WITH_ATTRS = (
+    '{{"entities": [{{"name": "...", "type": "...", "description": "...", '
+    '"attributes": {{}}}}], '
+    '"relationships": [{{"source": "...", "target": "...", "type": "...", '
+    '"description": "...", "span_start": 0, "span_end": 50, '
+    '"attributes": {{}}}}]}}'
+)
+
+
+def _format_property_for_prompt(prop: PropertyType) -> str:
+    desc = f" — {prop.description}" if prop.description else ""
+    return f"    - {prop.name} ({prop.type}){desc}"
+
+
+def _render_attribute_schema_block(schema: GraphSchema) -> str:
+    """Return the prompt block listing declared entity/relation attributes.
+
+    Returns ``""`` when no entity or relation type declares any property — this
+    keeps the prompt identical to today for property-less schemas (no token
+    drift, no quality regression for the existing extraction path).
+    """
+    ent_lines: list[str] = []
+    for et in schema.entities:
+        if not et.properties:
+            continue
+        ent_lines.append(f"- {et.label}:")
+        ent_lines.extend(_format_property_for_prompt(p) for p in et.properties)
+
+    rel_lines: list[str] = []
+    for rt in schema.relations:
+        if not rt.properties:
+            continue
+        rel_lines.append(f"- {rt.label}:")
+        rel_lines.extend(_format_property_for_prompt(p) for p in rt.properties)
+
+    if not ent_lines and not rel_lines:
+        return ""
+
+    parts = [
+        "## Attribute extraction",
+        "For each verified entity and each extracted relationship, also extract any "
+        "of the declared properties below. Use null when the property is not stated "
+        "in the text. Coerce to the declared type (INTEGER, FLOAT, BOOLEAN, DATE in "
+        "ISO 8601, STRING, LIST). Place extracted values inside an `attributes` "
+        "object on each entity / relationship.",
+    ]
+    if ent_lines:
+        parts.append("### Entity attributes")
+        parts.extend(ent_lines)
+    if rel_lines:
+        parts.append("### Relation attributes")
+        parts.extend(rel_lines)
+    return "\n".join(parts) + "\n\n"
+
+
+def _schema_has_attributes(schema: GraphSchema) -> bool:
+    return any(et.properties for et in schema.entities) or any(
+        rt.properties for rt in schema.relations
+    )
+
+
+def _coerce_attribute_value(value: Any, prop_type: str) -> tuple[bool, Any]:
+    """Coerce ``value`` to ``prop_type``. Returns ``(ok, coerced)``.
+
+    ``ok=False`` means the value should be dropped (incl. ``None``).
+    """
+    if value is None:
+        return False, None
+    pt = prop_type.upper()
+    try:
+        if pt == "STRING":
+            s = str(value).strip()
+            return (True, s) if s else (False, None)
+        if pt == "INTEGER":
+            if isinstance(value, bool):
+                return False, None
+            return True, int(float(value))
+        if pt == "FLOAT":
+            if isinstance(value, bool):
+                return False, None
+            return True, float(value)
+        if pt == "BOOLEAN":
+            if isinstance(value, bool):
+                return True, value
+            if isinstance(value, (int, float)):
+                return True, bool(value)
+            if isinstance(value, str):
+                v = value.strip().lower()
+                if v in {"true", "yes", "y", "1"}:
+                    return True, True
+                if v in {"false", "no", "n", "0"}:
+                    return True, False
+            return False, None
+        if pt == "DATE":
+            if isinstance(value, (date, datetime)):
+                return True, (value.date() if isinstance(value, datetime) else value).isoformat()
+            if isinstance(value, str):
+                v = value.strip()
+                if not v:
+                    return False, None
+                # Accept either pure date or full ISO 8601
+                try:
+                    parsed = date.fromisoformat(v)
+                    return True, parsed.isoformat()
+                except ValueError:
+                    try:
+                        parsed_dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                        return True, parsed_dt.date().isoformat()
+                    except ValueError:
+                        return False, None
+            return False, None
+        if pt == "LIST":
+            if isinstance(value, dict):
+                return False, None
+            if isinstance(value, (list, tuple, set)):
+                return True, list(value)
+            return True, [value]
+    except (TypeError, ValueError):
+        return False, None
+    return False, None
+
+
+def _coerce_attributes(
+    raw: dict[str, Any] | None,
+    declared: dict[str, PropertyType],
+) -> dict[str, Any]:
+    """Apply per-type coercion against declared properties.
+
+    Every declared property name appears in the result. Values that are absent
+    from ``raw`` or fail to coerce are recorded as ``None`` — never drop the
+    enclosing record. Downstream storage strips ``None`` before writing, so
+    these turn into "key missing" on the graph node, which is the right
+    behavior for retrieval (``WHERE p.age > N`` naturally excludes them).
+    """
+    coerced: dict[str, Any] = {}
+    raw = raw or {}
+    for prop_name, prop in declared.items():
+        if prop_name not in raw or raw[prop_name] is None:
+            coerced[prop_name] = None
+            continue
+        ok, val = _coerce_attribute_value(raw[prop_name], prop.type)
+        coerced[prop_name] = val if ok else None
+    return coerced
 
 
 def _optional_extras(obj: Any) -> dict[str, Any]:
@@ -306,12 +457,15 @@ class GraphExtraction(ExtractionStrategy):
             entities_json = json.dumps(
                 [{"name": e.name, "type": e.type, "description": e.description} for e in ents]
             )
+            has_attrs = _schema_has_attributes(schema)
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
                 relation_patterns=_format_relation_patterns(schema.relations),
+                attribute_schema_block=_render_attribute_schema_block(schema),
                 relationship_type_instruction=_relationship_type_instruction(schema.relations),
                 entities_json=entities_json,
                 text=text,
+                json_example=_JSON_EXAMPLE_WITH_ATTRS if has_attrs else _DEFAULT_JSON_EXAMPLE,
             )
             step2_prompts.append(prompt)
             step2_indices.append(i)
@@ -340,7 +494,7 @@ class GraphExtraction(ExtractionStrategy):
 
                 assert item.response is not None
                 verified_ents, rels = self._parse_step2_response(
-                    item.response.content, entity_types, chunk.uid
+                    item.response.content, entity_types, chunk.uid, schema
                 )
                 if verified_ents:
                     # Carry over spans/confidence from step 1 entities
@@ -436,8 +590,16 @@ class GraphExtraction(ExtractionStrategy):
         content: str,
         entity_types: list[str],
         source_chunk_id: str,
+        schema: GraphSchema | None = None,
     ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
-        """Parse the step 2 LLM response (verified entities + relationships)."""
+        """Parse the step 2 LLM response (verified entities + relationships).
+
+        When ``schema`` declares attributes for an entity / relation type, every
+        declared attribute appears in the record's ``attributes`` dict, with
+        ``None`` for values the LLM didn't supply or couldn't coerce. Records
+        are never dropped — downstream storage strips ``None`` so the graph
+        sees "key missing" for the unfilled slots.
+        """
         text = _strip_markdown_fences(content)
 
         try:
@@ -448,6 +610,16 @@ class GraphExtraction(ExtractionStrategy):
 
         if not isinstance(data, dict):
             return [], []
+
+        ent_props_by_label: dict[str, dict[str, PropertyType]] = {}
+        rel_props_by_label: dict[str, dict[str, PropertyType]] = {}
+        if schema is not None:
+            for et in schema.entities:
+                if et.properties:
+                    ent_props_by_label[et.label] = {p.name: p for p in et.properties}
+            for rt in schema.relations:
+                if rt.properties:
+                    rel_props_by_label[rt.label] = {p.name: p for p in rt.properties}
 
         # Parse entities
         entities: list[ExtractedEntity] = []
@@ -463,12 +635,20 @@ class GraphExtraction(ExtractionStrategy):
             etype = label_for_type(raw_type, entity_types)
             description = str(item.get("description", "")).strip()
 
+            declared = ent_props_by_label.get(etype, {})
+            attributes: dict[str, Any] = {}
+            if declared:
+                _raw = item.get("attributes")
+                raw_attrs = _raw if isinstance(_raw, dict) else {}
+                attributes = _coerce_attributes(raw_attrs, declared)
+
             entities.append(
                 ExtractedEntity(
                     name=name,
                     type=etype,
                     description=description,
                     source_chunk_ids=[source_chunk_id],
+                    attributes=attributes,
                 )
             )
 
@@ -492,6 +672,13 @@ class GraphExtraction(ExtractionStrategy):
             if spans:
                 extra["spans"] = spans
 
+            declared_rel = rel_props_by_label.get(rel_type, {})
+            attributes_rel: dict[str, Any] = {}
+            if declared_rel:
+                _raw = item.get("attributes")
+                raw_attrs = _raw if isinstance(_raw, dict) else {}
+                attributes_rel = _coerce_attributes(raw_attrs, declared_rel)
+
             relations.append(
                 ExtractedRelation(
                     source=source,
@@ -499,6 +686,7 @@ class GraphExtraction(ExtractionStrategy):
                     type=rel_type,
                     description=description,
                     source_chunk_ids=[source_chunk_id],
+                    attributes=attributes_rel,
                     **extra,
                 )
             )
@@ -538,12 +726,17 @@ class GraphExtraction(ExtractionStrategy):
                     for chunk_id, offsets in ent_spans.items():
                         existing_spans.setdefault(chunk_id, []).extend(offsets)
                     existing.spans = existing_spans  # type: ignore[attr-defined]
+                # Merge attributes: last-write-wins per key, matching FalkorDB's
+                # ``SET n += props`` semantics at the storage layer.
+                if ent.attributes:
+                    existing.attributes.update(ent.attributes)
             else:
                 seen[key] = ExtractedEntity(
                     name=ent.name,
                     type=ent.type,
                     description=ent.description,
                     source_chunk_ids=list(ent.source_chunk_ids),
+                    attributes=dict(ent.attributes),
                     **_optional_extras(ent),
                 )
         return list(seen.values())
@@ -577,6 +770,8 @@ class GraphExtraction(ExtractionStrategy):
                     for chunk_id, offsets in rel_spans.items():
                         existing_spans.setdefault(chunk_id, []).extend(offsets)
                     existing.spans = existing_spans  # type: ignore[attr-defined]
+                if rel.attributes:
+                    existing.attributes.update(rel.attributes)
             else:
                 seen[key] = ExtractedRelation(
                     source=rel.source,
@@ -584,6 +779,7 @@ class GraphExtraction(ExtractionStrategy):
                     type=rel.type,
                     description=rel.description,
                     source_chunk_ids=list(rel.source_chunk_ids),
+                    attributes=dict(rel.attributes),
                     **_optional_extras(rel),
                 )
         return list(seen.values())
@@ -609,6 +805,10 @@ class GraphExtraction(ExtractionStrategy):
             spans = getattr(ent, "spans", None)
             if spans:
                 props["spans"] = spans
+            # Merge schema-declared attributes. Reserved-name collisions are
+            # rejected at schema-validation time, so update() is safe.
+            if ent.attributes:
+                props.update(ent.attributes)
             nodes.append(
                 GraphNode(
                     id=node_id,
@@ -644,6 +844,8 @@ class GraphExtraction(ExtractionStrategy):
             spans = getattr(rel, "spans", None)
             if spans:
                 props["spans"] = spans
+            if rel.attributes:
+                props.update(rel.attributes)
             relationships.append(
                 GraphRelationship(
                     start_node_id=compute_entity_id(rel.source, src_type),

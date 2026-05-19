@@ -694,3 +694,142 @@ class TestPruneMethod:
         # Total count is reported, but the sampled list does not contain 50 entries.
         assert "Pruned 50" in msg
         assert msg.count("('Company', 'Person')") <= 3
+
+
+class TestValidateAttributes:
+    """Schema-attribute validation pass on top of ``_prune``."""
+
+    def _pipeline(self):
+        # We only exercise the validator; bypass construction by mocking the
+        # required strategy collaborators.
+        return IngestionPipeline(
+            loader=MagicMock(spec=LoaderStrategy),
+            chunker=MagicMock(spec=ChunkingStrategy),
+            extractor=MagicMock(spec=ExtractionStrategy),
+            resolver=MagicMock(spec=ResolutionStrategy),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+            schema=GraphSchema(),
+        )
+
+    def test_empty_schema_is_noop(self):
+        from graphrag_sdk.core.models import PropertyType
+        pipe = self._pipeline()
+        gd = GraphData(
+            nodes=[GraphNode(id="1", label="Foo", properties={"a": 1})],
+        )
+        out = pipe._validate_attributes(gd, GraphSchema())
+        assert len(out.nodes) == 1
+        assert out.nodes[0].properties == {"a": 1}
+
+    def test_unknown_attributes_dropped_on_declared_label(self):
+        from graphrag_sdk.core.models import PropertyType
+        pipe = self._pipeline()
+        schema = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[PropertyType(name="age", type="INTEGER")],
+                )
+            ]
+        )
+        node = GraphNode(
+            id="p1",
+            label="Person",
+            properties={
+                "name": "Marie",
+                "age": 56,
+                "ssn": "123-45-6789",
+            },
+        )
+        out = pipe._validate_attributes(GraphData(nodes=[node]), schema)
+        assert len(out.nodes) == 1
+        kept = out.nodes[0].properties
+        assert "ssn" not in kept
+        assert kept["age"] == 56
+        # Reserved keys preserved.
+        assert kept["name"] == "Marie"
+
+    def test_missing_attribute_keeps_node(self):
+        """Missing declared attributes don't drop the node — they stay
+        missing on the graph, which is the right null semantics for
+        retrieval (``WHERE p.age > N`` naturally excludes them)."""
+        from graphrag_sdk.core.models import PropertyType
+        pipe = self._pipeline()
+        schema = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[
+                        PropertyType(name="age", type="INTEGER"),
+                        PropertyType(name="birth_date", type="DATE"),
+                    ],
+                )
+            ]
+        )
+        nodes = [
+            GraphNode(
+                id="full",
+                label="Person",
+                properties={"name": "Marie", "age": 56, "birth_date": "1867-11-07"},
+            ),
+            GraphNode(
+                id="partial",
+                label="Person",
+                properties={"name": "Pierre", "age": 39},
+            ),
+        ]
+        out = pipe._validate_attributes(GraphData(nodes=nodes), schema)
+        assert sorted(n.id for n in out.nodes) == ["full", "partial"]
+
+    def test_unknown_node_label_passes_through(self):
+        """``"Unknown"`` typed nodes (preserved by ``_prune``) must not be
+        validated against any declared properties."""
+        from graphrag_sdk.core.models import PropertyType
+        pipe = self._pipeline()
+        schema = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[PropertyType(name="age", type="INTEGER")],
+                )
+            ]
+        )
+        nodes = [GraphNode(id="u", label="Unknown", properties={"name": "x"})]
+        out = pipe._validate_attributes(GraphData(nodes=nodes), schema)
+        assert len(out.nodes) == 1
+        assert out.nodes[0].id == "u"
+
+    def test_undeclared_relationship_attribute_keys_are_stripped(self):
+        from graphrag_sdk.core.models import PropertyType
+        pipe = self._pipeline()
+        schema = GraphSchema(
+            entities=[EntityType(label="Person"), EntityType(label="Company")],
+            relations=[
+                RelationType(
+                    label="WORKS_AT",
+                    properties=[PropertyType(name="since", type="DATE")],
+                )
+            ],
+        )
+        rels = [
+            GraphRelationship(
+                start_node_id="a",
+                end_node_id="b",
+                type="RELATES",
+                properties={
+                    "rel_type": "WORKS_AT",
+                    "fact": "f1",
+                    "since": "2020-01-01",
+                    "leaked_key": "noise",
+                },
+            ),
+        ]
+        out = pipe._validate_attributes(GraphData(relationships=rels), schema)
+        assert len(out.relationships) == 1
+        props = out.relationships[0].properties
+        assert "leaked_key" not in props
+        assert props["since"] == "2020-01-01"
+        # Reserved keys still preserved.
+        assert props["rel_type"] == "WORKS_AT"
+        assert props["fact"] == "f1"

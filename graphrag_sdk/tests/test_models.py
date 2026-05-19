@@ -136,10 +136,118 @@ class TestDocumentModels:
 
 class TestSchemaTypes:
     def test_property_type(self):
-        pt = PropertyType(name="age", type="INT", required=True)
+        pt = PropertyType(name="age", type="INTEGER")
         assert pt.name == "age"
-        assert pt.type == "INT"
-        assert pt.required is True
+        assert pt.type == "INTEGER"
+
+    def test_property_type_normalizes_case(self):
+        pt = PropertyType(name="age", type="integer")
+        assert pt.type == "INTEGER"
+
+    def test_property_type_rejects_unknown_type(self):
+        with pytest.raises(ValidationError):
+            PropertyType(name="age", type="OBJECT")
+
+    def test_relation_type_properties_default_empty(self):
+        rt = RelationType(label="WORKS_AT")
+        assert rt.properties == []
+
+    def test_relation_type_with_properties(self):
+        rt = RelationType(
+            label="WORKS_AT",
+            properties=[PropertyType(name="since", type="DATE")],
+        )
+        assert len(rt.properties) == 1
+        assert rt.properties[0].type == "DATE"
+
+    def test_graph_schema_rejects_reserved_entity_property_name(self):
+        with pytest.raises(ValidationError):
+            GraphSchema(
+                entities=[
+                    EntityType(
+                        label="Person",
+                        properties=[PropertyType(name="name", type="STRING")],
+                    )
+                ]
+            )
+
+    def test_graph_schema_rejects_reserved_relation_property_name(self):
+        with pytest.raises(ValidationError):
+            GraphSchema(
+                relations=[
+                    RelationType(
+                        label="WORKS_AT",
+                        properties=[PropertyType(name="rel_type", type="STRING")],
+                    )
+                ]
+            )
+
+    def test_graph_schema_roundtrips_through_json_file(self, tmp_path):
+        schema = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    description="A human",
+                    properties=[
+                        PropertyType(name="age", type="INTEGER"),
+                        PropertyType(name="birth_date", type="DATE"),
+                    ],
+                )
+            ],
+            relations=[
+                RelationType(
+                    label="WORKS_AT",
+                    patterns=[("Person", "Company")],
+                    properties=[PropertyType(name="since", type="DATE")],
+                ),
+            ],
+        )
+        path = tmp_path / "ontology.json"
+        schema.save_to_file(str(path))
+        # File is real JSON and round-trippable.
+        loaded = GraphSchema.from_file(str(path))
+        assert loaded == schema
+        # Indentation default is set so files are diff-friendly.
+        text = path.read_text()
+        assert "\n" in text
+        assert "  " in text
+
+    def test_graph_schema_merge_unions_entities_relations_and_properties(self):
+        a = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[PropertyType(name="age", type="INTEGER")],
+                )
+            ],
+            relations=[
+                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+            ],
+        )
+        b = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[PropertyType(name="dob", type="DATE")],
+                ),
+                EntityType(label="Company"),
+            ],
+            relations=[
+                RelationType(
+                    label="WORKS_AT",
+                    patterns=[("Person", "Organization")],
+                    properties=[PropertyType(name="since", type="DATE")],
+                ),
+            ],
+        )
+        merged = a.merge(b)
+        assert {e.label for e in merged.entities} == {"Person", "Company"}
+        person = next(e for e in merged.entities if e.label == "Person")
+        assert {p.name for p in person.properties} == {"age", "dob"}
+        works = next(r for r in merged.relations if r.label == "WORKS_AT")
+        assert ("Person", "Company") in works.patterns
+        assert ("Person", "Organization") in works.patterns
+        assert {p.name for p in works.properties} == {"since"}
 
     def test_entity_type(self):
         et = EntityType(label="Person", description="A human")

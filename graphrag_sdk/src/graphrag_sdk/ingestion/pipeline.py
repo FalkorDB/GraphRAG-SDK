@@ -188,6 +188,8 @@ class IngestionPipeline:
             # Step 5: Prune against schema
             ctx.log("Step 5/9: Pruning against schema")
             graph_data = self._prune(graph_data, self.schema)
+            graph_data = self._validate_attributes(graph_data, self.schema)
+            graph_data = self._filter_quality(graph_data)
 
             # Step 6: Resolve duplicate entities
             ctx.log("Step 6/9: Resolving duplicates")
@@ -444,6 +446,77 @@ class IngestionPipeline:
         return GraphData(
             nodes=pruned_nodes,
             relationships=pruned_rels,
+            mentions=graph_data.mentions,
+            extracted_entities=graph_data.extracted_entities,
+            extracted_relations=graph_data.extracted_relations,
+        )
+
+    def _validate_attributes(self, graph_data: GraphData, schema: GraphSchema) -> GraphData:
+        """Strip undeclared attribute keys from nodes / relationships.
+
+        - Keys not declared in the schema and not in the SDK-reserved set are
+          dropped (debug-logged).
+        - Records are never dropped. Missing values stay missing on the graph,
+          which is the correct null semantics for retrieval queries
+          (``WHERE p.age > N`` naturally excludes nodes without ``age``).
+        - Skips ``"Unknown"`` nodes (preserved by :py:meth:`_prune`).
+        """
+        if not schema.entities and not schema.relations:
+            return graph_data
+
+        from graphrag_sdk.core.models import RESERVED_PROPERTY_NAMES
+
+        ent_declared: dict[str, dict[str, Any]] = {
+            e.label: {p.name: p for p in e.properties} for e in schema.entities
+        }
+        rel_declared: dict[str, dict[str, Any]] = {
+            r.label: {p.name: p for p in r.properties} for r in schema.relations
+        }
+
+        kept_nodes: list[GraphNode] = []
+        unknown_dropped_by_label: dict[str, int] = {}
+        for node in graph_data.nodes:
+            if node.label == "Unknown" or node.label not in ent_declared:
+                kept_nodes.append(node)
+                continue
+            declared = ent_declared[node.label]
+            unknown_keys = [
+                k
+                for k in list(node.properties.keys())
+                if k not in declared and k not in RESERVED_PROPERTY_NAMES
+            ]
+            for k in unknown_keys:
+                node.properties.pop(k, None)
+                unknown_dropped_by_label[node.label] = (
+                    unknown_dropped_by_label.get(node.label, 0) + 1
+                )
+            kept_nodes.append(node)
+
+        for label, count in unknown_dropped_by_label.items():
+            logger.debug(
+                "Dropped %d undeclared attribute key(s) on %s nodes",
+                count,
+                label,
+            )
+
+        kept_rels: list[GraphRelationship] = []
+        for rel in graph_data.relationships:
+            rel_label = rel.properties.get("rel_type", rel.type)
+            if rel_label not in rel_declared:
+                kept_rels.append(rel)
+                continue
+            declared = rel_declared[rel_label]
+            for k in [
+                k
+                for k in list(rel.properties.keys())
+                if k not in declared and k not in RESERVED_PROPERTY_NAMES
+            ]:
+                rel.properties.pop(k, None)
+            kept_rels.append(rel)
+
+        return GraphData(
+            nodes=kept_nodes,
+            relationships=kept_rels,
             mentions=graph_data.mentions,
             extracted_entities=graph_data.extracted_entities,
             extracted_relations=graph_data.extracted_relations,

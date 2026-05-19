@@ -166,6 +166,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
+        schema: Any | None = None,  # GraphSchema; forwarded to Cypher generation when enable_cypher
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
@@ -176,6 +177,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._rel_top_k = rel_top_k
         self._keyword_limit = keyword_limit
         self._enable_cypher = enable_cypher
+        self._schema = schema
 
     # -- Template Method hook --
 
@@ -197,7 +199,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         if self._enable_cypher:
             results = await asyncio.gather(
                 search_relates_edges(self._vector, query_vector, self._rel_top_k),
-                execute_cypher_retrieval(self._graph, self._llm, query),
+                execute_cypher_retrieval(self._graph, self._llm, query, schema=self._schema),
                 return_exceptions=True,
             )
             # Unpack RELATES results
