@@ -56,8 +56,9 @@ class PdfLoader(LoaderStrategy):
         """Extract text using PyMuPDF with sort=True for table-aware layout."""
         import fitz  # PyMuPDF
 
-        doc = fitz.open(str(path))
+        doc = None
         try:
+            doc = fitz.open(str(path))
             pages: list[str] = []
             for page in doc:
                 text = page.get_text(sort=True)
@@ -65,9 +66,12 @@ class PdfLoader(LoaderStrategy):
                     pages.append(text)
             page_count = len(doc)
         except Exception as exc:
+            logger.error("Failed to read PDF %s with PyMuPDF: %s", path, exc)
+            logger.debug("PyMuPDF read failure details", exc_info=True)
             raise LoaderError(f"Failed to read PDF {path}: {exc}") from exc
         finally:
-            doc.close()
+            if doc is not None:
+                doc.close()
 
         full_text = "\n\n".join(pages)
         logger.info(
@@ -117,4 +121,6 @@ class PdfLoader(LoaderStrategy):
                 ),
             )
         except Exception as exc:
+            logger.error("Failed to read PDF %s with pypdf: %s", path, exc)
+            logger.debug("pypdf read failure details", exc_info=True)
             raise LoaderError(f"Failed to read PDF {path}: {exc}") from exc

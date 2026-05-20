@@ -194,7 +194,7 @@ class TestIngestionPipeline:
         # KNOWS survives; WRONG pruned (+ Alien endpoint gone)
         assert result.relationships_created == 1
 
-    async def test_pipeline_wraps_exception(self, ctx, mock_graph_store, mock_vector_store):
+    async def test_pipeline_wraps_exception(self, ctx, mock_graph_store, mock_vector_store, caplog):
         """Non-IngestionError exceptions get wrapped."""
         class FailingLoader(LoaderStrategy):
             async def load(self, source, ctx):
@@ -209,8 +209,10 @@ class TestIngestionPipeline:
             vector_store=mock_vector_store,
             schema=GraphSchema(),
         )
-        with pytest.raises(IngestionError, match="Pipeline failed"):
-            await pipeline.run("test.txt", ctx)
+        with caplog.at_level("ERROR", logger="graphrag_sdk.ingestion.pipeline"):
+            with pytest.raises(IngestionError, match="Pipeline failed"):
+                await pipeline.run("test.txt", ctx)
+        assert "Pipeline failed with unexpected error" in caplog.text
 
     async def test_pipeline_writes_content_hash(self, ctx, mock_graph_store, mock_vector_store):
         """v1.1.0: Document node carries SHA-256 of the loaded text so

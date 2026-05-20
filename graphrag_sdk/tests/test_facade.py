@@ -9,7 +9,11 @@ import pytest
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError, DocumentNotFoundError
+from graphrag_sdk.core.exceptions import (
+    ConfigError,
+    DocumentNotFoundError,
+    LatencyBudgetExceededError,
+)
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
     ChatMessage,
@@ -101,6 +105,41 @@ class TestGraphRAGInit:
         strategy = CustomStrategy()
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, retrieval_strategy=strategy, embedding_dimension=8)
         assert g._retrieval_strategy is strategy
+
+    async def test_async_context_manager_returns_self_and_closes(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+
+        async with g as rag:
+            assert rag is g
+
+        mock_conn.close.assert_awaited_once()
+
+    async def test_async_context_manager_preserves_inner_exception_on_close_failure(
+        self, mock_conn, embedder, llm, caplog
+    ):
+        mock_conn.close = AsyncMock(side_effect=RuntimeError("close failed"))
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+
+        try:
+            with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
+                with pytest.raises(ValueError, match="inner failure"):
+                    async with g:
+                        raise ValueError("inner failure")
+        finally:
+            mock_conn.close.assert_awaited_once()
+            assert "Error closing connection during __aexit__" in caplog.text
+
+    async def test_async_context_manager_raises_close_failure_without_inner_exception(
+        self, mock_conn, embedder, llm
+    ):
+        mock_conn.close = AsyncMock(side_effect=RuntimeError("close failed"))
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+
+        with pytest.raises(RuntimeError, match="close failed"):
+            async with g:
+                pass
+
+        mock_conn.close.assert_awaited_once()
 
 
 class TestGraphRAGGraphAdmin:
@@ -410,6 +449,89 @@ class TestGraphRAGRetrieve:
         assert result.items[0].content == "B"
         assert llm._call_index == 0
 
+    async def test_retrieve_checks_budget_before_config_embedder_probe(
+        self, mock_conn, embedder
+    ):
+        llm = MockLLM(responses=["should not be called"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        ctx = Context(latency_budget_ms=1000.0)
+
+        async def config_query_exhausts_budget(*args, **kwargs):
+            ctx.latency_budget_ms = 0.0
+            result = MagicMock()
+            result.result_set = []
+            return result
+
+        g._graph_store.query_raw = AsyncMock(side_effect=config_query_exhausts_budget)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(return_value=RetrieverResult())
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(LatencyBudgetExceededError, match="graph config embedder probe"):
+            await g.retrieve("test", ctx=ctx)
+
+        assert embedder.call_count == 0
+        mock_strategy.search.assert_not_awaited()
+
+    async def test_retrieve_checks_budget_before_config_query(
+        self, mock_conn, embedder, monkeypatch
+    ):
+        llm = MockLLM(responses=["should not be called"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock()
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(return_value=RetrieverResult())
+        g._retrieval_strategy = mock_strategy
+        ctx = Context(latency_budget_ms=1000.0)
+
+        def exhaust_budget(self: Context, operation: str) -> None:
+            if operation == "graph config query":
+                raise LatencyBudgetExceededError("budget exhausted before config query")
+
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
+        with pytest.raises(LatencyBudgetExceededError, match="config query"):
+            await g.retrieve("test", ctx=ctx)
+
+        g._graph_store.query_raw.assert_not_awaited()
+        mock_strategy.search.assert_not_awaited()
+
+    async def test_retrieve_propagates_budget_error_from_config_query(
+        self, mock_conn, embedder
+    ):
+        llm = MockLLM(responses=["should not be called"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock(
+            side_effect=LatencyBudgetExceededError("budget exhausted in config query")
+        )
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(return_value=RetrieverResult())
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(LatencyBudgetExceededError, match="config query"):
+            await g.retrieve("test", ctx=Context(latency_budget_ms=1000.0))
+
+        mock_strategy.search.assert_not_awaited()
+
+    async def test_retrieve_propagates_budget_error_from_config_probe(
+        self, mock_conn, embedder
+    ):
+        llm = MockLLM(responses=["should not be called"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = MagicMock()
+        result.result_set = []
+        g._graph_store.query_raw = AsyncMock(return_value=result)
+        embedder.aembed_query = AsyncMock(
+            side_effect=LatencyBudgetExceededError("budget exhausted in config probe")
+        )
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(return_value=RetrieverResult())
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(LatencyBudgetExceededError, match="config probe"):
+            await g.retrieve("test", ctx=Context(latency_budget_ms=1000.0))
+
+        mock_strategy.search.assert_not_awaited()
+
 
 class TestGraphRAGCompletion:
     async def test_completion_basic(self, mock_conn, embedder):
@@ -533,6 +655,19 @@ class TestGraphRAGCompletion:
 
         with pytest.raises(TypeError, match="expected ChatMessage or dict"):
             await g.completion("test?", history=["not a dict"])
+
+    async def test_completion_history_non_string_content_raises(self, mock_conn, embedder):
+        """History dict content must be a string."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(ValueError, match="content must be a string"):
+            await g.completion("test?", history=[{"role": "user", "content": 123}])
 
     async def test_completion_no_history_uses_messages_api(self, mock_conn, embedder):
         """Without history, completion still uses ainvoke_messages (unified path)."""
@@ -680,6 +815,19 @@ class TestGraphRAGCompletion:
         assert result.metadata["retrieval_query"] == "Where did Jane Doe go to college?"
         assert result.answer == "She attended Stanford University."
 
+    async def test_question_rewrite_budget_exhaustion_propagates(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+
+        with pytest.raises(LatencyBudgetExceededError, match="question rewrite LLM call"):
+            await g._rewrite_question_with_history(
+                "Where did she go?",
+                [ChatMessage(role="user", content="Who is Jane?")],
+                ctx=Context(latency_budget_ms=0.0),
+            )
+
+        assert llm._call_index == 0
+
     async def test_completion_rewrite_fallback_on_empty(self, mock_conn, embedder):
         """If the rewrite LLM returns empty, fall back to the original question."""
         llm = MockLLM(responses=["", "Some answer."])
@@ -728,6 +876,40 @@ class TestGraphRAGCompletion:
         assert "Cite sources with [1] [2] markers." in final.content
         assert "SRC" in final.content
         assert "What is it?" in final.content
+
+    async def test_completion_checks_budget_before_retrieval(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
+        )
+        g._retrieval_strategy = mock_strategy
+        ctx = Context(latency_budget_ms=0.0)
+
+        with pytest.raises(LatencyBudgetExceededError, match="completion retrieval"):
+            await g.completion("q?", ctx=ctx)
+
+        mock_strategy.search.assert_not_awaited()
+        assert llm._call_index == 0
+
+    async def test_completion_checks_budget_before_final_llm(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+
+        async def search_and_exhaust(question, ctx):
+            ctx.latency_budget_ms = 0.0
+            return RetrieverResult(items=[RetrieverResultItem(content="c")])
+
+        mock_strategy.search = AsyncMock(side_effect=search_and_exhaust)
+        g._retrieval_strategy = mock_strategy
+
+        with pytest.raises(LatencyBudgetExceededError, match="completion LLM call"):
+            await g.completion("q?", ctx=Context(latency_budget_ms=1000.0))
+
+        mock_strategy.search.assert_awaited_once()
+        assert llm._call_index == 0
 
 
 class TestGraphRAGCompletionInjectionDefenses:

@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     RawSearchResult,
     RetrieverResult,
@@ -43,6 +44,14 @@ from graphrag_sdk.retrieval.strategies.result_assembly import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _unpack_gather_result(result: Any, default: Any) -> Any:
+    if isinstance(result, LatencyBudgetExceededError):
+        raise result
+    if isinstance(result, BaseException):
+        return default
+    return result
 
 
 class MultiPathRetrieval(RetrievalStrategy):
@@ -186,33 +195,30 @@ class MultiPathRetrieval(RetrievalStrategy):
         **kwargs: Any,
     ) -> RawSearchResult:
         # 1. Extract keywords
-        simple_kw, llm_kw = await self._extract_keywords(query)
+        ctx.ensure_budget("MultiPath keyword extraction")
+        simple_kw, llm_kw = await self._extract_keywords(query, ctx)
         all_keywords = llm_kw[:8] + simple_kw
         ctx.log(f"MultiPath [1/9]: {len(all_keywords)} keywords extracted")
 
         # 2. Embed question only
-        query_vector = await self._embedder.aembed_query(query)
+        ctx.ensure_budget("MultiPath question embedding")
+        query_vector = await self._embedder.aembed_query(
+            query,
+            timeout=ctx.remaining_budget_seconds,
+        )
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
         if self._enable_cypher:
             results = await asyncio.gather(
-                search_relates_edges(self._vector, query_vector, self._rel_top_k),
-                execute_cypher_retrieval(self._graph, self._llm, query),
+                search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx),
+                execute_cypher_retrieval(self._graph, self._llm, query, ctx=ctx),
                 return_exceptions=True,
             )
-            # Unpack RELATES results
-            if isinstance(results[0], BaseException):
-                fact_strings_scored, rel_entities = [], {}
-            else:
-                fact_strings_scored, rel_entities = results[0]
-            # Unpack Cypher results
-            cypher_facts: list[str] = []
-            cypher_entities: dict[str, dict] = {}
-            if not isinstance(results[1], BaseException):
-                cypher_facts, cypher_entities = results[1]
+            fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))
+            cypher_facts, cypher_entities = _unpack_gather_result(results[1], ([], {}))
         else:
             fact_strings_scored, rel_entities = await search_relates_edges(
-                self._vector, query_vector, self._rel_top_k
+                self._vector, query_vector, self._rel_top_k, ctx=ctx
             )
             cypher_facts, cypher_entities = [], {}
 
@@ -225,10 +231,10 @@ class MultiPathRetrieval(RetrievalStrategy):
             f"{len(fact_strings)} after filtering"
             + (f", {len(cypher_facts)} cypher results" if cypher_facts else "")
         )
-
+        # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
         # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
         found_entities, entity_sources = await discover_entities(
-            self._graph, self._vector, llm_kw, all_keywords
+            self._graph, self._vector, llm_kw, all_keywords, ctx=ctx
         )
         for eid, einfo in rel_entities.items():
             if eid not in found_entities:
@@ -242,20 +248,25 @@ class MultiPathRetrieval(RetrievalStrategy):
 
         # 4b. Sibling expansion for enumeration queries
         if is_enumeration_query(query):
-            n_siblings = await expand_sibling_entities(self._graph, found_entities, entity_sources)
+            n_siblings = await expand_sibling_entities(
+                self._graph,
+                found_entities,
+                entity_sources,
+                ctx=ctx,
+            )
             if n_siblings:
                 ctx.log(
                     f"MultiPath [4b/9]: +{n_siblings} sibling entities "
                     f"({len(found_entities)} total)"
                 )
-
+        # 5. Relationship expansion
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[: self._max_entities]
         relationship_strings = await expand_relationships(
-            self._graph, entity_list, self._max_relationships
+            self._graph, entity_list, self._max_relationships, ctx=ctx
         )
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
-
+        # 6. Chunk retrieval (4 paths)
         # 6. Chunk retrieval (4 paths)
         candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
             self._vector,
@@ -265,15 +276,20 @@ class MultiPathRetrieval(RetrievalStrategy):
             llm_kw,
             simple_kw,
             entity_list,
+            ctx=ctx,
         )
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
             f"({len(chunk_embeddings)} with stored embeddings)"
         )
-
         # 7. Source document names
-        chunk_doc_map = await fetch_chunk_documents(self._graph, list(candidate_chunks.keys()))
-
+        # 7. Source document names
+        chunk_doc_map = await fetch_chunk_documents(
+            self._graph,
+            list(candidate_chunks.keys()),
+            ctx=ctx,
+        )
+        # 8. Cosine rerank (uses stored embeddings when available)
         # 8. Cosine rerank (uses stored embeddings when available)
         source_passages = await rerank_chunks(
             self._embedder,
@@ -281,6 +297,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             candidate_chunks,
             self._chunk_top_k,
             stored_embeddings=chunk_embeddings,
+            ctx=ctx,
         )
 
         # Tag with source docs
@@ -295,6 +312,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx.log(f"MultiPath [8/9]: {len(source_passages)} passages after rerank")
 
         # 9. Detect question type + assemble
+        ctx.ensure_budget("MultiPath result assembly")
         q_type_hint = detect_question_type(query)
         return assemble_raw_result(
             entity_list,
@@ -322,24 +340,32 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     # -- Internal: keyword extraction (stays in orchestrator) --
 
-    async def _extract_keywords(self, query: str) -> tuple[list[str], list[str]]:
+    async def _extract_keywords(
+        self,
+        query: str,
+        ctx: Context,
+    ) -> tuple[list[str], list[str]]:
         """Extract simple + LLM-based keywords from the query."""
         words = re.sub(r"[?.!,;:'\"\-()\[\]]", " ", query.lower()).split()
         simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][:12]
 
         llm_kw: list[str] = []
         try:
+            ctx.ensure_budget("MultiPath keyword extraction LLM call")
             response = await self._llm.ainvoke(
                 "Extract ALL proper nouns, character names, person names, place names, "
                 "book titles, and specific terms from this question. "
                 "Return them comma-separated, nothing else.\n\n"
-                f"Question: {query}\n\nNames: "
+                f"Question: {query}\n\nNames: ",
+                timeout=ctx.remaining_budget_seconds,
             )
             llm_kw = [
                 k.strip().strip("'\"").rstrip("()").strip()
                 for k in response.content.split(",")
                 if k.strip() and len(k.strip()) > 1
             ]
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug(f"LLM keyword extraction failed: {exc}")
 
@@ -351,7 +377,12 @@ class MultiPathRetrieval(RetrievalStrategy):
         self, query_vector: list[float]
     ) -> tuple[list[tuple[str, float]], dict[str, dict]]:
         """Backward-compat wrapper — delegates to module function."""
-        return await search_relates_edges(self._vector, query_vector, self._rel_top_k)
+        return await search_relates_edges(
+            self._vector,
+            query_vector,
+            self._rel_top_k,
+            ctx=Context(),
+        )
 
     @staticmethod
     def _detect_question_type(query: str) -> str:

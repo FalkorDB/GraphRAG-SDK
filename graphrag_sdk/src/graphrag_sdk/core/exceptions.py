@@ -10,6 +10,12 @@ class GraphRAGError(Exception):
     pass
 
 
+class LatencyBudgetExceededError(GraphRAGError):
+    """Raised when an operation cannot start within the remaining latency budget."""
+
+    pass
+
+
 # ── Provider Errors ──────────────────────────────────────────────
 
 
@@ -19,8 +25,20 @@ class LLMError(GraphRAGError):
     pass
 
 
+class LLMTimeoutError(LLMError):
+    """Raised when an LLM provider call exceeds its configured timeout."""
+
+    pass
+
+
 class EmbeddingError(GraphRAGError):
     """Raised when an embedding provider call fails."""
+
+    pass
+
+
+class EmbeddingTimeoutError(EmbeddingError):
+    """Raised when an embedding provider call exceeds its configured timeout."""
 
     pass
 

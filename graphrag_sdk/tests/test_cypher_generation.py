@@ -136,6 +136,55 @@ class TestSanitizeCypher:
 
 
 class TestExecuteCypherRetrieval:
+    async def test_budget_exhaustion_propagates_before_generation(self):
+        """Latency budget exhaustion should not be swallowed as generation failure."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock()
+        mock_graph = MagicMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="Cypher generation LLM call"):
+            await execute_cypher_retrieval(
+                mock_graph,
+                mock_llm,
+                "test?",
+                ctx=Context(latency_budget_ms=0.0),
+            )
+        mock_llm.ainvoke.assert_not_awaited()
+
+    async def test_budget_exhaustion_propagates_before_execution(self):
+        """Budget expiry during generation should block the Cypher DB query."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        ctx = Context(latency_budget_ms=1000.0)
+
+        async def generate_and_exhaust(*args, **kwargs):
+            ctx.latency_budget_ms = 0.0
+            return LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name LIMIT 10\n```")
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=generate_and_exhaust)
+        mock_graph = MagicMock()
+        mock_graph.query_raw = AsyncMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="Cypher execution"):
+            await execute_cypher_retrieval(mock_graph, mock_llm, "test?", ctx=ctx)
+        mock_graph.query_raw.assert_not_awaited()
+
     async def test_returns_empty_on_generation_failure(self):
         """When LLM returns garbage, should return empty results."""
         from unittest.mock import AsyncMock, MagicMock

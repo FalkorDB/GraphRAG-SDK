@@ -8,10 +8,13 @@ from typing import Any
 
 import numpy as np
 
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import RawSearchResult
 from graphrag_sdk.core.providers import Embedder
 
 logger = logging.getLogger(__name__)
+_UNBOUNDED = Context()
 
 
 def cosine_sim(a: list[float], b: list[float]) -> float:
@@ -29,6 +32,7 @@ async def rerank_chunks(
     candidate_chunks: dict[str, str],
     chunk_top_k: int = 15,
     stored_embeddings: dict[str, list[float]] | None = None,
+    ctx: Context = _UNBOUNDED,
 ) -> list[str]:
     """Rank candidates by cosine similarity, take top_k.
 
@@ -60,10 +64,16 @@ async def rerank_chunks(
 
     # Fallback: re-embed all candidates (coverage too low for fast path)
     try:
-        chunk_vectors = await embedder.aembed_documents(chunk_texts)
+        ctx.ensure_budget("chunk reranking embedding")
+        chunk_vectors = await embedder.aembed_documents(
+            chunk_texts,
+            timeout=ctx.remaining_budget_seconds,
+        )
         scored = [(i, cosine_sim(query_vector, cvec)) for i, cvec in enumerate(chunk_vectors)]
         scored.sort(key=lambda x: x[1], reverse=True)
         return [chunk_texts[i] for i, _ in scored[:chunk_top_k]]
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("Chunk reranking failed, returning unranked: %s", exc)
         return chunk_texts[:chunk_top_k]

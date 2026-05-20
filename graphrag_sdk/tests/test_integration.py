@@ -237,6 +237,7 @@ async def _entity_count(rag, name: str) -> int:
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestIncrementalUpdateInvariants:
     """v1.1.0 load-bearing correctness: scoped orphan cleanup preserves
     entities shared across documents. Run against real FalkorDB.

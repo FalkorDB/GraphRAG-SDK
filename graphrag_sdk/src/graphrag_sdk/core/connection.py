@@ -180,6 +180,12 @@ class FalkorDBConnection:
                 last_exc = exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
+                    logger.error(
+                        "Non-transient FalkorDB query failure: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
                     raise
                 await self._breaker.record_failure()
                 logger.warning(
@@ -193,7 +199,20 @@ class FalkorDBConnection:
                         break
                     base_delay = self.config.retry_delay * (2**attempt)
                     await asyncio.sleep(base_delay * (0.5 + random.random()))
-        raise last_exc  # type: ignore[misc]
+        logger.error(
+            "FalkorDB query failed after %d attempts: %s: %s",
+            self.config.retry_count,
+            type(last_exc).__name__ if last_exc is not None else "UnknownError",
+            last_exc,
+        )
+        if last_exc is not None:
+            logger.debug(
+                "FalkorDB query failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("FalkorDB query failed without an exception")
 
     # Substrings that indicate a non-transient (permanent) error —
     # retrying will never succeed.

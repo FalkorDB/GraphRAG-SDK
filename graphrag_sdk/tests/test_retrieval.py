@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import RetrieverError
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError, RetrieverError
 from graphrag_sdk.core.models import RawSearchResult, RetrieverResult, RetrieverResultItem
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
@@ -53,10 +53,12 @@ class TestRetrievalStrategyBase:
         with pytest.raises(RetrieverError, match="Empty query"):
             await strategy.search("   ", ctx)
 
-    async def test_search_wraps_exception(self, ctx):
+    async def test_search_wraps_exception(self, ctx, caplog):
         strategy = StubRetrieval(should_fail=True)
-        with pytest.raises(RetrieverError, match="failed"):
-            await strategy.search("valid query", ctx)
+        with caplog.at_level("ERROR", logger="graphrag_sdk.retrieval.strategies.base"):
+            with pytest.raises(RetrieverError, match="failed"):
+                await strategy.search("valid query", ctx)
+        assert "Retrieval [StubRetrieval] failed" in caplog.text
 
     async def test_search_default_context(self):
         """search() creates default Context if none provided."""
@@ -114,6 +116,16 @@ class TestLocalRetrieval:
         await local_strategy.search("test query", ctx)
         assert embedder.call_count >= 1
 
+    async def test_local_query_embedding_uses_remaining_budget(self, local_strategy, embedder):
+        embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+        ctx = Context(latency_budget_ms=1000.0)
+
+        await local_strategy.search("test query", ctx)
+
+        timeout = embedder.aembed_query.call_args.kwargs["timeout"]
+        assert timeout is not None
+        assert 0 < timeout <= 1.0
+
     async def test_local_includes_entities(self, ctx, local_strategy):
         result = await local_strategy.search("test", ctx)
         # Should include entity info in content
@@ -155,3 +167,45 @@ class TestLocalRetrieval:
     async def test_local_chunk_id_in_metadata(self, ctx, local_strategy):
         result = await local_strategy.search("test", ctx)
         assert result.items[0].metadata["chunk_id"] == "chunk-1"
+
+    async def test_local_budget_checked_before_embedding(
+        self, local_strategy, embedder, mock_vector_store
+    ):
+        with pytest.raises(LatencyBudgetExceededError, match="query embedding"):
+            await local_strategy.search("test", Context(latency_budget_ms=0.0))
+
+        assert embedder.call_count == 0
+        mock_vector_store.search_chunks.assert_not_awaited()
+
+    async def test_local_budget_checked_before_vector_search(
+        self, local_strategy, embedder, mock_vector_store, monkeypatch
+    ):
+        ctx = Context(latency_budget_ms=1000.0)
+
+        def exhaust_budget(self: Context, operation: str) -> None:
+            if operation == "LocalRetrieval chunk vector search":
+                raise LatencyBudgetExceededError("budget exhausted before vector search")
+
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
+        with pytest.raises(LatencyBudgetExceededError, match="vector search"):
+            await local_strategy.search("test", ctx)
+
+        assert embedder.call_count == 1
+        mock_vector_store.search_chunks.assert_not_awaited()
+
+    async def test_local_budget_checked_before_entity_expansion(
+        self, local_strategy, embedder, mock_vector_store, mock_graph_store, monkeypatch
+    ):
+        ctx = Context(latency_budget_ms=1000.0)
+
+        def exhaust_budget(self: Context, operation: str) -> None:
+            if operation == "LocalRetrieval entity expansion":
+                raise LatencyBudgetExceededError("budget exhausted before entity expansion")
+
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
+        with pytest.raises(LatencyBudgetExceededError, match="entity expansion"):
+            await local_strategy.search("test", ctx)
+
+        assert embedder.call_count == 1
+        mock_vector_store.search_chunks.assert_awaited_once()
+        mock_graph_store.get_connected_entities.assert_not_awaited()

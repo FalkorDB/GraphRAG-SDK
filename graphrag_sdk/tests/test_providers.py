@@ -2,24 +2,24 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
+from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
 from graphrag_sdk.core.models import LLMResponse
 from graphrag_sdk.core.providers import (
     Embedder,
-    LLMBatchItem,
-    LLMInterface,
     LiteLLM,
     LiteLLMEmbedder,
+    LLMBatchItem,
+    LLMInterface,
     OpenRouterEmbedder,
     OpenRouterLLM,
 )
-
 
 # ── Concrete test implementations ──────────────────────────────
 
@@ -56,6 +56,26 @@ class TestEmbedder:
         assert isinstance(result, list)
         assert result[0] == 5.0  # len("world")
 
+    async def test_aembed_query_timeout_raises_typed_error(self):
+        class SlowEmbedder(SimpleEmbedder):
+            def embed_query(self, text: str, **kwargs: Any) -> list[float]:
+                time.sleep(0.05)
+                return super().embed_query(text, **kwargs)
+
+        emb = SlowEmbedder()
+        with pytest.raises(EmbeddingTimeoutError, match="timed out"):
+            await emb.aembed_query("world", timeout=0.001)
+
+    async def test_aembed_documents_timeout_raises_typed_error(self):
+        class SlowEmbedder(SimpleEmbedder):
+            def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+                time.sleep(0.05)
+                return super().embed_documents(texts, **kwargs)
+
+        emb = SlowEmbedder()
+        with pytest.raises(EmbeddingTimeoutError, match="timed out"):
+            await emb.aembed_documents(["world"], timeout=0.001)
+
     def test_cannot_instantiate_abc(self):
         with pytest.raises(TypeError):
             Embedder()  # type: ignore[abstract]
@@ -80,6 +100,35 @@ class TestLLMInterface:
         llm = SimpleLLM()
         response = await llm.ainvoke("Async test")
         assert response.content.startswith("Echo:")
+
+    async def test_ainvoke_timeout_raises_typed_error(self):
+        class SlowLLM(SimpleLLM):
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                time.sleep(0.05)
+                return super().invoke(prompt, **kwargs)
+
+        llm = SlowLLM()
+        with pytest.raises(LLMTimeoutError, match="timed out"):
+            await llm.ainvoke("Async test", timeout=0.001, max_retries=1)
+
+    async def test_ainvoke_rejects_non_positive_timeout(self):
+        llm = SimpleLLM()
+        with pytest.raises(ValueError, match="timeout must be > 0"):
+            await llm.ainvoke("Async test", timeout=0)
+
+    async def test_provider_wait_timeout_zero_raises_typed_error(self):
+        from graphrag_sdk.core.providers._timeout import wait_for_provider_call
+
+        async def never_called():
+            await asyncio.sleep(0)
+
+        with pytest.raises(LLMTimeoutError, match="timed out"):
+            await wait_for_provider_call(
+                never_called(),
+                timeout=0.0,
+                timeout_error=LLMTimeoutError,
+                operation="test LLM call",
+            )
 
     async def test_invoke_with_model(self):
         class Result(BaseModel):
@@ -164,6 +213,30 @@ class TestLLMInterface:
         assert "proxy=" not in msg
         # Single-line invariant
         assert "\n" not in msg
+
+    async def test_ainvoke_exhaustion_logs_error_without_exception_body(self, caplog):
+        secret_body = "Authorization: Bearer SECRET_KEY_xyz\nproxy=https://internal"
+
+        class FailingLLM(LLMInterface):
+            def __init__(self) -> None:
+                super().__init__(model_name="fail")
+
+            def invoke(self, prompt: str, **kwargs: Any) -> LLMResponse:
+                raise RuntimeError(f"upstream 500\n{secret_body}")
+
+        import logging
+
+        llm = FailingLLM()
+        with caplog.at_level(logging.ERROR, logger="graphrag_sdk.core.providers.base"):
+            with pytest.raises(RuntimeError):
+                await llm.ainvoke("hi", max_retries=1)
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert errors
+        msg = errors[0].getMessage()
+        assert "LLM call failed after 1 attempts" in msg
+        assert "upstream 500" in msg
+        assert "SECRET_KEY_xyz" not in msg
+        assert "proxy=" not in msg
 
 
 class TestSummarizeException:
@@ -388,6 +461,19 @@ class TestLiteLLM:
         mock_litellm.acompletion.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_ainvoke_timeout_raises_typed_error(self):
+        async def slow_completion(**kwargs):
+            await asyncio.sleep(0.05)
+            return _mock_litellm_completion_response("too late")
+
+        mock_litellm = MagicMock()
+        mock_litellm.acompletion = slow_completion
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            llm = LiteLLM(model="azure/gpt-4")
+            with pytest.raises(LLMTimeoutError, match="timed out"):
+                await llm.ainvoke("Hello", timeout=0.001, max_retries=1)
+
+    @pytest.mark.asyncio
     async def test_ainvoke_retries_on_failure(self):
         mock_litellm = MagicMock()
         mock_litellm.acompletion = AsyncMock(
@@ -604,6 +690,19 @@ class TestLiteLLMEmbedder:
         assert result == vec
 
     @pytest.mark.asyncio
+    async def test_aembed_query_timeout_raises_typed_error(self):
+        async def slow_embedding(**kwargs):
+            await asyncio.sleep(0.05)
+            return _mock_litellm_embedding_response([[0.7, 0.8, 0.9]])
+
+        mock_litellm = MagicMock()
+        mock_litellm.aembedding = slow_embedding
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            embedder = LiteLLMEmbedder(model="text-embedding-ada-002")
+            with pytest.raises(EmbeddingTimeoutError, match="timed out"):
+                await embedder.aembed_query("hello", timeout=0.001)
+
+    @pytest.mark.asyncio
     async def test_aembed_documents(self):
         mock_litellm = MagicMock()
         vecs = [[0.1, 0.2], [0.3, 0.4]]
@@ -615,6 +714,38 @@ class TestLiteLLMEmbedder:
             result = await embedder.aembed_documents(["a", "b"])
 
         assert result == vecs
+
+    @pytest.mark.asyncio
+    async def test_aembed_documents_timeout_is_not_binary_split(self):
+        async def slow_embedding(**kwargs):
+            await asyncio.sleep(0.05)
+            return _mock_litellm_embedding_response([[0.1, 0.2]])
+
+        mock_litellm = MagicMock()
+        mock_litellm.aembedding = AsyncMock(side_effect=slow_embedding)
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            embedder = LiteLLMEmbedder(model="text-embedding-ada-002")
+            with pytest.raises(EmbeddingTimeoutError, match="timed out"):
+                await embedder.aembed_documents(["a", "b"], timeout=0.001)
+
+        assert mock_litellm.aembedding.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_aembed_documents_timeout_is_overall_deadline(self):
+        async def slow_embedding(**kwargs):
+            await asyncio.sleep(0.02)
+            return _mock_litellm_embedding_response([[0.1, 0.2]])
+
+        mock_litellm = MagicMock()
+        mock_litellm.aembedding = AsyncMock(side_effect=slow_embedding)
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            embedder = LiteLLMEmbedder(model="text-embedding-ada-002", batch_size=1)
+            started = time.monotonic()
+            with pytest.raises(EmbeddingTimeoutError, match="timed out"):
+                await embedder.aembed_documents(["a", "b"], timeout=0.03)
+
+        assert time.monotonic() - started < 0.2
+        assert mock_litellm.aembedding.await_count == 2
 
     def test_import_error(self):
         with patch.dict("sys.modules", {"litellm": None}):
@@ -632,7 +763,9 @@ class TestOpenRouterLLM:
     def test_invoke(self):
         mock_openai = MagicMock()
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _mock_openai_completion_response("router hi")
+        mock_client.chat.completions.create.return_value = _mock_openai_completion_response(
+            "router hi"
+        )
         mock_openai.OpenAI.return_value = mock_client
         with patch.dict("sys.modules", {"openai": mock_openai}):
             llm = OpenRouterLLM(model="anthropic/claude-sonnet-4-20250514", api_key="or-key")
@@ -658,6 +791,22 @@ class TestOpenRouterLLM:
 
         assert result.content == "async router"
         mock_openai.AsyncOpenAI.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_timeout_raises_typed_error(self):
+        mock_openai = MagicMock()
+        mock_async_client = MagicMock()
+
+        async def slow_create(**kwargs):
+            await asyncio.sleep(0.05)
+            return _mock_openai_completion_response("too late")
+
+        mock_async_client.chat.completions.create = slow_create
+        mock_openai.AsyncOpenAI.return_value = mock_async_client
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            llm = OpenRouterLLM(model="openai/gpt-4", api_key="or-key")
+            with pytest.raises(LLMTimeoutError, match="timed out"):
+                await llm.ainvoke("Hello", timeout=0.001, max_retries=1)
 
     def test_env_var_fallback(self):
         mock_openai = MagicMock()
@@ -705,7 +854,11 @@ class TestOpenRouterEmbedder:
         ]
         mock_openai.OpenAI.return_value = mock_client
         with patch.dict("sys.modules", {"openai": mock_openai}):
-            embedder = OpenRouterEmbedder(model="openai/text-embedding-ada-002", api_key="k", batch_size=2)
+            embedder = OpenRouterEmbedder(
+                model="openai/text-embedding-ada-002",
+                api_key="k",
+                batch_size=2,
+            )
             result = embedder.embed_documents(["a", "b", "c"])
 
         assert len(result) == 3
@@ -726,6 +879,22 @@ class TestOpenRouterEmbedder:
             result = await embedder.aembed_query("hello")
 
         assert result == vec
+
+    @pytest.mark.asyncio
+    async def test_aembed_query_timeout_raises_typed_error(self):
+        mock_openai = MagicMock()
+        mock_async_client = MagicMock()
+
+        async def slow_create(**kwargs):
+            await asyncio.sleep(0.05)
+            return _mock_openai_embedding_response([[0.4, 0.5, 0.6]])
+
+        mock_async_client.embeddings.create = slow_create
+        mock_openai.AsyncOpenAI.return_value = mock_async_client
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            embedder = OpenRouterEmbedder(model="openai/text-embedding-ada-002", api_key="k")
+            with pytest.raises(EmbeddingTimeoutError, match="timed out"):
+                await embedder.aembed_query("hello", timeout=0.001)
 
     def test_import_error(self):
         with patch.dict("sys.modules", {"openai": None}):

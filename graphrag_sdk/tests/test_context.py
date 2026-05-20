@@ -6,6 +6,7 @@ import time
 import pytest
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 
 
 class TestContextCreation:
@@ -65,6 +66,15 @@ class TestLatencyBudget:
         time.sleep(0.001)
         assert ctx.budget_exceeded is True
         assert ctx.remaining_budget_ms == 0.0
+
+    def test_ensure_budget_raises_when_exhausted(self):
+        ctx = Context(latency_budget_ms=0.0)
+        with pytest.raises(LatencyBudgetExceededError, match="before test operation"):
+            ctx.ensure_budget("test operation")
+
+    def test_ensure_budget_allows_operation_without_budget(self):
+        ctx = Context()
+        ctx.ensure_budget("test operation")
 
 
 class TestChildContext:

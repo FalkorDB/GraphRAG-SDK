@@ -15,7 +15,12 @@ from uuid import uuid4
 from graphrag_sdk import __version__
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError, DatabaseError, DocumentNotFoundError
+from graphrag_sdk.core.exceptions import (
+    ConfigError,
+    DatabaseError,
+    DocumentNotFoundError,
+    LatencyBudgetExceededError,
+)
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
     BatchEntry,
@@ -1446,13 +1451,16 @@ class GraphRAG:
             ctx = Context()
 
         ctx.log(f"Retrieve: {question[:80]}...")
+        ctx.ensure_budget("graph config validation")
 
-        await self._validate_graph_config()
+        await self._validate_graph_config(ctx=ctx)
 
         retrieval = strategy or self._retrieval_strategy
+        ctx.ensure_budget("retrieval strategy search")
         retriever_result = await retrieval.search(question, ctx)
 
         if reranker is not None:
+            ctx.ensure_budget("retrieval reranking")
             retriever_result = await reranker.rerank(question, retriever_result, ctx)
 
         ctx.log(f"Retrieved {len(retriever_result.items)} context items")
@@ -1480,13 +1488,16 @@ class GraphRAG:
                         f"history[{i}]: each message must have 'role' and "
                         f"'content' keys, got {sorted(msg.keys())}"
                     )
-                try:
-                    validated.append(ChatMessage(role=msg["role"], content=msg["content"]))
-                except Exception:
+                role = msg["role"]
+                content = msg["content"]
+                if role not in {"system", "user", "assistant"}:
                     raise ValueError(
-                        f"history[{i}]: invalid role '{msg['role']}'. "
+                        f"history[{i}]: invalid role '{role}'. "
                         f"Must be one of: 'system', 'user', 'assistant'"
                     )
+                if not isinstance(content, str):
+                    raise ValueError(f"history[{i}]: content must be a string")
+                validated.append(ChatMessage(role=role, content=content))
             else:
                 raise TypeError(
                     f"history[{i}]: expected ChatMessage or dict, got {type(msg).__name__}"
@@ -1515,8 +1526,11 @@ class GraphRAG:
             question=question,
         )
         try:
-            resp = await self.llm.ainvoke(prompt)
+            ctx.ensure_budget("question rewrite LLM call")
+            resp = await self.llm.ainvoke(prompt, timeout=ctx.remaining_budget_seconds)
             rewritten = (resp.content or "").strip().splitlines()[0].strip() if resp.content else ""
+        except LatencyBudgetExceededError:
+            raise
         except Exception as e:
             # Broad catch is intentional (see docstring) — but log at WARNING
             # with full traceback so programming bugs surface in operator
@@ -1585,6 +1599,7 @@ class GraphRAG:
         # Step 1: Optionally rewrite the question for retrieval.
         retrieval_query = question
         if validated_history and rewrite_question_with_history:
+            ctx.ensure_budget("question rewrite")
             retrieval_query = await self._rewrite_question_with_history(
                 question,
                 validated_history,
@@ -1594,6 +1609,7 @@ class GraphRAG:
                 ctx.log(f"Rewrote for retrieval: {retrieval_query[:80]}")
 
         # Step 2: Retrieve + rerank (using possibly-rewritten query).
+        ctx.ensure_budget("completion retrieval")
         retriever_result = await self.retrieve(
             retrieval_query,
             strategy=strategy,
@@ -1635,7 +1651,11 @@ class GraphRAG:
             ChatMessage(role="user", content=final_user_content),
         ]
 
-        llm_response = await self.llm.ainvoke_messages(messages)
+        ctx.ensure_budget("completion LLM call")
+        llm_response = await self.llm.ainvoke_messages(
+            messages,
+            timeout=ctx.remaining_budget_seconds,
+        )
 
         result = RagResult(
             answer=self._clean_answer(llm_response.content),
@@ -1675,7 +1695,7 @@ class GraphRAG:
         except Exception:
             logger.debug("Failed to write graph config node", exc_info=True)
 
-    async def _validate_graph_config(self) -> None:
+    async def _validate_graph_config(self, *, ctx: Context | None = None) -> None:
         """Check that the current embedder matches the graph's stored config.
 
         Two checks, both cached after first run:
@@ -1697,6 +1717,8 @@ class GraphRAG:
             return
 
         try:
+            if ctx is not None:
+                ctx.ensure_budget("graph config query")
             result = await self._graph_store.query_raw(
                 "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
                 "RETURN c.embedding_model, c.embedding_dimension"
@@ -1721,6 +1743,8 @@ class GraphRAG:
                     )
         except ConfigError:
             raise
+        except LatencyBudgetExceededError:
+            raise
         except Exception:
             # Don't mark as validated on transient failures — retry next call.
             logger.debug("Failed to validate graph config", exc_info=True)
@@ -1729,8 +1753,15 @@ class GraphRAG:
         # Probe the embedder once: confirm it produces vectors of the
         # configured dimension. Catches user error like
         # ``embedding_dimension=256`` paired with a 1536-dim model.
+        if ctx is not None:
+            ctx.ensure_budget("graph config embedder probe")
         try:
-            probe = await self.embedder.aembed_query("dim_check")
+            probe = await self.embedder.aembed_query(
+                "dim_check",
+                timeout=ctx.remaining_budget_seconds if ctx is not None else None,
+            )
+        except LatencyBudgetExceededError:
+            raise
         except Exception:
             # Probe failure is non-fatal — but don't cache a "validated"
             # state, otherwise a transient outage permanently disables

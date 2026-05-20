@@ -8,7 +8,11 @@ import logging
 import re
 from typing import Any
 
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
 logger = logging.getLogger(__name__)
+_UNBOUNDED = Context()
 
 _ENUMERATION_RE = re.compile(
     r"\b(every|each|complete list|full list|list all|list of all"
@@ -26,6 +30,7 @@ async def search_relates_edges(
     vector_store: Any,
     query_vector: list[float],
     rel_top_k: int = 15,
+    ctx: Context = _UNBOUNDED,
 ) -> tuple[list[tuple[str, float]], dict[str, dict]]:
     """Search RELATES edges by vector similarity.
 
@@ -37,6 +42,7 @@ async def search_relates_edges(
     fact_strings: list[tuple[str, float]] = []
     entities: dict[str, dict] = {}
     try:
+        ctx.ensure_budget("RELATES vector search")
         results = await vector_store.search_relationships(query_vector, top_k=rel_top_k)
         for rel in results:
             src = rel.get("src_name", "")
@@ -58,6 +64,8 @@ async def search_relates_edges(
                 tgt_id = tgt.strip().lower().replace(" ", "_")
                 if tgt_id not in entities:
                     entities[tgt_id] = {"name": tgt, "description": ""}
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("RELATES edge vector search failed: %s", exc)
     return fact_strings, entities
@@ -68,6 +76,7 @@ async def discover_entities(
     vector_store: Any,
     llm_kw: list[str],
     all_keywords: list[str],
+    ctx: Context = _UNBOUNDED,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """2-path entity discovery.
 
@@ -107,6 +116,7 @@ async def discover_entities(
         # so exact matches land at the head of `found` and survive the
         # downstream max_entities / result_assembly caps.
         try:
+            ctx.ensure_budget("entity exact-name search")
             result = await graph_store.query_raw(
                 "UNWIND $keywords AS kw "
                 "CALL { "
@@ -127,6 +137,8 @@ async def discover_entities(
                     },
                     "cypher_exact",
                 )
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug("Entity exact-name search failed: %s", exc)
 
@@ -134,6 +146,7 @@ async def discover_entities(
         # Excludes exact matches (already added in pass a1) so the quota
         # isn't spent re-fetching them.
         try:
+            ctx.ensure_budget("entity contains search")
             result = await graph_store.query_raw(
                 "UNWIND $keywords AS kw "
                 "CALL { "
@@ -157,17 +170,21 @@ async def discover_entities(
                     },
                     "cypher_contains",
                 )
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug("Entity CONTAINS search failed: %s", exc)
 
     # Path b: Fulltext search on entity index
     for kw in all_keywords[:6]:
         try:
+            ctx.ensure_budget("entity fulltext search")
             ft_ents = await vector_store.fulltext_search_entities(kw, top_k=3)
             for ent in ft_ents:
                 eid = ent.get("id", "")
                 if eid:
                     try:
+                        ctx.ensure_budget("entity detail fetch")
                         detail = await graph_store.query_raw(
                             "MATCH (e:__Entity__ {id: $eid}) "
                             "RETURN e.name AS name, e.description AS desc",
@@ -183,9 +200,13 @@ async def discover_entities(
                                 },
                                 "fulltext",
                             )
+                    except LatencyBudgetExceededError:
+                        raise
                     except Exception:
                         logger.debug("Entity detail fetch failed for %s", eid, exc_info=True)
                         _add(eid, {"name": "", "description": ""}, "fulltext")
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug("Entity fulltext search failed for '%s': %s", kw, exc)
 
@@ -197,6 +218,7 @@ async def expand_sibling_entities(
     found_entities: dict[str, dict],
     found_sources: dict[str, str],
     max_siblings: int = 20,
+    ctx: Context = _UNBOUNDED,
 ) -> int:
     """Expand discovered entities by finding graph siblings.
 
@@ -216,6 +238,7 @@ async def expand_sibling_entities(
     added = 0
 
     try:
+        ctx.ensure_budget("sibling entity expansion")
         result = await graph_store.query_raw(
             "MATCH (e:__Entity__) WHERE e.id IN $found_ids "
             "MATCH (e)-[]-(hub:__Entity__) "
@@ -238,6 +261,8 @@ async def expand_sibling_entities(
                 }
                 found_sources[eid] = "sibling_expansion"
                 added += 1
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("Sibling entity expansion failed: %s", exc)
 
