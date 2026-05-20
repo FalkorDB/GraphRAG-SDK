@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Any
 
 from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
@@ -16,12 +17,8 @@ from graphrag_sdk.core.providers._retry import (
     binary_split_retry_sync,
     summarize_exception,
 )
-from graphrag_sdk.core.providers.base import (
-    Embedder,
-    LLMInterface,
-    _validate_timeout,
-    _wait_for_provider_call,
-)
+from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
+from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +149,7 @@ class OpenRouterLLM(LLMInterface):
     ) -> LLMResponse:
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
-        _validate_timeout(timeout)
+        validate_timeout(timeout)
         client = self._get_async_client()
         create_kwargs = self._build_create_kwargs(
             [{"role": "user", "content": prompt}],
@@ -161,7 +158,7 @@ class OpenRouterLLM(LLMInterface):
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await _wait_for_provider_call(
+                response = await wait_for_provider_call(
                     client.chat.completions.create(**create_kwargs),
                     timeout=timeout,
                     timeout_error=LLMTimeoutError,
@@ -207,7 +204,7 @@ class OpenRouterLLM(LLMInterface):
         """Native multi-turn completion via OpenRouter."""
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
-        _validate_timeout(timeout)
+        validate_timeout(timeout)
         client = self._get_async_client()
         create_kwargs = self._build_create_kwargs(
             [m.to_dict() for m in messages],
@@ -216,7 +213,7 @@ class OpenRouterLLM(LLMInterface):
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await _wait_for_provider_call(
+                response = await wait_for_provider_call(
                     client.chat.completions.create(**create_kwargs),
                     timeout=timeout,
                     timeout_error=LLMTimeoutError,
@@ -334,9 +331,9 @@ class OpenRouterEmbedder(Embedder):
         **kwargs: Any,
     ) -> list[list[float]]:
         """Raw async embed without retry — called by binary_split_retry_async."""
-        _validate_timeout(timeout)
+        validate_timeout(timeout)
         client = self._get_async_client()
-        response = await _wait_for_provider_call(
+        response = await wait_for_provider_call(
             client.embeddings.create(model=self.model, input=texts, **kwargs),
             timeout=timeout,
             timeout_error=EmbeddingTimeoutError,
@@ -361,9 +358,9 @@ class OpenRouterEmbedder(Embedder):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> list[float]:
-        _validate_timeout(timeout)
+        validate_timeout(timeout)
         client = self._get_async_client()
-        response = await _wait_for_provider_call(
+        response = await wait_for_provider_call(
             client.embeddings.create(model=self.model, input=text, **kwargs),
             timeout=timeout,
             timeout_error=EmbeddingTimeoutError,
@@ -378,17 +375,38 @@ class OpenRouterEmbedder(Embedder):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> list[list[float]]:
-        _validate_timeout(timeout)
+        validate_timeout(timeout)
         if not texts:
             return []
+        deadline = time.monotonic() + timeout if timeout is not None else None
+
+        def remaining_timeout() -> float | None:
+            if deadline is None:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise EmbeddingTimeoutError(
+                    f"OpenRouter embedding documents with {self.model} timed out after "
+                    f"{timeout:.3g}s"
+                )
+            return remaining
+
+        async def embed_batch_with_deadline(
+            batch: list[str], **inner_kwargs: Any
+        ) -> list[list[float]]:
+            return await self._raw_embed_async(
+                batch,
+                timeout=remaining_timeout(),
+                **inner_kwargs,
+            )
+
         results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
             results.extend(
                 await binary_split_retry_async(
-                    self._raw_embed_async,
+                    embed_batch_with_deadline,
                     batch,
-                    timeout=timeout,
                     **kwargs,
                 )
             )

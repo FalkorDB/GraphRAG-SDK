@@ -16,30 +16,9 @@ from pydantic import BaseModel
 from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import summarize_exception
+from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
 
 logger = logging.getLogger(__name__)
-
-
-async def _wait_for_provider_call(
-    awaitable: Any,
-    *,
-    timeout: float | None,
-    timeout_error: type[LLMTimeoutError] | type[EmbeddingTimeoutError],
-    operation: str,
-) -> Any:
-    if timeout is None:
-        return await awaitable
-    if timeout <= 0:
-        raise ValueError("timeout must be > 0")
-    try:
-        return await asyncio.wait_for(awaitable, timeout=timeout)
-    except (TimeoutError, asyncio.TimeoutError) as exc:
-        raise timeout_error(f"{operation} timed out after {timeout:.3g}s") from exc
-
-
-def _validate_timeout(timeout: float | None) -> None:
-    if timeout is not None and timeout <= 0:
-        raise ValueError("timeout must be > 0")
 
 
 @dataclass
@@ -91,8 +70,8 @@ class Embedder(ABC):
         **kwargs: Any,
     ) -> list[float]:
         """Async variant — defaults to sync-in-thread."""
-        _validate_timeout(timeout)
-        return await _wait_for_provider_call(
+        validate_timeout(timeout)
+        return await wait_for_provider_call(
             asyncio.to_thread(self.embed_query, text, **kwargs),
             timeout=timeout,
             timeout_error=EmbeddingTimeoutError,
@@ -111,8 +90,8 @@ class Embedder(ABC):
         **kwargs: Any,
     ) -> list[list[float]]:
         """Async batch embed. Default: sync-in-thread."""
-        _validate_timeout(timeout)
-        return await _wait_for_provider_call(
+        validate_timeout(timeout)
+        return await wait_for_provider_call(
             asyncio.to_thread(self.embed_documents, texts, **kwargs),
             timeout=timeout,
             timeout_error=EmbeddingTimeoutError,
@@ -163,11 +142,11 @@ class LLMInterface(ABC):
         """
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
-        _validate_timeout(timeout)
+        validate_timeout(timeout)
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                return await _wait_for_provider_call(
+                return await wait_for_provider_call(
                     asyncio.to_thread(self.invoke, prompt, **kwargs),
                     timeout=timeout,
                     timeout_error=LLMTimeoutError,
@@ -224,6 +203,7 @@ class LLMInterface(ABC):
         Returns:
             LLMResponse with the model's reply.
         """
+        validate_timeout(timeout)
         # Default fallback: flatten messages into a single prompt string.
         parts: list[str] = []
         for msg in messages:
@@ -236,9 +216,15 @@ class LLMInterface(ABC):
             **kwargs,
         )
 
-    async def astream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
+    async def astream(
+        self,
+        prompt: str,
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
         """Async streaming — default yields the full response as one chunk."""
-        resp = await self.ainvoke(prompt, **kwargs)
+        resp = await self.ainvoke(prompt, timeout=timeout, **kwargs)
         yield resp.content
 
     def invoke_with_model(

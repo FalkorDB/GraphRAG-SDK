@@ -716,6 +716,23 @@ class TestLiteLLMEmbedder:
 
         assert mock_litellm.aembedding.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_aembed_documents_timeout_is_overall_deadline(self):
+        async def slow_embedding(**kwargs):
+            await asyncio.sleep(0.02)
+            return _mock_litellm_embedding_response([[0.1, 0.2]])
+
+        mock_litellm = MagicMock()
+        mock_litellm.aembedding = AsyncMock(side_effect=slow_embedding)
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            embedder = LiteLLMEmbedder(model="text-embedding-ada-002", batch_size=1)
+            started = time.monotonic()
+            with pytest.raises(EmbeddingTimeoutError, match="timed out"):
+                await embedder.aembed_documents(["a", "b"], timeout=0.03)
+
+        assert time.monotonic() - started < 0.05
+        assert mock_litellm.aembedding.await_count == 2
+
     def test_import_error(self):
         with patch.dict("sys.modules", {"litellm": None}):
             embedder = LiteLLMEmbedder(model="text-embedding-ada-002")
