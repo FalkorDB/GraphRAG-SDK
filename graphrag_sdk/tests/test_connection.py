@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.exceptions import DatabaseError
 
 
 class TestConnectionConfig:
@@ -115,7 +114,7 @@ class TestFalkorDBConnection:
         conn._driver = MagicMock()
 
         with caplog.at_level("ERROR", logger="graphrag_sdk.core.connection"):
-            with pytest.raises(DatabaseError, match="always fails"):
+            with pytest.raises(Exception, match="always fails"):
                 await conn.query("MATCH (n) RETURN n")
         assert "FalkorDB query failed after 2 attempts" in caplog.text
         assert mock_graph.query.call_count == 2
@@ -129,7 +128,7 @@ class TestFalkorDBConnection:
         conn._driver = MagicMock()
 
         with caplog.at_level("ERROR", logger="graphrag_sdk.core.connection"):
-            with pytest.raises(DatabaseError, match="already indexed"):
+            with pytest.raises(Exception, match="already indexed"):
                 await conn.query("CREATE INDEX idx")
         assert "Non-transient FalkorDB query failure" in caplog.text
         assert mock_graph.query.call_count == 1

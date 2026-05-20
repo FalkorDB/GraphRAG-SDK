@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from graphrag_sdk.core.exceptions import DatabaseError
-
 logger = logging.getLogger(__name__)
 
 
@@ -188,7 +186,7 @@ class FalkorDBConnection:
                         exc,
                     )
                     logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
-                    raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
+                    raise
                 await self._breaker.record_failure()
                 logger.warning(
                     "Query attempt %d/%d failed: %s",
@@ -212,7 +210,9 @@ class FalkorDBConnection:
                 "FalkorDB query failure details",
                 exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
             )
-        raise DatabaseError(f"FalkorDB query failed: {last_exc}") from last_exc
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("FalkorDB query failed without an exception")
 
     # Substrings that indicate a non-transient (permanent) error —
     # retrying will never succeed.
