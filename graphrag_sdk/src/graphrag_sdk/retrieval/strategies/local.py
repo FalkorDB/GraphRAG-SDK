@@ -53,7 +53,10 @@ class LocalRetrieval(RetrievalStrategy):
 
         # Step 1: Embed the query
         ctx.ensure_budget("LocalRetrieval query embedding")
-        query_vector = await self._embedder.aembed_query(query)
+        query_vector = await self._embedder.aembed_query(
+            query,
+            timeout=ctx.remaining_budget_seconds,
+        )
 
         # Step 2: Vector search for matching chunks
         ctx.ensure_budget("LocalRetrieval chunk vector search")

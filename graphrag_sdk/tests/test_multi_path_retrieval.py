@@ -131,15 +131,15 @@ class TestMultiPathRetrieval:
             )
 
     async def test_latency_budget_checked_before_question_embedding(
-        self, strategy, mp_embedder, mp_llm
+        self, strategy, mp_embedder, mp_llm, monkeypatch
     ):
         ctx = Context(latency_budget_ms=1000.0)
 
-        def exhaust_budget(operation: str) -> None:
+        def exhaust_budget(self: Context, operation: str) -> None:
             if operation == "MultiPath question embedding":
                 raise LatencyBudgetExceededError("budget exhausted before embedding")
 
-        ctx.ensure_budget = exhaust_budget  # type: ignore[method-assign]
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
         with pytest.raises(LatencyBudgetExceededError, match="before embedding"):
             await strategy.search("Who is Alice?", ctx)
 
@@ -147,15 +147,15 @@ class TestMultiPathRetrieval:
         assert mp_embedder.call_count == 0
 
     async def test_latency_budget_propagates_from_keyword_llm(
-        self, strategy, mp_embedder, mp_llm
+        self, strategy, mp_embedder, mp_llm, monkeypatch
     ):
         ctx = Context(latency_budget_ms=1000.0)
 
-        def exhaust_budget(operation: str) -> None:
+        def exhaust_budget(self: Context, operation: str) -> None:
             if operation == "MultiPath keyword extraction LLM call":
                 raise LatencyBudgetExceededError("budget exhausted before keyword LLM")
 
-        ctx.ensure_budget = exhaust_budget  # type: ignore[method-assign]
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
         with pytest.raises(LatencyBudgetExceededError, match="keyword LLM"):
             await strategy.search("Who is Alice?", ctx)
 

@@ -49,6 +49,14 @@ class Context:
         return max(0.0, self.latency_budget_ms - self.elapsed_ms)
 
     @property
+    def remaining_budget_seconds(self) -> float | None:
+        """Remaining latency budget in seconds, or None if no budget set."""
+        remaining = self.remaining_budget_ms
+        if remaining is None:
+            return None
+        return remaining / 1000.0
+
+    @property
     def budget_exceeded(self) -> bool:
         """True if the latency budget has been exceeded."""
         remaining = self.remaining_budget_ms

@@ -116,6 +116,16 @@ class TestLocalRetrieval:
         await local_strategy.search("test query", ctx)
         assert embedder.call_count >= 1
 
+    async def test_local_query_embedding_uses_remaining_budget(self, local_strategy, embedder):
+        embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+        ctx = Context(latency_budget_ms=1000.0)
+
+        await local_strategy.search("test query", ctx)
+
+        timeout = embedder.aembed_query.call_args.kwargs["timeout"]
+        assert timeout is not None
+        assert 0 < timeout <= 1.0
+
     async def test_local_includes_entities(self, ctx, local_strategy):
         result = await local_strategy.search("test", ctx)
         # Should include entity info in content
@@ -168,15 +178,15 @@ class TestLocalRetrieval:
         mock_vector_store.search_chunks.assert_not_awaited()
 
     async def test_local_budget_checked_before_vector_search(
-        self, local_strategy, embedder, mock_vector_store
+        self, local_strategy, embedder, mock_vector_store, monkeypatch
     ):
         ctx = Context(latency_budget_ms=1000.0)
 
-        def exhaust_budget(operation: str) -> None:
+        def exhaust_budget(self: Context, operation: str) -> None:
             if operation == "LocalRetrieval chunk vector search":
                 raise LatencyBudgetExceededError("budget exhausted before vector search")
 
-        ctx.ensure_budget = exhaust_budget  # type: ignore[method-assign]
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
         with pytest.raises(LatencyBudgetExceededError, match="vector search"):
             await local_strategy.search("test", ctx)
 
@@ -184,15 +194,15 @@ class TestLocalRetrieval:
         mock_vector_store.search_chunks.assert_not_awaited()
 
     async def test_local_budget_checked_before_entity_expansion(
-        self, local_strategy, embedder, mock_vector_store, mock_graph_store
+        self, local_strategy, embedder, mock_vector_store, mock_graph_store, monkeypatch
     ):
         ctx = Context(latency_budget_ms=1000.0)
 
-        def exhaust_budget(operation: str) -> None:
+        def exhaust_budget(self: Context, operation: str) -> None:
             if operation == "LocalRetrieval entity expansion":
                 raise LatencyBudgetExceededError("budget exhausted before entity expansion")
 
-        ctx.ensure_budget = exhaust_budget  # type: ignore[method-assign]
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
         with pytest.raises(LatencyBudgetExceededError, match="entity expansion"):
             await local_strategy.search("test", ctx)
 

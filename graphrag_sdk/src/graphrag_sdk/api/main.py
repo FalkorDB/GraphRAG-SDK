@@ -1527,7 +1527,7 @@ class GraphRAG:
         )
         try:
             ctx.ensure_budget("question rewrite LLM call")
-            resp = await self.llm.ainvoke(prompt)
+            resp = await self.llm.ainvoke(prompt, timeout=ctx.remaining_budget_seconds)
             rewritten = (resp.content or "").strip().splitlines()[0].strip() if resp.content else ""
         except LatencyBudgetExceededError:
             raise
@@ -1652,7 +1652,10 @@ class GraphRAG:
         ]
 
         ctx.ensure_budget("completion LLM call")
-        llm_response = await self.llm.ainvoke_messages(messages)
+        llm_response = await self.llm.ainvoke_messages(
+            messages,
+            timeout=ctx.remaining_budget_seconds,
+        )
 
         result = RagResult(
             answer=self._clean_answer(llm_response.content),
@@ -1692,7 +1695,7 @@ class GraphRAG:
         except Exception:
             logger.debug("Failed to write graph config node", exc_info=True)
 
-    async def _validate_graph_config(self, ctx: Context | None = None) -> None:
+    async def _validate_graph_config(self, *, ctx: Context | None = None) -> None:
         """Check that the current embedder matches the graph's stored config.
 
         Two checks, both cached after first run:
@@ -1753,7 +1756,10 @@ class GraphRAG:
         if ctx is not None:
             ctx.ensure_budget("graph config embedder probe")
         try:
-            probe = await self.embedder.aembed_query("dim_check")
+            probe = await self.embedder.aembed_query(
+                "dim_check",
+                timeout=ctx.remaining_budget_seconds if ctx is not None else None,
+            )
         except LatencyBudgetExceededError:
             raise
         except Exception:

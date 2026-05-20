@@ -473,7 +473,9 @@ class TestGraphRAGRetrieve:
         assert embedder.call_count == 0
         mock_strategy.search.assert_not_awaited()
 
-    async def test_retrieve_checks_budget_before_config_query(self, mock_conn, embedder):
+    async def test_retrieve_checks_budget_before_config_query(
+        self, mock_conn, embedder, monkeypatch
+    ):
         llm = MockLLM(responses=["should not be called"])
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         g._graph_store.query_raw = AsyncMock()
@@ -482,11 +484,11 @@ class TestGraphRAGRetrieve:
         g._retrieval_strategy = mock_strategy
         ctx = Context(latency_budget_ms=1000.0)
 
-        def exhaust_budget(operation: str) -> None:
+        def exhaust_budget(self: Context, operation: str) -> None:
             if operation == "graph config query":
                 raise LatencyBudgetExceededError("budget exhausted before config query")
 
-        ctx.ensure_budget = exhaust_budget  # type: ignore[method-assign]
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
         with pytest.raises(LatencyBudgetExceededError, match="config query"):
             await g.retrieve("test", ctx=ctx)
 
