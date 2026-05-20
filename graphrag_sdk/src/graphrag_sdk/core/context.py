@@ -54,7 +54,7 @@ class Context:
         remaining = self.remaining_budget_ms
         if remaining is None:
             return None
-        return remaining / 1000.0
+        return max(remaining / 1000.0, 1e-9)
 
     @property
     def budget_exceeded(self) -> bool:

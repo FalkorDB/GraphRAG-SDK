@@ -15,7 +15,11 @@ async def wait_for_provider_call(
 ) -> Any:
     if timeout is None:
         return await awaitable
-    validate_timeout(timeout)
+    if timeout <= 0:
+        close = getattr(awaitable, "close", None)
+        if close is not None:
+            close()
+        raise timeout_error(f"{operation} timed out after {timeout:.3g}s")
     try:
         return await asyncio.wait_for(awaitable, timeout=timeout)
     except (TimeoutError, asyncio.TimeoutError) as exc:
