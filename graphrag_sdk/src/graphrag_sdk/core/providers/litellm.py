@@ -395,8 +395,7 @@ class LiteLLMEmbedder(Embedder):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise EmbeddingTimeoutError(
-                    f"LiteLLM embedding documents with {self.model} timed out after "
-                    f"{timeout:.3g}s"
+                    f"LiteLLM embedding documents with {self.model} timed out after {timeout:.3g}s"
                 )
             return remaining
 
