@@ -281,6 +281,48 @@ class OntologyStore:
             },
         )
 
+    # ── Delete ───────────────────────────────────────────────────
+
+    async def delete_property(
+        self, label: str, prop_name: str, *, on_relation: bool = False
+    ) -> None:
+        """Remove a property declaration from an entity or relation type.
+
+        Existing values for this property on data-graph nodes are **not**
+        touched — schema deletions are forward-only. After this returns,
+        future extraction will not try to fill ``prop_name`` and Cypher
+        generation will not list it.
+        """
+        owner_label = "OntologyRelationType" if on_relation else "OntologyEntityType"
+        await self._query(
+            f"MATCH (o:{owner_label} {{label: $label}})"
+            "-[:HAS_PROPERTY]->(p:OntologyProperty {name: $name}) "
+            "DETACH DELETE p",
+            {"label": label, "name": prop_name},
+        )
+
+    async def delete_entity_type(self, label: str) -> None:
+        """Remove an entity type and all of its declared properties from the
+        ontology graph. Data-graph nodes with this label are untouched.
+        """
+        await self._query(
+            "MATCH (e:OntologyEntityType {label: $label}) "
+            "OPTIONAL MATCH (e)-[:HAS_PROPERTY]->(p:OntologyProperty) "
+            "DETACH DELETE e, p",
+            {"label": label},
+        )
+
+    async def delete_relation_type(self, label: str) -> None:
+        """Remove a relation type and all of its declared properties from
+        the ontology graph. Data-graph relationships are untouched.
+        """
+        await self._query(
+            "MATCH (r:OntologyRelationType {label: $label}) "
+            "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:OntologyProperty) "
+            "DETACH DELETE r, p",
+            {"label": label},
+        )
+
     # ── Clear ────────────────────────────────────────────────────
 
     async def clear(self) -> None:

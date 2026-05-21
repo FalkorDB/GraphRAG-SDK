@@ -316,3 +316,57 @@ class TestContradictionDetection:
         with pytest.raises(OntologyContradictionError) as exc:
             await store.register(incoming)
         assert "WORKS_AT.since" in str(exc.value)
+
+
+# ── delete lifecycle ─────────────────────────────────────────────
+
+
+class TestDeleteLifecycle:
+    """Forward-only deletion: removes the declaration from the ontology
+    graph; data-graph nodes/edges are untouched (caller's responsibility)."""
+
+    @pytest.mark.asyncio
+    async def test_delete_property_emits_detach_delete_on_property_node(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        await store.delete_property("Person", "age")
+        deletes = [
+            c
+            for c in fake_graph.calls
+            if "MATCH (o:OntologyEntityType" in c[0] and "DETACH DELETE p" in c[0]
+        ]
+        assert len(deletes) == 1
+        assert (deletes[0][1] or {}).get("label") == "Person"
+        assert (deletes[0][1] or {}).get("name") == "age"
+
+    @pytest.mark.asyncio
+    async def test_delete_property_on_relation_type(self, store_factory, fake_graph):
+        store = store_factory()
+        await store.delete_property("WORKS_AT", "since", on_relation=True)
+        deletes = [
+            c
+            for c in fake_graph.calls
+            if "MATCH (o:OntologyRelationType" in c[0] and "DETACH DELETE p" in c[0]
+        ]
+        assert len(deletes) == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_entity_type_removes_type_and_properties(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        await store.delete_entity_type("Person")
+        deletes = [c for c in fake_graph.calls if "DETACH DELETE e, p" in c[0]]
+        assert len(deletes) == 1
+        assert (deletes[0][1] or {}).get("label") == "Person"
+
+    @pytest.mark.asyncio
+    async def test_delete_relation_type_removes_type_and_properties(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        await store.delete_relation_type("WORKS_AT")
+        deletes = [c for c in fake_graph.calls if "DETACH DELETE r, p" in c[0]]
+        assert len(deletes) == 1
+        assert (deletes[0][1] or {}).get("label") == "WORKS_AT"

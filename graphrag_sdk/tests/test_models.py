@@ -160,28 +160,6 @@ class TestSchemaTypes:
         assert len(rt.properties) == 1
         assert rt.properties[0].type == "DATE"
 
-    def test_graph_schema_rejects_reserved_entity_property_name(self):
-        with pytest.raises(ValidationError):
-            GraphSchema(
-                entities=[
-                    EntityType(
-                        label="Person",
-                        properties=[PropertyType(name="name", type="STRING")],
-                    )
-                ]
-            )
-
-    def test_graph_schema_rejects_reserved_relation_property_name(self):
-        with pytest.raises(ValidationError):
-            GraphSchema(
-                relations=[
-                    RelationType(
-                        label="WORKS_AT",
-                        properties=[PropertyType(name="rel_type", type="STRING")],
-                    )
-                ]
-            )
-
     def test_graph_schema_roundtrips_through_json_file(self, tmp_path):
         schema = GraphSchema(
             entities=[

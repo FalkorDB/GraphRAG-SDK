@@ -140,22 +140,6 @@ _PROPERTY_TYPES: frozenset[str] = frozenset(
     {"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"}
 )
 
-# Property names reserved by the SDK; user schemas may not declare them.
-RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
-    {
-        "name",
-        "type",
-        "description",
-        "source_chunk_ids",
-        "spans",
-        "rel_type",
-        "fact",
-        "src_name",
-        "tgt_name",
-        "id",
-    }
-)
-
 
 class PropertyType(DataModel):
     """A property definition for a node or relationship type."""
@@ -241,48 +225,35 @@ class GraphSchema(DataModel):
     relations: list[RelationType] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _validate_schema(self) -> GraphSchema:
-        """Validate the schema at config time.
+    def _warn_on_undeclared_pattern_labels(self) -> GraphSchema:
+        """Warn when a ``RelationType.patterns`` references undeclared entity labels.
 
-        - Rejects user-declared property names that collide with SDK-reserved
-          keys (``name``, ``description``, ``source_chunk_ids``, ``spans``,
-          ``rel_type``, ``fact``, ``src_name``, ``tgt_name``, ``id``, ``type``).
-        - Warns when a ``RelationType.patterns`` references undeclared entity
-          labels (typo guard) — open-schema setups may legitimately reference
-          labels not yet listed in ``entities``, so this is a warning, not an
-          error.
+        Catches typos like ``("Persn", "Company")`` at config time, before any
+        extraction has run. Open-schema setups may legitimately reference
+        labels not yet listed in ``entities``, so this is a warning, not an
+        error.
+
+        Note: the SDK writes certain keys on every node/edge (``name``,
+        ``description``, ``source_chunk_ids``, ``spans``, ``rel_type``,
+        ``fact``, ``src_name``, ``tgt_name``, ``id``, ``label``). Declaring
+        a ``PropertyType`` with one of these names will shadow the system
+        value on extracted nodes. Don't do that.
         """
-        for et in self.entities:
-            for prop in et.properties:
-                if prop.name in RESERVED_PROPERTY_NAMES:
-                    raise ValueError(
-                        f"EntityType '{et.label}' declares property "
-                        f"'{prop.name}', which is reserved by the SDK. "
-                        f"Reserved names: {sorted(RESERVED_PROPERTY_NAMES)}"
+        if not self.entities:
+            return self
+        declared = {e.label for e in self.entities}
+        for rel in self.relations:
+            for src, tgt in rel.patterns:
+                missing = [lbl for lbl in (src, tgt) if lbl not in declared]
+                if missing:
+                    logger.warning(
+                        "RelationType '%s' pattern (%s, %s) references "
+                        "entity label(s) not declared in schema.entities: %s",
+                        rel.label,
+                        src,
+                        tgt,
+                        ", ".join(missing),
                     )
-        for rt in self.relations:
-            for prop in rt.properties:
-                if prop.name in RESERVED_PROPERTY_NAMES:
-                    raise ValueError(
-                        f"RelationType '{rt.label}' declares property "
-                        f"'{prop.name}', which is reserved by the SDK. "
-                        f"Reserved names: {sorted(RESERVED_PROPERTY_NAMES)}"
-                    )
-
-        if self.entities:
-            declared = {e.label for e in self.entities}
-            for rel in self.relations:
-                for src, tgt in rel.patterns:
-                    missing = [lbl for lbl in (src, tgt) if lbl not in declared]
-                    if missing:
-                        logger.warning(
-                            "RelationType '%s' pattern (%s, %s) references "
-                            "entity label(s) not declared in schema.entities: %s",
-                            rel.label,
-                            src,
-                            tgt,
-                            ", ".join(missing),
-                        )
         return self
 
     @classmethod
