@@ -12,7 +12,6 @@ class MockDocxLoader(DoclingBaseLoader):
 class TestDoclingBaseLoader:
     """Tests for DoclingBaseLoader and its derived loaders."""
 
-    @pytest.mark.asyncio
     async def test_import_error_wrapped_in_loader_error(self, ctx, tmp_path, monkeypatch):
         """Verify that ImportError when docling is missing is wrapped in LoaderError."""
         file = tmp_path / "test.docx"
@@ -35,80 +34,138 @@ class TestDoclingBaseLoader:
 
     async def test_label_mapping_and_metadata_preservation(self, ctx, tmp_path, monkeypatch):
         """Verify mapping of DocItemLabel and preservation of labels in metadata for fallback cases."""
-        from docling.datamodel.document import DocItemLabel
-
-        file = tmp_path / "test.docx"
-        file.write_text("dummy content")
-
-        # Mock Docling's result structure
-        mock_item_header = MagicMock()
-        mock_item_header.label = DocItemLabel.SECTION_HEADER
-        mock_item_header.text = "Header 1"
+        class MockLabel:
+            def __init__(self, val): self.value = val
+            def __eq__(self, other):
+                if isinstance(other, type) and hasattr(other, "SECTION_HEADER"): # Handle the Enum check
+                    return False # Not a direct match
+                return isinstance(other, MockLabel) and self.value == other.value
         
-        mock_item_para = MagicMock()
-        mock_item_para.label = DocItemLabel.PARAGRAPH
-        mock_item_para.text = "Paragraph 1"
+        class LabelEnum:
+            SECTION_HEADER = MockLabel("section_header")
+            PARAGRAPH = MockLabel("paragraph")
+            FOOTNOTE = MockLabel("footnote")
+            TITLE = MockLabel("title")
+            TEXT = MockLabel("text")
+            LIST_ITEM = MockLabel("list_item")
+            TABLE = MockLabel("table")
+            CODE = MockLabel("code")
         
-        mock_item_footnote = MagicMock()
-        mock_item_footnote.label = DocItemLabel.FOOTNOTE
-        mock_item_footnote.text = "Footnote content"
+        # The loader does 'from docling.datamodel.document import DocItemLabel' inside _load_sync
+        # We need to mock the module and the import process.
+        import sys
+        mock_docling_datamodel = MagicMock()
+        mock_docling_datamodel.document = MagicMock()
         
-        mock_doc = MagicMock()
-        mock_doc.iterate_items.return_value = [
-            (mock_item_header, 1),
-            (mock_item_para, 2),
-            (mock_item_footnote, 2),
-        ]
+        # We create a fake module structure
+        mock_document_module = MagicMock()
+        mock_document_module.DocItemLabel = LabelEnum
+        
+        # Patching the import mechanism
+        real_import = __import__
+        def mock_import(name, *args, **kwargs):
+            if name == "docling.datamodel.document":
+                return mock_document_module
+            return real_import(name, *args, **kwargs)
+        
+        with patch("builtins.__import__", side_effect=mock_import):
+            file = tmp_path / "test.docx"
+            file.write_text("dummy content")
 
-        mock_converter = MagicMock()
-        mock_converter.convert.return_value.document = mock_doc
+            # Mock Docling's result structure
+            mock_item_header = MagicMock()
+            mock_item_header.label = LabelEnum.SECTION_HEADER
+            mock_item_header.text = "Header 1"
+            
+            mock_item_para = MagicMock()
+            mock_item_para.label = LabelEnum.PARAGRAPH
+            mock_item_para.text = "Paragraph 1"
+            
+            mock_item_footnote = MagicMock()
+            mock_item_footnote.label = LabelEnum.FOOTNOTE
+            mock_item_footnote.text = "Footnote content"
+            
+            mock_doc = MagicMock()
+            mock_doc.iterate_items.return_value = [
+                (mock_item_header, 1),
+                (mock_item_para, 2),
+                (mock_item_footnote, 2),
+            ]
 
-        monkeypatch.setattr("docling.document_converter.DocumentConverter", lambda **kwargs: mock_converter)
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value.document = mock_doc
+            monkeypatch.setattr("docling.document_converter.DocumentConverter", lambda **kwargs: mock_converter)
 
-        loader = MockDocxLoader()
-        result = await loader.load(str(file), ctx)
+            loader = MockDocxLoader()
+            result = await loader.load(str(file), ctx)
 
-        elements = result.elements
-        assert len(elements) == 3
-        assert elements[0].type == "header"
-        assert elements[0].content == "Header 1"
-        assert elements[1].type == "paragraph"
-        assert elements[1].content == "Paragraph 1"
-        # Check fallback and metadata preservation
-        assert elements[2].type == "paragraph"
-        assert elements[2].content == "Footnote content"
-        assert elements[2].metadata["label"] == DocItemLabel.FOOTNOTE.value
+            elements = result.elements
+            assert len(elements) == 3
+            assert elements[0].type == "header"
+            assert elements[0].content == "Header 1"
+            assert elements[1].type == "paragraph"
+            assert elements[1].content == "Paragraph 1"
+            # Check fallback and metadata preservation
+            assert elements[2].type == "paragraph"
+            assert elements[2].content == "Footnote content"
+            assert elements[2].metadata["label"] == LabelEnum.FOOTNOTE.value
+
+
 
     async def test_breadcrumbs_construction(self, ctx, tmp_path, monkeypatch):
         """Verify the breadcrumbs are built correctly following the header hierarchy."""
-        file = tmp_path / "test.docx"
-        file.write_text("dummy content")
+        class MockLabel:
+            def __init__(self, val): self.value = val
+            def __eq__(self, other): 
+                return isinstance(other, MockLabel) and self.value == other.value
+        
+        class LabelEnum:
+            SECTION_HEADER = MockLabel("section_header")
+            PARAGRAPH = MockLabel("paragraph")
+            TITLE = MockLabel("title")
+            TEXT = MockLabel("text")
+            LIST_ITEM = MockLabel("list_item")
+            TABLE = MockLabel("table")
+            CODE = MockLabel("code")
+        
+        import sys
+        mock_document_module = MagicMock()
+        mock_document_module.DocItemLabel = LabelEnum
+        
+        real_import = __import__
+        def mock_import(name, *args, **kwargs):
+            if name == "docling.datamodel.document":
+                return mock_document_module
+            return real_import(name, *args, **kwargs)
+        
+        with patch("builtins.__import__", side_effect=mock_import):
+            file = tmp_path / "test.docx"
+            file.write_text("dummy content")
 
-        from docling.datamodel.document import DocItemLabel
+            # Hierarchy: H1 -> H2 -> P -> H2 (new) -> P
+            mock_items = []
+            mock_items.append((MagicMock(label=LabelEnum.SECTION_HEADER, text="Root"), 1))
+            mock_items.append((MagicMock(label=LabelEnum.SECTION_HEADER, text="Child"), 2))
+            mock_items.append((MagicMock(label=LabelEnum.PARAGRAPH, text="Text 1"), 3))
+            mock_items.append((MagicMock(label=LabelEnum.SECTION_HEADER, text="Sibling"), 2))
+            mock_items.append((MagicMock(label=LabelEnum.PARAGRAPH, text="Text 2"), 3))
 
-        # Hierarchy: H1 -> H2 -> P -> H2 (new) -> P
-        mock_items = []
-        mock_items.append((MagicMock(label=DocItemLabel.SECTION_HEADER, text="Root"), 1))
-        mock_items.append((MagicMock(label=DocItemLabel.SECTION_HEADER, text="Child"), 2))
-        mock_items.append((MagicMock(label=DocItemLabel.PARAGRAPH, text="Text 1"), 3))
-        mock_items.append((MagicMock(label=DocItemLabel.SECTION_HEADER, text="Sibling"), 2))
-        mock_items.append((MagicMock(label=DocItemLabel.PARAGRAPH, text="Text 2"), 3))
+            mock_doc = MagicMock()
+            mock_doc.iterate_items.return_value = mock_items
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value.document = mock_doc
+            monkeypatch.setattr("docling.document_converter.DocumentConverter", lambda **kwargs: mock_converter)
 
-        mock_doc = MagicMock()
-        mock_doc.iterate_items.return_value = mock_items
-        mock_converter = MagicMock()
-        mock_converter.convert.return_value.document = mock_doc
-        monkeypatch.setattr("docling.document_converter.DocumentConverter", lambda **kwargs: mock_converter)
+            loader = MockDocxLoader()
+            result = await loader.load(str(file), ctx)
 
-        loader = MockDocxLoader()
-        result = await loader.load(str(file), ctx)
+            elements = result.elements
+            assert elements[0].breadcrumbs == ["Root"]
+            assert elements[1].breadcrumbs == ["Root", "Child"]
+            assert elements[2].breadcrumbs == ["Root", "Child"]
+            assert elements[3].breadcrumbs == ["Root", "Sibling"]
+            assert elements[4].breadcrumbs == ["Root", "Sibling"]
 
-        elements = result.elements
-        assert elements[0].breadcrumbs == ["Root"]
-        assert elements[1].breadcrumbs == ["Root", "Child"]
-        assert elements[2].breadcrumbs == ["Root", "Child"]
-        assert elements[3].breadcrumbs == ["Root", "Sibling"]
-        assert elements[4].breadcrumbs == ["Root", "Sibling"]
 
     async def test_file_not_found(self, ctx):
         """Verify that LoaderError is raised when the file does not exist."""
@@ -131,11 +188,16 @@ class TestDoclingBaseLoader:
 
     async def test_export_to_markdown_fallback(self, ctx, tmp_path, monkeypatch):
         """Verify fallback to export_to_markdown when text attribute is empty."""
+        # Mock DocItemLabel to avoid importing docling
+        class MockLabel:
+            def __init__(self, val): self.value = val
+        class LabelEnum:
+            PARAGRAPH = MockLabel("paragraph")
+        DocItemLabel = LabelEnum
+
         file = tmp_path / "test.docx"
         file.write_text("dummy content")
 
-        from docling.datamodel.document import DocItemLabel
-        
         mock_item = MagicMock()
         mock_item.label = DocItemLabel.PARAGRAPH
         mock_item.text = ""
@@ -156,28 +218,50 @@ class TestDoclingBaseLoader:
 
     async def test_specialized_element_types(self, ctx, tmp_path, monkeypatch):
         """Verify mapping of list, table, and code elements."""
-        file = tmp_path / "test.docx"
-        file.write_text("dummy content")
-
-        from docling.datamodel.document import DocItemLabel
-
-        mock_items = [
-            (MagicMock(label=DocItemLabel.LIST_ITEM, text="List item 1"), 1),
-            (MagicMock(label=DocItemLabel.TABLE, text="Table content"), 1),
-            (MagicMock(label=DocItemLabel.CODE, text="print('hello')"), 1),
-        ]
+        class MockLabel:
+            def __init__(self, val): self.value = val
+            def __eq__(self, other): return isinstance(other, MockLabel) and self.value == other.value
+        class LabelEnum:
+            SECTION_HEADER = MockLabel("section_header")
+            PARAGRAPH = MockLabel("paragraph")
+            TITLE = MockLabel("title")
+            TEXT = MockLabel("text")
+            LIST_ITEM = MockLabel("list_item")
+            TABLE = MockLabel("table")
+            CODE = MockLabel("code")
         
-        mock_doc = MagicMock()
-        mock_doc.iterate_items.return_value = mock_items
+        import sys
+        mock_document_module = MagicMock()
+        mock_document_module.DocItemLabel = LabelEnum
         
-        mock_converter = MagicMock()
-        mock_converter.convert.return_value.document = mock_doc
-        monkeypatch.setattr("docling.document_converter.DocumentConverter", lambda **kwargs: mock_converter)
+        real_import = __import__
+        def mock_import(name, *args, **kwargs):
+            if name == "docling.datamodel.document":
+                return mock_document_module
+            return real_import(name, *args, **kwargs)
+        
+        with patch("builtins.__import__", side_effect=mock_import):
+            file = tmp_path / "test.docx"
+            file.write_text("dummy content")
 
-        loader = MockDocxLoader()
-        result = await loader.load(str(file), ctx)
+            mock_items = [
+                (MagicMock(label=LabelEnum.LIST_ITEM, text="List item 1"), 1),
+                (MagicMock(label=LabelEnum.TABLE, text="Table content"), 1),
+                (MagicMock(label=LabelEnum.CODE, text="print('hello')"), 1),
+            ]
+            
+            mock_doc = MagicMock()
+            mock_doc.iterate_items.return_value = mock_items
+            
+            mock_converter = MagicMock()
+            mock_converter.convert.return_value.document = mock_doc
+            monkeypatch.setattr("docling.document_converter.DocumentConverter", lambda **kwargs: mock_converter)
 
-        elements = result.elements
-        assert elements[0].type == "list"
-        assert elements[1].type == "table"
-        assert elements[2].type == "code"
+            loader = MockDocxLoader()
+            result = await loader.load(str(file), ctx)
+
+            elements = result.elements
+            assert elements[0].type == "list"
+            assert elements[1].type == "table"
+            assert elements[2].type == "code"
+
