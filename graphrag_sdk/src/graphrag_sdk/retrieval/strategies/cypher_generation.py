@@ -154,7 +154,10 @@ def _render_attribute_examples(schema: GraphSchema | None) -> str:
                 )
     if not examples:
         return ""
-    return "\n\n" + "\n\n".join(examples)
+    # No leading newline — the template places ``{attribute_examples}`` on its
+    # own line already, so this block stays cleanly separated from the closing
+    # code fence above it.
+    return "\n\n".join(examples)
 
 
 # ── Schema prompt ────────────────────────────────────────────────
@@ -231,7 +234,9 @@ Question: "What organizations are related to the technology?"
 MATCH (o:Organization)-[r:RELATES]-(t:Technology)
 RETURN o.name AS organization, t.name AS technology, r.rel_type AS relation, r.fact AS evidence
 LIMIT 20
-```{attribute_examples}
+```
+
+{attribute_examples}
 
 ## Your task
 

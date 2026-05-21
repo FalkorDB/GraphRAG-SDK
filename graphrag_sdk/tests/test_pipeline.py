@@ -722,6 +722,35 @@ class TestValidateAttributes:
         assert len(out.nodes) == 1
         assert out.nodes[0].properties == {"a": 1}
 
+    def test_bare_label_declaration_does_not_strip_properties(self):
+        """A label declared with zero properties is schema-open: the label
+        is anchored but any properties are allowed. Critical for the
+        DEFAULT_ENTITY_TYPES seed, which registers bare labels — without
+        this, the validator would wipe every property the LLM extracted
+        because none are declared."""
+        pipe = self._pipeline()
+        # Person declared without any properties → open mode for Person.
+        schema = GraphSchema(entities=[EntityType(label="Person")])
+        node = GraphNode(
+            id="p1",
+            label="Person",
+            properties={
+                "name": "Marie",
+                "description": "Scientist",
+                "embedding": [0.1, 0.2],   # SemanticResolution depends on this surviving
+                "country": "France",        # user-extracted property, not declared
+            },
+        )
+        out = pipe._validate_attributes(GraphData(nodes=[node]), schema)
+        assert len(out.nodes) == 1
+        # Every property kept: declared list is empty so nothing is filtered.
+        assert out.nodes[0].properties == {
+            "name": "Marie",
+            "description": "Scientist",
+            "embedding": [0.1, 0.2],
+            "country": "France",
+        }
+
     def test_unknown_attributes_dropped_on_declared_label(self):
         from graphrag_sdk.core.models import PropertyType
         pipe = self._pipeline()

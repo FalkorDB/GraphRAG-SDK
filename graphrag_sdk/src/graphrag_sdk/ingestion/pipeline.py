@@ -454,10 +454,15 @@ class IngestionPipeline:
     def _validate_attributes(self, graph_data: GraphData, schema: GraphSchema) -> GraphData:
         """Strip undeclared attribute keys from nodes / relationships.
 
-        - Keys not declared in the schema and not in the SDK-reserved set are
+        - When a type declares at least one property, keys not in the
+          declared set (and not in :py:data:`RESERVED_PROPERTY_NAMES`) are
           dropped (debug-logged).
-        - Records are never dropped. Missing values stay missing on the graph,
-          which is the correct null semantics for retrieval queries
+        - When a type declares **zero** properties, it's treated as
+          schema-open: the label is anchored but any properties are allowed.
+          Critical for the default seed (``DEFAULT_ENTITY_TYPES`` registers
+          labels without properties) and for users who declare just labels.
+        - Records are never dropped. Missing values stay missing on the
+          graph, which is the correct null semantics for retrieval queries
           (``WHERE p.age > N`` naturally excludes nodes without ``age``).
         - Skips ``"Unknown"`` nodes (preserved by :py:meth:`_prune`).
         """
@@ -466,11 +471,13 @@ class IngestionPipeline:
 
         from graphrag_sdk.core.models import RESERVED_PROPERTY_NAMES
 
+        # Only enforce attribute filtering for types that actually declared
+        # properties; bare-label declarations stay open.
         ent_declared: dict[str, dict[str, Any]] = {
-            e.label: {p.name: p for p in e.properties} for e in schema.entities
+            e.label: {p.name: p for p in e.properties} for e in schema.entities if e.properties
         }
         rel_declared: dict[str, dict[str, Any]] = {
-            r.label: {p.name: p for p in r.properties} for r in schema.relations
+            r.label: {p.name: p for p in r.properties} for r in schema.relations if r.properties
         }
 
         kept_nodes: list[GraphNode] = []
