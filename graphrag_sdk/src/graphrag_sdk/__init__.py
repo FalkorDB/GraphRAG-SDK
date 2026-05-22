@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "1.0.2"
+__version__ = "1.1.1"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG
@@ -19,12 +19,16 @@ from graphrag_sdk.api.main import GraphRAG
 # ── Core Contracts ───────────────────────────────────────────────
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import GraphRAGError
+from graphrag_sdk.core.exceptions import DocumentNotFoundError, GraphRAGError
 from graphrag_sdk.core.models import (
+    ApplyChangesResult,
+    BatchEntry,
     ChatMessage,
     DataModel,
+    DeleteDocumentResult,
     DocumentInfo,
     DocumentOutput,
+    DocumentRecord,
     EntityType,
     FinalizeResult,
     GraphData,
@@ -41,6 +45,7 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
     TokenUsage,
+    UpdateResult,
 )
 from graphrag_sdk.core.providers import (
     Embedder,
@@ -109,12 +114,17 @@ __all__ = [
     # API
     "GraphRAG",
     # Core
+    "ApplyChangesResult",
+    "BatchEntry",
     "ChatMessage",
     "ConnectionConfig",
     "Context",
     "DataModel",
+    "DeleteDocumentResult",
     "DocumentInfo",
+    "DocumentNotFoundError",
     "DocumentOutput",
+    "DocumentRecord",
     "Embedder",
     "EntityType",
     "FalkorDBConnection",
@@ -140,6 +150,7 @@ __all__ = [
     "TextChunk",
     "TextChunks",
     "TokenUsage",
+    "UpdateResult",
     # Ingestion
     "ChunkingStrategy",
     "CallableChunking",

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -118,6 +118,19 @@ class DocumentOutput(DataModel):
     text: str
     document_info: DocumentInfo = Field(default_factory=DocumentInfo)
     elements: list[DocumentElement] | None = None
+
+
+class DocumentRecord(DataModel):
+    """Persisted state of a Document node, as read back from the graph.
+
+    Returned by ``GraphStore.get_document_record()``. Pre-1.1.0 graphs
+    lack ``content_hash`` (defaults to ``None``); callers should treat
+    a ``None`` hash as "always run the full update path" since there
+    is no stored value to compare against.
+    """
+
+    path: str | None = None
+    content_hash: str | None = None
 
 
 # ── Schema Types ─────────────────────────────────────────────────
@@ -271,11 +284,30 @@ class ExtractionOutput(DataModel):
 
 
 class ResolutionResult(DataModel):
-    """Result of entity resolution (deduplication)."""
+    """Result of entity resolution (deduplication).
+
+    ``remap`` records every merge decision the resolver made: keys are
+    pre-resolution entity ids that were merged away, values are the
+    survivor's id. The ingestion pipeline rewrites ``graph_data.mentions``
+    through this mapping so MENTIONED_IN edges are written against
+    surviving entity ids instead of silently failing on a MATCH-not-found
+    against a merged-away node.
+
+    ``ExactMatchResolution`` groups by ``(label, resolve_property)`` and
+    populates ``remap`` whenever a group has more than one node. With the
+    default ``resolve_property='id'``, the duplicate and survivor already
+    share the same id, so any remap entry is identity (``a → a``) —
+    non-empty but a no-op when applied. With a non-id ``resolve_property``
+    (e.g. ``'name'``), genuinely distinct ids can collapse into a survivor
+    and ``remap`` captures each merge. Fuzzy resolvers (semantic,
+    LLM-verified) similarly populate ``remap`` with every
+    ``(loser_id → survivor_id)`` pair their merge produces.
+    """
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
     merged_count: int = 0
+    remap: dict[str, str] = Field(default_factory=dict)
 
 
 # ── Usage Tracking Types ─────────────────────────────────────────
@@ -426,6 +458,89 @@ class FinalizeResult(DataModel):
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
+
+
+class UpdateResult(IngestionResult):
+    """Result from ``GraphRAG.update()``.
+
+    Extends ``IngestionResult`` so callers can treat ingest and update
+    results polymorphically.
+
+    - ``no_op=True`` indicates the new content matched the stored
+      ``Document.content_hash`` and no work was done.
+    - ``replaced_existing=True`` indicates an existing document was
+      found and replaced (in-place update or no-op). ``False`` means
+      ``if_missing="ingest"`` fell through to a fresh ingest because
+      the id was unknown.
+
+    The document id is always available at ``document_info.uid``.
+    """
+
+    chunks_deleted: int = 0
+    entities_deleted: int = 0
+    no_op: bool = False
+    replaced_existing: bool = False
+
+
+class DeleteDocumentResult(DataModel):
+    """Result from ``GraphRAG.delete_document()``.
+
+    Reports which document was removed (``document_uid``) and the
+    counts of chunks and orphan entities cleaned up. Field name
+    matches ``DocumentInfo.uid`` for cross-result consistency.
+    """
+
+    document_uid: str
+    chunks_deleted: int = 0
+    entities_deleted: int = 0
+
+
+T_BatchResult = TypeVar("T_BatchResult", bound=DataModel)
+
+
+class BatchEntry(DataModel, Generic[T_BatchResult]):
+    """One entry in a batch result — either a success or a failure.
+
+    Wraps the per-file outcome of ``apply_changes()``. On success,
+    ``result`` carries the typed payload. On failure, ``error`` carries
+    the formatted message and ``error_type`` carries the exception
+    class name (e.g. ``"DocumentNotFoundError"``) for programmatic
+    branching without re-raising.
+
+    Storing the error as a string instead of an ``Exception`` keeps the
+    model JSON-serialisable and avoids ``arbitrary_types_allowed``,
+    which would otherwise disable Pydantic validation for the entry.
+    """
+
+    result: T_BatchResult | None = None
+    error: str | None = None
+    error_type: str | None = None
+
+    @property
+    def is_success(self) -> bool:
+        return self.error is None
+
+    @classmethod
+    def ok(cls, result: T_BatchResult) -> BatchEntry[T_BatchResult]:
+        return cls(result=result)
+
+    @classmethod
+    def fail(cls, exc: BaseException) -> BatchEntry[T_BatchResult]:
+        return cls(error=str(exc), error_type=type(exc).__name__)
+
+
+class ApplyChangesResult(DataModel):
+    """Aggregate result from ``GraphRAG.apply_changes()``.
+
+    Each list aligns with the corresponding input list by index. Per-file
+    failures are wrapped as ``BatchEntry`` with ``error`` set; the batch
+    never raises. Callers branch on ``entry.is_success`` (or check
+    ``entry.error_type`` for specific failures).
+    """
+
+    added: list[BatchEntry[IngestionResult]] = Field(default_factory=list)
+    modified: list[BatchEntry[UpdateResult]] = Field(default_factory=list)
+    deleted: list[BatchEntry[DeleteDocumentResult]] = Field(default_factory=list)
 
 
 # ── Enums ────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@ from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
-from graphrag_sdk.core.models import GraphNode, GraphRelationship
+from graphrag_sdk.core.models import DocumentRecord, GraphNode, GraphRelationship
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
@@ -198,13 +198,34 @@ class GraphStore:
                 )
                 safe_src = sanitize_cypher_label(src_label)
                 safe_tgt = sanitize_cypher_label(tgt_label)
-                query = (
-                    f"UNWIND $batch AS item "
-                    f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
-                    f"(b:`{safe_tgt}` {{id: item.end_id}}) "
-                    f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
-                    f"SET r += item.properties"
-                )
+                # RELATES edges carry ``source_chunk_ids`` provenance. A
+                # plain ``SET r += item.properties`` on MERGE-found edges
+                # overwrites the survivor's list with the incoming write's,
+                # silently destroying earlier docs' contribution and
+                # breaking ``delete_stale_relationships`` (a later delete
+                # of the new doc would drop the edge even though earlier
+                # docs still support it). Special-case RELATES to UNION
+                # the lists — same idiom as the deduplicator remap path.
+                if rel_type == "RELATES":
+                    query = (
+                        f"UNWIND $batch AS item "
+                        f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
+                        f"(b:`{safe_tgt}` {{id: item.end_id}}) "
+                        f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
+                        f"WITH r, item, "
+                        f"     coalesce(r.source_chunk_ids, []) AS old, "
+                        f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
+                        f"SET r += item.properties "
+                        f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                    )
+                else:
+                    query = (
+                        f"UNWIND $batch AS item "
+                        f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
+                        f"(b:`{safe_tgt}` {{id: item.end_id}}) "
+                        f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
+                        f"SET r += item.properties"
+                    )
                 try:
                     await self._conn.query(query, {"batch": batch_data})
                     count += len(batch)
@@ -222,12 +243,28 @@ class GraphStore:
                         safe_fb_src = sanitize_cypher_label(fb_src)
                         safe_fb_tgt = sanitize_cypher_label(fb_tgt)
                         safe_fb_rel = sanitize_cypher_label(rel.type)
-                        q = (
-                            f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
-                            f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
-                            f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
-                            f"SET r += $properties"
-                        )
+                        # Mirror the batch-path RELATES special case so
+                        # the per-item fallback doesn't silently regress
+                        # to overwriting source_chunk_ids when the batch
+                        # query fails (e.g. transient Cypher error).
+                        if rel.type == "RELATES":
+                            q = (
+                                f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
+                                f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
+                                f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
+                                f"WITH r, $properties AS props, "
+                                f"     coalesce(r.source_chunk_ids, []) AS old, "
+                                f"     coalesce($properties.source_chunk_ids, []) AS contrib "
+                                f"SET r += props "
+                                f"SET r.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]"
+                            )
+                        else:
+                            q = (
+                                f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
+                                f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
+                                f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
+                                f"SET r += $properties"
+                            )
                         params = {
                             "start_id": sid,
                             "end_id": eid,
@@ -360,6 +397,489 @@ class GraphStore:
             logger.debug("GRAPH.DELETE failed, falling back to DETACH DELETE", exc_info=True)
             await self._conn.query("MATCH (n) DETACH DELETE n")
         logger.info("Deleted all graph data")
+
+    # ── Document Lifecycle (incremental ingestion support) ──────
+    # Used by GraphRAG.update() / delete_document() / apply_changes().
+    # Cypher stays here per the repository pattern — facade calls these.
+
+    async def get_document_record(self, document_id: str) -> DocumentRecord | None:
+        """Return persisted Document state (``path``, ``content_hash``)
+        as a typed ``DocumentRecord``, or ``None`` if no such Document.
+
+        Pre-1.1.0 Document nodes lack ``content_hash`` — the field will
+        be ``None`` on those records and callers should treat that as
+        "always run the full update path" (no stored hash to compare).
+        """
+        result = await self._conn.query(
+            "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
+            "d.content_hash AS content_hash LIMIT 1",
+            {"id": document_id},
+        )
+        if not result.result_set:
+            return None
+        row = result.result_set[0]
+        return DocumentRecord(path=row[0], content_hash=row[1])
+
+    async def get_document_entity_candidates(self, document_id: str) -> list[str]:
+        """Return ids of entities mentioned in this document's chunks.
+
+        Captured before deletion so orphan cleanup can be scoped to just
+        these entities — never global. Entities still mentioned by chunks
+        of *other* documents will be filtered out by ``delete_orphan_entities``.
+
+        Returns the full DISTINCT id set in one round-trip with no
+        ``LIMIT`` — the assumption is that a single document's entity
+        cardinality is small (typically <1000) relative to the global
+        graph. Documents with millions of distinct entities are out of
+        scope for this design and would need a streaming/batched
+        variant.
+        """
+        result = await self._conn.query(
+            "MATCH (e:__Entity__)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-"
+            "(:Document {id: $id}) RETURN DISTINCT e.id AS eid",
+            {"id": document_id},
+        )
+        return [row[0] for row in result.result_set] if result.result_set else []
+
+    async def find_pending(self, document_id: str) -> tuple[str, str, str | None] | None:
+        """Look up any ``__pending__`` Document for this id and report its
+        commit state.
+
+        Returns ``None`` if no pending exists for ``document_id``. Otherwise
+        returns ``(state, pending_id, content_hash)`` where ``state`` is one
+        of:
+
+        - ``"COMMITTED"``  — pending has ``ready_to_commit=true``. The next
+          step is rollforward; the pending must NOT be deleted.
+        - ``"WRITTEN"``    — pending exists, no marker. The new content
+          was written but commit was never reached. Safe to roll back
+          (delete the pending and its chunks); the live document is
+          untouched.
+
+        State semantics are documented in detail in
+        ``GraphRAG.update``'s docstring. The marker is the load-bearing
+        commit point — anything that can read it is the source of truth
+        for "did the prior attempt cross the commit boundary?".
+
+        Implementation note — we issue TWO queries instead of one
+        ``ORDER BY p.id LIMIT 1`` because lexicographic order on the
+        pending suffix (``__pending__<8-hex>``) is essentially random.
+        Under compounded crashes a graph can briefly hold both a
+        WRITTEN and a COMMITTED pending for the same id; if the
+        WRITTEN one sorted first, the caller would take the rollback
+        branch and ``cleanup_pending_documents`` would skip the
+        COMMITTED one (it refuses to touch ``ready_to_commit=true``)
+        — but the freshly-started replacement update would also start
+        a NEW pending, and on the *next* call the stale COMMITTED
+        would replay over the just-written live data. Querying for
+        COMMITTED explicitly first eliminates the ordering hazard.
+        """
+        prefix = f"{document_id}__pending__"
+        # Phase 1: prefer COMMITTED pendings — they MUST be rolled
+        # forward; never silently replaced by a WRITTEN sibling.
+        committed = await self._conn.query(
+            "MATCH (p:Document) WHERE p.id STARTS WITH $prefix "
+            "AND p.ready_to_commit = true "
+            "RETURN p.id AS pid, p.content_hash AS hash LIMIT 1",
+            {"prefix": prefix},
+        )
+        if committed.result_set:
+            row = committed.result_set[0]
+            return ("COMMITTED", row[0], row[1])
+        # Phase 2: fall back to any non-committed pending.
+        written = await self._conn.query(
+            "MATCH (p:Document) WHERE p.id STARTS WITH $prefix "
+            "AND (p.ready_to_commit IS NULL OR p.ready_to_commit = false) "
+            "RETURN p.id AS pid, p.content_hash AS hash LIMIT 1",
+            {"prefix": prefix},
+        )
+        if not written.result_set:
+            return None
+        row = written.result_set[0]
+        return ("WRITTEN", row[0], row[1])
+
+    async def mark_pending_committed(self, pending_id: str) -> int:
+        """Set ``ready_to_commit=true`` on the pending Document — the
+        commit point for the state-machine cutover.
+
+        This single-property write is the load-bearing transition: it
+        MUST commit before any destructive Cypher touches the live
+        document. Once it commits, recovery on crash is rollforward
+        (replay rollforward_cutover); before it commits, recovery is
+        rollback (delete pending).
+
+        Returns the number of Document nodes updated (0 if the pending
+        id was not found, 1 in the normal path).
+        """
+        result = await self._conn.query(
+            "MATCH (p:Document {id: $pid}) SET p.ready_to_commit = true RETURN count(p) AS n",
+            {"pid": pending_id},
+        )
+        return result.result_set[0][0] if result.result_set else 0
+
+    async def cleanup_pending_documents(self, document_id: str) -> int:
+        """Delete UN-COMMITTED leftover pending Document(s) for this id.
+
+        Pending nodes that have ``ready_to_commit=true`` are NEVER
+        deleted by this method — those represent a crashed-mid-cutover
+        state and the new content must be rolled forward, not discarded.
+
+        Used at the start of ``update()`` whenever ``find_pending``
+        reports state ``"WRITTEN"`` (rollback path).
+
+        Returns the number of pending Document nodes removed.
+
+        **Limitation — entities introduced by the killed pending are not
+        garbage-collected here.** If the pending's pipeline ran far
+        enough to write entity nodes (step 7 of ``IngestionPipeline``)
+        before the crash, those entities live on in the global
+        ``__Entity__`` namespace. They are typically harmless: a
+        subsequent successful ``update()`` for the same document will
+        snapshot them as candidates and ``delete_orphan_entities`` will
+        sweep any that no longer have ``MENTIONED_IN`` edges. We don't
+        sweep here because doing so would require either tracking which
+        entities the pending introduced (no snapshot mechanism today)
+        or a global O(graph) orphan scan — neither acceptable on the
+        hot path.
+        """
+        prefix = f"{document_id}__pending__"
+        result = await self._conn.query(
+            "MATCH (p:Document) "
+            "WHERE p.id STARTS WITH $prefix "
+            "AND (p.ready_to_commit IS NULL OR p.ready_to_commit = false) "
+            "OPTIONAL MATCH (p)-[:PART_OF]->(c:Chunk) "
+            "DETACH DELETE p, c "
+            "RETURN count(DISTINCT p) AS n",
+            {"prefix": prefix},
+        )
+        return result.result_set[0][0] if result.result_set else 0
+
+    async def rollforward_cutover(
+        self,
+        pending_id: str,
+        real_id: str,
+        path: str,
+        content_hash: str,
+    ) -> int:
+        """Replay the cutover from a (possibly partial) COMMITTED state
+        to FINAL. Idempotent — every operation is safe to re-run.
+
+        Sequence:
+          0. Precondition: pending_id must still exist. On a successful
+             replay (steps 1-2 ran, step 3 didn't) the pending is still
+             present because step 3 is what renames it away. If the
+             pending is missing here, something is wrong (concurrent
+             cleanup, manual delete, or upstream bug) and we refuse to
+             proceed rather than silently destroy the live document.
+          1. Delete live document's chunks (idempotent: already-gone is a no-op).
+          2. Delete live document node (idempotent).
+          3. Rename pending → canonical id, write fresh metadata, clear
+             ``ready_to_commit``. Single Cypher statement — atomic at
+             the per-statement level FalkorDB does guarantee.
+
+        After step 3 the document is in FINAL state. If the process
+        crashes between any two steps, the next call's ``find_pending``
+        still reports COMMITTED (because the pending node and its
+        marker survive until step 3 completes) and this method replays.
+
+        Returns the number of chunks removed from the (possibly already
+        empty) live document.
+
+        Raises:
+            DatabaseError: if the precondition fails (pending missing).
+        """
+        # 0. Precondition check — abort before any destructive op if the
+        # pending we'd promote isn't there. Without this guard a misuse
+        # of the method (or a concurrent cleanup) would delete the live
+        # document and then no-op the rename, leaving the graph empty.
+        precheck = await self._conn.query(
+            "MATCH (p:Document {id: $pid}) RETURN count(p) AS n",
+            {"pid": pending_id},
+        )
+        if not precheck.result_set or precheck.result_set[0][0] != 1:
+            from graphrag_sdk.core.exceptions import DatabaseError
+
+            raise DatabaseError(
+                f"rollforward_cutover: pending Document '{pending_id}' not found; "
+                "refusing to delete live document. The pending may have been "
+                "concurrently deleted, or this method was called with a stale id."
+            )
+
+        # 1-2. Delete live chunks + Document node. Same Cypher as
+        # delete_document_chunks_and_node — share the helper so the
+        # delete pattern lives in one place.
+        chunks_removed = await self.delete_document_chunks_and_node(real_id)
+
+        # 3. Promote pending → canonical id and remove the commit marker.
+        # ``REMOVE p.ready_to_commit`` is the idiomatic way to drop a
+        # property; on a replay where the rename already happened this
+        # MATCH finds nothing and the whole statement is a no-op.
+        await self._conn.query(
+            "MATCH (p:Document {id: $pending_id}) "
+            "SET p.id = $real_id, p.path = $path, p.content_hash = $hash "
+            "REMOVE p.ready_to_commit",
+            {
+                "pending_id": pending_id,
+                "real_id": real_id,
+                "path": path,
+                "hash": content_hash,
+            },
+        )
+        return chunks_removed
+
+    async def delete_document_chunks_and_node(self, document_id: str) -> int:
+        """Delete all chunks for a document and the Document node itself.
+
+        Used by ``rollforward_cutover`` — the live document is replaced
+        wholesale, so removing both in one shot is correct.
+
+        ``delete_document()`` uses ``delete_document_chunks`` and
+        ``delete_document_node`` separately so the doc node can stay
+        alive (carrying recovery state) during orphan cleanup, then be
+        removed once cleanup completes.
+        """
+        chunks_removed = await self.delete_document_chunks(document_id)
+        await self.delete_document_node(document_id)
+        return chunks_removed
+
+    async def delete_document_chunks(self, document_id: str) -> int:
+        """Delete all chunks linked to a Document via ``PART_OF``.
+
+        Leaves the Document node intact. Idempotent — re-running on a
+        document whose chunks are already gone is a no-op that returns 0.
+        """
+        r = await self._conn.query(
+            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) "
+            "DETACH DELETE c RETURN count(c) AS n",
+            {"id": document_id},
+        )
+        return r.result_set[0][0] if r.result_set else 0
+
+    async def delete_document_node(self, document_id: str) -> None:
+        """Delete the Document node itself. Idempotent."""
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) DETACH DELETE d",
+            {"id": document_id},
+        )
+
+    async def get_document_chunk_ids(self, document_id: str) -> list[str]:
+        """Snapshot the chunk ids belonging to a document.
+
+        Captured alongside ``get_document_entity_candidates`` before a
+        destructive operation; the pair feeds ``delete_stale_relationships``
+        after cutover so RELATES facts whose only provenance was these
+        chunks can be removed.
+
+        Like the entity-candidate snapshot, this returns the full id set
+        in one round trip with no LIMIT — documents with millions of
+        chunks are out of scope for incremental update.
+        """
+        result = await self._conn.query(
+            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) RETURN c.id AS cid",
+            {"id": document_id},
+        )
+        return [row[0] for row in result.result_set] if result.result_set else []
+
+    async def set_pending_cleanup_state(
+        self,
+        document_id: str,
+        candidate_ids: list[str],
+        old_chunk_ids: list[str],
+    ) -> None:
+        """Persist post-cutover cleanup inputs onto a Document node so
+        the cleanup is recoverable across a crash.
+
+        Writes two properties:
+
+        - ``cleanup_candidates`` — entity ids to orphan-check
+        - ``cleanup_old_chunk_ids`` — chunks the cutover will delete,
+          needed by ``delete_stale_relationships`` to identify RELATES
+          edges whose only provenance was the doc's old chunks.
+
+        MUST be called before ``mark_pending_committed`` in the update
+        flow, or before ``mark_document_pending_delete`` in the delete
+        flow. A crash before this write leaves the live doc intact
+        (rollback is safe); a crash after this write but before the
+        commit marker is also safe (the pending will be discarded along
+        with its half-written cleanup state).
+        """
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) "
+            "SET d.cleanup_candidates = $candidates, "
+            "    d.cleanup_old_chunk_ids = $chunks",
+            {
+                "id": document_id,
+                "candidates": candidate_ids,
+                "chunks": old_chunk_ids,
+            },
+        )
+
+    async def get_cleanup_state(self, document_id: str) -> tuple[list[str], list[str]] | None:
+        """Read persisted cleanup state off a Document node.
+
+        Returns ``(candidate_ids, old_chunk_ids)`` if any cleanup state
+        is set, or ``None`` if the document has neither property. Both
+        lists are returned as ``[]`` when one property is set and the
+        other isn't (a corruption edge that the cleanup still handles
+        safely — empty lists are no-ops).
+        """
+        result = await self._conn.query(
+            "MATCH (d:Document {id: $id}) "
+            "RETURN d.cleanup_candidates AS cands, "
+            "       d.cleanup_old_chunk_ids AS chunks LIMIT 1",
+            {"id": document_id},
+        )
+        if not result.result_set:
+            return None
+        row = result.result_set[0]
+        if row[0] is None and row[1] is None:
+            return None
+        return (row[0] or [], row[1] or [])
+
+    async def clear_cleanup_state(self, document_id: str) -> None:
+        """Remove cleanup-state properties — last step of the
+        post-cutover cleanup. Idempotent."""
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) REMOVE d.cleanup_candidates, d.cleanup_old_chunk_ids",
+            {"id": document_id},
+        )
+
+    async def mark_document_pending_delete(
+        self,
+        document_id: str,
+        candidate_ids: list[str],
+        chunk_ids: list[str],
+    ) -> int:
+        """Single atomic write that marks a live Document as undergoing
+        deletion AND persists the cleanup inputs — the commit point for
+        the delete-side state machine.
+
+        Sets ``pending_delete=true`` plus ``cleanup_candidates`` and
+        ``cleanup_old_chunk_ids`` in one Cypher statement. After this
+        returns, recovery is rollforward (finish the delete sequence);
+        before it returns, recovery is no-op (the live doc is intact).
+
+        Returns the number of Document nodes updated. Callers should
+        check for ``== 1`` and refuse to proceed otherwise — a 0
+        indicates the doc vanished between the existence check and the
+        commit, and pressing on would silently delete nothing.
+        """
+        result = await self._conn.query(
+            "MATCH (d:Document {id: $id}) "
+            "SET d.pending_delete = true, "
+            "    d.cleanup_candidates = $candidates, "
+            "    d.cleanup_old_chunk_ids = $chunks "
+            "RETURN count(d) AS n",
+            {
+                "id": document_id,
+                "candidates": candidate_ids,
+                "chunks": chunk_ids,
+            },
+        )
+        return result.result_set[0][0] if result.result_set else 0
+
+    async def has_pending_delete(self, document_id: str) -> bool:
+        """Return True iff this Document has ``pending_delete=true`` set
+        — i.e. a prior ``delete_document()`` call crossed its commit
+        point but never finished. Recovery should resume the delete
+        before any other operation touches this id.
+        """
+        result = await self._conn.query(
+            "MATCH (d:Document {id: $id}) WHERE d.pending_delete = true "
+            "RETURN count(d) AS n LIMIT 1",
+            {"id": document_id},
+        )
+        if not result.result_set:
+            return False
+        return result.result_set[0][0] > 0
+
+    async def delete_stale_relationships(
+        self,
+        candidate_ids: list[str],
+        old_chunk_ids: list[str],
+    ) -> int:
+        """Strip ``old_chunk_ids`` from RELATES edges' ``source_chunk_ids``
+        provenance lists for edges incident to ``candidate_ids``; delete
+        edges whose list becomes empty.
+
+        Scoped to ``candidate_ids`` — never globally scans the graph,
+        mirroring the discipline of ``delete_orphan_entities``. The
+        ``source_chunk_ids`` property is written by the extractor (see
+        ``ingestion/extraction_strategies/graph_extraction.py``); this
+        method is its post-cutover counterpart, garbage-collecting facts
+        no longer supported by any current document's chunks.
+
+        Idempotent: chunk ids already stripped from a list don't appear
+        a second time, so re-runs are no-ops.
+
+        Why both inputs must be non-empty: with no candidates there's
+        nothing to scope to (refuses global scan), and with no old
+        chunks there's nothing to subtract (returns 0 trivially).
+        """
+        if not candidate_ids or not old_chunk_ids:
+            return 0
+        deleted = 0
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            # Two-query implementation. FalkorDB's planner quirks bite
+            # both ``WITH DISTINCT r, <expr> AS remaining ... SET r.X``
+            # (SET silently no-ops) and ``... SET ... WITH DISTINCT ...
+            # DELETE r`` (the SET is undone or skipped). Splitting into
+            # two queries — strip-then-delete — avoids both issues and
+            # is easier to reason about. Both are idempotent: re-running
+            # is a no-op once the list shrinks to the stable set.
+            await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
+                "WHERE r.source_chunk_ids IS NOT NULL "
+                "AND any(c IN r.source_chunk_ids WHERE c IN $old_chunks) "
+                "WITH r, "
+                "  [c IN r.source_chunk_ids WHERE NOT c IN $old_chunks] AS remaining "
+                "SET r.source_chunk_ids = remaining",
+                {"ids": batch, "old_chunks": old_chunk_ids},
+            )
+            # Delete edges whose provenance went empty. Scoped to the
+            # same candidate set so we still avoid a global scan, and
+            # we use DISTINCT to handle the undirected-match fan-out
+            # without errors from double-deleting the same row.
+            r = await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid})-[r:RELATES]-(:__Entity__) "
+                "WHERE r.source_chunk_ids IS NOT NULL "
+                "AND size(r.source_chunk_ids) = 0 "
+                "WITH DISTINCT r "
+                "DELETE r "
+                "RETURN count(r) AS n",
+                {"ids": batch},
+            )
+            deleted += r.result_set[0][0] if r.result_set else 0
+        return deleted
+
+    async def delete_orphan_entities(self, candidate_ids: list[str]) -> int:
+        """Delete entities from ``candidate_ids`` that no longer have any
+        ``MENTIONED_IN`` edge to a chunk.
+
+        Scoped to the candidate list — never touches entities outside it,
+        so a document update can never orphan an entity belonging to
+        another document. ``DETACH DELETE`` cascades incident ``RELATES``
+        edges automatically; FalkorDB drops vector-index entries for
+        deleted nodes/edges.
+        """
+        if not candidate_ids:
+            return 0
+        deleted = 0
+        # Batch to keep param size bounded.
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            r = await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid}) "
+                "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk) "
+                "DETACH DELETE e RETURN count(e) AS n",
+                {"ids": batch},
+            )
+            deleted += r.result_set[0][0] if r.result_set else 0
+        return deleted
 
     # ── Helpers ──────────────────────────────────────────────────
 

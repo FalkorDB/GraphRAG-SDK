@@ -212,6 +212,261 @@ class TestIngestionPipeline:
         with pytest.raises(IngestionError, match="Pipeline failed"):
             await pipeline.run("test.txt", ctx)
 
+    async def test_pipeline_writes_content_hash(self, ctx, mock_graph_store, mock_vector_store):
+        """v1.1.0: Document node carries SHA-256 of the loaded text so
+        ``GraphRAG.update()`` can short-circuit no-op updates without
+        re-running extraction.
+        """
+        import hashlib
+
+        text = "Stable content for hashing."
+        expected_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        pipeline = self._make_pipeline(mock_graph_store, mock_vector_store, text=text)
+
+        await pipeline.run("test.txt", ctx)
+
+        # Find the Document node among all upsert_nodes calls.
+        doc_nodes: list[GraphNode] = []
+        for call in mock_graph_store.upsert_nodes.call_args_list:
+            for n in call[0][0]:
+                if n.label == "Document":
+                    doc_nodes.append(n)
+        assert len(doc_nodes) == 1, "expected exactly one Document upsert"
+        assert doc_nodes[0].properties.get("content_hash") == expected_hash
+
+    async def test_pipeline_uses_provided_document_info_uid(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """v1.1.0 precursor: when ``document_info`` carries a custom uid,
+        the Document node is anchored to that id rather than a fresh UUID.
+        This is what makes ``update()`` and ``delete_document()`` work.
+        """
+        pipeline = self._make_pipeline(mock_graph_store, mock_vector_store)
+        custom_info = DocumentInfo(uid="my-stable-id", path="docs/a.md")
+
+        await pipeline.run("docs/a.md", ctx, document_info=custom_info)
+
+        doc_nodes: list[GraphNode] = []
+        for call in mock_graph_store.upsert_nodes.call_args_list:
+            for n in call[0][0]:
+                if n.label == "Document":
+                    doc_nodes.append(n)
+        assert len(doc_nodes) == 1
+        assert doc_nodes[0].id == "my-stable-id"
+        assert doc_nodes[0].properties.get("path") == "docs/a.md"
+
+    async def test_pipeline_remaps_mentions_through_resolver_remap(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """v1.1.0: when the resolver merges entities (returns a non-empty
+        ``remap``), the pipeline rewrites ``graph_data.mentions`` so
+        MENTIONED_IN edges target the survivor entity, not the merged-away
+        id. Without this, fuzzy resolvers silently drop mention edges via
+        MATCH-not-found in upsert_relationships, breaking orphan-cleanup
+        correctness for update()/delete_document().
+        """
+        from graphrag_sdk.core.models import EntityMention, ResolutionResult
+
+        class _MergingResolver(ResolutionStrategy):
+            async def resolve(self, graph_data, ctx):
+                # Pretend the extractor produced two distinct ids ``e_alice_a``
+                # and ``e_alice_b`` for the same real entity, and the resolver
+                # merged them into ``e_alice_canonical``.
+                return ResolutionResult(
+                    nodes=[
+                        GraphNode(
+                            id="e_alice_canonical",
+                            label="Person",
+                            properties={"name": "Alice"},
+                        )
+                    ],
+                    relationships=[],
+                    merged_count=2,
+                    remap={
+                        "e_alice_a": "e_alice_canonical",
+                        "e_alice_b": "e_alice_canonical",
+                    },
+                )
+
+        class _MentioningExtractor(ExtractionStrategy):
+            async def extract(self, chunks, schema, ctx):
+                return GraphData(
+                    nodes=[
+                        GraphNode(id="e_alice_a", label="Person"),
+                        GraphNode(id="e_alice_b", label="Person"),
+                    ],
+                    relationships=[],
+                    mentions=[
+                        EntityMention(entity_id="e_alice_a", chunk_id="chunk-0"),
+                        EntityMention(entity_id="e_alice_b", chunk_id="chunk-0"),
+                    ],
+                )
+
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=_MentioningExtractor(),
+            resolver=_MergingResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            schema=GraphSchema(),
+        )
+        await pipeline.run("test.txt", ctx)
+
+        # Find the MENTIONED_IN relationships that were upserted.
+        mention_rels: list[GraphRelationship] = []
+        for call in mock_graph_store.upsert_relationships.call_args_list:
+            for r in call[0][0]:
+                if r.type == "MENTIONED_IN":
+                    mention_rels.append(r)
+
+        # Both extracted ids merged → both mentions point at the survivor,
+        # and the duplicate (canonical, chunk-0) pair is collapsed to one.
+        assert len(mention_rels) == 1, (
+            f"expected 1 deduplicated MENTIONED_IN, got {len(mention_rels)}"
+        )
+        assert mention_rels[0].start_node_id == "e_alice_canonical"
+        assert mention_rels[0].end_node_id == "chunk-0"
+
+    async def test_pipeline_remaps_mentions_through_chained_resolver_remap(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """v1.1.0 follow-up: two-stage resolvers (SemanticResolution,
+        LLMVerifiedResolution) merge per-phase remap dicts without
+        flattening, so the combined dict can carry chains like
+        ``{a: b, b: c}`` where ``b`` was itself merged away in a later
+        phase. A single-hop ``remap.get(a)`` would point the mention at
+        ``b`` — a non-existent node — and the MENTIONED_IN edge would
+        silently fail to write. The fix follows each chain to its
+        terminal survivor.
+
+        This is an end-to-end check via the pipeline, mirroring the
+        single-hop test above but with chained merges.
+        """
+        from graphrag_sdk.core.models import EntityMention, ResolutionResult
+
+        class _ChainingResolver(ResolutionStrategy):
+            async def resolve(self, graph_data, ctx):
+                # Phase 1 merged a -> b; phase 2 merged b -> c. The
+                # combined remap is left un-flattened on purpose to
+                # reproduce the production code path.
+                return ResolutionResult(
+                    nodes=[
+                        GraphNode(id="c", label="Person", properties={"name": "Alice"})
+                    ],
+                    relationships=[],
+                    merged_count=2,
+                    remap={"a": "b", "b": "c"},
+                )
+
+        class _ChainingExtractor(ExtractionStrategy):
+            async def extract(self, chunks, schema, ctx):
+                # Mention points at the head of the chain (a). After
+                # remap-following it must land on c, not b.
+                return GraphData(
+                    nodes=[
+                        GraphNode(id="a", label="Person"),
+                        GraphNode(id="b", label="Person"),
+                        GraphNode(id="c", label="Person"),
+                    ],
+                    relationships=[],
+                    mentions=[
+                        EntityMention(entity_id="a", chunk_id="chunk-0"),
+                        EntityMention(entity_id="b", chunk_id="chunk-0"),
+                    ],
+                )
+
+        pipeline = IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=_ChainingExtractor(),
+            resolver=_ChainingResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            schema=GraphSchema(),
+        )
+        await pipeline.run("test.txt", ctx)
+
+        mention_rels: list[GraphRelationship] = []
+        for call in mock_graph_store.upsert_relationships.call_args_list:
+            for r in call[0][0]:
+                if r.type == "MENTIONED_IN":
+                    mention_rels.append(r)
+
+        # Both mentions follow the chain to c, then dedupe on (c, chunk-0).
+        assert len(mention_rels) == 1, (
+            f"expected 1 chain-collapsed MENTIONED_IN, got {len(mention_rels)}"
+        )
+        assert mention_rels[0].start_node_id == "c", (
+            "mention must follow the full chain a -> b -> c, not stop at b "
+            "(b was merged away and writing to it silently MATCH-fails)"
+        )
+        assert mention_rels[0].end_node_id == "chunk-0"
+
+
+class TestRemapMentionsUnit:
+    """Direct unit tests for ``IngestionPipeline._remap_mentions`` covering
+    the chain-following contract independently of the full pipeline."""
+
+    def _gd(self, mentions):
+        from graphrag_sdk.core.models import EntityMention
+
+        return GraphData(
+            nodes=[],
+            relationships=[],
+            mentions=[EntityMention(**m) for m in mentions],
+        )
+
+    def test_single_hop_remap(self):
+        out = IngestionPipeline._remap_mentions(
+            self._gd([{"entity_id": "a", "chunk_id": "k1"}]),
+            {"a": "b"},
+        )
+        assert out.mentions[0].entity_id == "b"
+
+    def test_chain_followed_to_terminal_survivor(self):
+        """{a: b, b: c} — looking up a must yield c, not b."""
+        out = IngestionPipeline._remap_mentions(
+            self._gd([{"entity_id": "a", "chunk_id": "k1"}]),
+            {"a": "b", "b": "c"},
+        )
+        assert out.mentions[0].entity_id == "c"
+
+    def test_chain_dedupes_on_terminal_survivor(self):
+        """Two mentions at different chain heads collapse to one edge if
+        they end at the same survivor in the same chunk."""
+        out = IngestionPipeline._remap_mentions(
+            self._gd(
+                [
+                    {"entity_id": "a", "chunk_id": "k1"},
+                    {"entity_id": "b", "chunk_id": "k1"},
+                ]
+            ),
+            {"a": "b", "b": "c"},
+        )
+        assert len(out.mentions) == 1
+        assert out.mentions[0].entity_id == "c"
+
+    def test_cycle_terminates(self):
+        """Malformed cyclic remap must not loop forever; visited-guard
+        stops the traversal at the cycle entry."""
+        out = IngestionPipeline._remap_mentions(
+            self._gd([{"entity_id": "a", "chunk_id": "k1"}]),
+            {"a": "b", "b": "a"},
+        )
+        # Acceptable terminal: either a or b (the loop breaks on
+        # revisit). What matters is that the call returns rather than
+        # spinning forever.
+        assert out.mentions[0].entity_id in {"a", "b"}
+
+    def test_unmapped_id_passes_through(self):
+        """Mention pointing at an id not in the remap is written as-is."""
+        out = IngestionPipeline._remap_mentions(
+            self._gd([{"entity_id": "z", "chunk_id": "k1"}]),
+            {"a": "b"},
+        )
+        assert out.mentions[0].entity_id == "z"
+
 
 class TestPruneMethod:
     def test_prune_open_schema(self):
