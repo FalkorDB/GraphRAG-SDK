@@ -44,6 +44,7 @@ from graphrag_sdk.core.models import (
     SearchType,
     TextChunk,
     TextChunks,
+    TokenUsage,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import (
@@ -148,6 +149,7 @@ __all__ = [
     "SearchType",
     "TextChunk",
     "TextChunks",
+    "TokenUsage",
     "UpdateResult",
     # Ingestion
     "ChunkingStrategy",

@@ -60,17 +60,35 @@ class Embedder(ABC):
         """Embed a single text string into a float vector."""
         ...
 
-    async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
-        """Async variant — defaults to sync-in-thread."""
+    async def aembed_query(
+        self, text: str, *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[float]:
+        """Async variant — defaults to sync-in-thread.
+
+        Args:
+            ctx: Execution context for usage tracking. Ignored by default
+                implementation — override in concrete classes to record
+                ``embedding_tokens`` via ``ctx.record_usage()``.
+        """
         return await asyncio.to_thread(self.embed_query, text, **kwargs)
 
-    def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
-        """Batch embed multiple texts. Default: sequential fallback."""
+    def embed_documents(
+        self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[list[float]]:
+        """Batch embed multiple texts. Default: sequential fallback.
+        S
+                Args:
+                    ctx: Execution context for usage tracking.
+        """
+        if ctx is None:
+            return [self.embed_query(t, **kwargs) for t in texts]
         return [self.embed_query(t, **kwargs) for t in texts]
 
-    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def aembed_documents(
+        self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[list[float]]:
         """Async batch embed. Default: sync-in-thread."""
-        return await asyncio.to_thread(self.embed_documents, texts, **kwargs)
+        return await asyncio.to_thread(self.embed_documents, texts, ctx=ctx, **kwargs)
 
 
 class LLMInterface(ABC):
@@ -105,10 +123,18 @@ class LLMInterface(ABC):
         self,
         prompt: str,
         *,
+        ctx: Any | None = None,
         max_retries: int = 3,
         **kwargs: Any,
     ) -> LLMResponse:
         """Async variant with retry + jittered exponential backoff.
+
+        Args:
+            ctx: Execution context for usage tracking. Ignored by the
+                default implementation — override in concrete classes to
+                record ``prompt_tokens`` / ``completion_tokens`` via
+                ``ctx.record_usage()``.
+            max_retries: Retry count.
 
         Retries on any exception up to ``max_retries`` times with
         jittered delays between attempts.
@@ -136,6 +162,7 @@ class LLMInterface(ABC):
         self,
         messages: list[ChatMessage],
         *,
+        ctx: Any | None = None,
         max_retries: int = 3,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -149,6 +176,7 @@ class LLMInterface(ABC):
 
         Args:
             messages: Ordered list of ``ChatMessage`` objects.
+            ctx: Execution context for usage tracking.
             max_retries: Retry count forwarded to ``ainvoke``.
             **kwargs: Extra arguments forwarded to the underlying call.
 
@@ -160,11 +188,13 @@ class LLMInterface(ABC):
         for msg in messages:
             parts.append(f"{msg.role.capitalize()}: {msg.content}")
         prompt = "\n\n".join(parts)
-        return await self.ainvoke(prompt, max_retries=max_retries, **kwargs)
+        return await self.ainvoke(prompt, ctx=ctx, max_retries=max_retries, **kwargs)
 
-    async def astream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
+    async def astream(
+        self, prompt: str, *, ctx: Any | None = None, **kwargs: Any
+    ) -> AsyncIterator[str]:
         """Async streaming — default yields the full response as one chunk."""
-        resp = await self.ainvoke(prompt, **kwargs)
+        resp = await self.ainvoke(prompt, ctx=ctx, **kwargs)
         yield resp.content
 
     def invoke_with_model(
@@ -197,6 +227,7 @@ class LLMInterface(ABC):
         self,
         prompts: list[str],
         *,
+        ctx: Any | None = None,
         max_concurrency: int | None = None,
         max_retries: int = 3,
         **kwargs: Any,
@@ -205,6 +236,9 @@ class LLMInterface(ABC):
 
         Args:
             prompts: List of prompt strings to process.
+            ctx: Execution context for usage tracking. Each successful
+                call accumulates into ``ctx.usage`` via the provider's
+                ``ainvoke()`` implementation.
             max_concurrency: Override the instance default concurrency limit.
             max_retries: Retry count passed to each ``ainvoke`` call.
             **kwargs: Extra arguments forwarded to ``ainvoke``.
@@ -220,7 +254,7 @@ class LLMInterface(ABC):
         async def _call(i: int, prompt: str) -> LLMBatchItem:
             async with sem:
                 try:
-                    resp = await self.ainvoke(prompt, max_retries=max_retries, **kwargs)
+                    resp = await self.ainvoke(prompt, ctx=ctx, max_retries=max_retries, **kwargs)
                     return LLMBatchItem(index=i, response=resp)
                 except Exception as exc:
                     return LLMBatchItem(index=i, error=exc)

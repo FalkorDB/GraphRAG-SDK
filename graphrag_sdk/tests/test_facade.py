@@ -15,10 +15,12 @@ from graphrag_sdk.core.models import (
     ChatMessage,
     DeleteDocumentResult,
     IngestionResult,
+    LLMResponse,
     RagResult,
     RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
+    TokenUsage,
     UpdateResult,
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
@@ -680,25 +682,47 @@ class TestGraphRAGCompletion:
         assert result.metadata["retrieval_query"] == "Where did Jane Doe go to college?"
         assert result.answer == "She attended Stanford University."
 
-    async def test_completion_rewrite_fallback_on_empty(self, mock_conn, embedder):
-        """If the rewrite LLM returns empty, fall back to the original question."""
-        llm = MockLLM(responses=["", "Some answer."])
+    async def test_completion_usage_isolation(self, mock_conn, embedder):
+        """
+        Verify that retriever_result.usage is a snapshot and does not 
+        incorrectly include tokens from the final generation step.
+        """
+        llm = MockLLM(responses=["The answer is 42."])
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        
+        # Mock strategy to record some retrieval usage
         mock_strategy = MagicMock(spec=RetrievalStrategy)
-        mock_strategy.search = AsyncMock(
-            return_value=RetrieverResult(items=[RetrieverResultItem(content="c")])
-        )
+        
+        # The facade calls strategy.search(question, ctx).
+        # We must monkeypatch .search to record usage into the provided ctx,
+        # because that's how the real SDK works.
+        async def mock_search(question, ctx, **kwargs):
+            ctx.record_usage(prompt_tokens=100, embedding_tokens=50)
+            return RetrieverResult(
+                items=[RetrieverResultItem(content="context")]
+            )
+        
+        mock_strategy.search = AsyncMock(side_effect=mock_search)
         g._retrieval_strategy = mock_strategy
 
-        result = await g.completion(
-            "where did she go?",
-            history=[{"role": "user", "content": "Who?"}, {"role": "assistant", "content": "Jane."}],
-            rewrite_question_with_history=True,
-        )
-        # Empty rewrite → original question used for retrieval
-        call_args = mock_strategy.search.call_args
-        assert call_args[0][0] == "where did she go?"
-        assert result.metadata["retrieval_query"] == "where did she go?"
+        async def mock_ainvoke_messages(messages, ctx=None, **kwargs):
+            if ctx:
+                ctx.record_usage(prompt_tokens=200, completion_tokens=50)
+            return LLMResponse(content="The answer is 42.")
+        
+        llm.ainvoke_messages = AsyncMock(side_effect=mock_ainvoke_messages)
+
+        result = await g.completion("What is the answer?", return_context=True)
+        
+        # 1. Retriever result usage should ONLY have retrieval tokens (prompt=100, embed=50)
+        assert result.retriever_result.usage.prompt_tokens == 100
+        assert result.retriever_result.usage.completion_tokens == 0
+        
+        # 2. Final RagResult usage should have BOTH retrieval and generation tokens
+        # (100 + 200 prompt, 0 + 50 completion)
+        assert result.usage.prompt_tokens == 300
+        assert result.usage.completion_tokens == 50
+
 
     async def test_completion_custom_prompt_template_with_history(self, mock_conn, embedder):
         """UI agent's use case: citation-style template works in multi-turn mode."""

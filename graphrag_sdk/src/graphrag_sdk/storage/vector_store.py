@@ -181,7 +181,7 @@ class VectorStore:
 
     # ── Indexing ─────────────────────────────────────────────────
 
-    async def index_chunks(self, chunks: TextChunks) -> int:
+    async def index_chunks(self, chunks: TextChunks, *, ctx: Any | None = None) -> int:
         """Embed and store vectors for all chunks.
 
         Uses batch embedding (``aembed_documents``) for efficiency,
@@ -189,6 +189,7 @@ class VectorStore:
 
         Args:
             chunks: TextChunks collection to embed and index.
+            ctx: Execution context for token usage tracking.
 
         Returns:
             Number of chunks indexed.
@@ -203,13 +204,13 @@ class VectorStore:
         # Batch embed all chunk texts in one API call
         texts = [chunk.text for chunk in chunks.chunks]
         try:
-            vectors = await self._embedder.aembed_documents(texts)
+            vectors = await self._embedder.aembed_documents(texts, ctx=ctx)
         except Exception as exc:
             logger.warning(f"Batch embedding failed, falling back to sequential: {exc}")
             vectors = []
             for chunk in chunks.chunks:
                 try:
-                    vec = await self._embedder.aembed_query(chunk.text)
+                    vec = await self._embedder.aembed_query(chunk.text, ctx=ctx)
                     vectors.append(vec)
                 except Exception:
                     logger.debug("Single chunk embedding failed", exc_info=True)

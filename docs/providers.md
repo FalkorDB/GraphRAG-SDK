@@ -137,11 +137,13 @@ class MyLLM(LLMInterface):
 
 | Method | Default Behavior | Override When |
 |--------|-----------------|--------------|
-| `ainvoke(prompt, max_retries=3)` | Runs `invoke()` in a thread pool with retry | You have a native async client |
-| `ainvoke_messages(messages, max_retries=3)` | Concatenates messages into a single prompt and calls `ainvoke()` | You have a native multi-turn chat API |
+| `ainvoke(prompt, *, ctx=None, max_retries=3)` | Runs `invoke()` in a thread pool with retry; records usage if `ctx` provided | You have a native async client |
+| `ainvoke_messages(messages, *, ctx=None, max_retries=3)` | Concatenates messages into a single prompt and calls `ainvoke()` | You have a native multi-turn chat API |
 | `invoke_with_model(prompt, response_model)` | Calls `invoke()` and parses JSON into Pydantic model | Your provider has native structured output |
 | `ainvoke_with_model(prompt, response_model)` | Calls `ainvoke()` and parses JSON | Same, async version |
-| `abatch_invoke(prompts, max_concurrency)` | Concurrent `ainvoke()` with semaphore | You have a native batch API |
+| `abatch_invoke(prompts, *, ctx=None, max_concurrency)` | Concurrent `ainvoke()` with semaphore; threads `ctx` to each call | You have a native batch API |
+
+> **Token usage:** pass the current `ctx` to record prompt/completion tokens automatically. See [Token Usage](token-usage.md).
 
 `ainvoke_messages()` is called by `completion()` when conversation history is provided. Override it to pass messages natively to your LLM's chat API for proper multi-turn handling:
 
@@ -195,9 +197,11 @@ The `model_name` property is used by the graph config node to validate that the 
 
 | Method | Default Behavior | Override When |
 |--------|-----------------|--------------|
-| `aembed_query(text)` | Runs `embed_query()` in thread pool | You have async embedding |
+| `aembed_query(text, *, ctx=None)` | Runs `embed_query()` in thread pool; records embedding tokens if `ctx` provided | You have async embedding |
 | `embed_documents(texts)` | Sequential `embed_query()` per text | You can batch embeddings |
-| `aembed_documents(texts)` | Runs `embed_documents()` in thread pool | You have async batch |
+| `aembed_documents(texts, *, ctx=None)` | Runs `embed_documents()` in thread pool; records embedding tokens if `ctx` provided | You have async batch |
+
+> **Token usage:** pass the current `ctx` to record embedding tokens automatically. See [Token Usage](token-usage.md).
 
 ### Batch Embedding
 

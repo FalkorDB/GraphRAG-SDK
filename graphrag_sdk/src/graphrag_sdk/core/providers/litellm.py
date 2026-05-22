@@ -19,6 +19,33 @@ from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 logger = logging.getLogger(__name__)
 
 
+def _extract_llm_usage(response: Any) -> tuple[int, int]:
+    """Extract (prompt_tokens, completion_tokens) from a LiteLLM response.
+
+    Returns (0, 0) when usage is absent or incomplete so callers never
+    need to guard against None.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0
+    pt = getattr(usage, "prompt_tokens", None) or 0
+    ct = getattr(usage, "completion_tokens", None) or 0
+    return int(pt), int(ct)
+
+
+def _extract_embedding_usage(response: Any) -> int:
+    """Extract embedding token count from a LiteLLM embedding response.
+
+    LiteLLM returns ``usage.prompt_tokens`` for embedding calls.
+    Returns 0 when absent.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+    pt = getattr(usage, "prompt_tokens", None) or 0
+    return int(pt)
+
+
 class LiteLLM(LLMInterface):
     """LLM provider backed by LiteLLM.
 
@@ -115,6 +142,7 @@ class LiteLLM(LLMInterface):
         self,
         prompt: str,
         *,
+        ctx: Any | None = None,
         max_retries: int = 3,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -130,6 +158,9 @@ class LiteLLM(LLMInterface):
             try:
                 response = await litellm.acompletion(**self._completion_kwargs(prompt, **kwargs))
                 content = response.choices[0].message.content or ""
+                if ctx is not None:
+                    pt, ct = _extract_llm_usage(response)
+                    ctx.record_usage(prompt_tokens=pt, completion_tokens=ct)
                 return LLMResponse(content=content)
             except Exception as exc:
                 last_exc = exc
@@ -182,6 +213,7 @@ class LiteLLM(LLMInterface):
         self,
         messages: list[ChatMessage],
         *,
+        ctx: Any | None = None,
         max_retries: int = 3,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -202,6 +234,9 @@ class LiteLLM(LLMInterface):
                     **self._messages_completion_kwargs(messages, **kwargs)
                 )
                 content = response.choices[0].message.content or ""
+                if ctx is not None:
+                    pt, ct = _extract_llm_usage(response)
+                    ctx.record_usage(prompt_tokens=pt, completion_tokens=ct)
                 return LLMResponse(content=content)
             except Exception as exc:
                 last_exc = exc
@@ -291,10 +326,14 @@ class LiteLLMEmbedder(Embedder):
         sorted_data = sorted(response.data, key=lambda x: x["index"])
         return [d["embedding"] for d in sorted_data]
 
-    async def _raw_embed_async(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def _raw_embed_async(
+        self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[list[float]]:
         """Raw async embed without retry — called by binary_split_retry_async."""
         litellm = self._import_litellm()
         response = await litellm.aembedding(**self._embedding_kwargs(texts, **kwargs))
+        if ctx is not None:
+            ctx.record_usage(embedding_tokens=_extract_embedding_usage(response))
         sorted_data = sorted(response.data, key=lambda x: x["index"])
         return [d["embedding"] for d in sorted_data]
 
@@ -307,16 +346,24 @@ class LiteLLMEmbedder(Embedder):
             results.extend(binary_split_retry_sync(self._raw_embed_sync, batch, **kwargs))
         return results
 
-    async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
+    async def aembed_query(
+        self, text: str, *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[float]:
         litellm = self._import_litellm()
         response = await litellm.aembedding(**self._embedding_kwargs(text, **kwargs))
+        if ctx is not None:
+            ctx.record_usage(embedding_tokens=_extract_embedding_usage(response))
         return response.data[0]["embedding"]
 
-    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def aembed_documents(
+        self, texts: list[str], *, ctx: Any | None = None, **kwargs: Any
+    ) -> list[list[float]]:
         if not texts:
             return []
         results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
-            results.extend(await binary_split_retry_async(self._raw_embed_async, batch, **kwargs))
+            results.extend(
+                await binary_split_retry_async(self._raw_embed_async, batch, ctx=ctx, **kwargs)
+            )
         return results

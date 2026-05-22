@@ -186,12 +186,12 @@ class MultiPathRetrieval(RetrievalStrategy):
         **kwargs: Any,
     ) -> RawSearchResult:
         # 1. Extract keywords
-        simple_kw, llm_kw = await self._extract_keywords(query)
+        simple_kw, llm_kw = await self._extract_keywords(query, ctx)
         all_keywords = llm_kw[:8] + simple_kw
         ctx.log(f"MultiPath [1/9]: {len(all_keywords)} keywords extracted")
 
         # 2. Embed question only
-        query_vector = await self._embedder.aembed_query(query)
+        query_vector = await self._embedder.aembed_query(query, ctx=ctx)
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
         if self._enable_cypher:
@@ -322,7 +322,9 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     # -- Internal: keyword extraction (stays in orchestrator) --
 
-    async def _extract_keywords(self, query: str) -> tuple[list[str], list[str]]:
+    async def _extract_keywords(
+        self, query: str, ctx: Context | None = None
+    ) -> tuple[list[str], list[str]]:
         """Extract simple + LLM-based keywords from the query."""
         words = re.sub(r"[?.!,;:'\"\-()\[\]]", " ", query.lower()).split()
         simple = [w for w in words if w not in self._STOP_WORDS and len(w) > 2][:12]
@@ -333,7 +335,8 @@ class MultiPathRetrieval(RetrievalStrategy):
                 "Extract ALL proper nouns, character names, person names, place names, "
                 "book titles, and specific terms from this question. "
                 "Return them comma-separated, nothing else.\n\n"
-                f"Question: {query}\n\nNames: "
+                f"Question: {query}\n\nNames: ",
+                ctx=ctx,
             )
             llm_kw = [
                 k.strip().strip("'\"").rstrip("()").strip()

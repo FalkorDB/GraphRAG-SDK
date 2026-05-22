@@ -12,6 +12,7 @@ GraphRAG SDK builds knowledge graphs from documents and answers questions over t
 - **Fully modular** -- swap chunking, extraction, resolution, retrieval, and reranking strategies
 - **Production-ready** -- async-first, connection pooling, circuit breaker, batched writes
 - **Full provenance** -- every answer traces back to its source document and chunk
+- **Built-in cost tracking** -- `result.usage.prompt_tokens / completion_tokens / embedding_tokens` on every response
 
 ## Quick Start
 
@@ -43,5 +44,6 @@ asyncio.run(main())
 - [Getting Started](getting-started.md) -- Full tutorial from install to first query
 - [Architecture](architecture.md) -- How the 9-step pipeline works
 - [Strategies](strategies.md) -- All swappable strategy ABCs and built-in options
+- [Token Usage](token-usage.md) -- Cost tracking and observability
 - [Benchmark](benchmark.md) -- Methodology and reproduction instructions
 - [API Reference](api-reference.md) -- Full API documentation
