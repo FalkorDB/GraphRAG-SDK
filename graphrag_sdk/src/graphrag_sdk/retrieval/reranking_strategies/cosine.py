@@ -40,7 +40,11 @@ class CosineReranker(RerankingStrategy):
             return result
 
         texts = [query] + [item.content for item in result.items]
-        vectors = await self._embedder.aembed_documents(texts)
+        ctx.ensure_budget("cosine reranker embedding")
+        vectors = await self._embedder.aembed_documents(
+            texts,
+            timeout=ctx.provider_timeout_seconds("cosine reranker embedding"),
+        )
 
         query_vec = np.array(vectors[0])
         q_norm = np.linalg.norm(query_vec)

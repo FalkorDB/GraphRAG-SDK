@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from graphrag_sdk.retrieval.strategies.chunk_retrieval import fetch_chunk_documents
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+from graphrag_sdk.retrieval.strategies.chunk_retrieval import (
+    fetch_chunk_documents,
+    retrieve_chunks,
+)
 
 
 def _graph_with_rows(rows: list[list]) -> MagicMock:
@@ -90,3 +95,59 @@ class TestFetchChunkDocuments:
         graph.query_raw = AsyncMock(side_effect=RuntimeError("graph down"))
         mapping = await fetch_chunk_documents(graph, ["chunk-1"])
         assert mapping == {}
+
+    async def test_budget_error_propagates(self):
+        graph = MagicMock()
+        graph.query_raw = AsyncMock(
+            side_effect=LatencyBudgetExceededError("budget exhausted")
+        )
+
+        with pytest.raises(LatencyBudgetExceededError, match="budget exhausted"):
+            await fetch_chunk_documents(graph, ["chunk-1"])
+
+
+class TestRetrieveChunks:
+    async def test_budget_error_propagates_from_fulltext_path(self):
+        vector = MagicMock()
+        vector.fulltext_search_chunks = AsyncMock(
+            side_effect=LatencyBudgetExceededError("budget exhausted")
+        )
+        graph = MagicMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="budget exhausted"):
+            await retrieve_chunks(
+                vector,
+                graph,
+                "query",
+                [0.1],
+                [],
+                [],
+                [],
+            )
+
+    async def test_budget_checked_between_fulltext_queries(self):
+        ctx = Context(latency_budget_ms=1000.0)
+
+        async def first_fulltext_exhausts_budget(*args, **kwargs):
+            ctx.latency_budget_ms = 0.0
+            return []
+
+        vector = MagicMock()
+        vector.fulltext_search_chunks = AsyncMock(side_effect=first_fulltext_exhausts_budget)
+        vector.search_chunks = AsyncMock(return_value=[])
+        graph = MagicMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="chunk fulltext search"):
+            await retrieve_chunks(
+                vector,
+                graph,
+                "query",
+                [0.1],
+                ["second-query"],
+                [],
+                [],
+                ctx=ctx,
+            )
+
+        assert vector.fulltext_search_chunks.await_count == 1
+        vector.search_chunks.assert_not_awaited()

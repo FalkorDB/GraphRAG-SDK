@@ -1,6 +1,8 @@
 """Tests for ingestion/loaders/ — TextLoader and PdfLoader."""
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from graphrag_sdk.core.exceptions import LoaderError
@@ -58,6 +60,20 @@ class TestTextLoader:
         loader = TextLoader()
         result = await loader.load(str(file), ctx)
         assert result.document_info.uid  # non-empty UUID
+
+    async def test_read_failure_is_logged_and_typed(self, ctx, tmp_path, monkeypatch, caplog):
+        file = tmp_path / "unreadable.txt"
+        file.write_text("content")
+        loader = TextLoader()
+
+        def fail_read_text(*args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr("pathlib.Path.read_text", fail_read_text)
+        with caplog.at_level(logging.ERROR, logger="graphrag_sdk.ingestion.loaders.text_loader"):
+            with pytest.raises(LoaderError, match="Failed to read"):
+                await loader.load(str(file), ctx)
+        assert "Failed to read text file" in caplog.text
 
 
 class TestPdfLoader:
@@ -135,6 +151,26 @@ class TestPdfLoader:
 
         result = await pdf_mod.PdfLoader().load(str(file), ctx)
         assert result.document_info.metadata["pdf_backend"] == "pypdf"
+
+    async def test_pymupdf_open_failure_is_logged_and_typed(
+        self, ctx, tmp_path, monkeypatch, caplog
+    ):
+        from graphrag_sdk.ingestion.loaders import pdf_loader as pdf_mod
+
+        file = tmp_path / "corrupt.pdf"
+        file.write_bytes(b"%PDF-corrupt")
+
+        class FakeFitz:
+            @staticmethod
+            def open(path):
+                raise RuntimeError("corrupt pdf")
+
+        monkeypatch.setitem(__import__("sys").modules, "fitz", FakeFitz)
+        with caplog.at_level(logging.ERROR, logger="graphrag_sdk.ingestion.loaders.pdf_loader"):
+            with pytest.raises(LoaderError, match="Failed to read PDF"):
+                await pdf_mod.PdfLoader().load(str(file), ctx)
+        assert "Failed to read PDF" in caplog.text
+        assert "PyMuPDF" in caplog.text
 
     async def test_raises_when_no_backend_installed(self, ctx, tmp_path, monkeypatch):
         """With neither backend available, a clear install message is raised."""

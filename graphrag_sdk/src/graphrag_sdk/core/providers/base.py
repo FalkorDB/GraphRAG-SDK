@@ -13,8 +13,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import summarize_exception
+from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
 
 logger = logging.getLogger(__name__)
 
@@ -60,17 +62,41 @@ class Embedder(ABC):
         """Embed a single text string into a float vector."""
         ...
 
-    async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
+    async def aembed_query(
+        self,
+        text: str,
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> list[float]:
         """Async variant — defaults to sync-in-thread."""
-        return await asyncio.to_thread(self.embed_query, text, **kwargs)
+        validate_timeout(timeout)
+        return await wait_for_provider_call(
+            asyncio.to_thread(self.embed_query, text, **kwargs),
+            timeout=timeout,
+            timeout_error=EmbeddingTimeoutError,
+            operation=f"embedding query with {self.model_name}",
+        )
 
     def embed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
         """Batch embed multiple texts. Default: sequential fallback."""
         return [self.embed_query(t, **kwargs) for t in texts]
 
-    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def aembed_documents(
+        self,
+        texts: list[str],
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> list[list[float]]:
         """Async batch embed. Default: sync-in-thread."""
-        return await asyncio.to_thread(self.embed_documents, texts, **kwargs)
+        validate_timeout(timeout)
+        return await wait_for_provider_call(
+            asyncio.to_thread(self.embed_documents, texts, **kwargs),
+            timeout=timeout,
+            timeout_error=EmbeddingTimeoutError,
+            operation=f"embedding documents with {self.model_name}",
+        )
 
 
 class LLMInterface(ABC):
@@ -106,6 +132,7 @@ class LLMInterface(ABC):
         prompt: str,
         *,
         max_retries: int = 3,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Async variant with retry + jittered exponential backoff.
@@ -113,10 +140,20 @@ class LLMInterface(ABC):
         Retries on any exception up to ``max_retries`` times with
         jittered delays between attempts.
         """
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
+        validate_timeout(timeout)
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                return await asyncio.to_thread(self.invoke, prompt, **kwargs)
+                return await wait_for_provider_call(
+                    asyncio.to_thread(self.invoke, prompt, **kwargs),
+                    timeout=timeout,
+                    timeout_error=LLMTimeoutError,
+                    operation=f"LLM call to {self.model_name}",
+                )
+            except LLMTimeoutError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 if attempt < max_retries - 1:
@@ -130,6 +167,16 @@ class LLMInterface(ABC):
                     )
                     logger.debug("LLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
+        logger.error(
+            "LLM call failed after %d attempts: %s",
+            max_retries,
+            summarize_exception(last_exc) if last_exc is not None else "UnknownError",
+        )
+        if last_exc is not None:
+            logger.debug(
+                "LLM call final failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
         raise last_exc  # type: ignore[misc]
 
     async def ainvoke_messages(
@@ -137,6 +184,7 @@ class LLMInterface(ABC):
         messages: list[ChatMessage],
         *,
         max_retries: int = 3,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Invoke the LLM with a list of structured chat messages.
@@ -155,16 +203,28 @@ class LLMInterface(ABC):
         Returns:
             LLMResponse with the model's reply.
         """
+        validate_timeout(timeout)
         # Default fallback: flatten messages into a single prompt string.
         parts: list[str] = []
         for msg in messages:
             parts.append(f"{msg.role.capitalize()}: {msg.content}")
         prompt = "\n\n".join(parts)
-        return await self.ainvoke(prompt, max_retries=max_retries, **kwargs)
+        return await self.ainvoke(
+            prompt,
+            max_retries=max_retries,
+            timeout=timeout,
+            **kwargs,
+        )
 
-    async def astream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
+    async def astream(
+        self,
+        prompt: str,
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
         """Async streaming — default yields the full response as one chunk."""
-        resp = await self.ainvoke(prompt, **kwargs)
+        resp = await self.ainvoke(prompt, timeout=timeout, **kwargs)
         yield resp.content
 
     def invoke_with_model(
@@ -187,10 +247,16 @@ class LLMInterface(ABC):
         response_model: type[BaseModel],
         *,
         max_retries: int = 3,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> BaseModel:
         """Async structured output invocation with retry."""
-        response = await self.ainvoke(prompt, max_retries=max_retries, **kwargs)
+        response = await self.ainvoke(
+            prompt,
+            max_retries=max_retries,
+            timeout=timeout,
+            **kwargs,
+        )
         return response_model.model_validate_json(response.content)
 
     async def abatch_invoke(
@@ -199,6 +265,7 @@ class LLMInterface(ABC):
         *,
         max_concurrency: int | None = None,
         max_retries: int = 3,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> list[LLMBatchItem]:
         """Invoke LLM on multiple prompts concurrently with per-item error handling.
@@ -220,9 +287,20 @@ class LLMInterface(ABC):
         async def _call(i: int, prompt: str) -> LLMBatchItem:
             async with sem:
                 try:
-                    resp = await self.ainvoke(prompt, max_retries=max_retries, **kwargs)
+                    resp = await self.ainvoke(
+                        prompt,
+                        max_retries=max_retries,
+                        timeout=timeout,
+                        **kwargs,
+                    )
                     return LLMBatchItem(index=i, response=resp)
                 except Exception as exc:
+                    logger.error(
+                        "Batch LLM item %d failed: %s",
+                        i,
+                        summarize_exception(exc),
+                    )
+                    logger.debug("Batch LLM item failure details", exc_info=True)
                     return LLMBatchItem(index=i, error=exc)
 
         return list(await asyncio.gather(*[_call(i, p) for i, p in enumerate(prompts)]))

@@ -12,6 +12,8 @@ import logging
 import re
 from typing import Any
 
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import GraphSchema
 
 logger = logging.getLogger(__name__)
@@ -381,6 +383,7 @@ async def generate_cypher(
     *,
     schema: GraphSchema | None = None,
     max_retries: int = 3,
+    ctx: Context | None = None,
 ) -> str | None:
     """Generate a Cypher query from a natural language question.
 
@@ -394,15 +397,31 @@ async def generate_cypher(
 
     for attempt in range(max_retries):
         try:
+            if ctx is not None:
+                ctx.ensure_budget("Cypher generation LLM call")
             if attempt > 0 and last_error:
                 prompt_with_feedback = (
                     prompt + f"\n\nPrevious attempt failed with error: {last_error}\n"
                     "Remember: no shortestPath, every RETURN column must have a "
                     "unique alias, add LIMIT, keep it simple."
                 )
-                response = await llm.ainvoke(prompt_with_feedback)
+                response = await llm.ainvoke(
+                    prompt_with_feedback,
+                    timeout=(
+                        ctx.provider_timeout_seconds("Cypher generation LLM call")
+                        if ctx is not None
+                        else None
+                    ),
+                )
             else:
-                response = await llm.ainvoke(prompt)
+                response = await llm.ainvoke(
+                    prompt,
+                    timeout=(
+                        ctx.provider_timeout_seconds("Cypher generation LLM call")
+                        if ctx is not None
+                        else None
+                    ),
+                )
 
             cypher = extract_cypher(response.content)
             if not cypher:
@@ -418,6 +437,8 @@ async def generate_cypher(
             cypher = _sanitize_cypher(cypher)
             return cypher
 
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             last_error = str(exc)
             logger.debug("Cypher generation attempt %d failed: %s", attempt + 1, exc)
@@ -433,6 +454,7 @@ async def execute_cypher_retrieval(
     *,
     schema: GraphSchema | None = None,
     max_retries: int = 3,
+    ctx: Context | None = None,
 ) -> tuple[list[str], dict[str, dict]]:
     """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
 
@@ -446,12 +468,16 @@ async def execute_cypher_retrieval(
 
     On any failure, returns empty results (silent degradation).
     """
-    cypher = await generate_cypher(llm, question, schema=schema, max_retries=max_retries)
+    cypher = await generate_cypher(llm, question, schema=schema, max_retries=max_retries, ctx=ctx)
     if not cypher:
         return [], {}
 
     try:
+        if ctx is not None:
+            ctx.ensure_budget("Cypher execution")
         result = await graph_store.query_raw(cypher)
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("Cypher execution failed: %s — query: %s", exc, cypher)
         return [], {}

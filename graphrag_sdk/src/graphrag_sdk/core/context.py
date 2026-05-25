@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,10 +49,46 @@ class Context:
         return max(0.0, self.latency_budget_ms - self.elapsed_ms)
 
     @property
+    def remaining_budget_seconds(self) -> float | None:
+        """Remaining latency budget in seconds, or None if no budget set."""
+        remaining = self.remaining_budget_ms
+        if remaining is None:
+            return None
+        return remaining / 1000.0
+
+    def provider_timeout_seconds(
+        self,
+        operation: str,
+        *,
+        min_remaining_ms: float = 1.0,
+    ) -> float | None:
+        """Remaining provider timeout, raising if the budget is too low to start."""
+        remaining = self.remaining_budget_ms
+        if remaining is None:
+            return None
+        if remaining <= min_remaining_ms:
+            budget = self.latency_budget_ms if self.latency_budget_ms is not None else 0.0
+            raise LatencyBudgetExceededError(
+                f"Latency budget exceeded before {operation} "
+                f"(elapsed={self.elapsed_ms:.1f}ms, budget={budget:.1f}ms)"
+            )
+        return remaining / 1000.0
+
+    @property
     def budget_exceeded(self) -> bool:
         """True if the latency budget has been exceeded."""
         remaining = self.remaining_budget_ms
         return remaining is not None and remaining <= 0
+
+    def ensure_budget(self, operation: str) -> None:
+        """Raise if the latency budget is already exhausted before *operation* starts."""
+        if not self.budget_exceeded:
+            return
+        budget = self.latency_budget_ms if self.latency_budget_ms is not None else 0.0
+        raise LatencyBudgetExceededError(
+            f"Latency budget exceeded before {operation} "
+            f"(elapsed={self.elapsed_ms:.1f}ms, budget={budget:.1f}ms)"
+        )
 
     def child(self, **overrides: Any) -> Context:
         """Create a child context inheriting tenant/trace but with optional overrides.

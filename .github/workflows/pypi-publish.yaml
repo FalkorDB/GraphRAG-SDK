@@ -32,8 +32,15 @@ jobs:
           fi
 
       - run: pip install build
+      - run: pip install twine
 
       - run: python -m build
+      - run: twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: graphrag_sdk/dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:

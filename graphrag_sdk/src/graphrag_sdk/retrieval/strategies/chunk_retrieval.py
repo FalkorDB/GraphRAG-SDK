@@ -6,6 +6,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,6 +20,7 @@ async def retrieve_chunks(
     llm_kw: list[str],
     simple_kw: list[str],
     entity_list: list[tuple[str, dict]],
+    ctx: Context | None = None,
 ) -> tuple[dict[str, str], dict[str, str], dict[str, list[float]]]:
     """4-path chunk retrieval: fulltext + vector + MENTIONED_IN + 2-hop.
 
@@ -37,17 +41,25 @@ async def retrieve_chunks(
     fulltext_queries = [query] + llm_kw[:6] + simple_kw[:4]
     for ft_q in fulltext_queries:
         try:
+            if ctx is not None:
+                ctx.ensure_budget("chunk fulltext search")
             results = await vector_store.fulltext_search_chunks(ft_q, top_k=5)
             for c in results:
                 _add(c.get("id", ""), c.get("text", ""), "fulltext")
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug("Chunk fulltext search failed for query: %s", exc)
 
     # Path B: Vector search
     try:
+        if ctx is not None:
+            ctx.ensure_budget("chunk vector search")
         results = await vector_store.search_chunks(query_vector, top_k=15)
         for c in results:
             _add(c.get("id", ""), c.get("text", ""), "vector")
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("Chunk vector search failed: %s", exc)
 
@@ -60,6 +72,8 @@ async def retrieve_chunks(
     eids_mention = [eid for eid, _ in entity_list[:15]]
     if eids_mention:
         try:
+            if ctx is not None:
+                ctx.ensure_budget("MENTIONED_IN chunk retrieval")
             result = await graph_store.query_raw(
                 "UNWIND $eids AS eid "
                 "MATCH (e:__Entity__ {id: eid})-[:MENTIONED_IN]->(c:Chunk) "
@@ -75,6 +89,8 @@ async def retrieve_chunks(
                 cid = row[1]
                 text = row[2] if len(row) > 2 else ""
                 _add(cid, text, "mentioned_in")
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug("MENTIONED_IN chunk retrieval failed: %s", exc)
 
@@ -82,6 +98,8 @@ async def retrieve_chunks(
     eids_2hop_chunk = [eid for eid, _ in entity_list[:10]]
     if eids_2hop_chunk:
         try:
+            if ctx is not None:
+                ctx.ensure_budget("2-hop chunk retrieval")
             result = await graph_store.query_raw(
                 "UNWIND $eids AS eid "
                 "MATCH (e:__Entity__ {id: eid})-[:RELATES]-(neighbor:__Entity__)"
@@ -94,6 +112,8 @@ async def retrieve_chunks(
                 cid = row[0]
                 text = row[1] if len(row) > 1 else ""
                 _add(cid, text, "2hop_mentioned")
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug("2-hop chunk retrieval failed: %s", exc)
 
@@ -102,6 +122,8 @@ async def retrieve_chunks(
     missing_ids = list(chunks.keys())
     if missing_ids:
         try:
+            if ctx is not None:
+                ctx.ensure_budget("stored chunk embedding fetch")
             result = await graph_store.query_raw(
                 "UNWIND $ids AS cid "
                 "MATCH (c:Chunk {id: cid}) "
@@ -112,6 +134,8 @@ async def retrieve_chunks(
             for row in result.result_set:
                 if row[0] and row[1] is not None:
                     embeddings[row[0]] = list(row[1])
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             logger.debug("Stored embedding fetch failed: %s", exc)
 
@@ -121,6 +145,7 @@ async def retrieve_chunks(
 async def fetch_chunk_documents(
     graph_store: Any,
     chunk_ids: list[str],
+    ctx: Context | None = None,
 ) -> dict[str, str]:
     """Batch-fetch the source document path for each chunk via PART_OF.
 
@@ -137,6 +162,8 @@ async def fetch_chunk_documents(
     if not chunk_ids:
         return {}
     try:
+        if ctx is not None:
+            ctx.ensure_budget("chunk source document fetch")
         result = await graph_store.query_raw(
             "UNWIND $ids AS cid "
             "MATCH (d:Document)-[:PART_OF]->(c:Chunk {id: cid}) "
@@ -150,6 +177,8 @@ async def fetch_chunk_documents(
             if cid and path:
                 mapping[cid] = path
         return mapping
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("Document name fetch failed: %s", exc)
         return {}

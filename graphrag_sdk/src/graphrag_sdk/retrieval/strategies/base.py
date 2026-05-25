@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import RetrieverError
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError, RetrieverError
 from graphrag_sdk.core.models import RawSearchResult, RetrieverResult, RetrieverResultItem
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,11 @@ class RetrievalStrategy(ABC):
 
         except RetrieverError:
             raise
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
+            logger.error("Retrieval [%s] failed: %s", self.__class__.__name__, exc)
+            logger.debug("Retrieval failure details", exc_info=True)
             raise RetrieverError(f"Retrieval [{self.__class__.__name__}] failed: {exc}") from exc
 
     @abstractmethod

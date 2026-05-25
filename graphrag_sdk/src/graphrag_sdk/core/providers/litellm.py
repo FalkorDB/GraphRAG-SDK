@@ -6,14 +6,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
+from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
 from graphrag_sdk.core.models import ChatMessage, LLMResponse
 from graphrag_sdk.core.providers._retry import (
     binary_split_retry_async,
     binary_split_retry_sync,
     summarize_exception,
 )
+from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
 from graphrag_sdk.core.providers.base import Embedder, LLMInterface
 
 logger = logging.getLogger(__name__)
@@ -116,8 +119,12 @@ class LiteLLM(LLMInterface):
         prompt: str,
         *,
         max_retries: int = 3,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
+        validate_timeout(timeout)
         try:
             import litellm
         except ImportError:
@@ -128,9 +135,16 @@ class LiteLLM(LLMInterface):
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await litellm.acompletion(**self._completion_kwargs(prompt, **kwargs))
+                response = await wait_for_provider_call(
+                    litellm.acompletion(**self._completion_kwargs(prompt, **kwargs)),
+                    timeout=timeout,
+                    timeout_error=LLMTimeoutError,
+                    operation=f"LiteLLM call to {self.model_name}",
+                )
                 content = response.choices[0].message.content or ""
                 return LLMResponse(content=content)
+            except LLMTimeoutError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 if attempt < max_retries - 1:
@@ -144,6 +158,16 @@ class LiteLLM(LLMInterface):
                     )
                     logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
+        logger.error(
+            "LiteLLM call failed after %d attempts: %s",
+            max_retries,
+            summarize_exception(last_exc) if last_exc is not None else "UnknownError",
+        )
+        if last_exc is not None:
+            logger.debug(
+                "LiteLLM call final failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
         raise last_exc  # type: ignore[misc]
 
     def _messages_completion_kwargs(
@@ -183,11 +207,13 @@ class LiteLLM(LLMInterface):
         messages: list[ChatMessage],
         *,
         max_retries: int = 3,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Native multi-turn completion via LiteLLM."""
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
+        validate_timeout(timeout)
         try:
             import litellm
         except ImportError:
@@ -198,11 +224,16 @@ class LiteLLM(LLMInterface):
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = await litellm.acompletion(
-                    **self._messages_completion_kwargs(messages, **kwargs)
+                response = await wait_for_provider_call(
+                    litellm.acompletion(**self._messages_completion_kwargs(messages, **kwargs)),
+                    timeout=timeout,
+                    timeout_error=LLMTimeoutError,
+                    operation=f"LiteLLM messages call to {self.model_name}",
                 )
                 content = response.choices[0].message.content or ""
                 return LLMResponse(content=content)
+            except LLMTimeoutError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 if attempt < max_retries - 1:
@@ -216,6 +247,16 @@ class LiteLLM(LLMInterface):
                     )
                     logger.debug("LiteLLM call failure details", exc_info=True)
                     await asyncio.sleep(delay)
+        logger.error(
+            "LiteLLM messages call failed after %d attempts: %s",
+            max_retries,
+            summarize_exception(last_exc) if last_exc is not None else "UnknownError",
+        )
+        if last_exc is not None:
+            logger.debug(
+                "LiteLLM messages call final failure details",
+                exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
+            )
         raise last_exc  # type: ignore[misc]
 
 
@@ -291,10 +332,22 @@ class LiteLLMEmbedder(Embedder):
         sorted_data = sorted(response.data, key=lambda x: x["index"])
         return [d["embedding"] for d in sorted_data]
 
-    async def _raw_embed_async(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def _raw_embed_async(
+        self,
+        texts: list[str],
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> list[list[float]]:
         """Raw async embed without retry — called by binary_split_retry_async."""
+        validate_timeout(timeout)
         litellm = self._import_litellm()
-        response = await litellm.aembedding(**self._embedding_kwargs(texts, **kwargs))
+        response = await wait_for_provider_call(
+            litellm.aembedding(**self._embedding_kwargs(texts, **kwargs)),
+            timeout=timeout,
+            timeout_error=EmbeddingTimeoutError,
+            operation=f"LiteLLM embedding batch with {self.model}",
+        )
         sorted_data = sorted(response.data, key=lambda x: x["index"])
         return [d["embedding"] for d in sorted_data]
 
@@ -307,16 +360,62 @@ class LiteLLMEmbedder(Embedder):
             results.extend(binary_split_retry_sync(self._raw_embed_sync, batch, **kwargs))
         return results
 
-    async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
+    async def aembed_query(
+        self,
+        text: str,
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> list[float]:
+        validate_timeout(timeout)
         litellm = self._import_litellm()
-        response = await litellm.aembedding(**self._embedding_kwargs(text, **kwargs))
+        response = await wait_for_provider_call(
+            litellm.aembedding(**self._embedding_kwargs(text, **kwargs)),
+            timeout=timeout,
+            timeout_error=EmbeddingTimeoutError,
+            operation=f"LiteLLM embedding query with {self.model}",
+        )
         return response.data[0]["embedding"]
 
-    async def aembed_documents(self, texts: list[str], **kwargs: Any) -> list[list[float]]:
+    async def aembed_documents(
+        self,
+        texts: list[str],
+        *,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> list[list[float]]:
+        validate_timeout(timeout)
         if not texts:
             return []
+        deadline = time.monotonic() + timeout if timeout is not None else None
+
+        def remaining_timeout() -> float | None:
+            if deadline is None:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise EmbeddingTimeoutError(
+                    f"LiteLLM embedding documents with {self.model} timed out after {timeout:.3g}s"
+                )
+            return remaining
+
+        async def embed_batch_with_deadline(
+            batch: list[str], **inner_kwargs: Any
+        ) -> list[list[float]]:
+            return await self._raw_embed_async(
+                batch,
+                timeout=remaining_timeout(),
+                **inner_kwargs,
+            )
+
         results: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
-            results.extend(await binary_split_retry_async(self._raw_embed_async, batch, **kwargs))
+            results.extend(
+                await binary_split_retry_async(
+                    embed_batch_with_deadline,
+                    batch,
+                    **kwargs,
+                )
+            )
         return results
