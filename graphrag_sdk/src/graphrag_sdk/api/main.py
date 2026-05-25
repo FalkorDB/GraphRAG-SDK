@@ -324,18 +324,6 @@ class GraphRAG:
         ontology = await self.get_ontology()
         ontology.save_to_file(path, indent=indent)
 
-    async def delete_property(
-        self, label: str, prop_name: str, *, on_relation: bool = False
-    ) -> GraphSchema:
-        """Remove a property declaration from a label.
-
-        Forward-only: existing values on data-graph nodes are not touched.
-        Future extraction will stop trying to fill the property, and Cypher
-        generation will stop listing it. Returns the refreshed global ontology.
-        """
-        await self._ontology_store.delete_property(label, prop_name, on_relation=on_relation)
-        return await self.refresh_ontology()
-
     # ── Graph admin ──────────────────────────────────────────────
 
     async def get_statistics(self) -> dict[str, Any]:

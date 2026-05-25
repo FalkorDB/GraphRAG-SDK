@@ -21,6 +21,7 @@ from graphrag_sdk.core.models import (
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyStore,
+    SchemaModificationNotAllowedError,
     _decode_patterns,
     _encode_patterns,
     _props_from_rows,
@@ -231,10 +232,16 @@ class TestLoad:
 
 
 class TestContradictionDetection:
-    """Additive-only schema: re-typing an existing property is rejected."""
+    """Type re-declarations are rejected; modifications surface as a separate error."""
 
     @pytest.mark.asyncio
-    async def test_compatible_addition_is_accepted(self, store_factory, fake_graph):
+    async def test_exact_subset_redeclaration_is_accepted(
+        self, store_factory, fake_graph
+    ):
+        """An existing label can be re-declared with a subset of its persisted
+        properties (or no properties at all) — that's "reference the existing
+        definition," not "modify it."
+        """
         store = store_factory()
         fake_graph.set_load_response(
             entity_rows=[
@@ -246,18 +253,19 @@ class TestContradictionDetection:
             ],
             relation_rows=[],
         )
-        incoming = GraphSchema(
-            entities=[
-                EntityType(
-                    label="Person",
-                    properties=[
-                        PropertyType(name="age", type="INTEGER"),       # same as before
-                        PropertyType(name="birth_date", type="DATE"),   # new property
-                    ],
-                ),
-            ],
+        # Re-declares Person with exactly the same property — accepted.
+        await store.register(
+            GraphSchema(
+                entities=[
+                    EntityType(
+                        label="Person",
+                        properties=[PropertyType(name="age", type="INTEGER")],
+                    ),
+                ],
+            )
         )
-        await store.register(incoming)  # must not raise
+        # Re-declares Person with NO properties (subset) — also accepted.
+        await store.register(GraphSchema(entities=[EntityType(label="Person")]))
 
     @pytest.mark.asyncio
     async def test_redefining_entity_property_type_is_rejected(
@@ -318,55 +326,134 @@ class TestContradictionDetection:
         assert "WORKS_AT.since" in str(exc.value)
 
 
-# ── delete lifecycle ─────────────────────────────────────────────
+# ── strict modification rejection ────────────────────────────────
 
 
-class TestDeleteLifecycle:
-    """Forward-only deletion: removes the declaration from the ontology
-    graph; data-graph nodes/edges are untouched (caller's responsibility)."""
+class TestStrictModification:
+    """The ingest path admits new labels only. Adding properties or patterns
+    to an existing label requires a separate schema-evolution operation that
+    keeps data and ontology in sync — which is not yet supported."""
 
     @pytest.mark.asyncio
-    async def test_delete_property_emits_detach_delete_on_property_node(
+    async def test_adding_new_label_is_accepted(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entity_rows=[
+                [
+                    "Person",
+                    None,
+                    [{"name": "age", "type": "INTEGER", "description": None}],
+                ],
+            ],
+            relation_rows=[],
+        )
+        # New label with full schema — fine.
+        await store.register(
+            GraphSchema(
+                entities=[
+                    EntityType(
+                        label="Company",
+                        properties=[PropertyType(name="founded", type="INTEGER")],
+                    ),
+                ],
+            )
+        )
+        ent_merges = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
+        # Only the new Company is upserted; existing Person isn't re-touched.
+        labels_upserted = {(c[1] or {}).get("label") for c in ent_merges}
+        assert labels_upserted == {"Company"}
+
+    @pytest.mark.asyncio
+    async def test_adding_property_to_existing_label_is_rejected(
         self, store_factory, fake_graph
     ):
         store = store_factory()
-        await store.delete_property("Person", "age")
-        deletes = [
-            c
-            for c in fake_graph.calls
-            if "MATCH (o:OntologyEntityType" in c[0] and "DETACH DELETE p" in c[0]
-        ]
-        assert len(deletes) == 1
-        assert (deletes[0][1] or {}).get("label") == "Person"
-        assert (deletes[0][1] or {}).get("name") == "age"
+        fake_graph.set_load_response(
+            entity_rows=[
+                [
+                    "Person",
+                    None,
+                    [{"name": "age", "type": "INTEGER", "description": None}],
+                ],
+            ],
+            relation_rows=[],
+        )
+        incoming = GraphSchema(
+            entities=[
+                EntityType(
+                    label="Person",
+                    properties=[
+                        PropertyType(name="age", type="INTEGER"),
+                        PropertyType(name="birth_date", type="DATE"),  # new on existing label
+                    ],
+                ),
+            ],
+        )
+        with pytest.raises(SchemaModificationNotAllowedError) as exc:
+            await store.register(incoming)
+        assert "Person" in str(exc.value)
+        assert "birth_date" in str(exc.value)
+        # Validation runs before persistence — no upsert leaked.
+        upserts = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
+        assert upserts == []
 
     @pytest.mark.asyncio
-    async def test_delete_property_on_relation_type(self, store_factory, fake_graph):
-        store = store_factory()
-        await store.delete_property("WORKS_AT", "since", on_relation=True)
-        deletes = [
-            c
-            for c in fake_graph.calls
-            if "MATCH (o:OntologyRelationType" in c[0] and "DETACH DELETE p" in c[0]
-        ]
-        assert len(deletes) == 1
-
-    @pytest.mark.asyncio
-    async def test_delete_entity_type_removes_type_and_properties(
+    async def test_adding_pattern_to_existing_relation_is_rejected(
         self, store_factory, fake_graph
     ):
         store = store_factory()
-        await store.delete_entity_type("Person")
-        deletes = [c for c in fake_graph.calls if "DETACH DELETE e, p" in c[0]]
-        assert len(deletes) == 1
-        assert (deletes[0][1] or {}).get("label") == "Person"
+        fake_graph.set_load_response(
+            entity_rows=[],
+            relation_rows=[
+                [
+                    "WORKS_AT",
+                    None,
+                    ["Person|Company"],
+                    [],
+                ],
+            ],
+        )
+        incoming = GraphSchema(
+            relations=[
+                RelationType(
+                    label="WORKS_AT",
+                    patterns=[
+                        ("Person", "Company"),
+                        ("Person", "Organization"),  # new pattern on existing relation
+                    ],
+                ),
+            ],
+        )
+        with pytest.raises(SchemaModificationNotAllowedError) as exc:
+            await store.register(incoming)
+        assert "WORKS_AT" in str(exc.value)
 
     @pytest.mark.asyncio
-    async def test_delete_relation_type_removes_type_and_properties(
+    async def test_adding_property_to_existing_relation_is_rejected(
         self, store_factory, fake_graph
     ):
         store = store_factory()
-        await store.delete_relation_type("WORKS_AT")
-        deletes = [c for c in fake_graph.calls if "DETACH DELETE r, p" in c[0]]
-        assert len(deletes) == 1
-        assert (deletes[0][1] or {}).get("label") == "WORKS_AT"
+        fake_graph.set_load_response(
+            entity_rows=[],
+            relation_rows=[
+                [
+                    "WORKS_AT",
+                    None,
+                    [],
+                    [{"name": "since", "type": "DATE", "description": None}],
+                ],
+            ],
+        )
+        incoming = GraphSchema(
+            relations=[
+                RelationType(
+                    label="WORKS_AT",
+                    properties=[
+                        PropertyType(name="since", type="DATE"),
+                        PropertyType(name="role", type="STRING"),  # new
+                    ],
+                ),
+            ],
+        )
+        with pytest.raises(SchemaModificationNotAllowedError):
+            await store.register(incoming)

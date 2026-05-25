@@ -36,11 +36,28 @@ logger = logging.getLogger(__name__)
 
 
 class OntologyContradictionError(ValueError):
-    """Raised when an incoming schema redefines an existing property's type.
+    """Raised when an incoming schema re-types an existing property.
 
-    The ontology is additive: new labels, properties, and relation patterns are
-    welcome, but re-typing a property already registered on a label is
-    explicitly rejected so downstream Cypher queries don't break silently.
+    Re-typing (e.g., ``Person.age`` STRING → INTEGER) is rejected before any
+    partial state is persisted, so downstream Cypher queries can never break
+    silently because someone changed a property's type out from under them.
+    """
+
+
+class SchemaModificationNotAllowedError(ValueError):
+    """Raised when an incoming schema tries to MODIFY an existing label.
+
+    The ingest path is intentionally constrained: it can add brand-new labels
+    (with whatever attributes the user wants) and re-declare existing labels
+    *exactly* (or with a strict subset of their persisted properties / patterns).
+    It cannot add attributes / patterns / fields to an already-registered
+    label — that's a schema-evolution operation that has to also update
+    existing graph data to keep the two in sync, which is handled by a separate
+    API path (not yet implemented).
+
+    Workaround for v1: ``await rag.delete_all()`` and re-ingest with the new
+    schema, OR rely solely on the constructor's first ``register`` to lock in
+    your full schema from the start.
     """
 
 
@@ -173,21 +190,30 @@ class OntologyStore:
     # ── Register ─────────────────────────────────────────────────
 
     async def register(self, schema: GraphSchema) -> GraphSchema:
-        """Merge ``schema`` into the persisted ontology and return the union.
+        """Register ``schema`` into the persisted ontology and return the union.
 
-        Validates first: if ``schema`` redefines the type of a property
-        already registered on the same entity/relation label, raises
-        :py:class:`OntologyContradictionError` before any partial state is
-        persisted.
+        The ingest path is constrained:
 
-        Additive operations — new entity types, new relations, new properties,
-        new relation patterns — go through unchanged.
+        - **New labels** — registered with their declared properties and
+          (for relations) patterns.
+        - **Existing labels** — incoming declaration must be a *strict subset*
+          of what's already persisted. The same property names, the same
+          types, the same (or fewer) relation patterns. Re-declaring a label
+          with no properties is fine; it just means "I know this label exists,
+          use the persisted definition."
+        - Trying to **add a property** to an existing label →
+          :py:class:`SchemaModificationNotAllowedError`.
+        - Trying to **change the type** of an existing property →
+          :py:class:`OntologyContradictionError`.
+
+        Both errors are raised before any partial state is persisted.
         """
         if not schema.entities and not schema.relations:
             return await self.load()
 
         existing = await self.load()
         self._check_no_contradictions(existing, schema)
+        self._check_no_modifications_to_existing(existing, schema)
 
         for et in schema.entities:
             await self._upsert_entity_type(et)
@@ -208,9 +234,9 @@ class OntologyStore:
                 if prior is not None and prior != p.type:
                     raise OntologyContradictionError(
                         f"Property '{et.label}.{p.name}' is already registered as "
-                        f"{prior}; refusing to redefine as {p.type}. The ontology "
-                        f"is additive — drop the data graph and start fresh if you "
-                        f"need to change a property's type."
+                        f"{prior}; refusing to redefine as {p.type}. Type changes "
+                        f"on existing properties are not supported via the ingest "
+                        f"path; drop the data graph and start fresh if you need to."
                     )
 
         existing_rel_types: dict[tuple[str, str], str] = {
@@ -224,6 +250,55 @@ class OntologyStore:
                         f"Property '{rt.label}.{p.name}' (on relation) is already "
                         f"registered as {prior}; refusing to redefine as {p.type}."
                     )
+
+    @staticmethod
+    def _check_no_modifications_to_existing(existing: GraphSchema, incoming: GraphSchema) -> None:
+        """Raise :py:class:`SchemaModificationNotAllowedError` when incoming
+        tries to add new properties / patterns to a label that's already
+        registered. New labels are unaffected.
+
+        Subset re-declarations are allowed: an existing label may appear in
+        the incoming schema with fewer (or zero) properties — that's treated
+        as "use the persisted definition" rather than "remove things."
+        """
+        existing_ent_by_label = {e.label: e for e in existing.entities}
+        for et in incoming.entities:
+            prior_et = existing_ent_by_label.get(et.label)
+            if prior_et is None:
+                continue
+            prior_prop_names = {p.name for p in prior_et.properties}
+            new_prop_names = {p.name for p in et.properties} - prior_prop_names
+            if new_prop_names:
+                raise SchemaModificationNotAllowedError(
+                    f"Refusing to add new attribute(s) {sorted(new_prop_names)} "
+                    f"to existing label '{et.label}'. The ingest path only "
+                    f"accepts new labels; modifying an existing label requires "
+                    f"a schema-evolution operation (not yet supported). "
+                    f"Workaround: `await rag.delete_all()` and re-ingest with "
+                    f"the updated schema."
+                )
+
+        existing_rel_by_label = {r.label: r for r in existing.relations}
+        for rt in incoming.relations:
+            prior_rt = existing_rel_by_label.get(rt.label)
+            if prior_rt is None:
+                continue
+            prior_prop_names = {p.name for p in prior_rt.properties}
+            new_prop_names = {p.name for p in rt.properties} - prior_prop_names
+            prior_patterns = set(prior_rt.patterns)
+            new_patterns = set(rt.patterns) - prior_patterns
+            if new_prop_names or new_patterns:
+                diffs: list[str] = []
+                if new_prop_names:
+                    diffs.append(f"new properties {sorted(new_prop_names)}")
+                if new_patterns:
+                    diffs.append(f"new patterns {sorted(new_patterns)}")
+                raise SchemaModificationNotAllowedError(
+                    f"Refusing to add {' and '.join(diffs)} to existing relation "
+                    f"'{rt.label}'. The ingest path only accepts new relation "
+                    f"types; modifying an existing one requires a schema-evolution "
+                    f"operation (not yet supported)."
+                )
 
     async def _upsert_entity_type(self, et: EntityType) -> None:
         await self._query(
@@ -279,48 +354,6 @@ class OntologyStore:
                 "type": prop.type,
                 "description": prop.description,
             },
-        )
-
-    # ── Delete ───────────────────────────────────────────────────
-
-    async def delete_property(
-        self, label: str, prop_name: str, *, on_relation: bool = False
-    ) -> None:
-        """Remove a property declaration from an entity or relation type.
-
-        Existing values for this property on data-graph nodes are **not**
-        touched — schema deletions are forward-only. After this returns,
-        future extraction will not try to fill ``prop_name`` and Cypher
-        generation will not list it.
-        """
-        owner_label = "OntologyRelationType" if on_relation else "OntologyEntityType"
-        await self._query(
-            f"MATCH (o:{owner_label} {{label: $label}})"
-            "-[:HAS_PROPERTY]->(p:OntologyProperty {name: $name}) "
-            "DETACH DELETE p",
-            {"label": label, "name": prop_name},
-        )
-
-    async def delete_entity_type(self, label: str) -> None:
-        """Remove an entity type and all of its declared properties from the
-        ontology graph. Data-graph nodes with this label are untouched.
-        """
-        await self._query(
-            "MATCH (e:OntologyEntityType {label: $label}) "
-            "OPTIONAL MATCH (e)-[:HAS_PROPERTY]->(p:OntologyProperty) "
-            "DETACH DELETE e, p",
-            {"label": label},
-        )
-
-    async def delete_relation_type(self, label: str) -> None:
-        """Remove a relation type and all of its declared properties from
-        the ontology graph. Data-graph relationships are untouched.
-        """
-        await self._query(
-            "MATCH (r:OntologyRelationType {label: $label}) "
-            "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:OntologyProperty) "
-            "DETACH DELETE r, p",
-            {"label": label},
         )
 
     # ── Clear ────────────────────────────────────────────────────
