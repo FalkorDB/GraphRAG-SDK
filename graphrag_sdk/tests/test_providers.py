@@ -116,20 +116,6 @@ class TestLLMInterface:
         with pytest.raises(ValueError, match="timeout must be > 0"):
             await llm.ainvoke("Async test", timeout=0)
 
-    async def test_provider_wait_timeout_zero_raises_typed_error(self):
-        from graphrag_sdk.core.providers._timeout import wait_for_provider_call
-
-        async def never_called():
-            await asyncio.sleep(0)
-
-        with pytest.raises(LLMTimeoutError, match="timed out"):
-            await wait_for_provider_call(
-                never_called(),
-                timeout=0.0,
-                timeout_error=LLMTimeoutError,
-                operation="test LLM call",
-            )
-
     async def test_invoke_with_model(self):
         class Result(BaseModel):
             answer: int

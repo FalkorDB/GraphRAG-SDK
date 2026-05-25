@@ -10,14 +10,13 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 
 logger = logging.getLogger(__name__)
-_UNBOUNDED = Context()
 
 
 async def expand_relationships(
     graph_store: Any,
     entity_list: list[tuple[str, dict]],
     max_relationships: int = 20,
-    ctx: Context = _UNBOUNDED,
+    ctx: Context | None = None,
 ) -> list[str]:
     """1-hop + 2-hop relationship expansion from top entities.
 
@@ -35,7 +34,8 @@ async def expand_relationships(
     eids_1hop = [eid for eid, _ in entity_list[:15]]
     if eids_1hop:
         try:
-            ctx.ensure_budget("1-hop relationship expansion")
+            if ctx is not None:
+                ctx.ensure_budget("1-hop relationship expansion")
             result = await graph_store.query_raw(
                 "UNWIND $eids AS eid "
                 "MATCH (a:__Entity__ {id: eid})-[r:RELATES]->(b:__Entity__) "
@@ -65,7 +65,8 @@ async def expand_relationships(
     eids_2hop = [eid for eid, _ in entity_list[:5]]
     if eids_2hop:
         try:
-            ctx.ensure_budget("2-hop relationship expansion")
+            if ctx is not None:
+                ctx.ensure_budget("2-hop relationship expansion")
             result = await graph_store.query_raw(
                 "UNWIND $eids AS eid "
                 "MATCH (a:__Entity__ {id: eid})-[r1:RELATES]->(b:__Entity__)"

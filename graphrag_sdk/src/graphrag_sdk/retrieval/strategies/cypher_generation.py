@@ -16,7 +16,6 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 
 logger = logging.getLogger(__name__)
-_UNBOUNDED = Context()
 
 # ── Valid labels for our graph schema ────────────────────────────
 
@@ -249,7 +248,7 @@ async def generate_cypher(
     question: str,
     *,
     max_retries: int = 3,
-    ctx: Context = _UNBOUNDED,
+    ctx: Context | None = None,
 ) -> str | None:
     """Generate a Cypher query from a natural language question.
 
@@ -260,7 +259,8 @@ async def generate_cypher(
 
     for attempt in range(max_retries):
         try:
-            ctx.ensure_budget("Cypher generation LLM call")
+            if ctx is not None:
+                ctx.ensure_budget("Cypher generation LLM call")
             if attempt > 0 and last_error:
                 prompt_with_feedback = (
                     prompt + f"\n\nPrevious attempt failed with error: {last_error}\n"
@@ -269,10 +269,21 @@ async def generate_cypher(
                 )
                 response = await llm.ainvoke(
                     prompt_with_feedback,
-                    timeout=ctx.remaining_budget_seconds,
+                    timeout=(
+                        ctx.provider_timeout_seconds("Cypher generation LLM call")
+                        if ctx is not None
+                        else None
+                    ),
                 )
             else:
-                response = await llm.ainvoke(prompt, timeout=ctx.remaining_budget_seconds)
+                response = await llm.ainvoke(
+                    prompt,
+                    timeout=(
+                        ctx.provider_timeout_seconds("Cypher generation LLM call")
+                        if ctx is not None
+                        else None
+                    ),
+                )
 
             cypher = extract_cypher(response.content)
             if not cypher:
@@ -304,7 +315,7 @@ async def execute_cypher_retrieval(
     question: str,
     *,
     max_retries: int = 3,
-    ctx: Context = _UNBOUNDED,
+    ctx: Context | None = None,
 ) -> tuple[list[str], dict[str, dict]]:
     """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
 
@@ -323,7 +334,8 @@ async def execute_cypher_retrieval(
         return [], {}
 
     try:
-        ctx.ensure_budget("Cypher execution")
+        if ctx is not None:
+            ctx.ensure_budget("Cypher execution")
         result = await graph_store.query_raw(cypher)
     except LatencyBudgetExceededError:
         raise

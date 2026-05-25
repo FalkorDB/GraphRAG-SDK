@@ -1527,7 +1527,10 @@ class GraphRAG:
         )
         try:
             ctx.ensure_budget("question rewrite LLM call")
-            resp = await self.llm.ainvoke(prompt, timeout=ctx.remaining_budget_seconds)
+            resp = await self.llm.ainvoke(
+                prompt,
+                timeout=ctx.provider_timeout_seconds("question rewrite LLM call"),
+            )
             rewritten = (resp.content or "").strip().splitlines()[0].strip() if resp.content else ""
         except LatencyBudgetExceededError:
             raise
@@ -1654,7 +1657,7 @@ class GraphRAG:
         ctx.ensure_budget("completion LLM call")
         llm_response = await self.llm.ainvoke_messages(
             messages,
-            timeout=ctx.remaining_budget_seconds,
+            timeout=ctx.provider_timeout_seconds("completion LLM call"),
         )
 
         result = RagResult(
@@ -1758,7 +1761,11 @@ class GraphRAG:
         try:
             probe = await self.embedder.aembed_query(
                 "dim_check",
-                timeout=ctx.remaining_budget_seconds if ctx is not None else None,
+                timeout=(
+                    ctx.provider_timeout_seconds("graph config embedder probe")
+                    if ctx is not None
+                    else None
+                ),
             )
         except LatencyBudgetExceededError:
             raise

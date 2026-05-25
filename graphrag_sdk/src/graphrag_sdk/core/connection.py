@@ -210,7 +210,6 @@ class FalkorDBConnection:
                 "FalkorDB query failure details",
                 exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
             )
-        if last_exc is not None:
             raise last_exc
         raise RuntimeError("FalkorDB query failed without an exception")
 

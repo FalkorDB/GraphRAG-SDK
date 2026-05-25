@@ -204,7 +204,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx.ensure_budget("MultiPath question embedding")
         query_vector = await self._embedder.aembed_query(
             query,
-            timeout=ctx.remaining_budget_seconds,
+            timeout=ctx.provider_timeout_seconds("MultiPath question embedding"),
         )
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
@@ -231,7 +231,6 @@ class MultiPathRetrieval(RetrievalStrategy):
             f"{len(fact_strings)} after filtering"
             + (f", {len(cypher_facts)} cypher results" if cypher_facts else "")
         )
-        # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
         # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
         found_entities, entity_sources = await discover_entities(
             self._graph, self._vector, llm_kw, all_keywords, ctx=ctx
@@ -260,13 +259,11 @@ class MultiPathRetrieval(RetrievalStrategy):
                     f"({len(found_entities)} total)"
                 )
         # 5. Relationship expansion
-        # 5. Relationship expansion
         entity_list = list(found_entities.items())[: self._max_entities]
         relationship_strings = await expand_relationships(
             self._graph, entity_list, self._max_relationships, ctx=ctx
         )
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
-        # 6. Chunk retrieval (4 paths)
         # 6. Chunk retrieval (4 paths)
         candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
             self._vector,
@@ -283,13 +280,11 @@ class MultiPathRetrieval(RetrievalStrategy):
             f"({len(chunk_embeddings)} with stored embeddings)"
         )
         # 7. Source document names
-        # 7. Source document names
         chunk_doc_map = await fetch_chunk_documents(
             self._graph,
             list(candidate_chunks.keys()),
             ctx=ctx,
         )
-        # 8. Cosine rerank (uses stored embeddings when available)
         # 8. Cosine rerank (uses stored embeddings when available)
         source_passages = await rerank_chunks(
             self._embedder,
@@ -357,7 +352,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 "book titles, and specific terms from this question. "
                 "Return them comma-separated, nothing else.\n\n"
                 f"Question: {query}\n\nNames: ",
-                timeout=ctx.remaining_budget_seconds,
+                timeout=ctx.provider_timeout_seconds("MultiPath keyword extraction LLM call"),
             )
             llm_kw = [
                 k.strip().strip("'\"").rstrip("()").strip()

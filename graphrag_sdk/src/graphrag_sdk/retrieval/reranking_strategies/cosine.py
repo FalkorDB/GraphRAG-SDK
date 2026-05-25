@@ -43,7 +43,7 @@ class CosineReranker(RerankingStrategy):
         ctx.ensure_budget("cosine reranker embedding")
         vectors = await self._embedder.aembed_documents(
             texts,
-            timeout=ctx.remaining_budget_seconds,
+            timeout=ctx.provider_timeout_seconds("cosine reranker embedding"),
         )
 
         query_vec = np.array(vectors[0])
