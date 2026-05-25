@@ -3,14 +3,23 @@
 The ontology lives in a separate FalkorDB graph named ``<data_graph>__ontology``
 and is the **anchor** for the working schema:
 
-- Always-on: every :py:class:`GraphRAG` has exactly one ontology graph,
+- **Always-on**: every :py:class:`GraphRAG` has exactly one ontology graph,
   created lazily on first use, dropped on ``delete_all()``.
-- Single source of truth: retrieval, ``get_ontology()``, and any cross-process
-  worker all read from the same graph.
-- Additive only: :py:meth:`register` validates incoming schema against what's
-  already persisted and refuses **type contradictions** on existing properties.
-  New entity types, relation types, properties, and relation patterns are all
-  welcome. Re-typing an existing property is not.
+- **Single source of truth**: retrieval, ``get_ontology()``, and any
+  cross-process worker all read from the same graph.
+- **Ingest path is constrained**. :py:meth:`register` admits:
+    - new entity / relation labels with their declared properties and patterns,
+    - re-declarations of existing labels with the *same* properties / patterns
+      (or a strict subset — treated as "use the persisted definition").
+
+  It refuses:
+    - **type contradictions** on existing properties
+      (:py:class:`OntologyContradictionError`), and
+    - **modifications** to existing labels — adding properties or patterns
+      (:py:class:`SchemaModificationNotAllowedError`).
+
+  The latter is reserved for a future schema-evolution API that updates the
+  data graph in lockstep with the ontology, keeping the two aligned.
 
 Users who want a curated, declarative schema (descriptions, future flags,
 properties not yet observed in the data) supply a ``schema`` to ``GraphRAG``;
