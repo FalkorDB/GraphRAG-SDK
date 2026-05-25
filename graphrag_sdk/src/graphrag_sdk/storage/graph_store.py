@@ -906,13 +906,13 @@ class GraphStore:
         for key, value in props.items():
             if value is None:
                 continue
-            if isinstance(value, (str, int, float, bool)):
+            if isinstance(value, str | int | float | bool):
                 cleaned[key] = cls._sanitize_string(value) if isinstance(value, str) else value
             elif isinstance(value, list):
                 # FalkorDB supports lists of primitives — filter items
                 filtered: list[str | int | float | bool] = []
                 for item in value:
-                    if not isinstance(item, (str, int, float, bool)):
+                    if not isinstance(item, str | int | float | bool):
                         continue
                     if isinstance(item, str):
                         filtered.append(cls._sanitize_string(item))

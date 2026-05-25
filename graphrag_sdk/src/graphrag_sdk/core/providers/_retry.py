@@ -7,6 +7,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from graphrag_sdk.core.exceptions import EmbeddingTimeoutError
+
 logger = logging.getLogger(__name__)
 
 _MAX_EXC_SUMMARY_LEN = 200
@@ -65,8 +67,12 @@ def binary_split_retry_sync(
     """
     try:
         return embed_fn(texts, **kwargs)
+    except EmbeddingTimeoutError:
+        raise
     except Exception as exc:
         if not is_transient_embedding_error(exc):
+            logger.error("Non-transient embedding failure: %s", summarize_exception(exc))
+            logger.debug("Non-transient embedding failure details", exc_info=True)
             raise
         if len(texts) == 1:
             logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))
@@ -85,8 +91,12 @@ async def binary_split_retry_async(
     """Async variant of :func:`binary_split_retry_sync`."""
     try:
         return await embed_fn(texts, **kwargs)
+    except EmbeddingTimeoutError:
+        raise
     except Exception as exc:
         if not is_transient_embedding_error(exc):
+            logger.error("Non-transient embedding failure: %s", summarize_exception(exc))
+            logger.debug("Non-transient embedding failure details", exc_info=True)
             raise
         if len(texts) == 1:
             logger.warning("Embedding failed for text (len=%d): skipped", len(texts[0]))

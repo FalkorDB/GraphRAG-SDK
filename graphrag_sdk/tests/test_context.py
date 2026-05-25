@@ -6,6 +6,7 @@ import time
 import pytest
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 
 
 class TestContextCreation:
@@ -65,6 +66,27 @@ class TestLatencyBudget:
         time.sleep(0.001)
         assert ctx.budget_exceeded is True
         assert ctx.remaining_budget_ms == 0.0
+        assert ctx.remaining_budget_seconds == 0.0
+
+    def test_ensure_budget_raises_when_exhausted(self):
+        ctx = Context(latency_budget_ms=0.0)
+        with pytest.raises(LatencyBudgetExceededError, match="before test operation"):
+            ctx.ensure_budget("test operation")
+
+    def test_ensure_budget_allows_operation_without_budget(self):
+        ctx = Context()
+        ctx.ensure_budget("test operation")
+
+    def test_provider_timeout_seconds_raises_when_budget_too_low(self):
+        ctx = Context(latency_budget_ms=0.5)
+        with pytest.raises(LatencyBudgetExceededError, match="before provider call"):
+            ctx.provider_timeout_seconds("provider call")
+
+    def test_provider_timeout_seconds_returns_remaining_seconds(self):
+        ctx = Context(latency_budget_ms=10000.0)
+        timeout = ctx.provider_timeout_seconds("provider call")
+        assert timeout is not None
+        assert 0 < timeout <= 10.0
 
 
 class TestChildContext:
