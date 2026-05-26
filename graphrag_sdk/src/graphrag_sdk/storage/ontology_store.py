@@ -36,6 +36,7 @@ the canonical copy.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -46,6 +47,18 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
 )
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
+
+# Marker label every ontology-graph node carries, so MATCH queries can pick
+# them out independently of the user-declared label. Defensive — the ontology
+# graph is in its own FalkorDB graph already, but the marker lets us evolve
+# the shape without scanning everything.
+_ONTOLOGY_LABEL = "__Ontology"
+
+# A relation type can be declared without any patterns (open mode — applies
+# to any entity-type pair). We materialise those as self-loops on a single
+# placeholder node so every relation is still an edge in the ontology graph.
+_OPEN_RELATION_LABEL = "__OpenRelation"
 
 logger = logging.getLogger(__name__)
 
@@ -76,40 +89,53 @@ class OntologyModificationNotAllowedError(ValueError):
     """
 
 
-def _encode_patterns(patterns: list[tuple[str, str]]) -> list[str]:
-    return [f"{src}|{tgt}" for src, tgt in patterns]
+def _encode_attributes(props: list[Attribute]) -> str:
+    """JSON-encode declared attributes for storage as a single node/edge property.
 
-
-def _decode_patterns(encoded: list[str] | None) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
-    for s in encoded or []:
-        if not isinstance(s, str) or "|" not in s:
-            continue
-        src, tgt = s.split("|", 1)
-        out.append((src, tgt))
-    return out
-
-
-def _props_from_rows(rows: list[Any] | None) -> list[Attribute]:
-    """Reconstruct Attribute objects from a ``collect(...)`` query result.
-
-    Filters out the null-keyed dict FalkorDB returns for an OPTIONAL MATCH
-    with no matches.
+    FalkorDB allows scalar / list properties on nodes and edges; nested maps
+    aren't durable across all versions, so we serialise to a JSON string and
+    decode on read. Empty ``props`` → ``"{}"`` so the property is always
+    present (lets ``coalesce()`` work in MERGE upserts).
     """
+    if not props:
+        return "{}"
+    return json.dumps(
+        {
+            p.name: (
+                {"type": p.type, "description": p.description}
+                if p.description
+                else {"type": p.type}
+            )
+            for p in props
+        }
+    )
+
+
+def _decode_attributes(raw: Any) -> list[Attribute]:
+    """Reconstruct ``Attribute`` objects from the JSON-encoded ``attributes`` prop."""
+    if not raw or not isinstance(raw, str):
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, dict):
+        return []
     out: list[Attribute] = []
-    for row in rows or []:
-        if not row or not isinstance(row, dict):
-            continue
-        name = row.get("name")
+    for name, info in data.items():
         if not name:
             continue
-        out.append(
-            Attribute(
-                name=name,
-                type=row.get("type") or "STRING",
-                description=row.get("description"),
+        if isinstance(info, dict):
+            out.append(
+                Attribute(
+                    name=name,
+                    type=info.get("type") or "STRING",
+                    description=info.get("description"),
+                )
             )
-        )
+        elif isinstance(info, str):
+            # Tolerant of an earlier shape where the value was just a type.
+            out.append(Attribute(name=name, type=info))
     return out
 
 
@@ -150,55 +176,101 @@ class OntologyStore:
     # ── Load ─────────────────────────────────────────────────────
 
     async def load(self) -> Ontology:
-        """Read the ontology graph and reconstruct a :py:class:`Ontology`.
+        """Read the ontology graph and reconstruct an :py:class:`Ontology`.
 
-        Returns an empty ontology if the ontology graph does not yet exist or
-        introspection fails. Failure is logged at DEBUG so we don't spam an
-        unconfigured GraphRAG instance with warnings.
+        Returns an empty ontology if the graph doesn't exist or introspection
+        fails. Failure is logged at DEBUG so an unconfigured ``GraphRAG``
+        instance doesn't emit warnings.
+
+        The on-graph shape (Option B):
+
+        - Each entity type is a node carrying both its user label and
+          ``:__Ontology``. The declared :py:class:`Attribute`\\s sit in a
+          single JSON-encoded ``attributes`` property on the node.
+        - Each relation type is a real edge between two entity-type nodes;
+          one edge per declared ``(src, tgt)`` pattern. The relation's own
+          declared attributes are JSON-encoded into an ``attributes`` prop
+          on the edge.
+        - Relations declared without patterns (open mode) appear as self-loops
+          on a single ``:__OpenRelation:__Ontology`` placeholder node.
         """
         try:
             ent_result = await self._query(
-                "MATCH (e:OntologyEntityType) "
-                "OPTIONAL MATCH (e)-[:HAS_PROPERTY]->(p:OntologyProperty) "
+                f"MATCH (e:`{_ONTOLOGY_LABEL}`) "
+                f"WHERE NOT e:`{_OPEN_RELATION_LABEL}` "
                 "RETURN e.label AS label, e.description AS description, "
-                "collect({name: p.name, type: p.type, description: p.description}) AS properties"
+                "e.attributes AS attributes"
             )
             rel_result = await self._query(
-                "MATCH (r:OntologyRelationType) "
-                "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:OntologyProperty) "
-                "RETURN r.label AS label, r.description AS description, "
-                "r.patterns AS patterns, "
-                "collect({name: p.name, type: p.type, description: p.description}) AS properties"
+                f"MATCH (s:`{_ONTOLOGY_LABEL}`)-[r]->(t:`{_ONTOLOGY_LABEL}`) "
+                f"WHERE NOT s:`{_OPEN_RELATION_LABEL}` "
+                f"AND NOT t:`{_OPEN_RELATION_LABEL}` "
+                "RETURN s.label AS src, t.label AS tgt, type(r) AS rel_label, "
+                "r.description AS description, r.attributes AS attributes"
+            )
+            open_rel_result = await self._query(
+                f"MATCH (o:`{_OPEN_RELATION_LABEL}`)-[r]->(o) "
+                "RETURN type(r) AS rel_label, "
+                "r.description AS description, r.attributes AS attributes"
             )
         except Exception as exc:
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()
 
-        ent_rows = getattr(ent_result, "result_set", None) or []
-        rel_rows = getattr(rel_result, "result_set", None) or []
-        if not isinstance(ent_rows, list):
-            ent_rows = []
-        if not isinstance(rel_rows, list):
-            rel_rows = []
+        def _rows(result: Any) -> list[Any]:
+            rows = getattr(result, "result_set", None) or []
+            return rows if isinstance(rows, list) else []
 
+        # Entity types
         entities = [
             Entity(
                 label=row[0],
                 description=row[1],
-                properties=_props_from_rows(row[2]),
+                properties=_decode_attributes(row[2]),
             )
-            for row in ent_rows
+            for row in _rows(ent_result)
             if isinstance(row, list) and len(row) >= 3 and row[0]
         ]
+
+        # Relation types — group edges by rel_label, collect endpoint patterns.
+        rel_by_label: dict[str, dict[str, Any]] = {}
+        for row in _rows(rel_result):
+            if not (isinstance(row, list) and len(row) >= 5 and row[2]):
+                continue
+            src, tgt, rel_label, description, attributes = row
+            entry = rel_by_label.setdefault(
+                rel_label,
+                {
+                    "description": description,
+                    "attributes": attributes,
+                    "patterns": [],
+                },
+            )
+            entry["patterns"].append((src, tgt))
+            # Last write wins for description / attributes — every edge for a
+            # given relation type carries the same metadata under the current
+            # contract.
+            if description:
+                entry["description"] = description
+            if attributes:
+                entry["attributes"] = attributes
+        for row in _rows(open_rel_result):
+            if not (isinstance(row, list) and len(row) >= 3 and row[0]):
+                continue
+            rel_label, description, attributes = row
+            rel_by_label.setdefault(
+                rel_label,
+                {"description": description, "attributes": attributes, "patterns": []},
+            )
+
         relations = [
             Relation(
-                label=row[0],
-                description=row[1],
-                patterns=_decode_patterns(row[2]),
-                properties=_props_from_rows(row[3]),
+                label=label,
+                description=entry["description"],
+                patterns=entry["patterns"],
+                properties=_decode_attributes(entry["attributes"]),
             )
-            for row in rel_rows
-            if isinstance(row, list) and len(row) >= 4 and row[0]
+            for label, entry in rel_by_label.items()
         ]
         return Ontology(entities=entities, relations=relations)
 
@@ -344,60 +416,62 @@ class OntologyStore:
                 )
 
     async def _upsert_entity_type(self, et: Entity) -> None:
-        await self._query(
-            "MERGE (e:OntologyEntityType {label: $label}) "
-            "SET e.description = coalesce($description, e.description)",
-            {"label": et.label, "description": et.description},
-        )
-        for prop in et.properties:
-            await self._upsert_property(et.label, prop, owner_label="OntologyEntityType")
+        """Upsert an entity-type node carrying the user label + ``__Ontology``.
 
-    async def _upsert_relation_type(self, rt: Relation) -> None:
-        new_patterns = _encode_patterns(rt.patterns)
-        result = await self._query(
-            "MATCH (r:OntologyRelationType {label: $label}) RETURN r.patterns AS patterns",
-            {"label": rt.label},
-        )
-        existing_patterns: list[str] = []
-        rows = getattr(result, "result_set", None) or []
-        if isinstance(rows, list) and rows and isinstance(rows[0], list) and rows[0]:
-            existing_patterns = list(rows[0][0] or [])
-        seen: set[str] = set()
-        merged: list[str] = []
-        for s in existing_patterns + new_patterns:
-            if s not in seen:
-                seen.add(s)
-                merged.append(s)
+        Declared attributes are JSON-encoded into a single ``attributes``
+        property so the node looks like a miniature data-graph node would.
+        """
+        label = sanitize_cypher_label(et.label)
         await self._query(
-            "MERGE (r:OntologyRelationType {label: $label}) "
-            "SET r.description = coalesce($description, r.description), "
-            "r.patterns = $patterns",
-            {"label": rt.label, "description": rt.description, "patterns": merged},
-        )
-        for prop in rt.properties:
-            await self._upsert_property(rt.label, prop, owner_label="OntologyRelationType")
-
-    async def _upsert_property(
-        self, owner_label_value: str, prop: Attribute, *, owner_label: str
-    ) -> None:
-        # Property nodes are keyed by ``(owner_label_kind, owner_label, name)``
-        # so two different types can declare the same property name without
-        # trampling each other's metadata.
-        owner_alias = "ent" if owner_label == "OntologyEntityType" else "rel"
-        await self._query(
-            f"MATCH ({owner_alias}:{owner_label} {{label: $owner}}) "
-            f"MERGE ({owner_alias})-[:HAS_PROPERTY]->"
-            f"(p:OntologyProperty {{name: $name, owner: $owner_kind, owner_label: $owner}}) "
-            "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            f"MERGE (e:`{label}`:`{_ONTOLOGY_LABEL}` {{label: $label}}) "
+            "SET e.description = coalesce($description, e.description), "
+            "e.attributes = $attributes",
             {
-                "owner": owner_label_value,
-                "owner_kind": owner_label,
-                "name": prop.name,
-                "type": prop.type,
-                "description": prop.description,
+                "label": et.label,
+                "description": et.description,
+                "attributes": _encode_attributes(et.properties),
             },
         )
+
+    async def _upsert_relation_type(self, rt: Relation) -> None:
+        """Upsert a relation type as one or more edges.
+
+        - Each declared ``(src, tgt)`` pattern materialises as a MERGE on
+          an edge of the user-declared relation label between the two
+          entity-type nodes.
+        - A relation without patterns (open mode) materialises as a self-loop
+          on the ``:__OpenRelation:__Ontology`` placeholder.
+
+        Both flavours carry the relation's description and JSON-encoded
+        attribute declarations on the edge itself.
+        """
+        rel_label = sanitize_cypher_label(rt.label)
+        attributes = _encode_attributes(rt.properties)
+        if rt.patterns:
+            for src, tgt in rt.patterns:
+                src_label = sanitize_cypher_label(src)
+                tgt_label = sanitize_cypher_label(tgt)
+                await self._query(
+                    f"MERGE (s:`{src_label}`:`{_ONTOLOGY_LABEL}` {{label: $src}}) "
+                    f"MERGE (t:`{tgt_label}`:`{_ONTOLOGY_LABEL}` {{label: $tgt}}) "
+                    f"MERGE (s)-[r:`{rel_label}`]->(t) "
+                    "SET r.description = coalesce($description, r.description), "
+                    "r.attributes = $attributes",
+                    {
+                        "src": src,
+                        "tgt": tgt,
+                        "description": rt.description,
+                        "attributes": attributes,
+                    },
+                )
+        else:
+            await self._query(
+                f"MERGE (o:`{_OPEN_RELATION_LABEL}`:`{_ONTOLOGY_LABEL}`) "
+                f"MERGE (o)-[r:`{rel_label}`]->(o) "
+                "SET r.description = coalesce($description, r.description), "
+                "r.attributes = $attributes",
+                {"description": rt.description, "attributes": attributes},
+            )
 
     # ── Clear ────────────────────────────────────────────────────
 

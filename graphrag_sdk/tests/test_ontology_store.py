@@ -1,66 +1,83 @@
 """Tests for storage/ontology_store.py — persistent ontology graph.
 
-The store talks to FalkorDB directly; unit tests here mock the graph handle
-through ``FalkorDBConnection``'s ``_driver.select_graph()`` seam. Real-FalkorDB
-exercise is left for the integration suite.
+The store talks to FalkorDB directly; these unit tests mock the graph handle
+through ``FalkorDBConnection._driver.select_graph()``. Real-FalkorDB exercise
+lives in the integration suite.
+
+Storage shape (Option B):
+- Entity types are nodes carrying both the user label and ``:__Ontology``,
+  with a JSON-encoded ``attributes`` property.
+- Relation types are real edges between entity-type nodes, one edge per
+  declared pattern, carrying their own JSON-encoded ``attributes``.
+- Open-mode relations (no patterns) become self-loops on a
+  ``:__OpenRelation:__Ontology`` placeholder.
 """
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from graphrag_sdk.core.models import (
+    Attribute,
     Entity,
     Ontology,
-    Attribute,
     Relation,
 )
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
-    OntologyStore,
     OntologyModificationNotAllowedError,
-    _decode_patterns,
-    _encode_patterns,
-    _props_from_rows,
+    OntologyStore,
+    _decode_attributes,
+    _encode_attributes,
 )
 
 
 class _FakeQueryResult:
-    """Stand-in for FalkorDB's QueryResult."""
-
     def __init__(self, rows):
         self.result_set = rows
 
 
 class _FakeGraph:
-    """In-memory async ``query()`` substitute. Records calls and serves canned
-    responses for the load + read-existing-patterns queries."""
+    """Records every query call so tests can assert on the on-graph shape.
+
+    Serves canned responses for the three load queries (entities, patterned
+    relations, open relations); everything else returns an empty result set.
+    """
 
     def __init__(self):
         self.calls: list[tuple[str, dict | None]] = []
         self._ent_rows: list[list] = []
         self._rel_rows: list[list] = []
-        self._patterns_for_label: dict[str, list[str]] = {}
+        self._open_rel_rows: list[list] = []
 
-    def set_load_response(self, entity_rows, relation_rows):
+    def set_load_response(
+        self,
+        entity_rows: list[list],
+        relation_rows: list[list],
+        open_relation_rows: list[list] | None = None,
+    ):
         self._ent_rows = entity_rows
         self._rel_rows = relation_rows
-
-    def set_existing_patterns(self, label: str, patterns: list[str]):
-        self._patterns_for_label[label] = patterns
+        self._open_rel_rows = open_relation_rows or []
 
     async def query(self, cypher: str, params: dict | None = None):
         self.calls.append((cypher, params))
-        if "MATCH (e:OntologyEntityType)" in cypher and "collect" in cypher:
+        # Entity-type load
+        if "MATCH (e:`__Ontology`)" in cypher and "e.attributes AS attributes" in cypher:
             return _FakeQueryResult(self._ent_rows)
-        if "MATCH (r:OntologyRelationType)" in cypher and "collect" in cypher:
+        # Patterned-relation load
+        if (
+            "MATCH (s:`__Ontology`)-[r]->(t:`__Ontology`)" in cypher
+            and "rel_label" in cypher
+        ):
             return _FakeQueryResult(self._rel_rows)
-        if "MATCH (r:OntologyRelationType {label: $label})" in cypher and "patterns" in cypher:
-            label = (params or {}).get("label", "")
-            return _FakeQueryResult([[self._patterns_for_label.get(label, [])]])
+        # Open-relation load
+        if "MATCH (o:`__OpenRelation`)-[r]->(o)" in cypher:
+            return _FakeQueryResult(self._open_rel_rows)
         return _FakeQueryResult([])
 
 
@@ -82,31 +99,42 @@ def store_factory(fake_graph):
     return _make
 
 
-# ── small helpers ────────────────────────────────────────────────
+# ── encoding helpers ─────────────────────────────────────────────
 
 
-class TestEncoders:
-    def test_roundtrip(self):
-        patterns = [("Person", "Company"), ("Person", "Organization")]
-        encoded = _encode_patterns(patterns)
-        assert encoded == ["Person|Company", "Person|Organization"]
-        assert _decode_patterns(encoded) == patterns
+class TestEncodeAttributes:
+    def test_empty_props_encodes_empty_object(self):
+        assert _encode_attributes([]) == "{}"
 
-    def test_decode_tolerates_garbage(self):
-        assert _decode_patterns(None) == []
-        assert _decode_patterns(["no-pipe", "a|b"]) == [("a", "b")]
-
-
-class TestPropsFromRows:
-    def test_filters_null_keyed_rows(self):
-        rows = [
-            {"name": "age", "type": "INTEGER", "description": None},
-            {"name": None, "type": None, "description": None},  # optional-match empty
-            None,
-            "not a dict",
+    def test_props_encode_and_decode_roundtrip(self):
+        props = [
+            Attribute(name="age", type="INTEGER", description="Years"),
+            Attribute(name="birth_date", type="DATE"),
         ]
-        result = _props_from_rows(rows)
-        assert [(p.name, p.type) for p in result] == [("age", "INTEGER")]
+        encoded = _encode_attributes(props)
+        data = json.loads(encoded)
+        assert data == {
+            "age": {"type": "INTEGER", "description": "Years"},
+            "birth_date": {"type": "DATE"},
+        }
+        decoded = _decode_attributes(encoded)
+        assert [(a.name, a.type, a.description) for a in decoded] == [
+            ("age", "INTEGER", "Years"),
+            ("birth_date", "DATE", None),
+        ]
+
+
+class TestDecodeAttributes:
+    def test_returns_empty_on_garbage(self):
+        assert _decode_attributes(None) == []
+        assert _decode_attributes("") == []
+        assert _decode_attributes("not json") == []
+        assert _decode_attributes("[]") == []  # JSON but not an object
+
+    def test_tolerates_bare_type_string(self):
+        """Older shapes might have stored ``{"age": "INTEGER"}`` directly."""
+        decoded = _decode_attributes(json.dumps({"age": "INTEGER"}))
+        assert [(a.name, a.type) for a in decoded] == [("age", "INTEGER")]
 
 
 # ── store identity ───────────────────────────────────────────────
@@ -121,67 +149,166 @@ class TestOntologyStoreGraphName:
 # ── register / load ──────────────────────────────────────────────
 
 
-class TestRegister:
+class TestRegisterEntityShape:
     @pytest.mark.asyncio
-    async def test_empty_schema_short_circuits_to_load(self, store_factory, fake_graph):
+    async def test_entity_node_uses_dual_label_and_attributes_json(
+        self, store_factory, fake_graph
+    ):
         store = store_factory()
-        result = await store.register(Ontology())
-        # No upsert queries — only the two load queries.
-        upserts = [c for c in fake_graph.calls if "MERGE" in c[0]]
-        assert upserts == []
-        assert isinstance(result, Ontology)
-
-    @pytest.mark.asyncio
-    async def test_persists_entity_type_with_properties(self, store_factory, fake_graph):
-        store = store_factory()
-        ontology = Ontology(
-            entities=[
-                Entity(
-                    label="Person",
-                    description="A human",
-                    properties=[
-                        Attribute(name="age", type="INTEGER"),
-                        Attribute(name="birth_date", type="DATE"),
-                    ],
-                ),
-            ],
+        await store.register(
+            Ontology(
+                entities=[
+                    Entity(
+                        label="Person",
+                        description="A human",
+                        properties=[
+                            Attribute(name="age", type="INTEGER"),
+                            Attribute(name="birth_date", type="DATE"),
+                        ],
+                    ),
+                ]
+            )
         )
-        await store.register(ontology)
-        ent_merges = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
-        prop_merges = [c for c in fake_graph.calls if "MERGE (ent)-[:HAS_PROPERTY]->" in c[0]]
-        assert len(ent_merges) == 1
-        assert len(prop_merges) == 2
-        prop_names = {(c[1] or {}).get("name") for c in prop_merges}
-        assert prop_names == {"age", "birth_date"}
+        merges = [c for c in fake_graph.calls if "MERGE (e:`Person`:`__Ontology`" in c[0]]
+        assert len(merges) == 1
+        params = merges[0][1] or {}
+        attrs = json.loads(params["attributes"])
+        assert attrs == {
+            "age": {"type": "INTEGER"},
+            "birth_date": {"type": "DATE"},
+        }
 
+
+class TestRegisterRelationShape:
     @pytest.mark.asyncio
-    async def test_unions_relation_patterns(self, store_factory, fake_graph):
+    async def test_patterned_relation_materialises_one_edge_per_pattern(
+        self, store_factory, fake_graph
+    ):
         store = store_factory()
-        fake_graph.set_existing_patterns("WORKS_AT", ["Person|Company"])
-        ontology = Ontology(
-            entities=[Entity(label="Person"), Entity(label="Org")],
-            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Org")])],
+        await store.register(
+            Ontology(
+                entities=[Entity(label="Person"), Entity(label="Company")],
+                relations=[
+                    Relation(
+                        label="WORKS_AT",
+                        patterns=[("Person", "Company"), ("Person", "Organization")],
+                        properties=[Attribute(name="since", type="DATE")],
+                    ),
+                ],
+            )
         )
-        await store.register(ontology)
-        rel_set_calls = [
+        edge_merges = [
             c
             for c in fake_graph.calls
-            if "MERGE (r:OntologyRelationType {label: $label})" in c[0] and "SET r." in c[0]
+            if "MERGE (s)-[r:`WORKS_AT`]->(t)" in c[0]
         ]
-        assert rel_set_calls, "expected SET on Relation"
-        patterns = (rel_set_calls[-1][1] or {})["patterns"]
-        assert "Person|Company" in patterns
-        assert "Person|Org" in patterns
+        # One MERGE per pattern.
+        assert len(edge_merges) == 2
+        endpoints = {((c[1] or {}).get("src"), (c[1] or {}).get("tgt")) for c in edge_merges}
+        assert endpoints == {("Person", "Company"), ("Person", "Organization")}
+        # Each edge carries the attributes JSON.
+        for call in edge_merges:
+            attrs = json.loads((call[1] or {}).get("attributes", "{}"))
+            assert attrs == {"since": {"type": "DATE"}}
+
+    @pytest.mark.asyncio
+    async def test_open_relation_lands_on_placeholder_self_loop(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        await store.register(
+            Ontology(
+                relations=[
+                    Relation(label="KNOWS_SOMETHING", description="Open relation"),
+                ],
+            )
+        )
+        open_merges = [
+            c
+            for c in fake_graph.calls
+            if "MERGE (o:`__OpenRelation`:`__Ontology`)" in c[0]
+            and "MERGE (o)-[r:`KNOWS_SOMETHING`]->(o)" in c[0]
+        ]
+        assert len(open_merges) == 1
 
 
 class TestLoad:
     @pytest.mark.asyncio
-    async def test_empty_graph_yields_empty_schema(self, store_factory, fake_graph):
+    async def test_empty_graph_yields_empty_ontology(self, store_factory, fake_graph):
         store = store_factory()
-        fake_graph.set_load_response([], [])
+        fake_graph.set_load_response([], [], [])
+        result = await store.load()
+        assert result.entities == []
+        assert result.relations == []
+
+    @pytest.mark.asyncio
+    async def test_reconstructs_entity_with_attributes(self, store_factory, fake_graph):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entity_rows=[
+                [
+                    "Person",
+                    "A human",
+                    json.dumps(
+                        {
+                            "age": {"type": "INTEGER", "description": "Years"},
+                            "birth_date": {"type": "DATE"},
+                        }
+                    ),
+                ],
+                ["Company", None, "{}"],
+            ],
+            relation_rows=[],
+        )
         ontology = await store.load()
-        assert ontology.entities == []
-        assert ontology.relations == []
+        assert {e.label for e in ontology.entities} == {"Person", "Company"}
+        person = next(e for e in ontology.entities if e.label == "Person")
+        assert sorted((a.name, a.type, a.description) for a in person.properties) == [
+            ("age", "INTEGER", "Years"),
+            ("birth_date", "DATE", None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_groups_relation_edges_by_label_into_patterns(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entity_rows=[],
+            relation_rows=[
+                ["Person", "Company", "WORKS_AT", "Employment", json.dumps({"since": {"type": "DATE"}})],
+                ["Person", "Organization", "WORKS_AT", "Employment", json.dumps({"since": {"type": "DATE"}})],
+                ["Person", "Person", "KNOWS", None, "{}"],
+            ],
+        )
+        ontology = await store.load()
+        rel_by_label = {r.label: r for r in ontology.relations}
+        assert set(rel_by_label) == {"WORKS_AT", "KNOWS"}
+        assert set(rel_by_label["WORKS_AT"].patterns) == {
+            ("Person", "Company"),
+            ("Person", "Organization"),
+        }
+        assert [
+            (a.name, a.type) for a in rel_by_label["WORKS_AT"].properties
+        ] == [("since", "DATE")]
+        assert rel_by_label["KNOWS"].patterns == [("Person", "Person")]
+
+    @pytest.mark.asyncio
+    async def test_open_relation_loaded_with_empty_patterns(
+        self, store_factory, fake_graph
+    ):
+        store = store_factory()
+        fake_graph.set_load_response(
+            entity_rows=[],
+            relation_rows=[],
+            open_relation_rows=[
+                ["KNOWS_SOMETHING", "Open relation", "{}"],
+            ],
+        )
+        ontology = await store.load()
+        rel = next(r for r in ontology.relations if r.label == "KNOWS_SOMETHING")
+        assert rel.patterns == []
+        assert rel.description == "Open relation"
 
     @pytest.mark.asyncio
     async def test_introspection_failure_returns_empty(self, store_factory, fake_graph):
@@ -194,66 +321,24 @@ class TestLoad:
         assert ontology.entities == []
         assert ontology.relations == []
 
-    @pytest.mark.asyncio
-    async def test_reconstructs_schema(self, store_factory, fake_graph):
-        store = store_factory()
-        fake_graph.set_load_response(
-            entity_rows=[
-                [
-                    "Person",
-                    "A human",
-                    [
-                        {"name": "age", "type": "INTEGER", "description": None},
-                        # OPTIONAL MATCH empty row — must be filtered.
-                        {"name": None, "type": None, "description": None},
-                    ],
-                ],
-                ["Company", None, []],
-            ],
-            relation_rows=[
-                [
-                    "WORKS_AT",
-                    "Employment",
-                    ["Person|Company"],
-                    [{"name": "since", "type": "DATE", "description": None}],
-                ],
-            ],
-        )
-        ontology = await store.load()
-        assert {e.label for e in ontology.entities} == {"Person", "Company"}
-        person = next(e for e in ontology.entities if e.label == "Person")
-        assert [(p.name, p.type) for p in person.properties] == [("age", "INTEGER")]
-        works = next(r for r in ontology.relations if r.label == "WORKS_AT")
-        assert works.patterns == [("Person", "Company")]
-        assert [(p.name, p.type) for p in works.properties] == [("since", "DATE")]
-
 
 # ── contradiction validation ─────────────────────────────────────
 
 
 class TestContradictionDetection:
-    """Type re-declarations are rejected; modifications surface as a separate error."""
+    """Type re-declarations are rejected before any partial state persists."""
 
     @pytest.mark.asyncio
     async def test_exact_subset_redeclaration_is_accepted(
         self, store_factory, fake_graph
     ):
-        """An existing label can be re-declared with a subset of its persisted
-        properties (or no properties at all) — that's "reference the existing
-        definition," not "modify it."
-        """
         store = store_factory()
         fake_graph.set_load_response(
             entity_rows=[
-                [
-                    "Person",
-                    None,
-                    [{"name": "age", "type": "INTEGER", "description": None}],
-                ],
+                ["Person", None, json.dumps({"age": {"type": "INTEGER"}})],
             ],
             relation_rows=[],
         )
-        # Re-declares Person with exactly the same property — accepted.
         await store.register(
             Ontology(
                 entities=[
@@ -264,7 +349,6 @@ class TestContradictionDetection:
                 ],
             )
         )
-        # Re-declares Person with NO properties (subset) — also accepted.
         await store.register(Ontology(entities=[Entity(label="Person")]))
 
     @pytest.mark.asyncio
@@ -274,27 +358,23 @@ class TestContradictionDetection:
         store = store_factory()
         fake_graph.set_load_response(
             entity_rows=[
-                [
-                    "Person",
-                    None,
-                    [{"name": "age", "type": "INTEGER", "description": None}],
-                ],
+                ["Person", None, json.dumps({"age": {"type": "INTEGER"}})],
             ],
             relation_rows=[],
         )
-        incoming = Ontology(
-            entities=[
-                Entity(
-                    label="Person",
-                    properties=[Attribute(name="age", type="STRING")],
-                ),
-            ],
-        )
         with pytest.raises(OntologyContradictionError) as exc:
-            await store.register(incoming)
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(
+                            label="Person",
+                            properties=[Attribute(name="age", type="STRING")],
+                        ),
+                    ],
+                )
+            )
         assert "Person.age" in str(exc.value)
-        # And no MERGE-on-Entity happened (validation runs before persistence).
-        upserts = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
+        upserts = [c for c in fake_graph.calls if "MERGE (e:`Person`:`__Ontology`" in c[0]]
         assert upserts == []
 
     @pytest.mark.asyncio
@@ -305,24 +385,20 @@ class TestContradictionDetection:
         fake_graph.set_load_response(
             entity_rows=[],
             relation_rows=[
-                [
-                    "WORKS_AT",
-                    None,
-                    [],
-                    [{"name": "since", "type": "DATE", "description": None}],
-                ],
-            ],
-        )
-        incoming = Ontology(
-            relations=[
-                Relation(
-                    label="WORKS_AT",
-                    properties=[Attribute(name="since", type="STRING")],
-                ),
+                ["Person", "Company", "WORKS_AT", None, json.dumps({"since": {"type": "DATE"}})],
             ],
         )
         with pytest.raises(OntologyContradictionError) as exc:
-            await store.register(incoming)
+            await store.register(
+                Ontology(
+                    relations=[
+                        Relation(
+                            label="WORKS_AT",
+                            properties=[Attribute(name="since", type="STRING")],
+                        ),
+                    ],
+                )
+            )
         assert "WORKS_AT.since" in str(exc.value)
 
 
@@ -330,24 +406,15 @@ class TestContradictionDetection:
 
 
 class TestStrictModification:
-    """The ingest path admits new labels only. Adding properties or patterns
-    to an existing label requires a separate ontology-evolution operation that
-    keeps data and ontology in sync — which is not yet supported."""
-
     @pytest.mark.asyncio
     async def test_adding_new_label_is_accepted(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(
             entity_rows=[
-                [
-                    "Person",
-                    None,
-                    [{"name": "age", "type": "INTEGER", "description": None}],
-                ],
+                ["Person", None, json.dumps({"age": {"type": "INTEGER"}})],
             ],
             relation_rows=[],
         )
-        # New label with full ontology — fine.
         await store.register(
             Ontology(
                 entities=[
@@ -358,10 +425,8 @@ class TestStrictModification:
                 ],
             )
         )
-        ent_merges = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
-        # Only the new Company is upserted; existing Person isn't re-touched.
-        labels_upserted = {(c[1] or {}).get("label") for c in ent_merges}
-        assert labels_upserted == {"Company"}
+        ent_merges = [c for c in fake_graph.calls if "MERGE (e:`Company`:`__Ontology`" in c[0]]
+        assert len(ent_merges) == 1
 
     @pytest.mark.asyncio
     async def test_adding_property_to_existing_label_is_rejected(
@@ -370,31 +435,27 @@ class TestStrictModification:
         store = store_factory()
         fake_graph.set_load_response(
             entity_rows=[
-                [
-                    "Person",
-                    None,
-                    [{"name": "age", "type": "INTEGER", "description": None}],
-                ],
+                ["Person", None, json.dumps({"age": {"type": "INTEGER"}})],
             ],
             relation_rows=[],
         )
-        incoming = Ontology(
-            entities=[
-                Entity(
-                    label="Person",
-                    properties=[
-                        Attribute(name="age", type="INTEGER"),
-                        Attribute(name="birth_date", type="DATE"),  # new on existing label
-                    ],
-                ),
-            ],
-        )
         with pytest.raises(OntologyModificationNotAllowedError) as exc:
-            await store.register(incoming)
+            await store.register(
+                Ontology(
+                    entities=[
+                        Entity(
+                            label="Person",
+                            properties=[
+                                Attribute(name="age", type="INTEGER"),
+                                Attribute(name="birth_date", type="DATE"),
+                            ],
+                        ),
+                    ],
+                )
+            )
         assert "Person" in str(exc.value)
         assert "birth_date" in str(exc.value)
-        # Validation runs before persistence — no upsert leaked.
-        upserts = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
+        upserts = [c for c in fake_graph.calls if "MERGE (e:`Person`:`__Ontology`" in c[0]]
         assert upserts == []
 
     @pytest.mark.asyncio
@@ -405,27 +466,23 @@ class TestStrictModification:
         fake_graph.set_load_response(
             entity_rows=[],
             relation_rows=[
-                [
-                    "WORKS_AT",
-                    None,
-                    ["Person|Company"],
-                    [],
-                ],
-            ],
-        )
-        incoming = Ontology(
-            relations=[
-                Relation(
-                    label="WORKS_AT",
-                    patterns=[
-                        ("Person", "Company"),
-                        ("Person", "Organization"),  # new pattern on existing relation
-                    ],
-                ),
+                ["Person", "Company", "WORKS_AT", None, "{}"],
             ],
         )
         with pytest.raises(OntologyModificationNotAllowedError) as exc:
-            await store.register(incoming)
+            await store.register(
+                Ontology(
+                    relations=[
+                        Relation(
+                            label="WORKS_AT",
+                            patterns=[
+                                ("Person", "Company"),
+                                ("Person", "Organization"),
+                            ],
+                        ),
+                    ],
+                )
+            )
         assert "WORKS_AT" in str(exc.value)
 
     @pytest.mark.asyncio
@@ -436,24 +493,20 @@ class TestStrictModification:
         fake_graph.set_load_response(
             entity_rows=[],
             relation_rows=[
-                [
-                    "WORKS_AT",
-                    None,
-                    [],
-                    [{"name": "since", "type": "DATE", "description": None}],
-                ],
-            ],
-        )
-        incoming = Ontology(
-            relations=[
-                Relation(
-                    label="WORKS_AT",
-                    properties=[
-                        Attribute(name="since", type="DATE"),
-                        Attribute(name="role", type="STRING"),  # new
-                    ],
-                ),
+                ["Person", "Company", "WORKS_AT", None, json.dumps({"since": {"type": "DATE"}})],
             ],
         )
         with pytest.raises(OntologyModificationNotAllowedError):
-            await store.register(incoming)
+            await store.register(
+                Ontology(
+                    relations=[
+                        Relation(
+                            label="WORKS_AT",
+                            properties=[
+                                Attribute(name="since", type="DATE"),
+                                Attribute(name="role", type="STRING"),
+                            ],
+                        ),
+                    ],
+                )
+            )
