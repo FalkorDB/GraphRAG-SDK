@@ -323,3 +323,77 @@ class TestMultiPathRetrievalKwargAlias:
         ]
         assert not deps
         assert retrieval._ontology is ontology
+
+
+# ── Cypher generation helpers ────────────────────────────────────
+
+
+class TestCypherGenerationLegacyNames:
+    def test_SCHEMA_PROMPT_alias_warns(self):
+        from graphrag_sdk.retrieval.strategies import cypher_generation as _cg
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            legacy = _cg.SCHEMA_PROMPT
+        deps = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert deps
+        assert legacy is _cg.ONTOLOGY_PROMPT
+
+    def test_build_schema_prompt_alias_warns_and_forwards(self):
+        from graphrag_sdk.retrieval.strategies import cypher_generation as _cg
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            legacy = _cg.build_schema_prompt(None, "test")
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "build_schema_prompt" in str(x.message)
+        ]
+        assert deps
+        assert legacy == _cg.build_ontology_prompt(None, "test")
+
+    def test_render_schema_block_alias_warns_and_forwards(self):
+        from graphrag_sdk.retrieval.strategies import cypher_generation as _cg
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            legacy = _cg.render_schema_block(None)
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "render_schema_block" in str(x.message)
+        ]
+        assert deps
+        assert legacy == _cg.render_ontology_block(None)
+
+    def test_validate_cypher_accepts_schema_kwarg(self):
+        from graphrag_sdk.retrieval.strategies.cypher_generation import validate_cypher
+
+        ontology = Ontology(entities=[Entity(label="Customer")])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            errors = validate_cypher(
+                "MATCH (c:Customer) RETURN c.name LIMIT 10",
+                schema=ontology,
+            )
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "schema=" in str(x.message)
+        ]
+        assert deps
+        assert errors == []
+
+    def test_validate_cypher_rejects_both_kwargs(self):
+        from graphrag_sdk.retrieval.strategies.cypher_generation import validate_cypher
+
+        with pytest.raises(TypeError, match="both"):
+            validate_cypher(
+                "MATCH (n) RETURN n LIMIT 10",
+                ontology=Ontology(),
+                schema=Ontology(),
+            )

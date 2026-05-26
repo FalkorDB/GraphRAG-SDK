@@ -316,7 +316,35 @@ def _sanitize_cypher(cypher: str) -> str:
 # ── Cypher validation ────────────────────────────────────────────
 
 
-def validate_cypher(cypher: str, ontology: Ontology | None = None) -> list[str]:
+def _pop_schema_alias(kwargs: dict, ontology: Ontology | None, func: str) -> Ontology | None:
+    """Back-compat helper: pop a legacy ``schema=`` kwarg, warn, and return
+    the resolved ``ontology`` value. Raises if both names were supplied.
+    """
+    if "schema" in kwargs:
+        import warnings
+
+        legacy = kwargs.pop("schema")
+        if kwargs:
+            raise TypeError(f"{func}() got unexpected keyword arguments: {sorted(kwargs)}")
+        if ontology is not None:
+            raise TypeError(
+                f"{func}() received both `ontology=` and `schema=`. "
+                f"Use `ontology=` only; `schema=` is deprecated."
+            )
+        warnings.warn(
+            f"The `schema=` keyword argument on {func}() has been renamed "
+            f"to `ontology=` (graphrag_sdk v1.2+). Update your call site "
+            f"— the alias will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return legacy
+    if kwargs:
+        raise TypeError(f"{func}() got unexpected keyword arguments: {sorted(kwargs)}")
+    return ontology
+
+
+def validate_cypher(cypher: str, ontology: Ontology | None = None, **legacy: Any) -> list[str]:
     """Validate generated Cypher for safety and correctness.
 
     Uses an allowlist approach: the query must start with a read-only
@@ -328,6 +356,7 @@ def validate_cypher(cypher: str, ontology: Ontology | None = None) -> list[str]:
 
     Returns list of error strings; empty list means valid.
     """
+    ontology = _pop_schema_alias(legacy, ontology, "validate_cypher")
     errors: list[str] = []
     if not cypher:
         errors.append("Empty Cypher query")
@@ -384,6 +413,7 @@ async def generate_cypher(
     ontology: Ontology | None = None,
     max_retries: int = 3,
     ctx: Context | None = None,
+    **legacy: Any,
 ) -> str | None:
     """Generate a Cypher query from a natural language question.
 
@@ -392,6 +422,7 @@ async def generate_cypher(
 
     Returns the Cypher string, or None if all retries fail.
     """
+    ontology = _pop_schema_alias(legacy, ontology, "generate_cypher")
     prompt = build_ontology_prompt(ontology, question)
     last_error = ""
 
@@ -455,6 +486,7 @@ async def execute_cypher_retrieval(
     ontology: Ontology | None = None,
     max_retries: int = 3,
     ctx: Context | None = None,
+    **legacy: Any,
 ) -> tuple[list[str], dict[str, dict]]:
     """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
 
@@ -468,6 +500,7 @@ async def execute_cypher_retrieval(
 
     On any failure, returns empty results (silent degradation).
     """
+    ontology = _pop_schema_alias(legacy, ontology, "execute_cypher_retrieval")
     cypher = await generate_cypher(
         llm, question, ontology=ontology, max_retries=max_retries, ctx=ctx
     )
@@ -525,3 +558,53 @@ async def execute_cypher_retrieval(
         cypher[:120],
     )
     return fact_strings, entities
+
+
+# ── Deprecation aliases ──────────────────────────────────────────
+
+
+def _deprecated_build_schema_prompt(ontology: Ontology | None, question: str) -> str:
+    """DEPRECATED: use ``build_ontology_prompt`` instead."""
+    import warnings
+
+    warnings.warn(
+        "`build_schema_prompt` has been renamed to `build_ontology_prompt` "
+        "(graphrag_sdk v1.2+). Update your import — the alias will be "
+        "removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return build_ontology_prompt(ontology, question)
+
+
+def _deprecated_render_schema_block(ontology: Ontology | None) -> str:
+    """DEPRECATED: use ``render_ontology_block`` instead."""
+    import warnings
+
+    warnings.warn(
+        "`render_schema_block` has been renamed to `render_ontology_block` "
+        "(graphrag_sdk v1.2+). Update your import — the alias will be "
+        "removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return render_ontology_block(ontology)
+
+
+def __getattr__(name: str):  # PEP 562
+    if name == "SCHEMA_PROMPT":
+        import warnings
+
+        warnings.warn(
+            "`SCHEMA_PROMPT` has been renamed to `ONTOLOGY_PROMPT` "
+            "(graphrag_sdk v1.2+). Update your import — the alias will be "
+            "removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return ONTOLOGY_PROMPT
+    if name == "build_schema_prompt":
+        return _deprecated_build_schema_prompt
+    if name == "render_schema_block":
+        return _deprecated_render_schema_block
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
