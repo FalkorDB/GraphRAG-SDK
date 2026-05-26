@@ -39,7 +39,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         self, ctx, tmp_path, mock_graph_store, mock_vector_store
     ):
         """Pipeline must complete without error and index at least one chunk."""
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -47,7 +47,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -64,7 +64,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         result = await pipeline.run(str(md_file), ctx)
 
@@ -78,7 +78,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
 
         Verifies chunk_document() is reached (not the plain chunk() fallback).
         """
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -86,7 +86,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -103,7 +103,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         await pipeline.run(str(md_file), ctx)
 
@@ -121,7 +121,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
           → StructuralChunking._flush_buffer (writes breadcrumbs to metadata)
           → IngestionPipeline (passes chunks to vector store)
         """
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -129,7 +129,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -146,7 +146,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         await pipeline.run(str(md_file), ctx)
 
@@ -169,7 +169,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         _build_lexical_graph spreads chunk.metadata onto Chunk node properties,
         so breadcrumbs become graph-queryable at zero extra cost.
         """
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -177,7 +177,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -194,7 +194,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         await pipeline.run(str(md_file), ctx)
 
@@ -214,7 +214,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         self, ctx, tmp_path, mock_graph_store, mock_vector_store
     ):
         """A Document node must be written with the source file path."""
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -222,7 +222,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -239,7 +239,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         await pipeline.run(str(md_file), ctx)
 
@@ -256,7 +256,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         self, ctx, tmp_path, mock_graph_store, mock_vector_store
     ):
         """Markdown '#' sigils must not appear in any indexed chunk text."""
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -264,7 +264,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -281,7 +281,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         await pipeline.run(str(md_file), ctx)
 
@@ -296,7 +296,7 @@ class TestPdfLoaderStructuralChunkingPipeline:
     async def test_pdf_loader_fallback(
         self, ctx, tmp_path, mock_graph_store, mock_vector_store, monkeypatch
     ):
-        from graphrag_sdk.core.models import DocumentInfo, DocumentOutput, GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import DocumentInfo, DocumentOutput, GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -304,7 +304,7 @@ class TestPdfLoaderStructuralChunkingPipeline:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -330,7 +330,7 @@ class TestPdfLoaderStructuralChunkingPipeline:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         
         result = await pipeline.run(str(pdf_file), ctx)
@@ -352,7 +352,7 @@ class TestMarkdownLoaderFallbackStrategies:
         self, ctx, tmp_path, mock_graph_store, mock_vector_store
     ):
         """Markdown loader text is correctly chunked by FixedSizeChunking."""
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -360,7 +360,7 @@ class TestMarkdownLoaderFallbackStrategies:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -378,7 +378,7 @@ class TestMarkdownLoaderFallbackStrategies:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         
         result = await pipeline.run(str(md_file), ctx)
@@ -399,7 +399,7 @@ class TestMarkdownLoaderFallbackStrategies:
         self, ctx, tmp_path, mock_graph_store, mock_vector_store
     ):
         """Markdown loader text is correctly chunked by SentenceTokenCapChunking."""
-        from graphrag_sdk.core.models import GraphData, GraphSchema, ResolutionResult
+        from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
         from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -407,7 +407,7 @@ class TestMarkdownLoaderFallbackStrategies:
         from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         class _NullExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(nodes=[], relationships=[])
 
         class _NullResolver(ResolutionStrategy):
@@ -425,7 +425,7 @@ class TestMarkdownLoaderFallbackStrategies:
             resolver=_NullResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         
         result = await pipeline.run(str(md_file), ctx)

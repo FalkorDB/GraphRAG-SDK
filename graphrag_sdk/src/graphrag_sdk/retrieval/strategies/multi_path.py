@@ -13,6 +13,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
+    Ontology,
     RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
@@ -175,7 +176,27 @@ class MultiPathRetrieval(RetrievalStrategy):
         rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
+        ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
+        schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
+        # Back-compat: legacy ``schema=`` kwarg forwards to ``ontology=``.
+        if schema is not None:
+            import warnings
+
+            if ontology is not None:
+                raise TypeError(
+                    "MultiPathRetrieval() received both `ontology=` and "
+                    "`schema=`. Use `ontology=` only; `schema=` is deprecated."
+                )
+            warnings.warn(
+                "The `schema=` keyword argument on MultiPathRetrieval has "
+                "been renamed to `ontology=` (graphrag_sdk v1.2+). Update "
+                "your call site — the alias will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            ontology = schema
+
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
         self._llm = llm
@@ -185,6 +206,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._rel_top_k = rel_top_k
         self._keyword_limit = keyword_limit
         self._enable_cypher = enable_cypher
+        self._ontology = ontology
 
     # -- Template Method hook --
 
@@ -211,7 +233,9 @@ class MultiPathRetrieval(RetrievalStrategy):
         if self._enable_cypher:
             results = await asyncio.gather(
                 search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx),
-                execute_cypher_retrieval(self._graph, self._llm, query, ctx=ctx),
+                execute_cypher_retrieval(
+                    self._graph, self._llm, query, ontology=self._ontology, ctx=ctx
+                ),
                 return_exceptions=True,
             )
             fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))

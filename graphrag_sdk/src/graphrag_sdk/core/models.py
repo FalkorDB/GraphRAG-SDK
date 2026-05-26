@@ -136,33 +136,48 @@ class DocumentRecord(DataModel):
 # ── Schema Types ─────────────────────────────────────────────────
 
 
-class PropertyType(DataModel):
+_PROPERTY_TYPES: frozenset[str] = frozenset(
+    {"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"}
+)
+
+
+class Attribute(DataModel):
     """A property definition for a node or relationship type."""
 
     name: str
     type: str = "STRING"  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
-    required: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_type(self) -> Attribute:
+        normalized = (self.type or "STRING").strip().upper()
+        if normalized not in _PROPERTY_TYPES:
+            raise ValueError(
+                f"Attribute '{self.name}' has unsupported type "
+                f"{self.type!r}. Allowed: {sorted(_PROPERTY_TYPES)}"
+            )
+        self.type = normalized
+        return self
 
 
-class EntityType(DataModel):
-    """Definition of a node/entity type in the graph schema."""
+class Entity(DataModel):
+    """Definition of a node/entity type in the ontology."""
 
     label: str
     description: str | None = None
-    properties: list[PropertyType] = Field(default_factory=list)
+    properties: list[Attribute] = Field(default_factory=list)
 
     def __hash__(self) -> int:
         return hash(self.label)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, EntityType):
+        if not isinstance(other, Entity):
             return NotImplemented
         return self.label == other.label
 
 
-class RelationType(DataModel):
-    """Definition of a relationship type in the graph schema.
+class Relation(DataModel):
+    """Definition of a relationship type in the ontology.
 
     ``patterns`` lists allowed directional ``(source_label, target_label)``
     pairs. Direction matters: ``("Person", "Company")`` means
@@ -171,7 +186,7 @@ class RelationType(DataModel):
     Example::
 
         # "Person works at Company"
-        RelationType(
+        Relation(
             label="WORKS_AT",
             patterns=[("Person", "Company")],   # source -> target
         )
@@ -185,36 +200,45 @@ class RelationType(DataModel):
     label: str
     description: str | None = None
     patterns: list[tuple[str, str]] = Field(default_factory=list)
+    properties: list[Attribute] = Field(default_factory=list)
 
-    # Identity is by label only — two RelationType instances with the same
+    # Identity is by label only — two Relation instances with the same
     # label but different patterns compare/hash equal. Schemas are expected
     # to declare each relation label once.
     def __hash__(self) -> int:
         return hash(self.label)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, RelationType):
+        if not isinstance(other, Relation):
             return NotImplemented
         return self.label == other.label
 
 
-class GraphSchema(DataModel):
-    """Complete schema definition for the knowledge graph.
+class Ontology(DataModel):
+    """The user-facing schema of a knowledge graph.
 
-    Used by extraction strategies to constrain LLM output and
-    by pruning to filter non-conforming data.
+    Lists declared entity types, relation types, and their typed attributes.
+    Used by extraction to constrain LLM output and by Cypher generation to
+    surface available labels / properties / patterns to the LLM.
     """
 
-    entities: list[EntityType] = Field(default_factory=list)
-    relations: list[RelationType] = Field(default_factory=list)
+    entities: list[Entity] = Field(default_factory=list)
+    relations: list[Relation] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _warn_on_undeclared_pattern_labels(self) -> GraphSchema:
-        """Warn when a ``RelationType.patterns`` references undeclared entity labels.
+    def _warn_on_undeclared_pattern_labels(self) -> Ontology:
+        """Warn when a ``Relation.patterns`` references undeclared entity labels.
 
         Catches typos like ``("Persn", "Company")`` at config time, before any
-        extraction has run. We warn rather than raise: open-schema setups may
-        legitimately reference labels not (yet) listed in ``entities``.
+        extraction has run. Open-schema setups may legitimately reference
+        labels not yet listed in ``entities``, so this is a warning, not an
+        error.
+
+        Note: the SDK writes certain keys on every node/edge (``name``,
+        ``description``, ``source_chunk_ids``, ``spans``, ``rel_type``,
+        ``fact``, ``src_name``, ``tgt_name``, ``id``, ``label``). Declaring
+        a ``Attribute`` with one of these names will shadow the system
+        value on extracted nodes. Don't do that.
         """
         if not self.entities:
             return self
@@ -224,14 +248,84 @@ class GraphSchema(DataModel):
                 missing = [lbl for lbl in (src, tgt) if lbl not in declared]
                 if missing:
                     logger.warning(
-                        "RelationType '%s' pattern (%s, %s) references "
-                        "entity label(s) not declared in schema.entities: %s",
+                        "Relation '%s' pattern (%s, %s) references "
+                        "entity label(s) not declared in ontology.entities: %s",
                         rel.label,
                         src,
                         tgt,
                         ", ".join(missing),
                     )
         return self
+
+    @classmethod
+    def from_file(cls, path: str) -> Ontology:
+        """Load a ``Ontology`` from a JSON file.
+
+        The schema-as-config workflow: keep the canonical schema in a JSON
+        file under version control, load it into the SDK with one call. See
+        :py:meth:`save_to_file` for the reverse direction.
+        """
+        from pathlib import Path
+
+        return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+    def save_to_file(self, path: str, *, indent: int = 2) -> None:
+        """Write this schema to ``path`` as JSON (overwrites existing files)."""
+        from pathlib import Path
+
+        Path(path).write_text(self.model_dump_json(indent=indent), encoding="utf-8")
+
+    def merge(self, other: Ontology) -> Ontology:
+        """Return a new ``Ontology`` that is the union of ``self`` and ``other``.
+
+        - Entity / relation types are unioned by ``label``.
+        - For each type, ``properties`` are unioned by ``name``. When the same
+          property name appears in both, the incoming type/description overrides
+          (last-write-wins).
+        - For relations, ``patterns`` are unioned (order-preserving, deduped).
+        """
+
+        def _merge_props(existing: list[Attribute], incoming: list[Attribute]) -> list[Attribute]:
+            by_name: dict[str, Attribute] = {p.name: p for p in existing}
+            for p in incoming:
+                by_name[p.name] = p
+            return list(by_name.values())
+
+        ent_by_label: dict[str, Entity] = {e.label: e for e in self.entities}
+        for e in other.entities:
+            if e.label in ent_by_label:
+                cur = ent_by_label[e.label]
+                ent_by_label[e.label] = Entity(
+                    label=cur.label,
+                    description=e.description or cur.description,
+                    properties=_merge_props(cur.properties, e.properties),
+                )
+            else:
+                ent_by_label[e.label] = e
+
+        rel_by_label: dict[str, Relation] = {r.label: r for r in self.relations}
+        for r in other.relations:
+            if r.label in rel_by_label:
+                cur = rel_by_label[r.label]
+                seen: set[tuple[str, str]] = set()
+                merged_patterns: list[tuple[str, str]] = []
+                for pat in list(cur.patterns) + list(r.patterns):
+                    if pat not in seen:
+                        seen.add(pat)
+                        merged_patterns.append(pat)
+                rel_by_label[r.label] = Relation(
+                    label=cur.label,
+                    description=r.description or cur.description,
+                    patterns=merged_patterns,
+                    properties=_merge_props(cur.properties, r.properties),
+                )
+            else:
+                rel_by_label[r.label] = r
+
+        return Ontology(
+            entities=list(ent_by_label.values()),
+            relations=list(rel_by_label.values()),
+        )
 
 
 # ── Extraction / Resolution Output Types ─────────────────────────
@@ -254,6 +348,7 @@ class ExtractedEntity(DataModel):
     type: str
     description: str = ""
     source_chunk_ids: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExtractedRelation(DataModel):
@@ -266,6 +361,7 @@ class ExtractedRelation(DataModel):
     description: str = ""
     weight: float = 1.0
     source_chunk_ids: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
 
 
 class EntityMention(DataModel):
@@ -500,3 +596,33 @@ class SearchType(str, Enum):
     VECTOR = "vector"
     FULLTEXT = "fulltext"
     HYBRID = "hybrid"
+
+
+# ── Deprecation aliases ──────────────────────────────────────────
+#
+# These older names were used prior to the v1.2.x ontology vocabulary rename
+# (commit 363a53d). We keep them importable so existing code keeps working,
+# but every access emits a ``DeprecationWarning`` pointing at the new name.
+# Once downstream callers have migrated we can drop this shim.
+
+_LEGACY_MODEL_ALIASES: dict[str, str] = {
+    "GraphSchema": "Ontology",
+    "EntityType": "Entity",
+    "RelationType": "Relation",
+    "PropertyType": "Attribute",
+}
+
+
+def __getattr__(name: str) -> Any:  # PEP 562
+    if name in _LEGACY_MODEL_ALIASES:
+        import warnings
+
+        new_name = _LEGACY_MODEL_ALIASES[name]
+        warnings.warn(
+            f"`{name}` has been renamed to `{new_name}` (graphrag_sdk v1.2+). "
+            f"Update your imports — the alias will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

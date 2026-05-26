@@ -10,9 +10,9 @@ import pytest
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     ExtractedEntity,
-    GraphSchema,
-    EntityType,
-    RelationType,
+    Ontology,
+    Entity,
+    Relation,
     TextChunk,
     TextChunks,
 )
@@ -76,14 +76,14 @@ class TestGraphExtractionSmoke:
 
     async def test_produces_nodes(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         assert len(result.nodes) > 0
         names = {n.properties.get("name") for n in result.nodes}
         assert "Alice" in names
 
     async def test_produces_relationships(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         assert len(result.relationships) > 0
         types = {r.type for r in result.relationships}
         assert "RELATES" in types
@@ -91,7 +91,7 @@ class TestGraphExtractionSmoke:
     async def test_relationships_have_all_retrieval_properties(self, extractor, ctx):
         """Relationships must have all properties needed by retrieval."""
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         for rel in result.relationships:
             # Used by relationship vector search (Phase 0)
             assert "fact" in rel.properties
@@ -103,7 +103,7 @@ class TestGraphExtractionSmoke:
 
     async def test_produces_mentions(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         assert len(result.mentions) > 0
         for mention in result.mentions:
             assert mention.chunk_id == "chunk-0"
@@ -111,7 +111,7 @@ class TestGraphExtractionSmoke:
 
     async def test_entities_have_descriptions(self, extractor, ctx):
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         for node in result.nodes:
             assert "description" in node.properties
 
@@ -123,14 +123,14 @@ class TestGraphExtractionWithMock:
         llm = MockLLMWithGraphExtraction()
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         assert len(result.nodes) >= 2
         assert len(result.relationships) >= 1
 
 
 class TestGraphExtractionSchemaTypes:
     async def test_schema_entity_types_used(self, ctx):
-        """Entity types from schema override defaults."""
+        """Entity types from ontology override defaults."""
         captured_prompts: list[str] = []
 
         class CaptureLLM(MockLLM):
@@ -143,17 +143,17 @@ class TestGraphExtractionSchemaTypes:
             json.dumps({"entities": [{"name": "Test", "type": "Vehicle", "description": "A car"}],
                         "relationships": []}),
         ])
-        schema = GraphSchema(
+        ontology = Ontology(
             entities=[
-                EntityType(label="Vehicle", description="A vehicle"),
-                EntityType(label="Road", description="A road"),
+                Entity(label="Vehicle", description="A vehicle"),
+                Entity(label="Road", description="A road"),
             ],
         )
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("The car drove down the highway.")
-        await extractor.extract(chunks, schema, ctx)
+        await extractor.extract(chunks, ontology, ctx)
 
-        # Prompts should contain schema entity types
+        # Prompts should contain ontology entity types
         assert len(captured_prompts) > 0
         assert "Vehicle" in captured_prompts[0]
         assert "Road" in captured_prompts[0]
@@ -168,7 +168,7 @@ class TestGraphExtractionBudget:
         ctx = Context(tenant_id="test", latency_budget_ms=0.0)
         ctx._start_time = ctx._start_time - 1.0
 
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         assert llm._call_index == 0 or len(result.nodes) == 0
 
 
@@ -184,7 +184,7 @@ class TestGraphExtractionAggregation:
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
 
         chunks = _make_chunks("Alice is an engineer.", "Alice works hard.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
 
         alice_nodes = [n for n in result.nodes if n.properties.get("name") == "Alice"]
         assert len(alice_nodes) == 1
@@ -198,7 +198,7 @@ class TestGraphExtractionGraphOutput:
         llm = _mock_hybrid_llm()
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
 
         ids = {n.id for n in result.nodes}
         # IDs should contain __ separator for type qualification
@@ -210,7 +210,7 @@ class TestGraphExtractionGraphOutput:
         llm = _mock_hybrid_llm()
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice works at Acme Corp.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
 
         for rel in result.relationships:
             assert rel.type == "RELATES"
@@ -249,7 +249,7 @@ class TestGraphExtractionPluggableExtractor:
         )
 
         chunks = _make_chunks("Alice and Bob are friends.")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
 
         names = {n.properties.get("name") for n in result.nodes}
         assert "Alice" in names
@@ -266,7 +266,7 @@ class TestGraphExtractionConcurrency:
         assert extractor._max_concurrency == 2
 
         chunks = _make_chunks("Text 1")
-        result = await extractor.extract(chunks, GraphSchema(), ctx)
+        result = await extractor.extract(chunks, Ontology(), ctx)
         assert len(result.nodes) > 0
 
 
@@ -632,15 +632,15 @@ class TestEntityTypeDescriptions:
             json.dumps({"entities": [{"name": "GRAPH.QUERY", "type": "Command", "description": "A cmd"}],
                         "relationships": []}),
         ])
-        schema = GraphSchema(
+        ontology = Ontology(
             entities=[
-                EntityType(label="Command", description="FalkorDB GRAPH.* commands"),
-                EntityType(label="Function", description="Cypher built-in functions"),
+                Entity(label="Command", description="FalkorDB GRAPH.* commands"),
+                Entity(label="Function", description="Cypher built-in functions"),
             ],
         )
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("GRAPH.QUERY is a FalkorDB command.")
-        await extractor.extract(chunks, schema, ctx)
+        await extractor.extract(chunks, ontology, ctx)
 
         # Step 2 prompt (second call) should contain the descriptions
         assert len(captured_prompts) >= 2
@@ -655,7 +655,7 @@ class TestFormatRelationPatterns:
 
     def test_relation_with_patterns(self):
         rels = [
-            RelationType(
+            Relation(
                 label="WORKS_AT",
                 description="Employment",
                 patterns=[("Person", "Company")],
@@ -667,7 +667,7 @@ class TestFormatRelationPatterns:
 
     def test_relation_with_multiple_patterns(self):
         rels = [
-            RelationType(
+            Relation(
                 label="LOCATED_IN",
                 patterns=[("Person", "Place"), ("Organization", "Place")],
             ),
@@ -678,7 +678,7 @@ class TestFormatRelationPatterns:
 
     def test_open_relation(self):
         """Relations without declared patterns render as ``- LABEL`` — no ``(any)`` noise."""
-        rels = [RelationType(label="RELATED_TO")]
+        rels = [Relation(label="RELATED_TO")]
         result = _format_relation_patterns(rels)
         assert "- RELATED_TO" in result
         assert "(any)" not in result
@@ -698,17 +698,141 @@ class TestFormatRelationPatterns:
             json.dumps({"entities": [{"name": "Alice", "type": "Person", "description": "A person"}],
                         "relationships": []}),
         ])
-        schema = GraphSchema(
-            entities=[EntityType(label="Person"), EntityType(label="Company")],
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
             relations=[
-                RelationType(label="WORKS_AT", description="Works at", patterns=[("Person", "Company")]),
+                Relation(label="WORKS_AT", description="Works at", patterns=[("Person", "Company")]),
             ],
         )
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
         chunks = _make_chunks("Alice works at Acme.")
-        await extractor.extract(chunks, schema, ctx)
+        await extractor.extract(chunks, ontology, ctx)
 
         assert len(captured_prompts) >= 2
         step2_prompt = captured_prompts[1]
         assert "## Allowed Relationships" in step2_prompt
         assert "WORKS_AT (Person \u2192 Company): Works at" in step2_prompt
+
+
+class TestGraphExtractionSchemaAttributes:
+    """Coverage for ontology-declared attributes flowing through extraction."""
+
+    def test_parse_step2_coerces_declared_attributes(self):
+        from graphrag_sdk.core.models import Attribute
+        content = json.dumps({
+            "entities": [
+                {
+                    "name": "Marie Curie",
+                    "type": "Person",
+                    "description": "Scientist",
+                    "attributes": {"age": "56", "birth_date": "1867-11-07"},
+                },
+            ],
+            "relationships": [],
+        })
+        ontology = Ontology(
+            entities=[
+                Entity(
+                    label="Person",
+                    properties=[
+                        Attribute(name="age", type="INTEGER"),
+                        Attribute(name="birth_date", type="DATE"),
+                    ],
+                )
+            ]
+        )
+        ents, _ = GraphExtraction._parse_step2_response(
+            content, ["Person"], "c1", ontology
+        )
+        assert len(ents) == 1
+        assert ents[0].attributes == {"age": 56, "birth_date": "1867-11-07"}
+
+    def test_parse_step2_missing_attribute_becomes_none(self):
+        """Missing values are represented as ``None`` in attributes — the
+        entity is NEVER dropped. Storage strips ``None`` before writing so
+        the graph sees "key missing", which is the right null semantics."""
+        from graphrag_sdk.core.models import Attribute
+        content = json.dumps({
+            "entities": [
+                {
+                    "name": "Marie Curie",
+                    "type": "Person",
+                    "description": "",
+                    "attributes": {"age": 56},
+                },
+            ],
+            "relationships": [],
+        })
+        ontology = Ontology(
+            entities=[
+                Entity(
+                    label="Person",
+                    properties=[
+                        Attribute(name="age", type="INTEGER"),
+                        Attribute(name="birth_date", type="DATE"),
+                    ],
+                )
+            ]
+        )
+        ents, _ = GraphExtraction._parse_step2_response(
+            content, ["Person"], "c1", ontology
+        )
+        assert len(ents) == 1
+        assert ents[0].attributes == {"age": 56, "birth_date": None}
+
+    def test_aggregator_carries_attributes_with_last_write_wins(self):
+        from graphrag_sdk.core.models import ExtractedEntity
+        e1 = ExtractedEntity(
+            name="Marie Curie",
+            type="Person",
+            description="",
+            source_chunk_ids=["c1"],
+            attributes={"age": 56, "country": "France"},
+        )
+        e2 = ExtractedEntity(
+            name="Marie Curie",
+            type="Person",
+            description="",
+            source_chunk_ids=["c2"],
+            attributes={"age": 58, "birth_year": 1867},
+        )
+        merged = GraphExtraction._aggregate_entities([e1, e2])
+        assert len(merged) == 1
+        # `age` is overwritten last-write-wins; the other keys are unioned.
+        assert merged[0].attributes == {
+            "age": 58,
+            "country": "France",
+            "birth_year": 1867,
+        }
+
+    def test_attributes_merged_into_node_properties(self):
+        from graphrag_sdk.core.models import ExtractedEntity
+        ent = ExtractedEntity(
+            name="Marie Curie",
+            type="Person",
+            description="d",
+            source_chunk_ids=["c1"],
+            attributes={"age": 56, "birth_date": "1867-11-07"},
+        )
+        nodes = GraphExtraction._entities_to_nodes([ent])
+        assert nodes[0].properties["age"] == 56
+        assert nodes[0].properties["birth_date"] == "1867-11-07"
+        # Reserved keys still present.
+        assert nodes[0].properties["name"] == "Marie Curie"
+
+    def test_property_less_schema_keeps_attributes_empty(self):
+        """Deterministic-extractor regression: ontology declares no
+        properties \u2192 records have empty attributes \u2192 storage gets only the
+        reserved keys."""
+        content = json.dumps({
+            "entities": [
+                {"name": "Alice", "type": "Person", "description": "A person"},
+            ],
+            "relationships": [],
+        })
+        ontology = Ontology(entities=[Entity(label="Person")])
+        ents, _ = GraphExtraction._parse_step2_response(
+            content, ["Person"], "c1", ontology
+        )
+        assert len(ents) == 1
+        assert ents[0].attributes == {}
