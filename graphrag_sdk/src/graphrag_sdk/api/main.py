@@ -325,6 +325,13 @@ class GraphRAG:
 
         Idempotent. Raises :py:class:`OntologyContradictionError` if
         ``self.ontology`` re-defines an existing property's type.
+
+        Note: this is a one-shot init guarded by ``_ontology_initialized``, so
+        re-assigning ``self.ontology`` after the first call doesn't re-fire
+        registration. To evolve the ontology on an existing instance (e.g.,
+        introduce a new label between ingest passes), call
+        :py:meth:`set_ontology` — it swaps the ontology and re-runs this
+        method cleanly.
         """
         if self._ontology_initialized:
             return
@@ -373,6 +380,25 @@ class GraphRAG:
         you want the next retrieval to see it without re-ingesting first.
         """
         return await self.get_ontology()
+
+    async def set_ontology(self, ontology: Ontology) -> Ontology:
+        """Replace the working ontology and register it into the ontology graph.
+
+        Use this to evolve the ontology between ingest passes — typically to
+        introduce a *new* label that wasn't in the original construction-time
+        ontology. Adding new labels is always accepted; re-declaring an
+        existing label still has to obey the contradiction / strict-modification
+        rules enforced by :py:meth:`OntologyStore.register`.
+
+        Equivalent to constructing a fresh :py:class:`GraphRAG` with the new
+        ontology, but reuses the same connection / strategies. Without this,
+        callers would have to reach into ``_ontology_initialized`` to force
+        re-registration on an existing instance.
+        """
+        self.ontology = ontology
+        self._ontology_initialized = False
+        await self._ensure_ontology_initialized()
+        return self._global_ontology
 
     async def save_ontology(self, path: str, *, indent: int = 2) -> None:
         """Write the current global ontology to ``path`` as JSON.

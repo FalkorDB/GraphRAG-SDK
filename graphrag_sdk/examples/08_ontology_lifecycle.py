@@ -152,16 +152,16 @@ async def main() -> None:
             print(f"  Reloaded {len(loaded.entities)} entities, {len(loaded.relations)} relations.")
 
         # ── 4. Adding a new entity type on a fresh ingest is OK ─────────
-        banner("4. Adding a new entity type via ingest (additive)")
-        rag.ontology = Ontology(
-            entities=list(persisted.entities)
-            + [
-                Entity(label="University", description="A higher-education institution"),
-            ],
-            relations=list(persisted.relations),
+        banner("4. Adding a new entity type via set_ontology (additive)")
+        await rag.set_ontology(
+            Ontology(
+                entities=list(persisted.entities)
+                + [
+                    Entity(label="University", description="A higher-education institution"),
+                ],
+                relations=list(persisted.relations),
+            )
         )
-        # Force re-init so the new schema is registered.
-        rag._ontology_initialized = False
         await rag.ingest(text=SAMPLE_TEXT_PASS_2)
         after = await rag.get_ontology()
         assert any(e.label == "University" for e in after.entities), (
@@ -171,49 +171,47 @@ async def main() -> None:
 
         # ── 5. Adding a NEW attribute to an existing entity is REJECTED ─
         banner("5. Modifying an existing entity → OntologyModificationNotAllowedError")
-        rag.ontology = Ontology(
-            entities=[
-                Entity(
-                    label="Person",
-                    properties=[
-                        Attribute(name="birth_year", type="INTEGER"),
-                        Attribute(name="birth_place", type="STRING"),
-                        Attribute(name="nobel_year", type="INTEGER"),  # ← new
-                    ],
-                ),
-            ],
-        )
-        rag._ontology_initialized = False
         try:
-            await rag.ingest(text="dummy")
+            await rag.set_ontology(
+                Ontology(
+                    entities=[
+                        Entity(
+                            label="Person",
+                            properties=[
+                                Attribute(name="birth_year", type="INTEGER"),
+                                Attribute(name="birth_place", type="STRING"),
+                                Attribute(name="nobel_year", type="INTEGER"),  # ← new
+                            ],
+                        ),
+                    ],
+                )
+            )
             raise AssertionError("expected OntologyModificationNotAllowedError")
         except OntologyModificationNotAllowedError as exc:
             print(f"  raised as expected: {exc}")
 
         # ── 6. Changing the TYPE of an existing attribute is REJECTED ──
         banner("6. Re-typing an existing attribute → OntologyContradictionError")
-        rag.ontology = Ontology(
-            entities=[
-                Entity(
-                    label="Person",
-                    properties=[
-                        Attribute(name="birth_year", type="STRING"),  # was INTEGER
-                    ],
-                ),
-            ],
-        )
-        rag._ontology_initialized = False
         try:
-            await rag.ingest(text="dummy")
+            await rag.set_ontology(
+                Ontology(
+                    entities=[
+                        Entity(
+                            label="Person",
+                            properties=[
+                                Attribute(name="birth_year", type="STRING"),  # was INTEGER
+                            ],
+                        ),
+                    ],
+                )
+            )
             raise AssertionError("expected OntologyContradictionError")
         except OntologyContradictionError as exc:
             print(f"  raised as expected: {exc}")
 
         # ── 7. Re-declaring a subset is fine (treated as "use persisted")
         banner("7. Re-declaring an existing entity as a subset is OK")
-        rag.ontology = Ontology(entities=[Entity(label="Person")])
-        rag._ontology_initialized = False
-        await rag._ensure_ontology_initialized()
+        await rag.set_ontology(Ontology(entities=[Entity(label="Person")]))
         print("  Bare Person re-declaration accepted ✓")
 
         # ── 8. Legacy aliases still work (DeprecationWarning) ───────────
