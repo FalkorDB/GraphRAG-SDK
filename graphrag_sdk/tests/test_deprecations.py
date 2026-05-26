@@ -397,3 +397,60 @@ class TestCypherGenerationLegacyNames:
                 ontology=Ontology(),
                 schema=Ontology(),
             )
+
+
+# ── OntologyStore.register schema= kwarg ─────────────────────────
+
+
+class TestOntologyStoreRegisterKwargAlias:
+    """``OntologyStore`` lives behind ``rag._ontology_store`` (private-ish),
+    but the alias is still wired so existing callers don't break."""
+
+    def _make_store(self):
+        from types import SimpleNamespace
+        from graphrag_sdk.storage.ontology_store import OntologyStore
+
+        class _FakeGraph:
+            async def query(self, cypher, params=None):
+                return SimpleNamespace(result_set=[])
+
+        conn = MagicMock()
+        conn._ensure_client = MagicMock()
+        conn._driver = SimpleNamespace(select_graph=MagicMock(return_value=_FakeGraph()))
+        return OntologyStore(conn, "test")
+
+    @pytest.mark.asyncio
+    async def test_schema_kwarg_warns_and_forwards(self):
+        store = self._make_store()
+        ontology = Ontology(entities=[Entity(label="Person")])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await store.register(schema=ontology)
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "schema=" in str(x.message)
+        ]
+        assert deps
+
+    @pytest.mark.asyncio
+    async def test_both_kwargs_raises(self):
+        store = self._make_store()
+        with pytest.raises(TypeError, match="both"):
+            await store.register(ontology=Ontology(), schema=Ontology())
+
+    @pytest.mark.asyncio
+    async def test_only_ontology_does_not_warn(self):
+        store = self._make_store()
+        ontology = Ontology(entities=[Entity(label="Person")])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            await store.register(ontology=ontology)
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "schema=" in str(x.message)
+        ]
+        assert not deps

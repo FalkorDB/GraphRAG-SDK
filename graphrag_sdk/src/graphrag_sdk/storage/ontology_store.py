@@ -198,7 +198,7 @@ class OntologyStore:
 
     # ── Register ─────────────────────────────────────────────────
 
-    async def register(self, ontology: Ontology) -> Ontology:
+    async def register(self, ontology: Ontology | None = None, **legacy: Any) -> Ontology:
         """Register ``ontology`` into the persisted ontology and return the union.
 
         The ingest path is constrained:
@@ -216,7 +216,35 @@ class OntologyStore:
           :py:class:`OntologyContradictionError`.
 
         Both errors are raised before any partial state is persisted.
+
+        .. deprecated:: 1.2
+            Passing the ``schema=`` keyword argument is deprecated; use
+            ``ontology=`` (or pass positionally) instead.
         """
+        if "schema" in legacy:
+            import warnings
+
+            legacy_schema = legacy.pop("schema")
+            if legacy:
+                raise TypeError(f"register() got unexpected keyword arguments: {sorted(legacy)}")
+            if ontology is not None:
+                raise TypeError(
+                    "OntologyStore.register() received both `ontology=` and "
+                    "`schema=`. Use `ontology=` only; `schema=` is deprecated."
+                )
+            warnings.warn(
+                "The `schema=` keyword argument on OntologyStore.register() has "
+                "been renamed to `ontology=` (graphrag_sdk v1.2+). Update your "
+                "call site — the alias will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            ontology = legacy_schema
+        elif legacy:
+            raise TypeError(f"register() got unexpected keyword arguments: {sorted(legacy)}")
+
+        if ontology is None:
+            raise TypeError("register() missing required argument: 'ontology'")
         if not ontology.entities and not ontology.relations:
             return await self.load()
 
