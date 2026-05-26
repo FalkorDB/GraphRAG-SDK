@@ -136,6 +136,55 @@ class TestSanitizeCypher:
 
 
 class TestExecuteCypherRetrieval:
+    async def test_budget_exhaustion_propagates_before_generation(self):
+        """Latency budget exhaustion should not be swallowed as generation failure."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock()
+        mock_graph = MagicMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="Cypher generation LLM call"):
+            await execute_cypher_retrieval(
+                mock_graph,
+                mock_llm,
+                "test?",
+                ctx=Context(latency_budget_ms=0.0),
+            )
+        mock_llm.ainvoke.assert_not_awaited()
+
+    async def test_budget_exhaustion_propagates_before_execution(self):
+        """Budget expiry during generation should block the Cypher DB query."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        ctx = Context(latency_budget_ms=1000.0)
+
+        async def generate_and_exhaust(*args, **kwargs):
+            ctx.latency_budget_ms = 0.0
+            return LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name LIMIT 10\n```")
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=generate_and_exhaust)
+        mock_graph = MagicMock()
+        mock_graph.query_raw = AsyncMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="Cypher execution"):
+            await execute_cypher_retrieval(mock_graph, mock_llm, "test?", ctx=ctx)
+        mock_graph.query_raw.assert_not_awaited()
+
     async def test_returns_empty_on_generation_failure(self):
         """When LLM returns garbage, should return empty results."""
         from unittest.mock import AsyncMock, MagicMock
@@ -197,3 +246,95 @@ class TestExecuteCypherRetrieval:
         assert "Alice" in facts[0]
         assert "alice" in entities
         assert "bob" in entities
+
+
+# ── Schema-aware prompt + validator ──────────────────────────────
+
+
+class TestRenderSchemaBlock:
+    def test_open_schema_falls_back_to_historic_labels(self):
+        from graphrag_sdk.core.models import Ontology
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            render_ontology_block,
+        )
+        block = render_ontology_block(Ontology())
+        assert "- Person" in block
+        assert "name (STRING)" in block
+        assert "rel_type (STRING)" in block
+
+    def test_schema_block_includes_declared_attributes(self):
+        from graphrag_sdk.core.models import (
+            Entity,
+            Ontology,
+            Attribute,
+            Relation,
+        )
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            render_ontology_block,
+        )
+        s = Ontology(
+            entities=[
+                Entity(
+                    label="Person",
+                    properties=[
+                        Attribute(name="age", type="INTEGER", description="years")
+                    ],
+                ),
+                Entity(label="Company"),
+            ],
+            relations=[
+                Relation(
+                    label="WORKS_AT",
+                    patterns=[("Person", "Company")],
+                    properties=[Attribute(name="since", type="DATE")],
+                ),
+            ],
+        )
+        block = render_ontology_block(s)
+        assert "age (INTEGER)" in block
+        assert "since (DATE)" in block
+        assert "WORKS_AT" in block
+
+
+class TestBuildSchemaPrompt:
+    def test_includes_question_and_schema(self):
+        from graphrag_sdk.core.models import (
+            Entity,
+            Ontology,
+            Attribute,
+        )
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            build_ontology_prompt,
+        )
+        s = Ontology(
+            entities=[
+                Entity(
+                    label="Person",
+                    properties=[Attribute(name="age", type="INTEGER")],
+                )
+            ]
+        )
+        prompt = build_ontology_prompt(s, "Who is older than 30?")
+        assert "Who is older than 30?" in prompt
+        assert "age (INTEGER)" in prompt
+        assert ".age" in prompt  # synthesized numeric-filter example
+
+
+class TestValidateCypherWithSchema:
+    def test_unknown_label_flagged_when_schema_provided(self):
+        from graphrag_sdk.core.models import Entity, Ontology
+        s = Ontology(entities=[Entity(label="Person")])
+        errors = validate_cypher("MATCH (x:Bogus) RETURN x LIMIT 10", s)
+        assert any("Unknown label: Bogus" in e for e in errors)
+
+    def test_declared_label_accepted(self):
+        from graphrag_sdk.core.models import Entity, Ontology
+        s = Ontology(entities=[Entity(label="Customer")])
+        errors = validate_cypher(
+            "MATCH (c:Customer) RETURN c.name LIMIT 10", s
+        )
+        assert errors == []
+
+    def test_no_schema_falls_back_to_historic_labels(self):
+        errors = validate_cypher("MATCH (p:Person) RETURN p LIMIT 10")
+        assert errors == []

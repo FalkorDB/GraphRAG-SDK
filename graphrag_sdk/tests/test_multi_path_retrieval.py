@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     LLMResponse,
     RawSearchResult,
@@ -14,8 +15,10 @@ from graphrag_sdk.core.models import (
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
     expand_sibling_entities,
     is_enumeration_query,
+    search_relates_edges,
 )
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+from graphrag_sdk.retrieval.strategies.result_assembly import rerank_chunks
 
 from .conftest import MockEmbedder, MockLLM
 
@@ -79,6 +82,85 @@ class TestMultiPathRetrieval:
         mp_embedder.call_count = 0
         await strategy.search("Who is Alice?")
         assert mp_embedder.call_count > 0
+
+    async def test_latency_budget_checked_before_first_phase(
+        self, strategy, mp_embedder, mp_llm
+    ):
+        ctx = Context(latency_budget_ms=0.0)
+
+        with pytest.raises(LatencyBudgetExceededError, match="keyword extraction"):
+            await strategy.search("Who is Alice?", ctx)
+
+        assert mp_llm._call_index == 0
+        assert mp_embedder.call_count == 0
+
+    async def test_relates_search_budget_error_propagates(self):
+        vector = MagicMock()
+        vector.search_relationships = AsyncMock(
+            side_effect=LatencyBudgetExceededError("budget exhausted")
+        )
+
+        with pytest.raises(LatencyBudgetExceededError, match="budget exhausted"):
+            await search_relates_edges(vector, [0.1], rel_top_k=3)
+
+    async def test_relates_search_checks_budget_before_vector_call(self):
+        vector = MagicMock()
+        vector.search_relationships = AsyncMock(return_value=[])
+
+        with pytest.raises(LatencyBudgetExceededError, match="RELATES vector search"):
+            await search_relates_edges(
+                vector,
+                [0.1],
+                rel_top_k=3,
+                ctx=Context(latency_budget_ms=0.0),
+            )
+
+        vector.search_relationships.assert_not_awaited()
+
+    async def test_rerank_budget_error_propagates(self, mp_embedder):
+        mp_embedder.aembed_documents = AsyncMock(
+            side_effect=LatencyBudgetExceededError("budget exhausted")
+        )
+
+        with pytest.raises(LatencyBudgetExceededError, match="budget exhausted"):
+            await rerank_chunks(
+                mp_embedder,
+                [0.1],
+                {"c1": "text"},
+                stored_embeddings={},
+            )
+
+    async def test_latency_budget_checked_before_question_embedding(
+        self, strategy, mp_embedder, mp_llm, monkeypatch
+    ):
+        ctx = Context(latency_budget_ms=1000.0)
+
+        def exhaust_budget(self: Context, operation: str) -> None:
+            if operation == "MultiPath question embedding":
+                raise LatencyBudgetExceededError("budget exhausted before embedding")
+
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
+        with pytest.raises(LatencyBudgetExceededError, match="before embedding"):
+            await strategy.search("Who is Alice?", ctx)
+
+        assert mp_llm._call_index == 1
+        assert mp_embedder.call_count == 0
+
+    async def test_latency_budget_propagates_from_keyword_llm(
+        self, strategy, mp_embedder, mp_llm, monkeypatch
+    ):
+        ctx = Context(latency_budget_ms=1000.0)
+
+        def exhaust_budget(self: Context, operation: str) -> None:
+            if operation == "MultiPath keyword extraction LLM call":
+                raise LatencyBudgetExceededError("budget exhausted before keyword LLM")
+
+        monkeypatch.setattr(Context, "ensure_budget", exhaust_budget)
+        with pytest.raises(LatencyBudgetExceededError, match="keyword LLM"):
+            await strategy.search("Who is Alice?", ctx)
+
+        assert mp_llm._call_index == 0
+        assert mp_embedder.call_count == 0
 
     async def test_relates_edge_vector_search(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """RELATES edge vector search should be called and return facts + entities."""

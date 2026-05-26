@@ -85,10 +85,8 @@ jobs:
           done
           echo "FalkorDB did not become reachable within 20 attempts" >&2
           exit 1
-      - name: Run incremental-update integration tests
-        # Only the v1.1.0 invariant suite needs the live database; the
-        # rest of test_integration.py is import-smoke that already runs
-        # in the unit job above.
+      - name: Run real-FalkorDB integration tests
         run: >
           python -m pytest -v
-          tests/test_integration.py::TestIncrementalUpdateInvariants
+          -m integration
+          tests/test_integration.py

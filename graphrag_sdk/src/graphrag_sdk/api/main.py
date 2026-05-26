@@ -15,16 +15,22 @@ from uuid import uuid4
 from graphrag_sdk import __version__
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import ConfigError, DatabaseError, DocumentNotFoundError
+from graphrag_sdk.core.exceptions import (
+    ConfigError,
+    DatabaseError,
+    DocumentNotFoundError,
+    LatencyBudgetExceededError,
+)
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
     BatchEntry,
     ChatMessage,
     DeleteDocumentResult,
     DocumentInfo,
+    Entity,
     FinalizeResult,
-    GraphSchema,
     IngestionResult,
+    Ontology,
     RagResult,
     RetrieverResult,
     UpdateResult,
@@ -35,6 +41,9 @@ from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    DEFAULT_ENTITY_TYPES,
+)
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.csv_loader import CsvLoader
@@ -53,6 +62,7 @@ from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.graph_store import GraphStore
+from graphrag_sdk.storage.ontology_store import OntologyStore
 from graphrag_sdk.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -144,7 +154,7 @@ class GraphRAG:
         connection: FalkorDB connection (or ConnectionConfig to create one).
         llm: LLM provider for extraction and generation.
         embedder: Embedding provider for vector operations.
-        schema: Optional graph schema for extraction constraints.
+        ontology: Optional graph ontology for extraction constraints.
         retrieval_strategy: Default retrieval strategy (uses MultiPathRetrieval if None).
 
     Example::
@@ -153,7 +163,7 @@ class GraphRAG:
             connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
             llm=MyLLM(model_name="gpt-4o"),
             embedder=MyEmbedder(),
-            schema=GraphSchema(entities=[...], relations=[...]),
+            ontology=Ontology(entities=[...], relations=[...]),
         )
 
         # Ingest
@@ -172,10 +182,31 @@ class GraphRAG:
         connection: FalkorDBConnection | ConnectionConfig,
         llm: LLMInterface,
         embedder: Embedder,
-        schema: GraphSchema | None = None,
+        ontology: Ontology | None = None,
         retrieval_strategy: RetrievalStrategy | None = None,
         embedding_dimension: int = 256,
+        *,
+        schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
+        # Back-compat: accept the legacy ``schema=`` kwarg and forward to
+        # ``ontology=``. Removed in a future release; see deprecation notes.
+        if schema is not None:
+            import warnings
+
+            if ontology is not None:
+                raise TypeError(
+                    "GraphRAG() received both `ontology=` and `schema=`. "
+                    "Use `ontology=` only; `schema=` is deprecated."
+                )
+            warnings.warn(
+                "The `schema=` keyword argument has been renamed to `ontology=` "
+                "(graphrag_sdk v1.2+). Update your call site — the alias will be "
+                "removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            ontology = schema
+
         # Connection
         if isinstance(connection, ConnectionConfig):
             self._conn = FalkorDBConnection(connection)
@@ -184,7 +215,7 @@ class GraphRAG:
 
         self.llm = llm
         self.embedder = embedder
-        self.schema = schema or GraphSchema()
+        self.ontology = ontology or Ontology()
         self._embedding_dimension = embedding_dimension
         self._config_validated = False
 
@@ -199,12 +230,23 @@ class GraphRAG:
         # Deduplication engine
         self._deduplicator = EntityDeduplicator(self._graph_store, self.embedder)
 
+        # Persistent ontology graph (``<data_graph>__ontology``). Always-on,
+        # always the anchor: ``self.ontology`` is registered into it on first
+        # connection, and ``get_ontology()`` / retrieval always read from it.
+        self._ontology_store = OntologyStore(self._conn, self._conn.config.graph_name)
+        # Lazy-init flag; the first async call that needs the ontology fires
+        # ``_ensure_ontology_initialized()`` to load + register the user's ontology.
+        self._ontology_initialized = False
+        # Working ontology used by retrieval; populated by ``_ensure_ontology_initialized()``.
+        self._global_ontology: Ontology = self.ontology
+
         # Default retrieval strategy
         self._retrieval_strategy = retrieval_strategy or MultiPathRetrieval(
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             embedder=self.embedder,
             llm=self.llm,
+            ontology=self._global_ontology,
         )
 
     # -- Async context manager -------------------------------------------
@@ -238,6 +280,142 @@ class GraphRAG:
         """Close the underlying database connection."""
         await self._conn.close()
 
+    # ── Deprecated aliases ───────────────────────────────────────
+
+    @property
+    def schema(self) -> Ontology:
+        """DEPRECATED: use :py:attr:`ontology` instead.
+
+        Kept as a property so existing code reading ``rag.schema`` keeps
+        working; emits a :py:class:`DeprecationWarning` on each access.
+        """
+        import warnings
+
+        warnings.warn(
+            "`GraphRAG.schema` has been renamed to `GraphRAG.ontology` "
+            "(graphrag_sdk v1.2+). Update your access — the alias will be "
+            "removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.ontology
+
+    @schema.setter
+    def schema(self, value: Ontology) -> None:
+        import warnings
+
+        warnings.warn(
+            "`GraphRAG.schema` has been renamed to `GraphRAG.ontology` "
+            "(graphrag_sdk v1.2+). Assigning via the legacy alias still "
+            "works but will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.ontology = value
+
+    # ── Ontology ─────────────────────────────────────────────────
+
+    async def _ensure_ontology_initialized(self) -> None:
+        """Lazy first-touch: load the persisted ontology and register the
+        user-supplied :py:attr:`ontology` into it.
+
+        Three states:
+
+        - ``self.ontology`` is non-empty → register it (validate + persist).
+        - ``self.ontology`` empty but the ontology graph already has content
+          (previous session, another writer) → use it as-is.
+        - Both empty (first connection, no user ontology) → register the
+          built-in :py:data:`DEFAULT_ENTITY_TYPES` so the ontology graph
+          accurately reflects the labels the extractor will produce.
+
+        Idempotent. Raises :py:class:`OntologyContradictionError` if
+        ``self.ontology`` re-defines an existing property's type.
+
+        Note: this is a one-shot init guarded by ``_ontology_initialized``, so
+        re-assigning ``self.ontology`` after the first call doesn't re-fire
+        registration. To evolve the ontology on an existing instance (e.g.,
+        introduce a new label between ingest passes), call
+        :py:meth:`set_ontology` — it swaps the ontology and re-runs this
+        method cleanly.
+        """
+        if self._ontology_initialized:
+            return
+        loaded = await self._ontology_store.load()
+        if self.ontology.entities or self.ontology.relations:
+            self._global_ontology = await self._ontology_store.register(self.ontology)
+        elif loaded.entities or loaded.relations:
+            self._global_ontology = loaded
+        else:
+            default_schema = Ontology(
+                entities=[Entity(label=label) for label in DEFAULT_ENTITY_TYPES],
+            )
+            logger.info(
+                "No ontology supplied and ontology graph is empty; seeding "
+                "DEFAULT_ENTITY_TYPES (%s) into the ontology. To customize "
+                "properties for these labels, pass ontology=... on first ingest "
+                "or delete_all() and re-ingest with a custom ontology.",
+                ", ".join(DEFAULT_ENTITY_TYPES),
+            )
+            self._global_ontology = await self._ontology_store.register(default_schema)
+        if hasattr(self._retrieval_strategy, "_ontology"):
+            self._retrieval_strategy._ontology = self._global_ontology
+        self._ontology_initialized = True
+
+    async def get_ontology(self) -> Ontology:
+        """Return the persisted global ontology.
+
+        Reads from the ontology graph — the single source of truth. On the
+        first call, also registers any ``ontology`` passed to :py:class:`GraphRAG`
+        into the ontology graph (validating no type contradictions with what's
+        already persisted).
+        """
+        await self._ensure_ontology_initialized()
+        # Always reflect the latest persisted state in case another writer
+        # has registered new types since our last ensure_initialized.
+        loaded = await self._ontology_store.load()
+        self._global_ontology = loaded
+        if hasattr(self._retrieval_strategy, "_ontology"):
+            self._retrieval_strategy._ontology = self._global_ontology
+        return self._global_ontology
+
+    async def refresh_ontology(self) -> Ontology:
+        """Reload the global ontology and propagate it to the retrieval path.
+
+        Call explicitly when another process has registered new ontology and
+        you want the next retrieval to see it without re-ingesting first.
+        """
+        return await self.get_ontology()
+
+    async def set_ontology(self, ontology: Ontology) -> Ontology:
+        """Replace the working ontology and register it into the ontology graph.
+
+        Use this to evolve the ontology between ingest passes — typically to
+        introduce a *new* label that wasn't in the original construction-time
+        ontology. Adding new labels is always accepted; re-declaring an
+        existing label still has to obey the contradiction / strict-modification
+        rules enforced by :py:meth:`OntologyStore.register`.
+
+        Equivalent to constructing a fresh :py:class:`GraphRAG` with the new
+        ontology, but reuses the same connection / strategies. Without this,
+        callers would have to reach into ``_ontology_initialized`` to force
+        re-registration on an existing instance.
+        """
+        self.ontology = ontology
+        self._ontology_initialized = False
+        await self._ensure_ontology_initialized()
+        return self._global_ontology
+
+    async def save_ontology(self, path: str, *, indent: int = 2) -> None:
+        """Write the current global ontology to ``path`` as JSON.
+
+        Bridges the persisted ontology graph to a versionable JSON artifact:
+        ``rag.save_ontology("ontology.json")``, hand-edit / version-control
+        it, then load with ``Ontology.from_file("ontology.json")`` on the
+        next run. The ontology graph remains the canonical copy.
+        """
+        ontology = await self.get_ontology()
+        ontology.save_to_file(path, indent=indent)
+
     # ── Graph admin ──────────────────────────────────────────────
 
     async def get_statistics(self) -> dict[str, Any]:
@@ -249,20 +427,29 @@ class GraphRAG:
         return await self._graph_store.get_statistics()
 
     async def delete_all(self) -> None:
-        """Drop the entire knowledge graph.
+        """Drop the entire knowledge graph (data + ontology).
 
-        Irreversible. Removes all nodes, relationships, and indexes
-        managed by this ``GraphRAG`` instance. Also invalidates the
-        cached config and index flags so a follow-up ``ingest()`` on
-        the same instance re-runs validation and re-creates indexes
-        instead of trusting stale state.
+        Irreversible. Removes all nodes, relationships, and indexes managed
+        by this ``GraphRAG`` instance, plus the paired ontology graph at
+        ``<graph_name>__ontology``. Also invalidates the cached config and
+        index flags so a follow-up ``ingest()`` on the same instance re-runs
+        validation, re-creates indexes, and re-registers the user's ontology.
         """
         await self._graph_store.delete_all()
+        # Drop the ontology graph alongside the data graph so the two never
+        # outlive each other; a fresh ingest re-registers self.ontology from
+        # scratch via _ensure_ontology_initialized().
+        try:
+            await self._ontology_store.clear()
+        except Exception as exc:
+            logger.warning("Ontology graph clear failed during delete_all (continuing): %s", exc)
         # Indexes were dropped along with the graph; force re-creation
         # on the next ensure_indices() call.
         self._vector_store._indices_ensured = False
         # The __GraphRAGConfig__ node is gone too; re-validate next time.
         self._config_validated = False
+        # Force re-registration of self.ontology next call.
+        self._ontology_initialized = False
 
     # ── Ingestion ────────────────────────────────────────────────
 
@@ -537,6 +724,11 @@ class GraphRAG:
 
         doc_info = DocumentInfo(uid=resolved_id, path=path_for_node)
 
+        # Load the persisted ontology and register self.ontology before the
+        # pipeline runs — contradictions surface early, before any expensive
+        # extraction work is done.
+        await self._ensure_ontology_initialized()
+
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
             chunker=chunker or SentenceTokenCapChunking(),
@@ -544,7 +736,7 @@ class GraphRAG:
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
-            schema=self.schema,
+            ontology=self._global_ontology,
         )
 
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
@@ -625,8 +817,8 @@ class GraphRAG:
         return results
 
     def _default_extractor(self) -> ExtractionStrategy:
-        """Return default GraphExtraction with schema entity types if available."""
-        entity_types = [e.label for e in self.schema.entities] if self.schema.entities else None
+        """Return default GraphExtraction with ontology entity types if available."""
+        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
         return GraphExtraction(
             llm=self.llm,
             entity_types=entity_types,
@@ -1028,6 +1220,11 @@ class GraphRAG:
         pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"
         pending_doc_info = DocumentInfo(uid=pending_id, path=doc_path, metadata=loaded_metadata)
 
+        # Mirror the ingest path: ensure the persisted ontology is loaded and
+        # any user-supplied schema is registered before the pipeline runs.
+        # Contradictions surface here rather than mid-extraction.
+        await self._ensure_ontology_initialized()
+
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),  # unused (text is provided below)
             chunker=chunker or SentenceTokenCapChunking(),
@@ -1035,7 +1232,7 @@ class GraphRAG:
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
-            schema=self.schema,
+            ontology=self._global_ontology,
         )
 
         try:
@@ -1461,13 +1658,19 @@ class GraphRAG:
             ctx = Context()
 
         ctx.log(f"Retrieve: {question[:80]}...")
+        ctx.ensure_budget("graph config validation")
 
-        await self._validate_graph_config()
+        # Make sure the retrieval strategy sees the persisted ontology, even
+        # when the user is querying an existing graph without ingesting first.
+        await self._ensure_ontology_initialized()
+        await self._validate_graph_config(ctx=ctx)
 
         retrieval = strategy or self._retrieval_strategy
+        ctx.ensure_budget("retrieval strategy search")
         retriever_result = await retrieval.search(question, ctx)
 
         if reranker is not None:
+            ctx.ensure_budget("retrieval reranking")
             retriever_result = await reranker.rerank(question, retriever_result, ctx)
 
         ctx.log(f"Retrieved {len(retriever_result.items)} context items")
@@ -1495,13 +1698,16 @@ class GraphRAG:
                         f"history[{i}]: each message must have 'role' and "
                         f"'content' keys, got {sorted(msg.keys())}"
                     )
-                try:
-                    validated.append(ChatMessage(role=msg["role"], content=msg["content"]))
-                except Exception:
+                role = msg["role"]
+                content = msg["content"]
+                if role not in {"system", "user", "assistant"}:
                     raise ValueError(
-                        f"history[{i}]: invalid role '{msg['role']}'. "
+                        f"history[{i}]: invalid role '{role}'. "
                         f"Must be one of: 'system', 'user', 'assistant'"
                     )
+                if not isinstance(content, str):
+                    raise ValueError(f"history[{i}]: content must be a string")
+                validated.append(ChatMessage(role=role, content=content))
             else:
                 raise TypeError(
                     f"history[{i}]: expected ChatMessage or dict, got {type(msg).__name__}"
@@ -1530,8 +1736,14 @@ class GraphRAG:
             question=question,
         )
         try:
-            resp = await self.llm.ainvoke(prompt)
+            ctx.ensure_budget("question rewrite LLM call")
+            resp = await self.llm.ainvoke(
+                prompt,
+                timeout=ctx.provider_timeout_seconds("question rewrite LLM call"),
+            )
             rewritten = (resp.content or "").strip().splitlines()[0].strip() if resp.content else ""
+        except LatencyBudgetExceededError:
+            raise
         except Exception as e:
             # Broad catch is intentional (see docstring) — but log at WARNING
             # with full traceback so programming bugs surface in operator
@@ -1594,12 +1806,17 @@ class GraphRAG:
 
         ctx.log(f"Completion: {question[:80]}...")
 
+        # Make sure the retrieval strategy sees the persisted ontology, even
+        # when the user is querying an existing graph without ingesting first.
+        await self._ensure_ontology_initialized()
+
         # Validate history up front — reused for rewrite and message assembly.
         validated_history = self._validate_history(history) if history else []
 
         # Step 1: Optionally rewrite the question for retrieval.
         retrieval_query = question
         if validated_history and rewrite_question_with_history:
+            ctx.ensure_budget("question rewrite")
             retrieval_query = await self._rewrite_question_with_history(
                 question,
                 validated_history,
@@ -1609,6 +1826,7 @@ class GraphRAG:
                 ctx.log(f"Rewrote for retrieval: {retrieval_query[:80]}")
 
         # Step 2: Retrieve + rerank (using possibly-rewritten query).
+        ctx.ensure_budget("completion retrieval")
         retriever_result = await self.retrieve(
             retrieval_query,
             strategy=strategy,
@@ -1650,7 +1868,11 @@ class GraphRAG:
             ChatMessage(role="user", content=final_user_content),
         ]
 
-        llm_response = await self.llm.ainvoke_messages(messages)
+        ctx.ensure_budget("completion LLM call")
+        llm_response = await self.llm.ainvoke_messages(
+            messages,
+            timeout=ctx.provider_timeout_seconds("completion LLM call"),
+        )
 
         result = RagResult(
             answer=self._clean_answer(llm_response.content),
@@ -1690,7 +1912,7 @@ class GraphRAG:
         except Exception:
             logger.debug("Failed to write graph config node", exc_info=True)
 
-    async def _validate_graph_config(self) -> None:
+    async def _validate_graph_config(self, *, ctx: Context | None = None) -> None:
         """Check that the current embedder matches the graph's stored config.
 
         Two checks, both cached after first run:
@@ -1712,6 +1934,8 @@ class GraphRAG:
             return
 
         try:
+            if ctx is not None:
+                ctx.ensure_budget("graph config query")
             result = await self._graph_store.query_raw(
                 "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
                 "RETURN c.embedding_model, c.embedding_dimension"
@@ -1736,6 +1960,8 @@ class GraphRAG:
                     )
         except ConfigError:
             raise
+        except LatencyBudgetExceededError:
+            raise
         except Exception:
             # Don't mark as validated on transient failures — retry next call.
             logger.debug("Failed to validate graph config", exc_info=True)
@@ -1744,8 +1970,19 @@ class GraphRAG:
         # Probe the embedder once: confirm it produces vectors of the
         # configured dimension. Catches user error like
         # ``embedding_dimension=256`` paired with a 1536-dim model.
+        if ctx is not None:
+            ctx.ensure_budget("graph config embedder probe")
         try:
-            probe = await self.embedder.aembed_query("dim_check")
+            probe = await self.embedder.aembed_query(
+                "dim_check",
+                timeout=(
+                    ctx.provider_timeout_seconds("graph config embedder probe")
+                    if ctx is not None
+                    else None
+                ),
+            )
+        except LatencyBudgetExceededError:
+            raise
         except Exception:
             # Probe failure is non-fatal — but don't cache a "validated"
             # state, otherwise a transient outage permanently disables

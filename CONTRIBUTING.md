@@ -24,10 +24,10 @@ pip install -e "graphrag_sdk[dev]"
 You will need a running FalkorDB instance for integration work. The easiest way is via Docker:
 
 ```bash
-docker run -p 6379:6379 falkordb/falkordb
+docker compose up -d falkordb
 ```
 
-This exposes FalkorDB on the default Redis port (6379). No additional configuration is required for local development.
+This exposes FalkorDB on the default Redis port (6379) and the browser UI on port 3000.
 
 ---
 
@@ -40,6 +40,14 @@ python -m pytest graphrag_sdk/tests/ -q
 ```
 
 There are 558 tests covering the ingestion pipeline, the GraphRAG facade, extraction strategies, resolution strategies, retrieval strategies, storage layers, and utilities. All tests use mock providers, so no live LLM or database connection is needed to run them.
+
+Run real-FalkorDB integration tests with:
+
+```bash
+RUN_INTEGRATION=1 python -m pytest graphrag_sdk/tests/test_integration.py -m integration -q
+```
+
+These tests use scripted local providers, not live LLM APIs.
 
 ---
 

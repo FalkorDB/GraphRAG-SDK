@@ -1,5 +1,5 @@
 # GraphRAG SDK — Retrieval: Text-to-Cypher Generation
-# Adapted from FalkorDB/GraphRAG-SDK upstream for the unified RELATES schema.
+# Adapted from FalkorDB/GraphRAG-SDK upstream for the unified RELATES ontology.
 # Generates read-only Cypher queries from natural language questions.
 #
 # Design: Uses typed entity node labels (Person, Organization, Location, etc.)
@@ -12,9 +12,13 @@ import logging
 import re
 from typing import Any
 
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
+from graphrag_sdk.core.models import Ontology
+
 logger = logging.getLogger(__name__)
 
-# ── Valid labels for our graph schema ────────────────────────────
+# ── Valid labels for our graph ontology ────────────────────────────
 
 _ENTITY_LABELS = frozenset(
     {
@@ -36,31 +40,136 @@ _STRUCTURAL_LABELS = frozenset({"Chunk", "Document", "__Entity__"})
 
 _ALL_LABELS = _ENTITY_LABELS | _STRUCTURAL_LABELS
 
+_RESERVED_ENTITY_PROPS = (
+    ("name", "STRING", "entity name"),
+    ("description", "STRING", "entity description"),
+)
+_RESERVED_REL_PROPS = (
+    ("rel_type", "STRING", "original relation type as a string"),
+    ("fact", "STRING", "evidence text for the relation"),
+    ("src_name", "STRING", "source entity name"),
+    ("tgt_name", "STRING", "target entity name"),
+)
+
+_NUMERIC_TYPES = frozenset({"INTEGER", "FLOAT"})
+
 _WRITE_KEYWORDS = re.compile(
     r"\b(CREATE|DELETE|DETACH|SET|REMOVE|MERGE|DROP|CALL\s+db\.idx)\b",
     re.IGNORECASE,
 )
 
+
+def _labels_from_ontology(ontology: Ontology | None) -> frozenset[str]:
+    """Return the entity labels declared in ``ontology``, falling back to the
+    historical hardcoded set when the ontology is empty (open-ontology mode).
+    """
+    if ontology is None or not ontology.entities:
+        return _ENTITY_LABELS
+    return frozenset(e.label for e in ontology.entities)
+
+
+def render_ontology_block(ontology: Ontology | None) -> str:
+    """Render a Markdown ontology block listing declared entity / relation
+    properties, derived from the live ``Ontology``.
+
+    Mirrors LangChain's ``Neo4jGraph.get_schema()`` and LlamaIndex's
+    ``Neo4jPropertyGraphStore.get_schema_str()``. Always emits the reserved
+    SDK keys (``name``, ``description`` on entities; ``rel_type``, ``fact``,
+    ``src_name``, ``tgt_name`` on RELATES) so the LLM still knows about them
+    even when the ontology declares no custom properties.
+    """
+    labels: list[str]
+    rel_labels: list[str]
+    ent_props: dict[str, list[tuple[str, str, str | None]]] = {}
+    rel_props: dict[str, list[tuple[str, str, str | None]]] = {}
+
+    if ontology is not None and ontology.entities:
+        labels = [e.label for e in ontology.entities]
+        for e in ontology.entities:
+            ent_props[e.label] = [(p.name, p.type, p.description) for p in e.properties]
+    else:
+        labels = sorted(_ENTITY_LABELS)
+
+    if ontology is not None and ontology.relations:
+        rel_labels = [r.label for r in ontology.relations]
+        for r in ontology.relations:
+            rel_props[r.label] = [(p.name, p.type, p.description) for p in r.properties]
+    else:
+        rel_labels = []
+
+    lines: list[str] = []
+    lines.append("### Entity node labels (all entities also carry `__Entity__`):")
+    for label in labels:
+        lines.append(f"- {label}")
+        lines.append("    Properties:")
+        for name, typ, desc in _RESERVED_ENTITY_PROPS:
+            lines.append(f"      - {name} ({typ}) — {desc}")
+        for name, typ, desc in ent_props.get(label, []):
+            d = f" — {desc}" if desc else ""
+            lines.append(f"      - {name} ({typ}){d}")
+
+    lines.append("")
+    lines.append("### Edge types:")
+    lines.append("- RELATES: connects any entity to any entity.")
+    lines.append("    Properties:")
+    for name, typ, desc in _RESERVED_REL_PROPS:
+        lines.append(f"      - {name} ({typ}) — {desc}")
+    union_rel_props: dict[str, tuple[str, str | None]] = {}
+    for label in rel_labels:
+        for name, typ, desc in rel_props.get(label, []):
+            if name not in union_rel_props:
+                union_rel_props[name] = (typ, desc)
+    for name, (typ, desc) in union_rel_props.items():
+        d = f" — {desc}" if desc else ""
+        lines.append(f"      - {name} ({typ}){d}  # declared on RELATES via rel_type filters")
+    if rel_labels:
+        lines.append("    Allowed `rel_type` values: " + ", ".join(rel_labels))
+    lines.append("- MENTIONED_IN: connects entity to Chunk node (provenance)")
+    lines.append("- PART_OF: connects Document to Chunk")
+    lines.append("- NEXT_CHUNK: connects Chunk to next sequential Chunk")
+    return "\n".join(lines)
+
+
+def _render_attribute_examples(ontology: Ontology | None) -> str:
+    """Synthesize one filter example per declared numeric attribute.
+
+    Helps the LLM learn that custom numeric properties exist and can be used
+    in ``WHERE`` / ``ORDER BY`` / aggregations. Returns ``""`` when no
+    numeric attributes are declared.
+    """
+    if ontology is None:
+        return ""
+    examples: list[str] = []
+    for et in ontology.entities:
+        for p in et.properties:
+            if p.type in _NUMERIC_TYPES and len(examples) < 2:
+                var = et.label[0].lower()
+                examples.append(
+                    f'Question: "Which {et.label} has the highest {p.name}?"\n'
+                    f"```cypher\n"
+                    f"MATCH ({var}:{et.label})\n"
+                    f"WHERE {var}.{p.name} IS NOT NULL\n"
+                    f"RETURN {var}.name AS name, {var}.{p.name} AS {p.name}\n"
+                    f"ORDER BY {var}.{p.name} DESC\n"
+                    f"LIMIT 10\n"
+                    f"```"
+                )
+    if not examples:
+        return ""
+    # No leading newline — the template places ``{attribute_examples}`` on its
+    # own line already, so this block stays cleanly separated from the closing
+    # code fence above it.
+    return "\n\n".join(examples)
+
+
 # ── Schema prompt ────────────────────────────────────────────────
 
-SCHEMA_PROMPT = """\
+_ONTOLOGY_PROMPT_TEMPLATE = """\
 You are a Cypher query generator for a FalkorDB graph database.
 
 ## Graph Schema
 
-### Entity node labels (all entities also carry the label `__Entity__`):
-Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method
-
-### Entity node properties:
-- name (string) — entity name
-- description (string) — entity description
-
-### Edge types:
-- RELATES: connects any entity to any entity.
-  Properties: rel_type (string), fact (string — evidence text), src_name (string), tgt_name (string)
-- MENTIONED_IN: connects entity to Chunk node (provenance)
-- PART_OF: connects Document to Chunk
-- NEXT_CHUNK: connects Chunk to next sequential Chunk
+{ontology_block}
 
 ## FalkorDB-specific rules (CRITICAL — violating these causes execution errors):
 1. Do NOT use shortestPath() or allShortestPaths() — FalkorDB returns
@@ -129,6 +238,8 @@ RETURN o.name AS organization, t.name AS technology, r.rel_type AS relation, r.f
 LIMIT 20
 ```
 
+{attribute_examples}
+
 ## Your task
 
 Generate a single Cypher query to answer the following question.
@@ -137,6 +248,27 @@ Return ONLY the Cypher query inside triple backticks.
 
 Question: {question}
 """
+
+
+def build_ontology_prompt(ontology: Ontology | None, question: str) -> str:
+    """Build the full Cypher generation prompt for ``question`` from ``ontology``.
+
+    When ``ontology`` is empty, the prompt falls back to the historical
+    hardcoded label set and matches today's behavior bit-for-bit aside from
+    the new ontology block formatting.
+    """
+    return _ONTOLOGY_PROMPT_TEMPLATE.format(
+        ontology_block=render_ontology_block(ontology),
+        attribute_examples=_render_attribute_examples(ontology),
+        question=question,
+    )
+
+
+# Backwards-compatible alias for callers that import ONTOLOGY_PROMPT.
+# It exposes the template form (still expects ``{ontology_block}``,
+# ``{attribute_examples}``, and ``{question}`` placeholders) — direct
+# ``.format(question=...)`` callers should migrate to ``build_ontology_prompt``.
+ONTOLOGY_PROMPT = _ONTOLOGY_PROMPT_TEMPLATE
 
 
 # ── Cypher extraction ────────────────────────────────────────────
@@ -184,14 +316,47 @@ def _sanitize_cypher(cypher: str) -> str:
 # ── Cypher validation ────────────────────────────────────────────
 
 
-def validate_cypher(cypher: str) -> list[str]:
+def _pop_schema_alias(kwargs: dict, ontology: Ontology | None, func: str) -> Ontology | None:
+    """Back-compat helper: pop a legacy ``schema=`` kwarg, warn, and return
+    the resolved ``ontology`` value. Raises if both names were supplied.
+    """
+    if "schema" in kwargs:
+        import warnings
+
+        legacy = kwargs.pop("schema")
+        if kwargs:
+            raise TypeError(f"{func}() got unexpected keyword arguments: {sorted(kwargs)}")
+        if ontology is not None:
+            raise TypeError(
+                f"{func}() received both `ontology=` and `schema=`. "
+                f"Use `ontology=` only; `schema=` is deprecated."
+            )
+        warnings.warn(
+            f"The `schema=` keyword argument on {func}() has been renamed "
+            f"to `ontology=` (graphrag_sdk v1.2+). Update your call site "
+            f"— the alias will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return legacy
+    if kwargs:
+        raise TypeError(f"{func}() got unexpected keyword arguments: {sorted(kwargs)}")
+    return ontology
+
+
+def validate_cypher(cypher: str, ontology: Ontology | None = None, **legacy: Any) -> list[str]:
     """Validate generated Cypher for safety and correctness.
 
     Uses an allowlist approach: the query must start with a read-only
     keyword, and dangerous constructs are explicitly rejected.
 
+    When ``ontology`` is provided, label validation uses the labels declared
+    in the ontology (plus structural labels); otherwise it falls back to the
+    historical hardcoded label set.
+
     Returns list of error strings; empty list means valid.
     """
+    ontology = _pop_schema_alias(legacy, ontology, "validate_cypher")
     errors: list[str] = []
     if not cypher:
         errors.append("Empty Cypher query")
@@ -228,10 +393,11 @@ def validate_cypher(cypher: str) -> list[str]:
     if not re.search(r"\bRETURN\b", cypher_norm, re.IGNORECASE):
         errors.append("Missing RETURN clause")
 
-    # Check referenced labels exist in schema
+    # Check referenced labels exist in ontology
+    allowed_labels = _labels_from_ontology(ontology) | _STRUCTURAL_LABELS
     label_pattern = re.findall(r"\((?:\w+)?:(\w+)", cypher_norm)
     for label in label_pattern:
-        if label not in _ALL_LABELS:
+        if label not in allowed_labels:
             errors.append(f"Unknown label: {label}")
 
     return errors
@@ -244,33 +410,56 @@ async def generate_cypher(
     llm: Any,
     question: str,
     *,
+    ontology: Ontology | None = None,
     max_retries: int = 3,
+    ctx: Context | None = None,
+    **legacy: Any,
 ) -> str | None:
     """Generate a Cypher query from a natural language question.
 
+    When ``ontology`` is provided, the prompt and validator both use the
+    declared labels and properties.
+
     Returns the Cypher string, or None if all retries fail.
     """
-    prompt = SCHEMA_PROMPT.format(question=question)
+    ontology = _pop_schema_alias(legacy, ontology, "generate_cypher")
+    prompt = build_ontology_prompt(ontology, question)
     last_error = ""
 
     for attempt in range(max_retries):
         try:
+            if ctx is not None:
+                ctx.ensure_budget("Cypher generation LLM call")
             if attempt > 0 and last_error:
                 prompt_with_feedback = (
                     prompt + f"\n\nPrevious attempt failed with error: {last_error}\n"
                     "Remember: no shortestPath, every RETURN column must have a "
                     "unique alias, add LIMIT, keep it simple."
                 )
-                response = await llm.ainvoke(prompt_with_feedback)
+                response = await llm.ainvoke(
+                    prompt_with_feedback,
+                    timeout=(
+                        ctx.provider_timeout_seconds("Cypher generation LLM call")
+                        if ctx is not None
+                        else None
+                    ),
+                )
             else:
-                response = await llm.ainvoke(prompt)
+                response = await llm.ainvoke(
+                    prompt,
+                    timeout=(
+                        ctx.provider_timeout_seconds("Cypher generation LLM call")
+                        if ctx is not None
+                        else None
+                    ),
+                )
 
             cypher = extract_cypher(response.content)
             if not cypher:
                 last_error = "Empty query generated"
                 continue
 
-            errors = validate_cypher(cypher)
+            errors = validate_cypher(cypher, ontology)
             if errors:
                 last_error = "; ".join(errors)
                 continue
@@ -279,6 +468,8 @@ async def generate_cypher(
             cypher = _sanitize_cypher(cypher)
             return cypher
 
+        except LatencyBudgetExceededError:
+            raise
         except Exception as exc:
             last_error = str(exc)
             logger.debug("Cypher generation attempt %d failed: %s", attempt + 1, exc)
@@ -292,7 +483,10 @@ async def execute_cypher_retrieval(
     llm: Any,
     question: str,
     *,
+    ontology: Ontology | None = None,
     max_retries: int = 3,
+    ctx: Context | None = None,
+    **legacy: Any,
 ) -> tuple[list[str], dict[str, dict]]:
     """Full text-to-cypher retrieval: generate -> validate -> execute -> parse.
 
@@ -306,12 +500,19 @@ async def execute_cypher_retrieval(
 
     On any failure, returns empty results (silent degradation).
     """
-    cypher = await generate_cypher(llm, question, max_retries=max_retries)
+    ontology = _pop_schema_alias(legacy, ontology, "execute_cypher_retrieval")
+    cypher = await generate_cypher(
+        llm, question, ontology=ontology, max_retries=max_retries, ctx=ctx
+    )
     if not cypher:
         return [], {}
 
     try:
+        if ctx is not None:
+            ctx.ensure_budget("Cypher execution")
         result = await graph_store.query_raw(cypher)
+    except LatencyBudgetExceededError:
+        raise
     except Exception as exc:
         logger.debug("Cypher execution failed: %s — query: %s", exc, cypher)
         return [], {}
@@ -357,3 +558,53 @@ async def execute_cypher_retrieval(
         cypher[:120],
     )
     return fact_strings, entities
+
+
+# ── Deprecation aliases ──────────────────────────────────────────
+
+
+def _deprecated_build_schema_prompt(ontology: Ontology | None, question: str) -> str:
+    """DEPRECATED: use ``build_ontology_prompt`` instead."""
+    import warnings
+
+    warnings.warn(
+        "`build_schema_prompt` has been renamed to `build_ontology_prompt` "
+        "(graphrag_sdk v1.2+). Update your import — the alias will be "
+        "removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return build_ontology_prompt(ontology, question)
+
+
+def _deprecated_render_schema_block(ontology: Ontology | None) -> str:
+    """DEPRECATED: use ``render_ontology_block`` instead."""
+    import warnings
+
+    warnings.warn(
+        "`render_schema_block` has been renamed to `render_ontology_block` "
+        "(graphrag_sdk v1.2+). Update your import — the alias will be "
+        "removed in a future release.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return render_ontology_block(ontology)
+
+
+def __getattr__(name: str):  # PEP 562
+    if name == "SCHEMA_PROMPT":
+        import warnings
+
+        warnings.warn(
+            "`SCHEMA_PROMPT` has been renamed to `ONTOLOGY_PROMPT` "
+            "(graphrag_sdk v1.2+). Update your import — the alias will be "
+            "removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return ONTOLOGY_PROMPT
+    if name == "build_schema_prompt":
+        return _deprecated_build_schema_prompt
+    if name == "render_schema_block":
+        return _deprecated_render_schema_block
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
