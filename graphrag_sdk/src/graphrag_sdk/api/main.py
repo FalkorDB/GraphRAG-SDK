@@ -283,6 +283,13 @@ class GraphRAG:
             default_schema = GraphSchema(
                 entities=[EntityType(label=label) for label in DEFAULT_ENTITY_TYPES],
             )
+            logger.info(
+                "No schema supplied and ontology graph is empty; seeding "
+                "DEFAULT_ENTITY_TYPES (%s) into the ontology. To customize "
+                "properties for these labels, pass schema=... on first ingest "
+                "or delete_all() and re-ingest with a custom schema.",
+                ", ".join(DEFAULT_ENTITY_TYPES),
+            )
             self._global_schema = await self._ontology_store.register(default_schema)
         if hasattr(self._retrieval_strategy, "_schema"):
             self._retrieval_strategy._schema = self._global_schema
@@ -1553,6 +1560,9 @@ class GraphRAG:
         ctx.log(f"Retrieve: {question[:80]}...")
         ctx.ensure_budget("graph config validation")
 
+        # Make sure the retrieval strategy sees the persisted ontology, even
+        # when the user is querying an existing graph without ingesting first.
+        await self._ensure_ontology_initialized()
         await self._validate_graph_config(ctx=ctx)
 
         retrieval = strategy or self._retrieval_strategy
@@ -1695,6 +1705,10 @@ class GraphRAG:
             ctx = Context()
 
         ctx.log(f"Completion: {question[:80]}...")
+
+        # Make sure the retrieval strategy sees the persisted ontology, even
+        # when the user is querying an existing graph without ingesting first.
+        await self._ensure_ontology_initialized()
 
         # Validate history up front — reused for rewrite and message assembly.
         validated_history = self._validate_history(history) if history else []
