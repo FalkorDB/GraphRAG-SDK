@@ -14,7 +14,7 @@ from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
-    GraphSchema,
+    Ontology,
     ResolutionResult,
     TextChunk,
     TextChunks,

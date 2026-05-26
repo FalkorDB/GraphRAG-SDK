@@ -34,9 +34,9 @@ class TestTopLevelImports:
             TextChunks,
             DocumentInfo,
             DocumentOutput,
-            EntityType,
-            RelationType,
-            GraphSchema,
+            Entity,
+            Relation,
+            Ontology,
             GraphData,
             ResolutionResult,
             RetrieverResult,
@@ -408,11 +408,11 @@ class TestIncrementalUpdateInvariants:
             "without re-verifying this property."
         )
 
-    # ── D8: schema-mode coverage ──────────────────────────────────
-    # The four invariant tests above all run with schema=None (open
+    # ── D8: ontology-mode coverage ──────────────────────────────────
+    # The four invariant tests above all run with ontology=None (open
     # mode). Schema-constrained extraction (with explicit entity types
     # and relation patterns) takes a different code path through the
-    # pipeline's _prune step, so we add one schema-mode test that
+    # pipeline's _prune step, so we add one ontology-mode test that
     # exercises the same shared-entity-preserved invariant under that
     # configuration.
 
@@ -420,22 +420,22 @@ class TestIncrementalUpdateInvariants:
         self, real_falkordb_rag_factory, scripted_llm, resolver
     ):
         """Same invariant as test_shared_entity_preserved_when_one_doc_deleted,
-        but with an explicit GraphSchema. Catches regressions where
-        schema pruning interacts badly with the orphan-cleanup
+        but with an explicit Ontology. Catches regressions where
+        ontology pruning interacts badly with the orphan-cleanup
         candidate snapshot."""
         from graphrag_sdk.core.models import (
-            EntityType,
-            GraphSchema,
-            RelationType,
+            Entity,
+            Ontology,
+            Relation,
         )
 
-        schema = GraphSchema(
+        ontology = Ontology(
             entities=[
-                EntityType(label="Person", description="A human"),
-                EntityType(label="Organization", description="A company"),
+                Entity(label="Person", description="A human"),
+                Entity(label="Organization", description="A company"),
             ],
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
                     patterns=[("Person", "Organization")],
                 ),
@@ -448,7 +448,7 @@ class TestIncrementalUpdateInvariants:
             ],
             [("Alice", "Person", "Engineer at Acme"), ("Bob", "Person", "Colleague")],
         )
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, schema=schema)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
 
         await rag.ingest(
             text="Alice works at Acme Corp.",
@@ -464,7 +464,7 @@ class TestIncrementalUpdateInvariants:
 
         await rag.delete_document("doc-A")
 
-        # Same invariant under schema mode: Alice survives via doc-B.
+        # Same invariant under ontology mode: Alice survives via doc-B.
         assert await _entity_count(rag, "Alice") == 1, (
             "Schema-mode orphan cleanup must preserve shared entities exactly like open mode."
         )

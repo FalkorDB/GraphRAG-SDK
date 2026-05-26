@@ -15,13 +15,13 @@ _logger = logging.getLogger(__name__)
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
-    EntityType,
+    Entity,
     GraphData,
     GraphNode,
     GraphRelationship,
-    GraphSchema,
+    Ontology,
     LLMResponse,
-    RelationType,
+    Relation,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 
@@ -137,19 +137,19 @@ def llm() -> MockLLM:
 
 
 @pytest.fixture
-def sample_schema() -> GraphSchema:
-    return GraphSchema(
+def sample_ontology() -> Ontology:
+    return Ontology(
         entities=[
-            EntityType(label="Person", description="A human being"),
-            EntityType(label="Company", description="A business organization"),
+            Entity(label="Person", description="A human being"),
+            Entity(label="Company", description="A business organization"),
         ],
         relations=[
-            RelationType(
+            Relation(
                 label="WORKS_AT",
                 description="Employment relationship",
                 patterns=[("Person", "Company")],
             ),
-            RelationType(
+            Relation(
                 label="KNOWS",
                 description="Social relationship",
                 patterns=[("Person", "Person")],
@@ -321,7 +321,7 @@ async def real_falkordb_rag_factory(embedder):
 
     created: list[Any] = []
 
-    def _make(*, llm, resolver, schema=None):
+    def _make(*, llm, resolver, ontology=None):
         config = ConnectionConfig(
             host=os.getenv("FALKOR_HOST", "localhost"),
             port=int(os.getenv("FALKOR_PORT", "6379")),
@@ -335,8 +335,8 @@ async def real_falkordb_rag_factory(embedder):
             embedder=embedder,
             embedding_dimension=embedder.dimension,
         )
-        if schema is not None:
-            kwargs["schema"] = schema
+        if ontology is not None:
+            kwargs["ontology"] = ontology
         rag = GraphRAG(**kwargs)
         # Per-call resolver injection (apply_changes / update / ingest don't
         # accept a default-resolver kwarg on the facade — but each call does).

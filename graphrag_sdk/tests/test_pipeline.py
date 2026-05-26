@@ -9,12 +9,12 @@ from graphrag_sdk.core.exceptions import IngestionError
 from graphrag_sdk.core.models import (
     DocumentInfo,
     DocumentOutput,
-    EntityType,
+    Entity,
     GraphData,
     GraphNode,
     GraphRelationship,
-    GraphSchema,
-    RelationType,
+    Ontology,
+    Relation,
     ResolutionResult,
     TextChunk,
     TextChunks,
@@ -53,7 +53,7 @@ class StubChunker(ChunkingStrategy):
 
 
 class StubExtractor(ExtractionStrategy):
-    async def extract(self, chunks, schema, ctx):
+    async def extract(self, chunks, ontology, ctx):
         return GraphData(
             nodes=[GraphNode(id="e1", label="Entity", properties={"name": "Test"})],
             relationships=[],
@@ -78,7 +78,7 @@ class TestIngestionPipeline:
         mock_graph_store,
         mock_vector_store,
         text="Alice works at Acme Corp. Bob is her colleague.",
-        schema=None,
+        ontology=None,
     ):
         return IngestionPipeline(
             loader=StubLoader(text),
@@ -87,7 +87,7 @@ class TestIngestionPipeline:
             resolver=StubResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=schema or GraphSchema(),
+            ontology=ontology or Ontology(),
         )
 
     async def test_full_run(self, ctx, mock_graph_store, mock_vector_store):
@@ -153,14 +153,14 @@ class TestIngestionPipeline:
         assert result.nodes_created >= 0
 
     async def test_schema_pruning(self, ctx, mock_graph_store, mock_vector_store):
-        """Pruning keeps Unknown + valid rel_type, drops non-schema labels/types."""
-        schema = GraphSchema(
-            entities=[EntityType(label="Person")],
-            relations=[RelationType(label="KNOWS")],
+        """Pruning keeps Unknown + valid rel_type, drops non-ontology labels/types."""
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            relations=[Relation(label="KNOWS")],
         )
 
         class ExtractorWithMixedLabels(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(
                     nodes=[
                         GraphNode(id="p1", label="Person", properties={"name": "Alice"}),
@@ -186,7 +186,7 @@ class TestIngestionPipeline:
             resolver=StubResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=schema,
+            ontology=ontology,
         )
         result = await pipeline.run("test.txt", ctx)
         # Person + Unknown survive; Alien pruned
@@ -207,7 +207,7 @@ class TestIngestionPipeline:
             resolver=StubResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         with caplog.at_level("ERROR", logger="graphrag_sdk.ingestion.pipeline"):
             with pytest.raises(IngestionError, match="Pipeline failed"):
@@ -291,7 +291,7 @@ class TestIngestionPipeline:
                 )
 
         class _MentioningExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 return GraphData(
                     nodes=[
                         GraphNode(id="e_alice_a", label="Person"),
@@ -311,7 +311,7 @@ class TestIngestionPipeline:
             resolver=_MergingResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         await pipeline.run("test.txt", ctx)
 
@@ -362,7 +362,7 @@ class TestIngestionPipeline:
                 )
 
         class _ChainingExtractor(ExtractionStrategy):
-            async def extract(self, chunks, schema, ctx):
+            async def extract(self, chunks, ontology, ctx):
                 # Mention points at the head of the chain (a). After
                 # remap-following it must land on c, not b.
                 return GraphData(
@@ -385,7 +385,7 @@ class TestIngestionPipeline:
             resolver=_ChainingResolver(),
             graph_store=mock_graph_store,
             vector_store=mock_vector_store,
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         await pipeline.run("test.txt", ctx)
 
@@ -472,7 +472,7 @@ class TestRemapMentionsUnit:
 
 class TestPruneMethod:
     def test_prune_open_schema(self):
-        """Empty schema = open mode, nothing pruned."""
+        """Empty ontology = open mode, nothing pruned."""
         pipeline = IngestionPipeline(
             loader=StubLoader(),
             chunker=StubChunker(),
@@ -480,7 +480,7 @@ class TestPruneMethod:
             resolver=StubResolver(),
             graph_store=MagicMock(),
             vector_store=MagicMock(),
-            schema=GraphSchema(),
+            ontology=Ontology(),
         )
         data = GraphData(
             nodes=[GraphNode(id="a", label="Anything")],
@@ -488,7 +488,7 @@ class TestPruneMethod:
                 GraphRelationship(start_node_id="a", end_node_id="a", type="SELF"),
             ],
         )
-        result = pipeline._prune(data, GraphSchema())
+        result = pipeline._prune(data, Ontology())
         assert len(result.nodes) == 1
         assert len(result.relationships) == 1
 
@@ -501,7 +501,7 @@ class TestPruneMethod:
             graph_store=MagicMock(),
             vector_store=MagicMock(),
         )
-        schema = GraphSchema(entities=[EntityType(label="Person")])
+        ontology = Ontology(entities=[Entity(label="Person")])
         data = GraphData(
             nodes=[
                 GraphNode(id="p", label="Person"),
@@ -510,7 +510,7 @@ class TestPruneMethod:
             ],
             relationships=[],
         )
-        result = pipeline._prune(data, schema)
+        result = pipeline._prune(data, ontology)
         # Person + Unknown survive; Alien pruned
         assert len(result.nodes) == 2
         labels = {n.label for n in result.nodes}
@@ -525,9 +525,9 @@ class TestPruneMethod:
             graph_store=MagicMock(),
             vector_store=MagicMock(),
         )
-        schema = GraphSchema(
-            entities=[EntityType(label="A")],
-            relations=[RelationType(label="LINK")],
+        ontology = Ontology(
+            entities=[Entity(label="A")],
+            relations=[Relation(label="LINK")],
         )
         data = GraphData(
             nodes=[
@@ -538,7 +538,7 @@ class TestPruneMethod:
                 GraphRelationship(start_node_id="a", end_node_id="b", type="LINK"),
             ],
         )
-        result = pipeline._prune(data, schema)
+        result = pipeline._prune(data, ontology)
         assert len(result.nodes) == 1
         assert len(result.relationships) == 0  # rel removed because 'b' is pruned
 
@@ -551,13 +551,13 @@ class TestPruneMethod:
             graph_store=MagicMock(),
             vector_store=MagicMock(),
         )
-        schema = GraphSchema(
+        ontology = Ontology(
             entities=[
-                EntityType(label="Person"),
-                EntityType(label="Company"),
+                Entity(label="Person"),
+                Entity(label="Company"),
             ],
             relations=[
-                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+                Relation(label="WORKS_AT", patterns=[("Person", "Company")]),
             ],
         )
         data = GraphData(
@@ -576,12 +576,12 @@ class TestPruneMethod:
                 ),
             ],
         )
-        result = pipeline._prune(data, schema)
+        result = pipeline._prune(data, ontology)
         assert len(result.relationships) == 1
         assert result.relationships[0].start_node_id == "p"
 
     def test_prune_open_relation_patterns(self):
-        """RelationType with empty patterns allows any direction."""
+        """Relation with empty patterns allows any direction."""
         pipeline = IngestionPipeline(
             loader=StubLoader(),
             chunker=StubChunker(),
@@ -590,9 +590,9 @@ class TestPruneMethod:
             graph_store=MagicMock(),
             vector_store=MagicMock(),
         )
-        schema = GraphSchema(
-            entities=[EntityType(label="Person")],
-            relations=[RelationType(label="KNOWS")],
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            relations=[Relation(label="KNOWS")],
         )
         data = GraphData(
             nodes=[
@@ -606,7 +606,7 @@ class TestPruneMethod:
                 ),
             ],
         )
-        result = pipeline._prune(data, schema)
+        result = pipeline._prune(data, ontology)
         assert len(result.relationships) == 1
 
     def test_prune_logs_pattern_mismatch_warning(self, caplog):
@@ -621,10 +621,10 @@ class TestPruneMethod:
             graph_store=MagicMock(),
             vector_store=MagicMock(),
         )
-        schema = GraphSchema(
-            entities=[EntityType(label="Person"), EntityType(label="Company")],
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
             relations=[
-                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+                Relation(label="WORKS_AT", patterns=[("Person", "Company")]),
             ],
         )
         # Three inverted (Company -> Person) extractions — triggers the warning.
@@ -642,7 +642,7 @@ class TestPruneMethod:
             ],
         )
         with caplog.at_level(logging.WARNING, logger="graphrag_sdk.ingestion.pipeline"):
-            result = pipeline._prune(data, schema)
+            result = pipeline._prune(data, ontology)
 
         assert len(result.relationships) == 0
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -665,10 +665,10 @@ class TestPruneMethod:
             graph_store=MagicMock(),
             vector_store=MagicMock(),
         )
-        schema = GraphSchema(
-            entities=[EntityType(label="Person"), EntityType(label="Company")],
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
             relations=[
-                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+                Relation(label="WORKS_AT", patterns=[("Person", "Company")]),
             ],
         )
         data = GraphData(
@@ -685,7 +685,7 @@ class TestPruneMethod:
             ],
         )
         with caplog.at_level(logging.WARNING, logger="graphrag_sdk.ingestion.pipeline"):
-            pipeline._prune(data, schema)
+            pipeline._prune(data, ontology)
 
         msg = next(
             (r.getMessage() for r in caplog.records

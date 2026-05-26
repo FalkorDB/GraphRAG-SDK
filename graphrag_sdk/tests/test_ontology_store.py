@@ -13,15 +13,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from graphrag_sdk.core.models import (
-    EntityType,
-    GraphSchema,
-    PropertyType,
-    RelationType,
+    Entity,
+    Ontology,
+    Attribute,
+    Relation,
 )
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyStore,
-    SchemaModificationNotAllowedError,
+    OntologyModificationNotAllowedError,
     _decode_patterns,
     _encode_patterns,
     _props_from_rows,
@@ -125,28 +125,28 @@ class TestRegister:
     @pytest.mark.asyncio
     async def test_empty_schema_short_circuits_to_load(self, store_factory, fake_graph):
         store = store_factory()
-        result = await store.register(GraphSchema())
+        result = await store.register(Ontology())
         # No upsert queries — only the two load queries.
         upserts = [c for c in fake_graph.calls if "MERGE" in c[0]]
         assert upserts == []
-        assert isinstance(result, GraphSchema)
+        assert isinstance(result, Ontology)
 
     @pytest.mark.asyncio
     async def test_persists_entity_type_with_properties(self, store_factory, fake_graph):
         store = store_factory()
-        schema = GraphSchema(
+        ontology = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
                     description="A human",
                     properties=[
-                        PropertyType(name="age", type="INTEGER"),
-                        PropertyType(name="birth_date", type="DATE"),
+                        Attribute(name="age", type="INTEGER"),
+                        Attribute(name="birth_date", type="DATE"),
                     ],
                 ),
             ],
         )
-        await store.register(schema)
+        await store.register(ontology)
         ent_merges = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
         prop_merges = [c for c in fake_graph.calls if "MERGE (ent)-[:HAS_PROPERTY]->" in c[0]]
         assert len(ent_merges) == 1
@@ -158,17 +158,17 @@ class TestRegister:
     async def test_unions_relation_patterns(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_existing_patterns("WORKS_AT", ["Person|Company"])
-        schema = GraphSchema(
-            entities=[EntityType(label="Person"), EntityType(label="Org")],
-            relations=[RelationType(label="WORKS_AT", patterns=[("Person", "Org")])],
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Org")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Org")])],
         )
-        await store.register(schema)
+        await store.register(ontology)
         rel_set_calls = [
             c
             for c in fake_graph.calls
             if "MERGE (r:OntologyRelationType {label: $label})" in c[0] and "SET r." in c[0]
         ]
-        assert rel_set_calls, "expected SET on RelationType"
+        assert rel_set_calls, "expected SET on Relation"
         patterns = (rel_set_calls[-1][1] or {})["patterns"]
         assert "Person|Company" in patterns
         assert "Person|Org" in patterns
@@ -179,9 +179,9 @@ class TestLoad:
     async def test_empty_graph_yields_empty_schema(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response([], [])
-        schema = await store.load()
-        assert schema.entities == []
-        assert schema.relations == []
+        ontology = await store.load()
+        assert ontology.entities == []
+        assert ontology.relations == []
 
     @pytest.mark.asyncio
     async def test_introspection_failure_returns_empty(self, store_factory, fake_graph):
@@ -190,9 +190,9 @@ class TestLoad:
 
         fake_graph.query = boom
         store = store_factory()
-        schema = await store.load()
-        assert schema.entities == []
-        assert schema.relations == []
+        ontology = await store.load()
+        assert ontology.entities == []
+        assert ontology.relations == []
 
     @pytest.mark.asyncio
     async def test_reconstructs_schema(self, store_factory, fake_graph):
@@ -219,11 +219,11 @@ class TestLoad:
                 ],
             ],
         )
-        schema = await store.load()
-        assert {e.label for e in schema.entities} == {"Person", "Company"}
-        person = next(e for e in schema.entities if e.label == "Person")
+        ontology = await store.load()
+        assert {e.label for e in ontology.entities} == {"Person", "Company"}
+        person = next(e for e in ontology.entities if e.label == "Person")
         assert [(p.name, p.type) for p in person.properties] == [("age", "INTEGER")]
-        works = next(r for r in schema.relations if r.label == "WORKS_AT")
+        works = next(r for r in ontology.relations if r.label == "WORKS_AT")
         assert works.patterns == [("Person", "Company")]
         assert [(p.name, p.type) for p in works.properties] == [("since", "DATE")]
 
@@ -255,17 +255,17 @@ class TestContradictionDetection:
         )
         # Re-declares Person with exactly the same property — accepted.
         await store.register(
-            GraphSchema(
+            Ontology(
                 entities=[
-                    EntityType(
+                    Entity(
                         label="Person",
-                        properties=[PropertyType(name="age", type="INTEGER")],
+                        properties=[Attribute(name="age", type="INTEGER")],
                     ),
                 ],
             )
         )
         # Re-declares Person with NO properties (subset) — also accepted.
-        await store.register(GraphSchema(entities=[EntityType(label="Person")]))
+        await store.register(Ontology(entities=[Entity(label="Person")]))
 
     @pytest.mark.asyncio
     async def test_redefining_entity_property_type_is_rejected(
@@ -282,18 +282,18 @@ class TestContradictionDetection:
             ],
             relation_rows=[],
         )
-        incoming = GraphSchema(
+        incoming = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
-                    properties=[PropertyType(name="age", type="STRING")],
+                    properties=[Attribute(name="age", type="STRING")],
                 ),
             ],
         )
         with pytest.raises(OntologyContradictionError) as exc:
             await store.register(incoming)
         assert "Person.age" in str(exc.value)
-        # And no MERGE-on-EntityType happened (validation runs before persistence).
+        # And no MERGE-on-Entity happened (validation runs before persistence).
         upserts = [c for c in fake_graph.calls if "MERGE (e:OntologyEntityType" in c[0]]
         assert upserts == []
 
@@ -313,11 +313,11 @@ class TestContradictionDetection:
                 ],
             ],
         )
-        incoming = GraphSchema(
+        incoming = Ontology(
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
-                    properties=[PropertyType(name="since", type="STRING")],
+                    properties=[Attribute(name="since", type="STRING")],
                 ),
             ],
         )
@@ -331,7 +331,7 @@ class TestContradictionDetection:
 
 class TestStrictModification:
     """The ingest path admits new labels only. Adding properties or patterns
-    to an existing label requires a separate schema-evolution operation that
+    to an existing label requires a separate ontology-evolution operation that
     keeps data and ontology in sync — which is not yet supported."""
 
     @pytest.mark.asyncio
@@ -347,13 +347,13 @@ class TestStrictModification:
             ],
             relation_rows=[],
         )
-        # New label with full schema — fine.
+        # New label with full ontology — fine.
         await store.register(
-            GraphSchema(
+            Ontology(
                 entities=[
-                    EntityType(
+                    Entity(
                         label="Company",
-                        properties=[PropertyType(name="founded", type="INTEGER")],
+                        properties=[Attribute(name="founded", type="INTEGER")],
                     ),
                 ],
             )
@@ -378,18 +378,18 @@ class TestStrictModification:
             ],
             relation_rows=[],
         )
-        incoming = GraphSchema(
+        incoming = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
                     properties=[
-                        PropertyType(name="age", type="INTEGER"),
-                        PropertyType(name="birth_date", type="DATE"),  # new on existing label
+                        Attribute(name="age", type="INTEGER"),
+                        Attribute(name="birth_date", type="DATE"),  # new on existing label
                     ],
                 ),
             ],
         )
-        with pytest.raises(SchemaModificationNotAllowedError) as exc:
+        with pytest.raises(OntologyModificationNotAllowedError) as exc:
             await store.register(incoming)
         assert "Person" in str(exc.value)
         assert "birth_date" in str(exc.value)
@@ -413,9 +413,9 @@ class TestStrictModification:
                 ],
             ],
         )
-        incoming = GraphSchema(
+        incoming = Ontology(
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
                     patterns=[
                         ("Person", "Company"),
@@ -424,7 +424,7 @@ class TestStrictModification:
                 ),
             ],
         )
-        with pytest.raises(SchemaModificationNotAllowedError) as exc:
+        with pytest.raises(OntologyModificationNotAllowedError) as exc:
             await store.register(incoming)
         assert "WORKS_AT" in str(exc.value)
 
@@ -444,16 +444,16 @@ class TestStrictModification:
                 ],
             ],
         )
-        incoming = GraphSchema(
+        incoming = Ontology(
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
                     properties=[
-                        PropertyType(name="since", type="DATE"),
-                        PropertyType(name="role", type="STRING"),  # new
+                        Attribute(name="since", type="DATE"),
+                        Attribute(name="role", type="STRING"),  # new
                     ],
                 ),
             ],
         )
-        with pytest.raises(SchemaModificationNotAllowedError):
+        with pytest.raises(OntologyModificationNotAllowedError):
             await store.register(incoming)

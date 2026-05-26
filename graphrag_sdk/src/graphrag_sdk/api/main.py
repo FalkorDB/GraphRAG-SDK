@@ -27,10 +27,10 @@ from graphrag_sdk.core.models import (
     ChatMessage,
     DeleteDocumentResult,
     DocumentInfo,
-    EntityType,
+    Entity,
     FinalizeResult,
-    GraphSchema,
     IngestionResult,
+    Ontology,
     RagResult,
     RetrieverResult,
     UpdateResult,
@@ -149,7 +149,7 @@ class GraphRAG:
         connection: FalkorDB connection (or ConnectionConfig to create one).
         llm: LLM provider for extraction and generation.
         embedder: Embedding provider for vector operations.
-        schema: Optional graph schema for extraction constraints.
+        ontology: Optional graph ontology for extraction constraints.
         retrieval_strategy: Default retrieval strategy (uses MultiPathRetrieval if None).
 
     Example::
@@ -158,7 +158,7 @@ class GraphRAG:
             connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
             llm=MyLLM(model_name="gpt-4o"),
             embedder=MyEmbedder(),
-            schema=GraphSchema(entities=[...], relations=[...]),
+            ontology=Ontology(entities=[...], relations=[...]),
         )
 
         # Ingest
@@ -177,7 +177,7 @@ class GraphRAG:
         connection: FalkorDBConnection | ConnectionConfig,
         llm: LLMInterface,
         embedder: Embedder,
-        schema: GraphSchema | None = None,
+        ontology: Ontology | None = None,
         retrieval_strategy: RetrievalStrategy | None = None,
         embedding_dimension: int = 256,
     ) -> None:
@@ -189,7 +189,7 @@ class GraphRAG:
 
         self.llm = llm
         self.embedder = embedder
-        self.schema = schema or GraphSchema()
+        self.ontology = ontology or Ontology()
         self._embedding_dimension = embedding_dimension
         self._config_validated = False
 
@@ -205,14 +205,14 @@ class GraphRAG:
         self._deduplicator = EntityDeduplicator(self._graph_store, self.embedder)
 
         # Persistent ontology graph (``<data_graph>__ontology``). Always-on,
-        # always the anchor: ``self.schema`` is registered into it on first
+        # always the anchor: ``self.ontology`` is registered into it on first
         # connection, and ``get_ontology()`` / retrieval always read from it.
         self._ontology_store = OntologyStore(self._conn, self._conn.config.graph_name)
-        # Lazy-init flag; the first async call that needs the schema fires
-        # ``_ensure_ontology_initialized()`` to load + register the user's schema.
+        # Lazy-init flag; the first async call that needs the ontology fires
+        # ``_ensure_ontology_initialized()`` to load + register the user's ontology.
         self._ontology_initialized = False
-        # Working schema used by retrieval; populated by ``_ensure_ontology_initialized()``.
-        self._global_schema: GraphSchema = self.schema
+        # Working ontology used by retrieval; populated by ``_ensure_ontology_initialized()``.
+        self._global_ontology: Ontology = self.ontology
 
         # Default retrieval strategy
         self._retrieval_strategy = retrieval_strategy or MultiPathRetrieval(
@@ -220,7 +220,7 @@ class GraphRAG:
             vector_store=self._vector_store,
             embedder=self.embedder,
             llm=self.llm,
-            schema=self._global_schema,
+            ontology=self._global_ontology,
         )
 
     # -- Async context manager -------------------------------------------
@@ -258,48 +258,48 @@ class GraphRAG:
 
     async def _ensure_ontology_initialized(self) -> None:
         """Lazy first-touch: load the persisted ontology and register the
-        user-supplied :py:attr:`schema` into it.
+        user-supplied :py:attr:`ontology` into it.
 
         Three states:
 
-        - ``self.schema`` is non-empty → register it (validate + persist).
-        - ``self.schema`` empty but the ontology graph already has content
+        - ``self.ontology`` is non-empty → register it (validate + persist).
+        - ``self.ontology`` empty but the ontology graph already has content
           (previous session, another writer) → use it as-is.
-        - Both empty (first connection, no user schema) → register the
+        - Both empty (first connection, no user ontology) → register the
           built-in :py:data:`DEFAULT_ENTITY_TYPES` so the ontology graph
           accurately reflects the labels the extractor will produce.
 
         Idempotent. Raises :py:class:`OntologyContradictionError` if
-        ``self.schema`` re-defines an existing property's type.
+        ``self.ontology`` re-defines an existing property's type.
         """
         if self._ontology_initialized:
             return
         loaded = await self._ontology_store.load()
-        if self.schema.entities or self.schema.relations:
-            self._global_schema = await self._ontology_store.register(self.schema)
+        if self.ontology.entities or self.ontology.relations:
+            self._global_ontology = await self._ontology_store.register(self.ontology)
         elif loaded.entities or loaded.relations:
-            self._global_schema = loaded
+            self._global_ontology = loaded
         else:
-            default_schema = GraphSchema(
-                entities=[EntityType(label=label) for label in DEFAULT_ENTITY_TYPES],
+            default_schema = Ontology(
+                entities=[Entity(label=label) for label in DEFAULT_ENTITY_TYPES],
             )
             logger.info(
-                "No schema supplied and ontology graph is empty; seeding "
+                "No ontology supplied and ontology graph is empty; seeding "
                 "DEFAULT_ENTITY_TYPES (%s) into the ontology. To customize "
-                "properties for these labels, pass schema=... on first ingest "
-                "or delete_all() and re-ingest with a custom schema.",
+                "properties for these labels, pass ontology=... on first ingest "
+                "or delete_all() and re-ingest with a custom ontology.",
                 ", ".join(DEFAULT_ENTITY_TYPES),
             )
-            self._global_schema = await self._ontology_store.register(default_schema)
+            self._global_ontology = await self._ontology_store.register(default_schema)
         if hasattr(self._retrieval_strategy, "_schema"):
-            self._retrieval_strategy._schema = self._global_schema
+            self._retrieval_strategy._schema = self._global_ontology
         self._ontology_initialized = True
 
-    async def get_ontology(self) -> GraphSchema:
+    async def get_ontology(self) -> Ontology:
         """Return the persisted global ontology.
 
         Reads from the ontology graph — the single source of truth. On the
-        first call, also registers any ``schema`` passed to :py:class:`GraphRAG`
+        first call, also registers any ``ontology`` passed to :py:class:`GraphRAG`
         into the ontology graph (validating no type contradictions with what's
         already persisted).
         """
@@ -307,15 +307,15 @@ class GraphRAG:
         # Always reflect the latest persisted state in case another writer
         # has registered new types since our last ensure_initialized.
         loaded = await self._ontology_store.load()
-        self._global_schema = loaded
+        self._global_ontology = loaded
         if hasattr(self._retrieval_strategy, "_schema"):
-            self._retrieval_strategy._schema = self._global_schema
-        return self._global_schema
+            self._retrieval_strategy._schema = self._global_ontology
+        return self._global_ontology
 
-    async def refresh_ontology(self) -> GraphSchema:
+    async def refresh_ontology(self) -> Ontology:
         """Reload the global ontology and propagate it to the retrieval path.
 
-        Call explicitly when another process has registered new schema and
+        Call explicitly when another process has registered new ontology and
         you want the next retrieval to see it without re-ingesting first.
         """
         return await self.get_ontology()
@@ -325,7 +325,7 @@ class GraphRAG:
 
         Bridges the persisted ontology graph to a versionable JSON artifact:
         ``rag.save_ontology("ontology.json")``, hand-edit / version-control
-        it, then load with ``GraphSchema.from_file("ontology.json")`` on the
+        it, then load with ``Ontology.from_file("ontology.json")`` on the
         next run. The ontology graph remains the canonical copy.
         """
         ontology = await self.get_ontology()
@@ -348,11 +348,11 @@ class GraphRAG:
         by this ``GraphRAG`` instance, plus the paired ontology graph at
         ``<graph_name>__ontology``. Also invalidates the cached config and
         index flags so a follow-up ``ingest()`` on the same instance re-runs
-        validation, re-creates indexes, and re-registers the user's schema.
+        validation, re-creates indexes, and re-registers the user's ontology.
         """
         await self._graph_store.delete_all()
         # Drop the ontology graph alongside the data graph so the two never
-        # outlive each other; a fresh ingest re-registers self.schema from
+        # outlive each other; a fresh ingest re-registers self.ontology from
         # scratch via _ensure_ontology_initialized().
         try:
             await self._ontology_store.clear()
@@ -363,7 +363,7 @@ class GraphRAG:
         self._vector_store._indices_ensured = False
         # The __GraphRAGConfig__ node is gone too; re-validate next time.
         self._config_validated = False
-        # Force re-registration of self.schema next call.
+        # Force re-registration of self.ontology next call.
         self._ontology_initialized = False
 
     # ── Ingestion ────────────────────────────────────────────────
@@ -639,7 +639,7 @@ class GraphRAG:
 
         doc_info = DocumentInfo(uid=resolved_id, path=path_for_node)
 
-        # Load the persisted ontology and register self.schema before the
+        # Load the persisted ontology and register self.ontology before the
         # pipeline runs — contradictions surface early, before any expensive
         # extraction work is done.
         await self._ensure_ontology_initialized()
@@ -651,7 +651,7 @@ class GraphRAG:
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
-            schema=self._global_schema,
+            ontology=self._global_ontology,
         )
 
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
@@ -732,8 +732,8 @@ class GraphRAG:
         return results
 
     def _default_extractor(self) -> ExtractionStrategy:
-        """Return default GraphExtraction with schema entity types if available."""
-        entity_types = [e.label for e in self.schema.entities] if self.schema.entities else None
+        """Return default GraphExtraction with ontology entity types if available."""
+        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
         return GraphExtraction(
             llm=self.llm,
             entity_types=entity_types,
@@ -1132,7 +1132,7 @@ class GraphRAG:
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
-            schema=self.schema,
+            ontology=self.ontology,
         )
 
         try:

@@ -253,44 +253,44 @@ class TestExecuteCypherRetrieval:
 
 class TestRenderSchemaBlock:
     def test_open_schema_falls_back_to_historic_labels(self):
-        from graphrag_sdk.core.models import GraphSchema
+        from graphrag_sdk.core.models import Ontology
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
-            render_schema_block,
+            render_ontology_block,
         )
-        block = render_schema_block(GraphSchema())
+        block = render_ontology_block(Ontology())
         assert "- Person" in block
         assert "name (STRING)" in block
         assert "rel_type (STRING)" in block
 
     def test_schema_block_includes_declared_attributes(self):
         from graphrag_sdk.core.models import (
-            EntityType,
-            GraphSchema,
-            PropertyType,
-            RelationType,
+            Entity,
+            Ontology,
+            Attribute,
+            Relation,
         )
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
-            render_schema_block,
+            render_ontology_block,
         )
-        s = GraphSchema(
+        s = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
                     properties=[
-                        PropertyType(name="age", type="INTEGER", description="years")
+                        Attribute(name="age", type="INTEGER", description="years")
                     ],
                 ),
-                EntityType(label="Company"),
+                Entity(label="Company"),
             ],
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
                     patterns=[("Person", "Company")],
-                    properties=[PropertyType(name="since", type="DATE")],
+                    properties=[Attribute(name="since", type="DATE")],
                 ),
             ],
         )
-        block = render_schema_block(s)
+        block = render_ontology_block(s)
         assert "age (INTEGER)" in block
         assert "since (DATE)" in block
         assert "WORKS_AT" in block
@@ -299,22 +299,22 @@ class TestRenderSchemaBlock:
 class TestBuildSchemaPrompt:
     def test_includes_question_and_schema(self):
         from graphrag_sdk.core.models import (
-            EntityType,
-            GraphSchema,
-            PropertyType,
+            Entity,
+            Ontology,
+            Attribute,
         )
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
-            build_schema_prompt,
+            build_ontology_prompt,
         )
-        s = GraphSchema(
+        s = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
-                    properties=[PropertyType(name="age", type="INTEGER")],
+                    properties=[Attribute(name="age", type="INTEGER")],
                 )
             ]
         )
-        prompt = build_schema_prompt(s, "Who is older than 30?")
+        prompt = build_ontology_prompt(s, "Who is older than 30?")
         assert "Who is older than 30?" in prompt
         assert "age (INTEGER)" in prompt
         assert ".age" in prompt  # synthesized numeric-filter example
@@ -322,14 +322,14 @@ class TestBuildSchemaPrompt:
 
 class TestValidateCypherWithSchema:
     def test_unknown_label_flagged_when_schema_provided(self):
-        from graphrag_sdk.core.models import EntityType, GraphSchema
-        s = GraphSchema(entities=[EntityType(label="Person")])
+        from graphrag_sdk.core.models import Entity, Ontology
+        s = Ontology(entities=[Entity(label="Person")])
         errors = validate_cypher("MATCH (x:Bogus) RETURN x LIMIT 10", s)
         assert any("Unknown label: Bogus" in e for e in errors)
 
     def test_declared_label_accepted(self):
-        from graphrag_sdk.core.models import EntityType, GraphSchema
-        s = GraphSchema(entities=[EntityType(label="Customer")])
+        from graphrag_sdk.core.models import Entity, Ontology
+        s = Ontology(entities=[Entity(label="Customer")])
         errors = validate_cypher(
             "MATCH (c:Customer) RETURN c.name LIMIT 10", s
         )

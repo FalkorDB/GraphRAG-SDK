@@ -1,5 +1,5 @@
 # GraphRAG SDK — Retrieval: Text-to-Cypher Generation
-# Adapted from FalkorDB/GraphRAG-SDK upstream for the unified RELATES schema.
+# Adapted from FalkorDB/GraphRAG-SDK upstream for the unified RELATES ontology.
 # Generates read-only Cypher queries from natural language questions.
 #
 # Design: Uses typed entity node labels (Person, Organization, Location, etc.)
@@ -14,11 +14,11 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
-from graphrag_sdk.core.models import GraphSchema
+from graphrag_sdk.core.models import Ontology
 
 logger = logging.getLogger(__name__)
 
-# ── Valid labels for our graph schema ────────────────────────────
+# ── Valid labels for our graph ontology ────────────────────────────
 
 _ENTITY_LABELS = frozenset(
     {
@@ -59,40 +59,40 @@ _WRITE_KEYWORDS = re.compile(
 )
 
 
-def _labels_from_schema(schema: GraphSchema | None) -> frozenset[str]:
-    """Return the entity labels declared in ``schema``, falling back to the
-    historical hardcoded set when the schema is empty (open-schema mode).
+def _labels_from_ontology(ontology: Ontology | None) -> frozenset[str]:
+    """Return the entity labels declared in ``ontology``, falling back to the
+    historical hardcoded set when the ontology is empty (open-ontology mode).
     """
-    if schema is None or not schema.entities:
+    if ontology is None or not ontology.entities:
         return _ENTITY_LABELS
-    return frozenset(e.label for e in schema.entities)
+    return frozenset(e.label for e in ontology.entities)
 
 
-def render_schema_block(schema: GraphSchema | None) -> str:
-    """Render a Markdown schema block listing declared entity / relation
-    properties, derived from the live ``GraphSchema``.
+def render_ontology_block(ontology: Ontology | None) -> str:
+    """Render a Markdown ontology block listing declared entity / relation
+    properties, derived from the live ``Ontology``.
 
     Mirrors LangChain's ``Neo4jGraph.get_schema()`` and LlamaIndex's
     ``Neo4jPropertyGraphStore.get_schema_str()``. Always emits the reserved
     SDK keys (``name``, ``description`` on entities; ``rel_type``, ``fact``,
     ``src_name``, ``tgt_name`` on RELATES) so the LLM still knows about them
-    even when the schema declares no custom properties.
+    even when the ontology declares no custom properties.
     """
     labels: list[str]
     rel_labels: list[str]
     ent_props: dict[str, list[tuple[str, str, str | None]]] = {}
     rel_props: dict[str, list[tuple[str, str, str | None]]] = {}
 
-    if schema is not None and schema.entities:
-        labels = [e.label for e in schema.entities]
-        for e in schema.entities:
+    if ontology is not None and ontology.entities:
+        labels = [e.label for e in ontology.entities]
+        for e in ontology.entities:
             ent_props[e.label] = [(p.name, p.type, p.description) for p in e.properties]
     else:
         labels = sorted(_ENTITY_LABELS)
 
-    if schema is not None and schema.relations:
-        rel_labels = [r.label for r in schema.relations]
-        for r in schema.relations:
+    if ontology is not None and ontology.relations:
+        rel_labels = [r.label for r in ontology.relations]
+        for r in ontology.relations:
             rel_props[r.label] = [(p.name, p.type, p.description) for p in r.properties]
     else:
         rel_labels = []
@@ -130,17 +130,17 @@ def render_schema_block(schema: GraphSchema | None) -> str:
     return "\n".join(lines)
 
 
-def _render_attribute_examples(schema: GraphSchema | None) -> str:
+def _render_attribute_examples(ontology: Ontology | None) -> str:
     """Synthesize one filter example per declared numeric attribute.
 
     Helps the LLM learn that custom numeric properties exist and can be used
     in ``WHERE`` / ``ORDER BY`` / aggregations. Returns ``""`` when no
     numeric attributes are declared.
     """
-    if schema is None:
+    if ontology is None:
         return ""
     examples: list[str] = []
-    for et in schema.entities:
+    for et in ontology.entities:
         for p in et.properties:
             if p.type in _NUMERIC_TYPES and len(examples) < 2:
                 var = et.label[0].lower()
@@ -164,12 +164,12 @@ def _render_attribute_examples(schema: GraphSchema | None) -> str:
 
 # ── Schema prompt ────────────────────────────────────────────────
 
-_SCHEMA_PROMPT_TEMPLATE = """\
+_ONTOLOGY_PROMPT_TEMPLATE = """\
 You are a Cypher query generator for a FalkorDB graph database.
 
 ## Graph Schema
 
-{schema_block}
+{ontology_block}
 
 ## FalkorDB-specific rules (CRITICAL — violating these causes execution errors):
 1. Do NOT use shortestPath() or allShortestPaths() — FalkorDB returns
@@ -250,25 +250,25 @@ Question: {question}
 """
 
 
-def build_schema_prompt(schema: GraphSchema | None, question: str) -> str:
-    """Build the full Cypher generation prompt for ``question`` from ``schema``.
+def build_ontology_prompt(ontology: Ontology | None, question: str) -> str:
+    """Build the full Cypher generation prompt for ``question`` from ``ontology``.
 
-    When ``schema`` is empty, the prompt falls back to the historical
+    When ``ontology`` is empty, the prompt falls back to the historical
     hardcoded label set and matches today's behavior bit-for-bit aside from
-    the new schema block formatting.
+    the new ontology block formatting.
     """
-    return _SCHEMA_PROMPT_TEMPLATE.format(
-        schema_block=render_schema_block(schema),
-        attribute_examples=_render_attribute_examples(schema),
+    return _ONTOLOGY_PROMPT_TEMPLATE.format(
+        ontology_block=render_ontology_block(ontology),
+        attribute_examples=_render_attribute_examples(ontology),
         question=question,
     )
 
 
-# Backwards-compatible alias for callers that import SCHEMA_PROMPT.
-# It exposes the template form (still expects ``{schema_block}``,
+# Backwards-compatible alias for callers that import ONTOLOGY_PROMPT.
+# It exposes the template form (still expects ``{ontology_block}``,
 # ``{attribute_examples}``, and ``{question}`` placeholders) — direct
-# ``.format(question=...)`` callers should migrate to ``build_schema_prompt``.
-SCHEMA_PROMPT = _SCHEMA_PROMPT_TEMPLATE
+# ``.format(question=...)`` callers should migrate to ``build_ontology_prompt``.
+ONTOLOGY_PROMPT = _ONTOLOGY_PROMPT_TEMPLATE
 
 
 # ── Cypher extraction ────────────────────────────────────────────
@@ -316,14 +316,14 @@ def _sanitize_cypher(cypher: str) -> str:
 # ── Cypher validation ────────────────────────────────────────────
 
 
-def validate_cypher(cypher: str, schema: GraphSchema | None = None) -> list[str]:
+def validate_cypher(cypher: str, ontology: Ontology | None = None) -> list[str]:
     """Validate generated Cypher for safety and correctness.
 
     Uses an allowlist approach: the query must start with a read-only
     keyword, and dangerous constructs are explicitly rejected.
 
-    When ``schema`` is provided, label validation uses the labels declared
-    in the schema (plus structural labels); otherwise it falls back to the
+    When ``ontology`` is provided, label validation uses the labels declared
+    in the ontology (plus structural labels); otherwise it falls back to the
     historical hardcoded label set.
 
     Returns list of error strings; empty list means valid.
@@ -364,8 +364,8 @@ def validate_cypher(cypher: str, schema: GraphSchema | None = None) -> list[str]
     if not re.search(r"\bRETURN\b", cypher_norm, re.IGNORECASE):
         errors.append("Missing RETURN clause")
 
-    # Check referenced labels exist in schema
-    allowed_labels = _labels_from_schema(schema) | _STRUCTURAL_LABELS
+    # Check referenced labels exist in ontology
+    allowed_labels = _labels_from_ontology(ontology) | _STRUCTURAL_LABELS
     label_pattern = re.findall(r"\((?:\w+)?:(\w+)", cypher_norm)
     for label in label_pattern:
         if label not in allowed_labels:
@@ -381,18 +381,18 @@ async def generate_cypher(
     llm: Any,
     question: str,
     *,
-    schema: GraphSchema | None = None,
+    ontology: Ontology | None = None,
     max_retries: int = 3,
     ctx: Context | None = None,
 ) -> str | None:
     """Generate a Cypher query from a natural language question.
 
-    When ``schema`` is provided, the prompt and validator both use the
+    When ``ontology`` is provided, the prompt and validator both use the
     declared labels and properties.
 
     Returns the Cypher string, or None if all retries fail.
     """
-    prompt = build_schema_prompt(schema, question)
+    prompt = build_ontology_prompt(ontology, question)
     last_error = ""
 
     for attempt in range(max_retries):
@@ -428,7 +428,7 @@ async def generate_cypher(
                 last_error = "Empty query generated"
                 continue
 
-            errors = validate_cypher(cypher, schema)
+            errors = validate_cypher(cypher, ontology)
             if errors:
                 last_error = "; ".join(errors)
                 continue
@@ -452,7 +452,7 @@ async def execute_cypher_retrieval(
     llm: Any,
     question: str,
     *,
-    schema: GraphSchema | None = None,
+    ontology: Ontology | None = None,
     max_retries: int = 3,
     ctx: Context | None = None,
 ) -> tuple[list[str], dict[str, dict]]:
@@ -468,7 +468,9 @@ async def execute_cypher_retrieval(
 
     On any failure, returns empty results (silent degradation).
     """
-    cypher = await generate_cypher(llm, question, schema=schema, max_retries=max_retries, ctx=ctx)
+    cypher = await generate_cypher(
+        llm, question, ontology=ontology, max_retries=max_retries, ctx=ctx
+    )
     if not cypher:
         return [], {}
 

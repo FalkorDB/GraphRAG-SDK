@@ -12,15 +12,15 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
+    Attribute,
     EntityMention,
     ExtractedEntity,
     ExtractedRelation,
     GraphData,
     GraphNode,
     GraphRelationship,
-    GraphSchema,
-    PropertyType,
-    RelationType,
+    Ontology,
+    Relation,
     TextChunks,
 )
 from graphrag_sdk.core.providers import LLMInterface
@@ -50,7 +50,7 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "## Entity Types\n"
     "{entity_types}\n\n"
     "{relation_patterns}"
-    "{attribute_schema_block}"
+    "{attribute_block}"
     "## Pre-extracted Entities\n"
     "{entities_json}\n\n"
     "## Text\n"
@@ -96,12 +96,12 @@ _JSON_EXAMPLE_WITH_ATTRS = (
 )
 
 
-def _format_property_for_prompt(prop: PropertyType) -> str:
+def _format_property_for_prompt(prop: Attribute) -> str:
     desc = f" — {prop.description}" if prop.description else ""
     return f"    - {prop.name} ({prop.type}){desc}"
 
 
-def _render_attribute_schema_block(schema: GraphSchema) -> str:
+def _render_attribute_block(ontology: Ontology) -> str:
     """Return the prompt block listing declared entity/relation attributes.
 
     Returns ``""`` when no entity or relation type declares any property — this
@@ -109,14 +109,14 @@ def _render_attribute_schema_block(schema: GraphSchema) -> str:
     drift, no quality regression for the existing extraction path).
     """
     ent_lines: list[str] = []
-    for et in schema.entities:
+    for et in ontology.entities:
         if not et.properties:
             continue
         ent_lines.append(f"- {et.label}:")
         ent_lines.extend(_format_property_for_prompt(p) for p in et.properties)
 
     rel_lines: list[str] = []
-    for rt in schema.relations:
+    for rt in ontology.relations:
         if not rt.properties:
             continue
         rel_lines.append(f"- {rt.label}:")
@@ -142,9 +142,9 @@ def _render_attribute_schema_block(schema: GraphSchema) -> str:
     return "\n".join(parts) + "\n\n"
 
 
-def _schema_has_attributes(schema: GraphSchema) -> bool:
-    return any(et.properties for et in schema.entities) or any(
-        rt.properties for rt in schema.relations
+def _ontology_has_attributes(ontology: Ontology) -> bool:
+    return any(et.properties for et in ontology.entities) or any(
+        rt.properties for rt in ontology.relations
     )
 
 
@@ -211,7 +211,7 @@ def _coerce_attribute_value(value: Any, prop_type: str) -> tuple[bool, Any]:
 
 def _coerce_attributes(
     raw: dict[str, Any] | None,
-    declared: dict[str, PropertyType],
+    declared: dict[str, Attribute],
 ) -> dict[str, Any]:
     """Apply per-type coercion against declared properties.
 
@@ -263,13 +263,13 @@ def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) 
     return "\n".join(parts)
 
 
-def _format_relation_patterns(relations: list[RelationType]) -> str:
+def _format_relation_patterns(relations: list[Relation]) -> str:
     """Format allowed relationships for prompt injection.
 
-    Returns an empty string when no relations are defined (open schema),
+    Returns an empty string when no relations are defined (open ontology),
     so the prompt section collapses cleanly.  Relations without declared
     patterns render as ``- LABEL: description`` — the directional list is
-    only emitted when the schema actually constrains it, so we don't burn
+    only emitted when the ontology actually constrains it, so we don't burn
     prompt tokens on ``(any)`` noise.
     """
     if not relations:
@@ -286,10 +286,10 @@ def _format_relation_patterns(relations: list[RelationType]) -> str:
     return "## Allowed Relationships\n" + "\n".join(lines) + "\n\n"
 
 
-def _relationship_type_instruction(relations: list[RelationType]) -> str:
+def _relationship_type_instruction(relations: list[Relation]) -> str:
     """Return the type instruction line for the relationships section.
 
-    When the schema defines allowed relations the LLM is told to restrict
+    When the ontology defines allowed relations the LLM is told to restrict
     to those types; otherwise it may use any descriptive label.
     """
     if relations:
@@ -323,7 +323,7 @@ class GraphExtraction(ExtractionStrategy):
             Pass ``LLMExtractor(llm)`` to use LLM for step 1 instead.
         coref_resolver: Optional coreference resolver applied per-chunk.
         entity_types: Entity type labels. Default: DEFAULT_ENTITY_TYPES.
-            Overridden by schema.entities if present.
+            Overridden by ontology.entities if present.
         max_concurrency: Maximum parallel LLM calls.
     """
 
@@ -345,14 +345,14 @@ class GraphExtraction(ExtractionStrategy):
     async def extract(
         self,
         chunks: TextChunks,
-        schema: GraphSchema,
+        ontology: Ontology,
         ctx: Context,
     ) -> GraphData:
-        # Resolve entity types: schema overrides instance default
-        if schema.entities:
-            entity_types = [e.label for e in schema.entities]
+        # Resolve entity types: ontology overrides instance default
+        if ontology.entities:
+            entity_types = [e.label for e in ontology.entities]
             entity_type_descs: dict[str, str] = {
-                e.label: e.description for e in schema.entities if e.description
+                e.label: e.description for e in ontology.entities if e.description
             }
         else:
             entity_types = list(self.entity_types)
@@ -457,12 +457,12 @@ class GraphExtraction(ExtractionStrategy):
             entities_json = json.dumps(
                 [{"name": e.name, "type": e.type, "description": e.description} for e in ents]
             )
-            has_attrs = _schema_has_attributes(schema)
+            has_attrs = _ontology_has_attributes(ontology)
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
-                relation_patterns=_format_relation_patterns(schema.relations),
-                attribute_schema_block=_render_attribute_schema_block(schema),
-                relationship_type_instruction=_relationship_type_instruction(schema.relations),
+                relation_patterns=_format_relation_patterns(ontology.relations),
+                attribute_block=_render_attribute_block(ontology),
+                relationship_type_instruction=_relationship_type_instruction(ontology.relations),
                 entities_json=entities_json,
                 text=text,
                 json_example=_JSON_EXAMPLE_WITH_ATTRS if has_attrs else _DEFAULT_JSON_EXAMPLE,
@@ -494,7 +494,7 @@ class GraphExtraction(ExtractionStrategy):
 
                 assert item.response is not None
                 verified_ents, rels = self._parse_step2_response(
-                    item.response.content, entity_types, chunk.uid, schema
+                    item.response.content, entity_types, chunk.uid, ontology
                 )
                 if verified_ents:
                     # Carry over spans/confidence from step 1 entities
@@ -590,11 +590,11 @@ class GraphExtraction(ExtractionStrategy):
         content: str,
         entity_types: list[str],
         source_chunk_id: str,
-        schema: GraphSchema | None = None,
+        ontology: Ontology | None = None,
     ) -> tuple[list[ExtractedEntity], list[ExtractedRelation]]:
         """Parse the step 2 LLM response (verified entities + relationships).
 
-        When ``schema`` declares attributes for an entity / relation type, every
+        When ``ontology`` declares attributes for an entity / relation type, every
         declared attribute appears in the record's ``attributes`` dict, with
         ``None`` for values the LLM didn't supply or couldn't coerce. Records
         are never dropped — downstream storage strips ``None`` so the graph
@@ -611,13 +611,13 @@ class GraphExtraction(ExtractionStrategy):
         if not isinstance(data, dict):
             return [], []
 
-        ent_props_by_label: dict[str, dict[str, PropertyType]] = {}
-        rel_props_by_label: dict[str, dict[str, PropertyType]] = {}
-        if schema is not None:
-            for et in schema.entities:
+        ent_props_by_label: dict[str, dict[str, Attribute]] = {}
+        rel_props_by_label: dict[str, dict[str, Attribute]] = {}
+        if ontology is not None:
+            for et in ontology.entities:
                 if et.properties:
                     ent_props_by_label[et.label] = {p.name: p for p in et.properties}
-            for rt in schema.relations:
+            for rt in ontology.relations:
                 if rt.properties:
                     rel_props_by_label[rt.label] = {p.name: p for p in rt.properties}
 
@@ -805,8 +805,8 @@ class GraphExtraction(ExtractionStrategy):
             spans = getattr(ent, "spans", None)
             if spans:
                 props["spans"] = spans
-            # Merge schema-declared attributes. Reserved-name collisions are
-            # rejected at schema-validation time, so update() is safe.
+            # Merge ontology-declared attributes. Reserved-name collisions are
+            # rejected at ontology-validation time, so update() is safe.
             if ent.attributes:
                 props.update(ent.attributes)
             nodes.append(

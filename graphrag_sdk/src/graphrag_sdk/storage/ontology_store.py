@@ -1,7 +1,7 @@
 """Persistent ontology storage in a dedicated FalkorDB graph.
 
 The ontology lives in a separate FalkorDB graph named ``<data_graph>__ontology``
-and is the **anchor** for the working schema:
+and is the **anchor** for the working ontology:
 
 - **Always-on**: every :py:class:`GraphRAG` has exactly one ontology graph,
   created lazily on first use, dropped on ``delete_all()``.
@@ -16,15 +16,15 @@ and is the **anchor** for the working schema:
     - **type contradictions** on existing properties
       (:py:class:`OntologyContradictionError`), and
     - **modifications** to existing labels — adding properties or patterns
-      (:py:class:`SchemaModificationNotAllowedError`).
+      (:py:class:`OntologyModificationNotAllowedError`).
 
-  The latter is reserved for a future schema-evolution API that updates the
+  The latter is reserved for a future ontology-evolution API that updates the
   data graph in lockstep with the ontology, keeping the two aligned.
 
-Users who want a curated, declarative schema (descriptions, future flags,
-properties not yet observed in the data) supply a ``schema`` to ``GraphRAG``;
+Users who want a curated, declarative ontology (descriptions, future flags,
+properties not yet observed in the data) supply a ``ontology`` to ``GraphRAG``;
 it gets registered into the ontology graph on first connection. JSON
-import/export via :py:meth:`GraphSchema.save_to_file` / ``from_file`` is a
+import/export via :py:meth:`Ontology.save_to_file` / ``from_file`` is a
 review / version-control bridge — the ontology graph is the canonical copy.
 """
 
@@ -35,17 +35,17 @@ from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.models import (
-    EntityType,
-    GraphSchema,
-    PropertyType,
-    RelationType,
+    Attribute,
+    Entity,
+    Ontology,
+    Relation,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class OntologyContradictionError(ValueError):
-    """Raised when an incoming schema re-types an existing property.
+    """Raised when an incoming ontology re-types an existing property.
 
     Re-typing (e.g., ``Person.age`` STRING → INTEGER) is rejected before any
     partial state is persisted, so downstream Cypher queries can never break
@@ -53,20 +53,20 @@ class OntologyContradictionError(ValueError):
     """
 
 
-class SchemaModificationNotAllowedError(ValueError):
-    """Raised when an incoming schema tries to MODIFY an existing label.
+class OntologyModificationNotAllowedError(ValueError):
+    """Raised when an incoming ontology tries to MODIFY an existing label.
 
     The ingest path is intentionally constrained: it can add brand-new labels
     (with whatever attributes the user wants) and re-declare existing labels
     *exactly* (or with a strict subset of their persisted properties / patterns).
     It cannot add attributes / patterns / fields to an already-registered
-    label — that's a schema-evolution operation that has to also update
+    label — that's a ontology-evolution operation that has to also update
     existing graph data to keep the two in sync, which is handled by a separate
     API path (not yet implemented).
 
     Workaround for v1: ``await rag.delete_all()`` and re-ingest with the new
-    schema, OR rely solely on the constructor's first ``register`` to lock in
-    your full schema from the start.
+    ontology, OR rely solely on the constructor's first ``register`` to lock in
+    your full ontology from the start.
     """
 
 
@@ -84,13 +84,13 @@ def _decode_patterns(encoded: list[str] | None) -> list[tuple[str, str]]:
     return out
 
 
-def _props_from_rows(rows: list[Any] | None) -> list[PropertyType]:
-    """Reconstruct PropertyType objects from a ``collect(...)`` query result.
+def _props_from_rows(rows: list[Any] | None) -> list[Attribute]:
+    """Reconstruct Attribute objects from a ``collect(...)`` query result.
 
     Filters out the null-keyed dict FalkorDB returns for an OPTIONAL MATCH
     with no matches.
     """
-    out: list[PropertyType] = []
+    out: list[Attribute] = []
     for row in rows or []:
         if not row or not isinstance(row, dict):
             continue
@@ -98,7 +98,7 @@ def _props_from_rows(rows: list[Any] | None) -> list[PropertyType]:
         if not name:
             continue
         out.append(
-            PropertyType(
+            Attribute(
                 name=name,
                 type=row.get("type") or "STRING",
                 description=row.get("description"),
@@ -108,7 +108,7 @@ def _props_from_rows(rows: list[Any] | None) -> list[PropertyType]:
 
 
 class OntologyStore:
-    """Persists and loads :py:class:`GraphSchema` in a dedicated FalkorDB graph.
+    """Persists and loads :py:class:`Ontology` in a dedicated FalkorDB graph.
 
     Owns its own graph handle, derived from the data-graph connection's
     driver. Queries go directly to the FalkorDB driver and bypass the
@@ -143,10 +143,10 @@ class OntologyStore:
 
     # ── Load ─────────────────────────────────────────────────────
 
-    async def load(self) -> GraphSchema:
-        """Read the ontology graph and reconstruct a :py:class:`GraphSchema`.
+    async def load(self) -> Ontology:
+        """Read the ontology graph and reconstruct a :py:class:`Ontology`.
 
-        Returns an empty schema if the ontology graph does not yet exist or
+        Returns an empty ontology if the ontology graph does not yet exist or
         introspection fails. Failure is logged at DEBUG so we don't spam an
         unconfigured GraphRAG instance with warnings.
         """
@@ -165,8 +165,8 @@ class OntologyStore:
                 "collect({name: p.name, type: p.type, description: p.description}) AS properties"
             )
         except Exception as exc:
-            logger.debug("Ontology load failed (returning empty schema): %s", exc)
-            return GraphSchema()
+            logger.debug("Ontology load failed (returning empty ontology): %s", exc)
+            return Ontology()
 
         ent_rows = getattr(ent_result, "result_set", None) or []
         rel_rows = getattr(rel_result, "result_set", None) or []
@@ -176,7 +176,7 @@ class OntologyStore:
             rel_rows = []
 
         entities = [
-            EntityType(
+            Entity(
                 label=row[0],
                 description=row[1],
                 properties=_props_from_rows(row[2]),
@@ -185,7 +185,7 @@ class OntologyStore:
             if isinstance(row, list) and len(row) >= 3 and row[0]
         ]
         relations = [
-            RelationType(
+            Relation(
                 label=row[0],
                 description=row[1],
                 patterns=_decode_patterns(row[2]),
@@ -194,12 +194,12 @@ class OntologyStore:
             for row in rel_rows
             if isinstance(row, list) and len(row) >= 4 and row[0]
         ]
-        return GraphSchema(entities=entities, relations=relations)
+        return Ontology(entities=entities, relations=relations)
 
     # ── Register ─────────────────────────────────────────────────
 
-    async def register(self, schema: GraphSchema) -> GraphSchema:
-        """Register ``schema`` into the persisted ontology and return the union.
+    async def register(self, ontology: Ontology) -> Ontology:
+        """Register ``ontology`` into the persisted ontology and return the union.
 
         The ingest path is constrained:
 
@@ -211,28 +211,28 @@ class OntologyStore:
           with no properties is fine; it just means "I know this label exists,
           use the persisted definition."
         - Trying to **add a property** to an existing label →
-          :py:class:`SchemaModificationNotAllowedError`.
+          :py:class:`OntologyModificationNotAllowedError`.
         - Trying to **change the type** of an existing property →
           :py:class:`OntologyContradictionError`.
 
         Both errors are raised before any partial state is persisted.
         """
-        if not schema.entities and not schema.relations:
+        if not ontology.entities and not ontology.relations:
             return await self.load()
 
         existing = await self.load()
-        self._check_no_contradictions(existing, schema)
-        self._check_no_modifications_to_existing(existing, schema)
+        self._check_no_contradictions(existing, ontology)
+        self._check_no_modifications_to_existing(existing, ontology)
 
-        for et in schema.entities:
+        for et in ontology.entities:
             await self._upsert_entity_type(et)
-        for rt in schema.relations:
+        for rt in ontology.relations:
             await self._upsert_relation_type(rt)
 
         return await self.load()
 
     @staticmethod
-    def _check_no_contradictions(existing: GraphSchema, incoming: GraphSchema) -> None:
+    def _check_no_contradictions(existing: Ontology, incoming: Ontology) -> None:
         """Raise :py:class:`OntologyContradictionError` on any type re-declaration."""
         existing_ent_types: dict[tuple[str, str], str] = {
             (e.label, p.name): p.type for e in existing.entities for p in e.properties
@@ -261,13 +261,13 @@ class OntologyStore:
                     )
 
     @staticmethod
-    def _check_no_modifications_to_existing(existing: GraphSchema, incoming: GraphSchema) -> None:
-        """Raise :py:class:`SchemaModificationNotAllowedError` when incoming
+    def _check_no_modifications_to_existing(existing: Ontology, incoming: Ontology) -> None:
+        """Raise :py:class:`OntologyModificationNotAllowedError` when incoming
         tries to add new properties / patterns to a label that's already
         registered. New labels are unaffected.
 
         Subset re-declarations are allowed: an existing label may appear in
-        the incoming schema with fewer (or zero) properties — that's treated
+        the incoming ontology with fewer (or zero) properties — that's treated
         as "use the persisted definition" rather than "remove things."
         """
         existing_ent_by_label = {e.label: e for e in existing.entities}
@@ -278,13 +278,13 @@ class OntologyStore:
             prior_prop_names = {p.name for p in prior_et.properties}
             new_prop_names = {p.name for p in et.properties} - prior_prop_names
             if new_prop_names:
-                raise SchemaModificationNotAllowedError(
+                raise OntologyModificationNotAllowedError(
                     f"Refusing to add new attribute(s) {sorted(new_prop_names)} "
                     f"to existing label '{et.label}'. The ingest path only "
                     f"accepts new labels; modifying an existing label requires "
-                    f"a schema-evolution operation (not yet supported). "
+                    f"a ontology-evolution operation (not yet supported). "
                     f"Workaround: `await rag.delete_all()` and re-ingest with "
-                    f"the updated schema."
+                    f"the updated ontology."
                 )
 
         existing_rel_by_label = {r.label: r for r in existing.relations}
@@ -302,14 +302,14 @@ class OntologyStore:
                     diffs.append(f"new properties {sorted(new_prop_names)}")
                 if new_patterns:
                     diffs.append(f"new patterns {sorted(new_patterns)}")
-                raise SchemaModificationNotAllowedError(
+                raise OntologyModificationNotAllowedError(
                     f"Refusing to add {' and '.join(diffs)} to existing relation "
                     f"'{rt.label}'. The ingest path only accepts new relation "
-                    f"types; modifying an existing one requires a schema-evolution "
+                    f"types; modifying an existing one requires a ontology-evolution "
                     f"operation (not yet supported)."
                 )
 
-    async def _upsert_entity_type(self, et: EntityType) -> None:
+    async def _upsert_entity_type(self, et: Entity) -> None:
         await self._query(
             "MERGE (e:OntologyEntityType {label: $label}) "
             "SET e.description = coalesce($description, e.description)",
@@ -318,7 +318,7 @@ class OntologyStore:
         for prop in et.properties:
             await self._upsert_property(et.label, prop, owner_label="OntologyEntityType")
 
-    async def _upsert_relation_type(self, rt: RelationType) -> None:
+    async def _upsert_relation_type(self, rt: Relation) -> None:
         new_patterns = _encode_patterns(rt.patterns)
         result = await self._query(
             "MATCH (r:OntologyRelationType {label: $label}) RETURN r.patterns AS patterns",
@@ -344,7 +344,7 @@ class OntologyStore:
             await self._upsert_property(rt.label, prop, owner_label="OntologyRelationType")
 
     async def _upsert_property(
-        self, owner_label_value: str, prop: PropertyType, *, owner_label: str
+        self, owner_label_value: str, prop: Attribute, *, owner_label: str
     ) -> None:
         # Property nodes are keyed by ``(owner_label_kind, owner_label, name)``
         # so two different types can declare the same property name without

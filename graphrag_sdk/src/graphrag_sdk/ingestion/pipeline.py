@@ -21,8 +21,8 @@ from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
-    GraphSchema,
     IngestionResult,
+    Ontology,
     TextChunks,
 )
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Number of offending (src, tgt) pairs to include verbatim in the
 # "pattern mismatch" warning. Enough to spot the inversion; bounded
-# so a misconfigured schema can't flood logs.
+# so a misconfigured ontology can't flood logs.
 _PATTERN_MISMATCH_SAMPLE_SIZE = 3
 
 
@@ -47,7 +47,7 @@ class IngestionPipeline:
     2. **Chunk** — split text via ``ChunkingStrategy``
     3. **Lexical Graph** — create Document→Chunk provenance (MANDATORY)
     4. **Extract** — extract entities/relationships via ``ExtractionStrategy``
-    5. **Prune** — filter against schema (built-in, not a strategy)
+    5. **Prune** — filter against ontology (built-in, not a strategy)
     6. **Resolve** — deduplicate entities via ``ResolutionStrategy``
     7. **Write** — upsert to graph store (batched)
     8. **Mentions** — write MENTIONED_IN edges (parallel with step 9)
@@ -63,7 +63,7 @@ class IngestionPipeline:
         resolver: Entity resolution strategy.
         graph_store: Graph data access object (from ``storage/``).
         vector_store: Vector data access object (from ``storage/``).
-        schema: Graph schema for extraction constraints and pruning.
+        ontology: Graph ontology for extraction constraints and pruning.
 
     Example::
 
@@ -74,7 +74,7 @@ class IngestionPipeline:
             resolver=ExactMatchResolution(),
             graph_store=my_graph_store,
             vector_store=my_vector_store,
-            schema=my_schema,
+            ontology=my_schema,
         )
         result = await pipeline.run("document.pdf", ctx)
     """
@@ -87,7 +87,7 @@ class IngestionPipeline:
         resolver: ResolutionStrategy,
         graph_store: Any,  # storage.GraphStore — import avoided for layering
         vector_store: Any,  # storage.VectorStore
-        schema: GraphSchema | None = None,
+        ontology: Ontology | None = None,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -95,7 +95,7 @@ class IngestionPipeline:
         self.resolver = resolver
         self.graph_store = graph_store
         self.vector_store = vector_store
-        self.schema = schema or GraphSchema()
+        self.ontology = ontology or Ontology()
 
     async def run(
         self,
@@ -180,14 +180,14 @@ class IngestionPipeline:
 
             # Step 4: Extract entities & relationships
             ctx.log("Step 4/9: Extracting entities & relationships")
-            graph_data = await self.extractor.extract(chunks, self.schema, ctx)
+            graph_data = await self.extractor.extract(chunks, self.ontology, ctx)
 
             # Step 4b: Quality filter — remove empty-ID and invalid nodes
             graph_data = self._filter_quality(graph_data)
 
-            # Step 5: Prune against schema
-            ctx.log("Step 5/9: Pruning against schema")
-            graph_data = self._prune(graph_data, self.schema)
+            # Step 5: Prune against ontology
+            ctx.log("Step 5/9: Pruning against ontology")
+            graph_data = self._prune(graph_data, self.ontology)
 
             # Step 6: Resolve duplicate entities
             ctx.log("Step 6/9: Resolving duplicates")
@@ -364,26 +364,26 @@ class IngestionPipeline:
             f"{len(part_of_rels)} PART_OF, {len(next_chunk_rels)} NEXT_CHUNK"
         )
 
-    def _prune(self, graph_data: GraphData, schema: GraphSchema) -> GraphData:
-        """Filter graph data to only include schema-conforming nodes and relationships.
+    def _prune(self, graph_data: GraphData, ontology: Ontology) -> GraphData:
+        """Filter graph data to only include ontology-conforming nodes and relationships.
 
-        Each check runs only when the corresponding schema section is populated:
+        Each check runs only when the corresponding ontology section is populated:
 
-        - ``schema.entities`` present → nodes whose label is not declared (or
+        - ``ontology.entities`` present → nodes whose label is not declared (or
           "Unknown") are dropped; otherwise all nodes pass.
-        - ``schema.relations`` present → relationships whose ``rel_type`` is not
+        - ``ontology.relations`` present → relationships whose ``rel_type`` is not
           declared are dropped, and each declared relation's ``patterns`` (when
           non-empty) filters by ``(src_label, tgt_label)``; otherwise all
           relationships whose endpoints survived node-pruning pass.
 
-        When both sections are empty the pipeline is in open-schema mode and
+        When both sections are empty the pipeline is in open-ontology mode and
         the graph is returned unchanged.
         """
-        if not schema.entities and not schema.relations:
+        if not ontology.entities and not ontology.relations:
             return graph_data
 
         # --- Node filtering (keep "Unknown" — low-confidence entities) ---
-        allowed_labels = {e.label for e in schema.entities}
+        allowed_labels = {e.label for e in ontology.entities}
         if allowed_labels:
             allowed_labels.add("Unknown")
             pruned_nodes = [n for n in graph_data.nodes if n.label in allowed_labels]
@@ -395,7 +395,7 @@ class IngestionPipeline:
         # --- Build relation catalog ---
         # label -> set of (src, tgt) pairs, or None for "open" (no pattern constraint).
         allowed_rels: dict[str, set[tuple[str, str]] | None] = {}
-        for rt in schema.relations:
+        for rt in ontology.relations:
             allowed_rels[rt.label] = set(rt.patterns) if rt.patterns else None
 
         # --- Relationship filtering ---

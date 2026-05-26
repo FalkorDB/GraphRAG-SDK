@@ -8,20 +8,20 @@ from graphrag_sdk.core.models import (
     DataModel,
     DocumentInfo,
     DocumentOutput,
-    EntityType,
+    Entity,
     FinalizeResult,
     GraphData,
     GraphNode,
     GraphRelationship,
-    GraphSchema,
+    Ontology,
     IngestionResult,
     ChatMessage,
     LLMMessage,
     LLMResponse,
-    PropertyType,
+    Attribute,
     RagResult,
     RawSearchResult,
-    RelationType,
+    Relation,
     ResolutionResult,
     RetrieverResult,
     RetrieverResultItem,
@@ -136,85 +136,85 @@ class TestDocumentModels:
 
 class TestSchemaTypes:
     def test_property_type(self):
-        pt = PropertyType(name="age", type="INTEGER")
+        pt = Attribute(name="age", type="INTEGER")
         assert pt.name == "age"
         assert pt.type == "INTEGER"
 
     def test_property_type_normalizes_case(self):
-        pt = PropertyType(name="age", type="integer")
+        pt = Attribute(name="age", type="integer")
         assert pt.type == "INTEGER"
 
     def test_property_type_rejects_unknown_type(self):
         with pytest.raises(ValidationError):
-            PropertyType(name="age", type="OBJECT")
+            Attribute(name="age", type="OBJECT")
 
     def test_relation_type_properties_default_empty(self):
-        rt = RelationType(label="WORKS_AT")
+        rt = Relation(label="WORKS_AT")
         assert rt.properties == []
 
     def test_relation_type_with_properties(self):
-        rt = RelationType(
+        rt = Relation(
             label="WORKS_AT",
-            properties=[PropertyType(name="since", type="DATE")],
+            properties=[Attribute(name="since", type="DATE")],
         )
         assert len(rt.properties) == 1
         assert rt.properties[0].type == "DATE"
 
     def test_graph_schema_roundtrips_through_json_file(self, tmp_path):
-        schema = GraphSchema(
+        ontology = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
                     description="A human",
                     properties=[
-                        PropertyType(name="age", type="INTEGER"),
-                        PropertyType(name="birth_date", type="DATE"),
+                        Attribute(name="age", type="INTEGER"),
+                        Attribute(name="birth_date", type="DATE"),
                     ],
                 )
             ],
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
                     patterns=[("Person", "Company")],
-                    properties=[PropertyType(name="since", type="DATE")],
+                    properties=[Attribute(name="since", type="DATE")],
                 ),
             ],
         )
         path = tmp_path / "ontology.json"
-        schema.save_to_file(str(path))
+        ontology.save_to_file(str(path))
         # File is real JSON and round-trippable.
-        loaded = GraphSchema.from_file(str(path))
-        assert loaded == schema
+        loaded = Ontology.from_file(str(path))
+        assert loaded == ontology
         # Indentation default is set so files are diff-friendly.
         text = path.read_text()
         assert "\n" in text
         assert "  " in text
 
     def test_graph_schema_merge_unions_entities_relations_and_properties(self):
-        a = GraphSchema(
+        a = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
-                    properties=[PropertyType(name="age", type="INTEGER")],
+                    properties=[Attribute(name="age", type="INTEGER")],
                 )
             ],
             relations=[
-                RelationType(label="WORKS_AT", patterns=[("Person", "Company")]),
+                Relation(label="WORKS_AT", patterns=[("Person", "Company")]),
             ],
         )
-        b = GraphSchema(
+        b = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
-                    properties=[PropertyType(name="dob", type="DATE")],
+                    properties=[Attribute(name="dob", type="DATE")],
                 ),
-                EntityType(label="Company"),
+                Entity(label="Company"),
             ],
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
                     patterns=[("Person", "Organization")],
-                    properties=[PropertyType(name="since", type="DATE")],
+                    properties=[Attribute(name="since", type="DATE")],
                 ),
             ],
         )
@@ -228,48 +228,48 @@ class TestSchemaTypes:
         assert {p.name for p in works.properties} == {"since"}
 
     def test_entity_type(self):
-        et = EntityType(label="Person", description="A human")
+        et = Entity(label="Person", description="A human")
         assert et.label == "Person"
         assert et.properties == []
 
     def test_entity_type_hash(self):
-        e1 = EntityType(label="Person")
-        e2 = EntityType(label="Person", description="Different desc")
+        e1 = Entity(label="Person")
+        e2 = Entity(label="Person", description="Different desc")
         assert hash(e1) == hash(e2)
 
     def test_relation_type(self):
-        rt = RelationType(label="KNOWS", description="Social link")
+        rt = Relation(label="KNOWS", description="Social link")
         assert rt.label == "KNOWS"
         assert rt.patterns == []
-        assert hash(rt) == hash(RelationType(label="KNOWS"))
+        assert hash(rt) == hash(Relation(label="KNOWS"))
 
     def test_relation_type_with_patterns(self):
-        rt = RelationType(
+        rt = Relation(
             label="WORKS_AT",
             patterns=[("Person", "Company"), ("Person", "Organization")],
         )
         assert len(rt.patterns) == 2
         assert ("Person", "Company") in rt.patterns
 
-    def test_graph_schema(self, sample_schema):
-        assert len(sample_schema.entities) == 2
-        assert len(sample_schema.relations) == 2
-        assert len(sample_schema.relations[0].patterns) == 1
+    def test_graph_schema(self, sample_ontology):
+        assert len(sample_ontology.entities) == 2
+        assert len(sample_ontology.relations) == 2
+        assert len(sample_ontology.relations[0].patterns) == 1
 
     def test_empty_schema(self):
-        schema = GraphSchema()
-        assert schema.entities == []
-        assert schema.relations == []
+        ontology = Ontology()
+        assert ontology.entities == []
+        assert ontology.relations == []
 
     def test_graph_schema_warns_on_undeclared_pattern_label(self, caplog):
         """A2: catch typos like 'Persn' at config time, not later in pruning."""
         import logging
 
         with caplog.at_level(logging.WARNING, logger="graphrag_sdk.core.models"):
-            GraphSchema(
-                entities=[EntityType(label="Person"), EntityType(label="Company")],
+            Ontology(
+                entities=[Entity(label="Person"), Entity(label="Company")],
                 relations=[
-                    RelationType(label="WORKS_AT", patterns=[("Persn", "Company")]),
+                    Relation(label="WORKS_AT", patterns=[("Persn", "Company")]),
                 ],
             )
 
@@ -283,8 +283,8 @@ class TestSchemaTypes:
         import logging
 
         with caplog.at_level(logging.WARNING, logger="graphrag_sdk.core.models"):
-            GraphSchema(
-                relations=[RelationType(label="X", patterns=[("Anything", "Goes")])],
+            Ontology(
+                relations=[Relation(label="X", patterns=[("Anything", "Goes")])],
             )
 
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]

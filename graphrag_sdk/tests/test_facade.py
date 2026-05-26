@@ -62,12 +62,12 @@ def graphrag(mock_conn, embedder, llm):
 
 
 @pytest.fixture
-def graphrag_with_schema(mock_conn, embedder, llm, sample_schema):
+def graphrag_with_schema(mock_conn, embedder, llm, sample_ontology):
     return GraphRAG(
         connection=mock_conn,
         llm=llm,
         embedder=embedder,
-        schema=sample_schema,
+        ontology=sample_ontology,
         embedding_dimension=8,
     )
 
@@ -96,11 +96,11 @@ class TestGraphRAGInit:
         assert g._conn.config.host == "testhost"
 
     def test_default_schema(self, graphrag):
-        assert graphrag.schema is not None
-        assert graphrag.schema.entities == []
+        assert graphrag.ontology is not None
+        assert graphrag.ontology.entities == []
 
-    def test_custom_schema(self, graphrag_with_schema, sample_schema):
-        assert graphrag_with_schema.schema is sample_schema
+    def test_custom_schema(self, graphrag_with_schema, sample_ontology):
+        assert graphrag_with_schema.ontology is sample_ontology
 
     def test_default_retrieval_strategy(self, graphrag):
         from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
@@ -295,11 +295,11 @@ class TestGraphRAGDefaultExtractor:
         extractor = g._default_extractor()
         assert isinstance(extractor, GraphExtraction)
 
-    def test_default_extractor_uses_schema_types(self, mock_conn, embedder, llm, sample_schema):
+    def test_default_extractor_uses_schema_types(self, mock_conn, embedder, llm, sample_ontology):
         """Schema entity types should be passed to GraphExtraction."""
         from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 
-        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, schema=sample_schema, embedding_dimension=8)
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, ontology=sample_ontology, embedding_dimension=8)
         extractor = g._default_extractor()
         assert isinstance(extractor, GraphExtraction)
         assert "Person" in extractor.entity_types

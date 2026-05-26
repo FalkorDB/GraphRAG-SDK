@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from graphrag_sdk.core.models import (
-    EntityType,
-    GraphSchema,
-    PropertyType,
-    RelationType,
+    Entity,
+    Ontology,
+    Attribute,
+    Relation,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     VERIFY_EXTRACT_RELS_PROMPT,
@@ -16,33 +16,33 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     _JSON_EXAMPLE_WITH_ATTRS,
     _coerce_attribute_value,
     _coerce_attributes,
-    _render_attribute_schema_block,
-    _schema_has_attributes,
+    _render_attribute_block,
+    _ontology_has_attributes,
 )
 
 
-# ── _render_attribute_schema_block ──────────────────────────────
+# ── _render_attribute_block ──────────────────────────────
 
 
 class TestRenderAttributeSchemaBlock:
     def test_empty_schema_renders_empty(self):
-        assert _render_attribute_schema_block(GraphSchema()) == ""
+        assert _render_attribute_block(Ontology()) == ""
 
     def test_schema_with_no_attributes_renders_empty(self):
-        s = GraphSchema(entities=[EntityType(label="Person")])
-        assert _render_attribute_schema_block(s) == ""
+        s = Ontology(entities=[Entity(label="Person")])
+        assert _render_attribute_block(s) == ""
 
     def test_includes_only_types_with_declared_properties(self):
-        s = GraphSchema(
+        s = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
-                    properties=[PropertyType(name="age", type="INTEGER")],
+                    properties=[Attribute(name="age", type="INTEGER")],
                 ),
-                EntityType(label="Company"),  # no properties; should not appear
+                Entity(label="Company"),  # no properties; should not appear
             ],
         )
-        block = _render_attribute_schema_block(s)
+        block = _render_attribute_block(s)
         assert "Person" in block
         assert "age (INTEGER)" in block
         # Bare Company without a colon shouldn't appear; the only "Company"
@@ -50,16 +50,16 @@ class TestRenderAttributeSchemaBlock:
         assert "- Company:" not in block
 
     def test_renders_relation_attributes(self):
-        s = GraphSchema(
-            entities=[EntityType(label="Person"), EntityType(label="Company")],
+        s = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
-                    properties=[PropertyType(name="since", type="DATE")],
+                    properties=[Attribute(name="since", type="DATE")],
                 ),
             ],
         )
-        block = _render_attribute_schema_block(s)
+        block = _render_attribute_block(s)
         assert "Relation attributes" in block
         assert "WORKS_AT" in block
         assert "since (DATE)" in block
@@ -67,29 +67,29 @@ class TestRenderAttributeSchemaBlock:
 
 class TestSchemaHasAttributes:
     def test_empty_schema(self):
-        assert _schema_has_attributes(GraphSchema()) is False
+        assert _ontology_has_attributes(Ontology()) is False
 
     def test_only_entity_attrs(self):
-        s = GraphSchema(
+        s = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
-                    properties=[PropertyType(name="age", type="INTEGER")],
+                    properties=[Attribute(name="age", type="INTEGER")],
                 )
             ]
         )
-        assert _schema_has_attributes(s) is True
+        assert _ontology_has_attributes(s) is True
 
     def test_only_relation_attrs(self):
-        s = GraphSchema(
+        s = Ontology(
             relations=[
-                RelationType(
+                Relation(
                     label="WORKS_AT",
-                    properties=[PropertyType(name="since", type="DATE")],
+                    properties=[Attribute(name="since", type="DATE")],
                 )
             ]
         )
-        assert _schema_has_attributes(s) is True
+        assert _ontology_has_attributes(s) is True
 
 
 # ── _coerce_attribute_value ──────────────────────────────────────
@@ -127,9 +127,9 @@ class TestCoerceAttributes:
         """Result shape is uniform: every declared key is present, with the
         coerced value or None. Never drop the enclosing record."""
         declared = {
-            "age": PropertyType(name="age", type="INTEGER"),
-            "birth_date": PropertyType(name="birth_date", type="DATE"),
-            "nickname": PropertyType(name="nickname", type="STRING"),
+            "age": Attribute(name="age", type="INTEGER"),
+            "birth_date": Attribute(name="birth_date", type="DATE"),
+            "nickname": Attribute(name="nickname", type="STRING"),
         }
         result = _coerce_attributes(
             {"age": "56", "birth_date": "1867-11-07"}, declared
@@ -137,11 +137,11 @@ class TestCoerceAttributes:
         assert result == {"age": 56, "birth_date": "1867-11-07", "nickname": None}
 
     def test_uncoercible_value_becomes_none(self):
-        declared = {"age": PropertyType(name="age", type="INTEGER")}
+        declared = {"age": Attribute(name="age", type="INTEGER")}
         assert _coerce_attributes({"age": "abc"}, declared) == {"age": None}
 
     def test_undeclared_keys_are_ignored(self):
-        declared = {"age": PropertyType(name="age", type="INTEGER")}
+        declared = {"age": Attribute(name="age", type="INTEGER")}
         result = _coerce_attributes({"age": 56, "unknown": "x"}, declared)
         assert result == {"age": 56}
 
@@ -151,11 +151,11 @@ class TestCoerceAttributes:
 
 class TestPromptTemplate:
     def test_property_less_schema_keeps_block_empty(self):
-        s = GraphSchema(entities=[EntityType(label="Person")])
+        s = Ontology(entities=[Entity(label="Person")])
         prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
             entity_types="Person",
             relation_patterns="",
-            attribute_schema_block=_render_attribute_schema_block(s),
+            attribute_block=_render_attribute_block(s),
             relationship_type_instruction="- type: ...\n",
             entities_json="[]",
             text="...",
@@ -167,18 +167,18 @@ class TestPromptTemplate:
         assert '"description": "..."' in prompt
 
     def test_schema_with_attributes_injects_section_and_example(self):
-        s = GraphSchema(
+        s = Ontology(
             entities=[
-                EntityType(
+                Entity(
                     label="Person",
-                    properties=[PropertyType(name="age", type="INTEGER")],
+                    properties=[Attribute(name="age", type="INTEGER")],
                 ),
             ]
         )
         prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
             entity_types="Person",
             relation_patterns="",
-            attribute_schema_block=_render_attribute_schema_block(s),
+            attribute_block=_render_attribute_block(s),
             relationship_type_instruction="- type: ...\n",
             entities_json="[]",
             text="...",
@@ -186,6 +186,6 @@ class TestPromptTemplate:
         )
         assert "## Attribute extraction" in prompt
         assert "age (INTEGER)" in prompt
-        # The example output schema must mention attributes so the LLM
+        # The example output ontology must mention attributes so the LLM
         # knows to include the field.
         assert '"attributes"' in prompt
