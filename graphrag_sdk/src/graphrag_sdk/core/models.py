@@ -596,3 +596,33 @@ class SearchType(str, Enum):
     VECTOR = "vector"
     FULLTEXT = "fulltext"
     HYBRID = "hybrid"
+
+
+# ── Deprecation aliases ──────────────────────────────────────────
+#
+# These older names were used prior to the v1.2.x ontology vocabulary rename
+# (commit 363a53d). We keep them importable so existing code keeps working,
+# but every access emits a ``DeprecationWarning`` pointing at the new name.
+# Once downstream callers have migrated we can drop this shim.
+
+_LEGACY_MODEL_ALIASES: dict[str, str] = {
+    "GraphSchema": "Ontology",
+    "EntityType": "Entity",
+    "RelationType": "Relation",
+    "PropertyType": "Attribute",
+}
+
+
+def __getattr__(name: str) -> Any:  # PEP 562
+    if name in _LEGACY_MODEL_ALIASES:
+        import warnings
+
+        new_name = _LEGACY_MODEL_ALIASES[name]
+        warnings.warn(
+            f"`{name}` has been renamed to `{new_name}` (graphrag_sdk v1.2+). "
+            f"Update your imports — the alias will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

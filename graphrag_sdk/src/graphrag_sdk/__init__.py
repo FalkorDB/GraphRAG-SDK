@@ -26,6 +26,7 @@ from graphrag_sdk.core.exceptions import (
 )
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
+    Attribute,
     BatchEntry,
     ChatMessage,
     DataModel,
@@ -126,6 +127,7 @@ __all__ = [
     "DeleteDocumentResult",
     "DocumentInfo",
     "DocumentNotFoundError",
+    "Attribute",
     "DocumentOutput",
     "DocumentRecord",
     "Embedder",
@@ -183,3 +185,41 @@ __all__ = [
     "GraphStore",
     "VectorStore",
 ]
+
+
+# ── Deprecation aliases ──────────────────────────────────────────
+#
+# Older names from before the v1.2.x ontology rename (commit 363a53d).
+# Importing the old names still works but emits a ``DeprecationWarning``.
+
+_LEGACY_TOP_LEVEL_ALIASES: dict[str, str] = {
+    "GraphSchema": "Ontology",
+    "EntityType": "Entity",
+    "RelationType": "Relation",
+    "PropertyType": "Attribute",
+    "SchemaModificationNotAllowedError": "OntologyModificationNotAllowedError",
+}
+
+
+def __getattr__(name: str):  # PEP 562
+    if name in _LEGACY_TOP_LEVEL_ALIASES:
+        import warnings
+
+        new_name = _LEGACY_TOP_LEVEL_ALIASES[name]
+        warnings.warn(
+            f"`graphrag_sdk.{name}` has been renamed to "
+            f"`graphrag_sdk.{new_name}` (v1.2+). Update your imports — "
+            f"the alias will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if name == "SchemaModificationNotAllowedError":
+            from graphrag_sdk.storage.ontology_store import (
+                OntologyModificationNotAllowedError,
+            )
+
+            return OntologyModificationNotAllowedError
+        from graphrag_sdk.core import models as _models
+
+        return getattr(_models, new_name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

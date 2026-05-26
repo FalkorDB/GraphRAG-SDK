@@ -386,3 +386,21 @@ class OntologyStore:
             else:
                 raise
         self._graph = None
+
+
+# ── Deprecation aliases ──────────────────────────────────────────
+
+
+def __getattr__(name: str):  # PEP 562
+    if name == "SchemaModificationNotAllowedError":
+        import warnings
+
+        warnings.warn(
+            "`SchemaModificationNotAllowedError` has been renamed to "
+            "`OntologyModificationNotAllowedError` (graphrag_sdk v1.2+). "
+            "Update your imports — the alias will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return OntologyModificationNotAllowedError
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

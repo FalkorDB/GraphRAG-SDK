@@ -180,7 +180,28 @@ class GraphRAG:
         ontology: Ontology | None = None,
         retrieval_strategy: RetrievalStrategy | None = None,
         embedding_dimension: int = 256,
+        *,
+        schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
+        # Back-compat: accept the legacy ``schema=`` kwarg and forward to
+        # ``ontology=``. Removed in a future release; see deprecation notes.
+        if schema is not None:
+            import warnings
+
+            if ontology is not None:
+                raise TypeError(
+                    "GraphRAG() received both `ontology=` and `schema=`. "
+                    "Use `ontology=` only; `schema=` is deprecated."
+                )
+            warnings.warn(
+                "The `schema=` keyword argument has been renamed to `ontology=` "
+                "(graphrag_sdk v1.2+). Update your call site — the alias will be "
+                "removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            ontology = schema
+
         # Connection
         if isinstance(connection, ConnectionConfig):
             self._conn = FalkorDBConnection(connection)
@@ -253,6 +274,39 @@ class GraphRAG:
     async def close(self) -> None:
         """Close the underlying database connection."""
         await self._conn.close()
+
+    # ── Deprecated aliases ───────────────────────────────────────
+
+    @property
+    def schema(self) -> Ontology:
+        """DEPRECATED: use :py:attr:`ontology` instead.
+
+        Kept as a property so existing code reading ``rag.schema`` keeps
+        working; emits a :py:class:`DeprecationWarning` on each access.
+        """
+        import warnings
+
+        warnings.warn(
+            "`GraphRAG.schema` has been renamed to `GraphRAG.ontology` "
+            "(graphrag_sdk v1.2+). Update your access — the alias will be "
+            "removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.ontology
+
+    @schema.setter
+    def schema(self, value: Ontology) -> None:
+        import warnings
+
+        warnings.warn(
+            "`GraphRAG.schema` has been renamed to `GraphRAG.ontology` "
+            "(graphrag_sdk v1.2+). Assigning via the legacy alias still "
+            "works but will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.ontology = value
 
     # ── Ontology ─────────────────────────────────────────────────
 
