@@ -88,7 +88,27 @@ class IngestionPipeline:
         graph_store: Any,  # storage.GraphStore — import avoided for layering
         vector_store: Any,  # storage.VectorStore
         ontology: Ontology | None = None,
+        *,
+        schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
+        # Back-compat: legacy ``schema=`` kwarg forwards to ``ontology=``.
+        if schema is not None:
+            import warnings
+
+            if ontology is not None:
+                raise TypeError(
+                    "IngestionPipeline() received both `ontology=` and `schema=`. "
+                    "Use `ontology=` only; `schema=` is deprecated."
+                )
+            warnings.warn(
+                "The `schema=` keyword argument on IngestionPipeline has been "
+                "renamed to `ontology=` (graphrag_sdk v1.2+). Update your call "
+                "site — the alias will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            ontology = schema
+
         self.loader = loader
         self.chunker = chunker
         self.extractor = extractor

@@ -212,3 +212,114 @@ class TestGraphRAGAttributeAlias:
         ]
         assert deps
         assert rag.ontology is new_ontology
+
+
+# ── IngestionPipeline schema= kwarg ──────────────────────────────
+
+
+class TestIngestionPipelineKwargAlias:
+    def _stubs(self):
+        from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
+        from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+        from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+        from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+
+        return dict(
+            loader=MagicMock(spec=LoaderStrategy),
+            chunker=MagicMock(spec=ChunkingStrategy),
+            extractor=MagicMock(spec=ExtractionStrategy),
+            resolver=MagicMock(spec=ResolutionStrategy),
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+        )
+
+    def test_schema_kwarg_warns_and_forwards(self):
+        from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+
+        ontology = Ontology(entities=[Entity(label="Person")])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            pipe = IngestionPipeline(**self._stubs(), schema=ontology)
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "schema=" in str(x.message)
+        ]
+        assert deps
+        assert pipe.ontology is ontology
+
+    def test_both_ontology_and_schema_raises(self):
+        from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+
+        with pytest.raises(TypeError, match="both"):
+            IngestionPipeline(**self._stubs(), ontology=Ontology(), schema=Ontology())
+
+    def test_only_ontology_does_not_warn(self):
+        from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+
+        ontology = Ontology(entities=[Entity(label="Person")])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            pipe = IngestionPipeline(**self._stubs(), ontology=ontology)
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "schema=" in str(x.message)
+        ]
+        assert not deps
+        assert pipe.ontology is ontology
+
+
+# ── MultiPathRetrieval schema= kwarg ─────────────────────────────
+
+
+class TestMultiPathRetrievalKwargAlias:
+    def _stubs(self):
+        return dict(
+            graph_store=MagicMock(),
+            vector_store=MagicMock(),
+            embedder=_StubEmbedder(),
+            llm=_StubLLM(),
+        )
+
+    def test_schema_kwarg_warns_and_forwards(self):
+        from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+        ontology = Ontology(entities=[Entity(label="Person")])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            retrieval = MultiPathRetrieval(**self._stubs(), schema=ontology)
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "schema=" in str(x.message)
+        ]
+        assert deps
+        assert retrieval._ontology is ontology
+
+    def test_both_ontology_and_schema_raises(self):
+        from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+        with pytest.raises(TypeError, match="both"):
+            MultiPathRetrieval(
+                **self._stubs(), ontology=Ontology(), schema=Ontology()
+            )
+
+    def test_only_ontology_does_not_warn(self):
+        from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+        ontology = Ontology(entities=[Entity(label="Person")])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            retrieval = MultiPathRetrieval(**self._stubs(), ontology=ontology)
+        deps = [
+            x
+            for x in w
+            if issubclass(x.category, DeprecationWarning)
+            and "schema=" in str(x.message)
+        ]
+        assert not deps
+        assert retrieval._ontology is ontology

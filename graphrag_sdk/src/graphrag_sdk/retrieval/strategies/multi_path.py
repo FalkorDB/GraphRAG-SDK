@@ -177,7 +177,26 @@ class MultiPathRetrieval(RetrievalStrategy):
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
         ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
+        schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
+        # Back-compat: legacy ``schema=`` kwarg forwards to ``ontology=``.
+        if schema is not None:
+            import warnings
+
+            if ontology is not None:
+                raise TypeError(
+                    "MultiPathRetrieval() received both `ontology=` and "
+                    "`schema=`. Use `ontology=` only; `schema=` is deprecated."
+                )
+            warnings.warn(
+                "The `schema=` keyword argument on MultiPathRetrieval has "
+                "been renamed to `ontology=` (graphrag_sdk v1.2+). Update "
+                "your call site — the alias will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            ontology = schema
+
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
         self._llm = llm
