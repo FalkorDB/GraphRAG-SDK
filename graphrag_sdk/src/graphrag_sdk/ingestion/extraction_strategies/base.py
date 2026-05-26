@@ -12,7 +12,7 @@ from graphrag_sdk.core.models import GraphData, Ontology, TextChunks
 class ExtractionStrategy(ABC):
     """Abstract base class for entity/relationship extraction strategies.
 
-    An extraction strategy takes text chunks and a ontology, then returns
+    An extraction strategy takes text chunks and an ontology, then returns
     ``GraphData`` containing extracted nodes and relationships.
 
     The ontology constrains the extraction — implementations should respect

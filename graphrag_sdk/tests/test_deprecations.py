@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
+from graphrag_sdk.core.connection import ConnectionConfig
+from graphrag_sdk.core.models import Attribute, Entity, Ontology
 
 
 class _StubLLM:
@@ -58,7 +58,7 @@ class TestModuleLevelClassAliases:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            obj = getattr(graphrag_sdk, old)
+            getattr(graphrag_sdk, old)
         deps = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert deps, f"expected DeprecationWarning for graphrag_sdk.{old}"
         assert old in str(deps[0].message)
@@ -78,7 +78,7 @@ class TestModuleLevelClassAliases:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            obj = getattr(_models, old)
+            getattr(_models, old)
         deps = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert deps, f"expected DeprecationWarning for core.models.{old}"
 
@@ -157,8 +157,7 @@ class TestGraphRAGKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert deps, "expected DeprecationWarning when passing schema= kwarg"
         assert rag.ontology is ontology
@@ -175,8 +174,7 @@ class TestGraphRAGKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert not deps
         assert rag.ontology is ontology
@@ -192,8 +190,7 @@ class TestGraphRAGAttributeAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "GraphRAG.schema" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "GraphRAG.schema" in str(x.message)
         ]
         assert deps
         assert out is rag.ontology
@@ -207,8 +204,7 @@ class TestGraphRAGAttributeAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "GraphRAG.schema" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "GraphRAG.schema" in str(x.message)
         ]
         assert deps
         assert rag.ontology is new_ontology
@@ -243,8 +239,7 @@ class TestIngestionPipelineKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert deps
         assert pipe.ontology is ontology
@@ -265,8 +260,7 @@ class TestIngestionPipelineKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert not deps
         assert pipe.ontology is ontology
@@ -294,8 +288,7 @@ class TestMultiPathRetrievalKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert deps
         assert retrieval._ontology is ontology
@@ -304,9 +297,7 @@ class TestMultiPathRetrievalKwargAlias:
         from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
         with pytest.raises(TypeError, match="both"):
-            MultiPathRetrieval(
-                **self._stubs(), ontology=Ontology(), schema=Ontology()
-            )
+            MultiPathRetrieval(**self._stubs(), ontology=Ontology(), schema=Ontology())
 
     def test_only_ontology_does_not_warn(self):
         from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
@@ -318,8 +309,7 @@ class TestMultiPathRetrievalKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert not deps
         assert retrieval._ontology is ontology
@@ -382,8 +372,7 @@ class TestCypherGenerationLegacyNames:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert deps
         assert errors == []
@@ -408,6 +397,7 @@ class TestOntologyStoreRegisterKwargAlias:
 
     def _make_store(self):
         from types import SimpleNamespace
+
         from graphrag_sdk.storage.ontology_store import OntologyStore
 
         class _FakeGraph:
@@ -429,8 +419,7 @@ class TestOntologyStoreRegisterKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert deps
 
@@ -450,7 +439,6 @@ class TestOntologyStoreRegisterKwargAlias:
         deps = [
             x
             for x in w
-            if issubclass(x.category, DeprecationWarning)
-            and "schema=" in str(x.message)
+            if issubclass(x.category, DeprecationWarning) and "schema=" in str(x.message)
         ]
         assert not deps

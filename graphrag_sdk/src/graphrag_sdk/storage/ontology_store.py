@@ -21,11 +21,17 @@ and is the **anchor** for the working ontology:
   The latter is reserved for a future ontology-evolution API that updates the
   data graph in lockstep with the ontology, keeping the two aligned.
 
+The ontology graph **accumulates new labels** across ingest passes, but it is
+not free-form additive: existing labels are frozen by :py:meth:`register` to
+keep the ontology and the data graph aligned. A future ontology-evolution
+API will support extending existing labels in lockstep with data updates.
+
 Users who want a curated, declarative ontology (descriptions, future flags,
-properties not yet observed in the data) supply a ``ontology`` to ``GraphRAG``;
-it gets registered into the ontology graph on first connection. JSON
-import/export via :py:meth:`Ontology.save_to_file` / ``from_file`` is a
-review / version-control bridge — the ontology graph is the canonical copy.
+properties not yet observed in the data) supply an ``ontology`` to
+``GraphRAG``; it gets registered into the ontology graph on first
+connection. JSON import/export via :py:meth:`Ontology.save_to_file` /
+``from_file`` is a review / version-control bridge — the ontology graph is
+the canonical copy.
 """
 
 from __future__ import annotations

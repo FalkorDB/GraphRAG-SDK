@@ -345,8 +345,8 @@ class GraphRAG:
                 ", ".join(DEFAULT_ENTITY_TYPES),
             )
             self._global_ontology = await self._ontology_store.register(default_schema)
-        if hasattr(self._retrieval_strategy, "_schema"):
-            self._retrieval_strategy._schema = self._global_ontology
+        if hasattr(self._retrieval_strategy, "_ontology"):
+            self._retrieval_strategy._ontology = self._global_ontology
         self._ontology_initialized = True
 
     async def get_ontology(self) -> Ontology:
@@ -362,8 +362,8 @@ class GraphRAG:
         # has registered new types since our last ensure_initialized.
         loaded = await self._ontology_store.load()
         self._global_ontology = loaded
-        if hasattr(self._retrieval_strategy, "_schema"):
-            self._retrieval_strategy._schema = self._global_ontology
+        if hasattr(self._retrieval_strategy, "_ontology"):
+            self._retrieval_strategy._ontology = self._global_ontology
         return self._global_ontology
 
     async def refresh_ontology(self) -> Ontology:
@@ -1179,6 +1179,11 @@ class GraphRAG:
         pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"
         pending_doc_info = DocumentInfo(uid=pending_id, path=doc_path, metadata=loaded_metadata)
 
+        # Mirror the ingest path: ensure the persisted ontology is loaded and
+        # any user-supplied schema is registered before the pipeline runs.
+        # Contradictions surface here rather than mid-extraction.
+        await self._ensure_ontology_initialized()
+
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),  # unused (text is provided below)
             chunker=chunker or SentenceTokenCapChunking(),
@@ -1186,7 +1191,7 @@ class GraphRAG:
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
-            ontology=self.ontology,
+            ontology=self._global_ontology,
         )
 
         try:
