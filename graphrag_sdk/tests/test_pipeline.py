@@ -696,5 +696,3 @@ class TestPruneMethod:
         # Total count is reported, but the sampled list does not contain 50 entries.
         assert "Pruned 50" in msg
         assert msg.count("('Company', 'Person')") <= 3
-
-

@@ -805,8 +805,11 @@ class GraphExtraction(ExtractionStrategy):
             spans = getattr(ent, "spans", None)
             if spans:
                 props["spans"] = spans
-            # Merge ontology-declared attributes. Reserved-name collisions are
-            # rejected at ontology-validation time, so update() is safe.
+            # Merge ontology-declared attributes. The ontology layer does NOT
+            # validate against SDK-reserved keys (name, type, description,
+            # source_chunk_ids, spans, id) — declaring an Attribute with one
+            # of those names will shadow the system value. This is documented
+            # as user-responsibility; the trade-off is the smaller API surface.
             if ent.attributes:
                 props.update(ent.attributes)
             nodes.append(

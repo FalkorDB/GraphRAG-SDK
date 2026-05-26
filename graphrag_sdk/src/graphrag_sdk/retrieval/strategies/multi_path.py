@@ -13,6 +13,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
+    Ontology,
     RawSearchResult,
     RetrieverResult,
     RetrieverResultItem,
@@ -175,7 +176,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
-        ontology: Any | None = None,  # Ontology; forwarded to Cypher generation when enable_cypher
+        ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
     ) -> None:
         super().__init__(graph_store=graph_store, vector_store=vector_store)
         self._embedder = embedder
