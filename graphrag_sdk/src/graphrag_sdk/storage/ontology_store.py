@@ -66,7 +66,7 @@ class OntologyModificationNotAllowedError(ValueError):
     (with whatever attributes the user wants) and re-declare existing labels
     *exactly* (or with a strict subset of their persisted properties / patterns).
     It cannot add attributes / patterns / fields to an already-registered
-    label — that's a ontology-evolution operation that has to also update
+    label — that's an ontology-evolution operation that has to also update
     existing graph data to keep the two in sync, which is handled by a separate
     API path (not yet implemented).
 
@@ -316,7 +316,7 @@ class OntologyStore:
                     f"Refusing to add new attribute(s) {sorted(new_prop_names)} "
                     f"to existing label '{et.label}'. The ingest path only "
                     f"accepts new labels; modifying an existing label requires "
-                    f"a ontology-evolution operation (not yet supported). "
+                    f"an ontology-evolution operation (not yet supported). "
                     f"Workaround: `await rag.delete_all()` and re-ingest with "
                     f"the updated ontology."
                 )
@@ -339,7 +339,7 @@ class OntologyStore:
                 raise OntologyModificationNotAllowedError(
                     f"Refusing to add {' and '.join(diffs)} to existing relation "
                     f"'{rt.label}'. The ingest path only accepts new relation "
-                    f"types; modifying an existing one requires a ontology-evolution "
+                    f"types; modifying an existing one requires an ontology-evolution "
                     f"operation (not yet supported)."
                 )
 

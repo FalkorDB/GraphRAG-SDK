@@ -110,6 +110,11 @@ from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 
 # ── Storage ─────────────────────────────────────────────────────
 from graphrag_sdk.storage.graph_store import GraphStore
+from graphrag_sdk.storage.ontology_store import (
+    OntologyContradictionError,
+    OntologyModificationNotAllowedError,
+    OntologyStore,
+)
 from graphrag_sdk.storage.vector_store import VectorStore
 
 __all__ = [
@@ -183,6 +188,9 @@ __all__ = [
     "RetrievalStrategy",
     # Storage
     "GraphStore",
+    "OntologyContradictionError",
+    "OntologyModificationNotAllowedError",
+    "OntologyStore",
     "VectorStore",
 ]
 
