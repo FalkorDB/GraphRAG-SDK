@@ -260,6 +260,41 @@ class TestRetypeProperty:
         assert not any("SET p.type" in c[0] for c in fake.calls)
 
 
+class TestAddPropertyRefusesRetype:
+    """``add_entity_property`` / ``add_relation_property`` must NOT silently
+    retype an existing property — without this guard a stray
+    ``add_attribute('Person', Attribute(name='age', type='STRING'))`` on a
+    Person.age INTEGER would mutate the schema in place. Use
+    ``retype_property`` / ``GraphRAG.retype_attribute`` for deliberate
+    type changes."""
+
+    @pytest.mark.asyncio
+    async def test_add_entity_property_raises_on_type_conflict(self, store_factory):
+        from graphrag_sdk.storage.ontology_store import OntologyContradictionError
+
+        store, fake = store_factory()
+
+        # Patch the type-check probe to report an existing INTEGER.
+        async def _scripted_query(cypher, params=None):
+            fake.calls.append((cypher, params))
+            from types import SimpleNamespace
+
+            if "RETURN p.type AS type LIMIT 1" in cypher:
+                return SimpleNamespace(result_set=[["INTEGER"]])
+            return SimpleNamespace(result_set=[])
+
+        fake.query = _scripted_query  # type: ignore[method-assign]
+        with pytest.raises(OntologyContradictionError, match="already registered"):
+            await store.add_entity_property(
+                "Person", Attribute(name="age", type="STRING")
+            )
+        # No SET p.type write — the contradiction check fires before the upsert.
+        assert not any(
+            "MERGE (e)-[:HAS_PROPERTY]" in c[0] and "SET p.type" in c[0]
+            for c in fake.calls
+        )
+
+
 # ── GraphRAG orchestration: Group 1 ──────────────────────────────
 
 
@@ -296,9 +331,18 @@ class TestAddDeclarations:
         graphrag_evolving._ontology_store.register.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_add_attribute_requires_known_entity(self, graphrag_evolving):
-        with pytest.raises(ValueError, match="Unknown entity"):
+    async def test_add_attribute_requires_known_label(self, graphrag_evolving):
+        with pytest.raises(ValueError, match="Unknown ontology label"):
             await graphrag_evolving.add_attribute("Alien", Attribute(name="x"))
+
+    @pytest.mark.asyncio
+    async def test_add_attribute_on_relation_calls_relation_property(self, graphrag_evolving):
+        attr = Attribute(name="since", type="DATE")
+        await graphrag_evolving.add_attribute("WORKS_AT", attr)
+        graphrag_evolving._ontology_store.add_relation_property.assert_awaited_once_with(
+            "WORKS_AT", attr
+        )
+        graphrag_evolving._ontology_store.add_entity_property.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_add_attribute_calls_lower_level_primitive(self, graphrag_evolving):
@@ -333,6 +377,41 @@ class TestRenameEntity:
     async def test_no_op_when_old_equals_new(self, graphrag_evolving):
         await graphrag_evolving.rename_entity("Person", "Person")
         graphrag_evolving._graph_store.rename_label.assert_not_awaited()
+
+
+class TestRenameAttributeValidation:
+    """``rename_attribute`` must refuse silent no-ops (typoed old_name) and
+    silent overwrites (collision on new_name) — without this guard a
+    misspelled rename does nothing or stamps over existing values."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_old_name(self, graphrag_evolving):
+        with pytest.raises(ValueError, match="Unknown attribute"):
+            await graphrag_evolving.rename_attribute("Person", "nonexistent", "new")
+        graphrag_evolving._graph_store.rename_node_property.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_existing_new_name(self, graphrag_evolving, evolving_ontology):
+        # Add a second attribute so we can test collision detection.
+        person = next(e for e in evolving_ontology.entities if e.label == "Person")
+        person.properties.append(Attribute(name="email", type="STRING"))
+        with pytest.raises(ValueError, match="already exists"):
+            await graphrag_evolving.rename_attribute("Person", "age", "email")
+        graphrag_evolving._graph_store.rename_node_property.assert_not_awaited()
+
+
+class TestRefreshGlobalOntologySyncsSelf:
+    """``_refresh_global_ontology`` must update ``self.ontology`` in lockstep
+    so a later ``ingest()`` (which reads ``self.ontology.entities`` in
+    ``_default_extractor``) sees the post-mutation label set."""
+
+    @pytest.mark.asyncio
+    async def test_self_ontology_updated(self, graphrag_evolving):
+        new_loaded = Ontology(entities=[Entity(label="Updated")])
+        graphrag_evolving._ontology_store.load = AsyncMock(return_value=new_loaded)
+        await graphrag_evolving._refresh_global_ontology()
+        assert graphrag_evolving._global_ontology is new_loaded
+        assert graphrag_evolving.ontology is new_loaded
 
 
 class TestRenameRelation:

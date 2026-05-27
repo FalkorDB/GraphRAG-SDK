@@ -489,13 +489,46 @@ class OntologyStore:
     # keeping the data graph in lockstep (or for explicitly running a backfill
     # to populate new structure on existing data).
 
+    async def _check_no_property_retype(
+        self,
+        owner_kind: OwnerKind,
+        owner_label: str,
+        attribute: Attribute,
+    ) -> None:
+        """Refuse to silently change the declared type of an existing property.
+
+        Raised pre-write so a stray ``add_entity_property(... type="STRING")``
+        on an existing INTEGER property doesn't silently retype the schema
+        (and leave the data graph mistyped). Use :py:meth:`retype_property`
+        or ``GraphRAG.retype_attribute`` / ``backfill_attribute_semantic``
+        to deliberately change types.
+        """
+        owner_lbl = "Entity" if owner_kind == "entity" else "Relation"
+        result = await self._query(
+            f"MATCH (o:{owner_lbl} {{label: $owner}})-[:HAS_PROPERTY]->"
+            "(p:Property {label: $name}) "
+            "RETURN p.type AS type LIMIT 1",
+            {"owner": owner_label, "name": attribute.name},
+        )
+        rows = getattr(result, "result_set", None) or []
+        if rows and rows[0] and rows[0][0] and rows[0][0] != attribute.type:
+            raise OntologyContradictionError(
+                f"Property '{owner_label}.{attribute.name}' is already registered "
+                f"as {rows[0][0]}; refusing to redefine as {attribute.type}. Use "
+                f"retype_property() to deliberately change the declared type."
+            )
+
     async def add_entity_property(self, entity_label: str, attribute: Attribute) -> None:
         """Attach a new ``Property`` node to an existing ``Entity``.
 
-        No-op if a property with the same name already hangs off this
-        entity. Description is coalesced (existing wins unless the caller
-        supplies a non-null one).
+        Idempotent on identical re-declarations. Raises
+        :py:class:`OntologyContradictionError` if the same property name
+        already exists with a different type — the caller must explicitly
+        ``retype_property`` (or ``backfill_attribute_semantic``) to
+        change a type. Description is coalesced (existing wins unless the
+        caller supplies a non-null one).
         """
+        await self._check_no_property_retype("entity", entity_label, attribute)
         await self._upsert_entity_property(entity_label, attribute)
 
     async def add_relation_property(self, rel_label: str, attribute: Attribute) -> None:
@@ -505,13 +538,16 @@ class OntologyStore:
 
         Mirrors how :py:meth:`_upsert_relation_type` lays out properties
         per-pattern, so the property appears uniformly across all patterns
-        of the relation.
+        of the relation. Raises :py:class:`OntologyContradictionError` on
+        type re-declaration (same semantics as
+        :py:meth:`add_entity_property`).
         """
+        await self._check_no_property_retype("relation", rel_label, attribute)
         await self._query(
             "MATCH (r:Relation {label: $rel_label}) "
             "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
-            "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            "ON CREATE SET p.type = $type "
+            "SET p.description = coalesce($description, p.description)",
             {
                 "rel_label": rel_label,
                 "name": attribute.name,

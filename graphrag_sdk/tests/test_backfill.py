@@ -74,6 +74,7 @@ def rag(embedder, small_ontology, mock_graph_store):
     rag._graph_store.list_node_values_for_semantic_coerce = AsyncMock(return_value=[])
     rag._graph_store.mark_chunk_extracted = AsyncMock()
     rag._graph_store.set_node_property_by_id = AsyncMock()
+    rag._graph_store.count_chunks_marked_with_op = AsyncMock(return_value=0)
     return rag
 
 
@@ -180,6 +181,54 @@ class TestBackfillAttribute:
         result = await rag.backfill_attribute("Person", "email")
         assert result.operation_id == "backfill_attribute:Person:email"
 
+    @pytest.mark.asyncio
+    async def test_lookup_keys_by_both_name_and_id(self, rag):
+        """If the LLM echoes the entity id (because the entity had no name and
+        the prompt fell back to id), the merge must still match — keying by
+        name alone would silently drop the value."""
+        rag.llm = MockLLM(responses=[json.dumps({"results": {"alice-id-7": "42"}})])
+        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "c1",
+                    "chunk_text": "...",
+                    # Entity has no name — only an id.
+                    "entities": [{"id": "alice-id-7", "name": None}],
+                }
+            ]
+        )
+        result = await rag.backfill_attribute("Person", "age")
+        assert result.values_filled == 1
+        rag._graph_store.set_node_property_by_id.assert_awaited_once_with(
+            "Person", "alice-id-7", "age", 42
+        )
+
+    @pytest.mark.asyncio
+    async def test_chunks_skipped_reflects_prior_run(self, rag):
+        """``chunks_skipped`` should count chunks already marked from a
+        previous run — i.e. work this run didn't have to redo."""
+        rag.llm = MockLLM(responses=[json.dumps({"results": {}})])
+        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "", "entities": []}]
+        )
+        # Pretend 5 prior chunks are already marked.
+        rag._graph_store.count_chunks_marked_with_op = AsyncMock(return_value=6)
+        result = await rag.backfill_attribute("Person", "age")
+        # 1 scanned this run, 6 marked total → 5 skipped from prior runs.
+        assert result.chunks_skipped == 5
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_lands_in_failed_chunks(self, rag):
+        """Malformed JSON must raise from the parser so the BackfillExecutor
+        adds the chunk to ``failed_chunks`` instead of marking it done."""
+        rag.llm = MockLLM(responses=["this is not json"])
+        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c-bad", "chunk_text": "", "entities": []}]
+        )
+        result = await rag.backfill_attribute("Person", "age")
+        assert result.failed_chunks == ["c-bad"]
+        rag._graph_store.mark_chunk_extracted.assert_not_awaited()
+
 
 # ── backfill_entity ─────────────────────────────────────────────
 
@@ -233,6 +282,82 @@ class TestBackfillRelationPattern:
             await rag.backfill_relation_pattern(
                 "WORKS_AT", "Person", "Company", scope="all"
             )
+
+    @pytest.mark.asyncio
+    async def test_pair_lookup_is_tuple_keyed_no_id_mismatch(self, rag):
+        """Two candidate pairs sharing the same src_name must not produce a
+        crossed edge: ``(Alice, Acme)`` and ``(Alice, Globex)`` in the same
+        chunk used to be lookup-collapsible; the merge now keys by the
+        full ``(src_name, tgt_name)`` tuple so each pair stays paired."""
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "links": [
+                            {"src": "Alice", "tgt": "Globex", "description": "joined later"}
+                        ]
+                    }
+                )
+            ]
+        )
+        rag._graph_store.list_chunks_for_relation_pattern_backfill = AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "c1",
+                    "chunk_text": "Alice was at Acme, then Globex.",
+                    "pairs": [
+                        {
+                            "src_id": "alice",
+                            "src_name": "Alice",
+                            "tgt_id": "acme",
+                            "tgt_name": "Acme",
+                        },
+                        {
+                            "src_id": "alice",
+                            "src_name": "Alice",
+                            "tgt_id": "globex",
+                            "tgt_name": "Globex",
+                        },
+                    ],
+                }
+            ]
+        )
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
+        result = await rag.backfill_relation_pattern("WORKS_AT", "Person", "Company")
+        assert result.values_filled == 1
+        edge = rag._graph_store.upsert_relationships.await_args.args[0][0]
+        # Must be Alice → Globex, NOT Alice → Acme (would happen if name maps
+        # collided).
+        assert edge.start_node_id == "alice"
+        assert edge.end_node_id == "globex"
+
+    @pytest.mark.asyncio
+    async def test_no_source_chunk_ids_on_non_relates(self, rag):
+        """Backfill edges of arbitrary type must not write source_chunk_ids:
+        ``GraphStore.upsert_relationships`` only unions provenance for
+        RELATES, so writing it on (e.g.) WORKS_AT would be silently
+        overwritten by future MERGE calls."""
+        rag.llm = MockLLM(
+            responses=[
+                json.dumps({"links": [{"src": "Alice", "tgt": "Acme", "description": "x"}]})
+            ]
+        )
+        rag._graph_store.list_chunks_for_relation_pattern_backfill = AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "c1",
+                    "chunk_text": "...",
+                    "pairs": [
+                        {"src_id": "alice", "src_name": "Alice",
+                         "tgt_id": "acme", "tgt_name": "Acme"}
+                    ],
+                }
+            ]
+        )
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
+        await rag.backfill_relation_pattern("WORKS_AT", "Person", "Company")
+        edge = rag._graph_store.upsert_relationships.await_args.args[0][0]
+        assert "source_chunk_ids" not in edge.properties
 
     @pytest.mark.asyncio
     async def test_links_recognised_pairs(self, rag):
@@ -310,3 +435,20 @@ class TestBackfillAttributeSemantic:
     async def test_relation_owner_rejected(self, rag):
         with pytest.raises(ValueError, match="relation owners"):
             await rag.backfill_attribute_semantic("WORKS_AT", "since", "DATE")
+
+    @pytest.mark.asyncio
+    async def test_failures_land_in_failed_node_ids(self, rag):
+        """Per-node failures in semantic backfill must populate
+        ``failed_node_ids`` (not ``failed_chunks`` — these aren't chunks)
+        so callers retry against the right surface."""
+
+        async def _boom(prompt, **kwargs):
+            raise RuntimeError("LLM down")
+
+        rag.llm.ainvoke = _boom  # type: ignore[method-assign]
+        rag._graph_store.list_node_values_for_semantic_coerce = AsyncMock(
+            return_value=[("alice", "twelve")]
+        )
+        result = await rag.backfill_attribute_semantic("Person", "age", "INTEGER")
+        assert result.failed_node_ids == ["alice"]
+        assert result.failed_chunks == []

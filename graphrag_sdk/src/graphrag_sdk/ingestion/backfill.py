@@ -5,9 +5,11 @@ attribute on an existing entity type, a brand-new entity type, a brand-new
 relation pattern), we need to re-scan the stored chunks and ask the LLM to
 fill the new shape in.
 
-The :py:class:`BackfillExecutor` owns the concurrency, retries, and
-per-chunk idempotency-marker bookkeeping. The caller supplies four
-operation-specific callbacks:
+The :py:class:`BackfillExecutor` owns the concurrency and per-chunk
+idempotency-marker bookkeeping. (Per-call retries are delegated to
+``LLMInterface.ainvoke`` — the executor itself does not retry; failed
+chunks land in ``BackfillResult.failed_chunks`` for caller-driven
+retry.) The caller supplies four operation-specific callbacks:
 
 - a scope iterator that yields :py:class:`ChunkContext` rows;
 - a ``prompt_builder`` that produces a focused per-chunk prompt;
@@ -65,8 +67,17 @@ class BackfillResult:
     """Post-run summary of a backfill operation.
 
     Returned by every Group-3 ``GraphRAG`` method. ``failed_chunks`` carries
-    the chunk ids that raised so the caller can retry just those; the
+    chunk ids that raised so the caller can retry just those; the
     operation as a whole does not raise on per-chunk failures.
+
+    ``failed_node_ids`` is the parallel field for operations that don't
+    iterate chunks (``backfill_attribute_semantic`` walks node values
+    directly). Both lists are present so callers always know what to
+    retry without parsing the operation_id.
+
+    ``chunks_skipped`` counts chunks already marked with the same
+    ``op_id`` from a prior run — i.e. work this run did NOT have to redo.
+    Read it to confirm idempotency on reruns.
 
     ``estimated_cost_usd`` is ``None`` in v1 — :py:class:`LLMInterface` does
     not expose usage stats. A future provider-specific hook can populate it.
@@ -81,6 +92,7 @@ class BackfillResult:
     values_skipped: int = 0
     dropped_for_coercion: int = 0
     failed_chunks: list[str] = field(default_factory=list)
+    failed_node_ids: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
     estimated_cost_usd: float | None = None
 

@@ -1086,6 +1086,19 @@ class GraphStore:
 
     # ── Chunk-scoped backfill helpers ───────────────────────────
 
+    async def count_chunks_marked_with_op(self, op_id: str) -> int:
+        """Count chunks that already carry the given backfill ``op_id``.
+
+        Used to populate ``BackfillResult.chunks_skipped`` — on a fresh
+        run this is 0, on an idempotent rerun it equals the work the
+        previous run completed.
+        """
+        r = await self._conn.query(
+            "MATCH (c:Chunk) WHERE $op IN coalesce(c.extracted_ops, []) RETURN count(c) AS n",
+            {"op": op_id},
+        )
+        return r.result_set[0][0] if r.result_set else 0
+
     async def mark_chunk_extracted(self, chunk_id: str, op_id: str) -> None:
         """Append ``op_id`` to a chunk's ``extracted_ops`` list (idempotent).
 

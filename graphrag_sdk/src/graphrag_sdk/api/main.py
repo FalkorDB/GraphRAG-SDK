@@ -145,14 +145,12 @@ def _neutralize_context_close_tag(text: str) -> str:
 def _strip_and_load_json(text: str) -> Any:
     """Parse LLM-emitted JSON, tolerating optional markdown fences.
 
-    Used by the ontology-evolution backfill methods to consume their
-    focused-prompt responses. Returns ``{}`` on malformed JSON so a single
-    bad response degrades to a no-op merge rather than poisoning the run.
+    Raises ``ValueError`` on malformed JSON so the calling
+    :py:class:`BackfillExecutor` lands the chunk in
+    ``BackfillResult.failed_chunks`` instead of marking it done — otherwise
+    a parser-corrupted chunk would be permanently skipped on every rerun.
     """
-    try:
-        return json.loads(_strip_markdown_fences(text))
-    except (ValueError, TypeError):
-        return {}
+    return json.loads(_strip_markdown_fences(text))
 
 
 _QUESTION_REWRITE_PROMPT = (
@@ -461,9 +459,12 @@ class GraphRAG:
         """Reload the persisted ontology and re-propagate to retrieval.
 
         Internal helper shared by every evolution method so the refresh
-        path lives in one place.
+        path lives in one place. Updates ``self.ontology`` in lockstep so
+        a follow-up ``ingest()`` (which reads ``self.ontology.entities``
+        in ``_default_extractor``) sees the post-mutation label set.
         """
         self._global_ontology = await self._ontology_store.load()
+        self.ontology = self._global_ontology
         if hasattr(self._retrieval_strategy, "_ontology"):
             self._retrieval_strategy._ontology = self._global_ontology
         return self._global_ontology
@@ -488,6 +489,17 @@ class GraphRAG:
         if is_relation:
             return "relation"
         raise ValueError(f"Unknown ontology label: {owner_label!r}")
+
+    def _owner_for_kind(self, owner_label: str, kind: Literal["entity", "relation"]) -> Any:
+        """Return the :py:class:`Entity` or :py:class:`Relation` for a known label.
+
+        Companion to :py:meth:`_resolve_owner_kind`; only intended to be
+        called after the kind has been resolved. ``KeyError`` here would
+        indicate a programming error (the kind was wrong).
+        """
+        if kind == "entity":
+            return next(e for e in self._global_ontology.entities if e.label == owner_label)
+        return next(r for r in self._global_ontology.relations if r.label == owner_label)
 
     # ── Group 1: pure ontology (no data, no LLM) ─────────────────
 
@@ -532,15 +544,21 @@ class GraphRAG:
         await self._ontology_store.register(Ontology(entities=[entity]))
         return await self._refresh_global_ontology()
 
-    async def add_attribute(self, entity_label: str, attribute: Attribute) -> Ontology:
-        """Declare a new attribute on an existing entity type. Adds no
-        data — call ``backfill_attribute`` afterwards to populate values
-        from already-ingested chunks.
+    async def add_attribute(self, owner_label: str, attribute: Attribute) -> Ontology:
+        """Declare a new attribute on an existing entity OR relation type.
+
+        Adds no data — call ``backfill_attribute`` afterwards to populate
+        values from already-ingested chunks (entities only; relation
+        attributes are ontology-only in v1, see ``rename_attribute``).
+        Resolves entity-vs-relation dynamically, like the other attribute
+        evolution methods.
         """
         await self._ensure_ontology_initialized()
-        if not any(e.label == entity_label for e in self._global_ontology.entities):
-            raise ValueError(f"Unknown entity label: {entity_label!r}")
-        await self._ontology_store.add_entity_property(entity_label, attribute)
+        kind = self._resolve_owner_kind(owner_label)
+        if kind == "entity":
+            await self._ontology_store.add_entity_property(owner_label, attribute)
+        else:
+            await self._ontology_store.add_relation_property(owner_label, attribute)
         return await self._refresh_global_ontology()
 
     async def add_relation_pattern(self, rel_label: str, source: str, target: str) -> Ontology:
@@ -587,11 +605,28 @@ class GraphRAG:
         """Rename an attribute on an entity (data + ontology) or on a
         relation (ontology only — relation-property data migration is
         not implemented in this version; a warning is logged).
+
+        Validates that ``old_name`` exists and ``new_name`` does not before
+        touching either graph — without this guard a typo silently no-ops
+        the rename, and a collision with an existing attribute would
+        overwrite values on the data graph.
         """
         await self._ensure_ontology_initialized()
         kind = self._resolve_owner_kind(owner_label)
         if old_name == new_name:
             return self._global_ontology
+        owner = self._owner_for_kind(owner_label, kind)
+        attr_names = {p.name for p in owner.properties}
+        if old_name not in attr_names:
+            raise ValueError(
+                f"Unknown attribute {owner_label}.{old_name!r}; declared "
+                f"attributes are {sorted(attr_names)}."
+            )
+        if new_name in attr_names:
+            raise ValueError(
+                f"Attribute {owner_label}.{new_name!r} already exists; "
+                f"merging attributes is not supported by rename_attribute."
+            )
         nodes_touched = 0
         if kind == "entity":
             nodes_touched = await self._graph_store.rename_node_property(
@@ -821,9 +856,19 @@ class GraphRAG:
 
         async def _merge(parsed: dict[str, Any], ctx: ChunkContext) -> BackfillMergeStats:
             filled = skipped = dropped = 0
-            by_name = {(ent.get("name") or "").strip(): ent for ent in ctx.payload["entities"]}
+            # Key by BOTH name and id so the merge tolerates LLM responses
+            # that echo either the human name or the entity id (the prompt
+            # falls back to id when name is missing).
+            by_key: dict[str, dict[str, Any]] = {}
+            for ent in ctx.payload["entities"]:
+                name_key = (ent.get("name") or "").strip()
+                id_key = (ent.get("id") or "").strip()
+                if name_key:
+                    by_key[name_key] = ent
+                if id_key:
+                    by_key[id_key] = ent
             for ent_name, raw_value in parsed.items():
-                ent = by_name.get((ent_name or "").strip())
+                ent = by_key.get((ent_name or "").strip())
                 if ent is None:
                     continue
                 if raw_value is None or raw_value == "":
@@ -852,6 +897,10 @@ class GraphRAG:
             merge_fn=_merge,
         )
         result.target_nodes = sum(len(r["entities"]) for r in chunk_rows)
+        result.chunks_skipped = await self._graph_store.count_chunks_marked_with_op(op_id) - (
+            result.chunks_scanned + len(result.failed_chunks)
+        )
+        result.chunks_skipped = max(0, result.chunks_skipped)
         return result
 
     async def backfill_entity(
@@ -970,6 +1019,11 @@ class GraphRAG:
             merge_fn=_merge,
         )
         result.target_nodes = len(chunk_rows)
+        result.chunks_skipped = max(
+            0,
+            await self._graph_store.count_chunks_marked_with_op(op_id)
+            - (result.chunks_scanned + len(result.failed_chunks)),
+        )
         return result
 
     async def backfill_relation_pattern(
@@ -1041,25 +1095,37 @@ class GraphRAG:
 
         async def _merge(parsed: list[dict[str, Any]], ctx: ChunkContext) -> BackfillMergeStats:
             filled = skipped = 0
-            by_src = {(p.get("src_name") or "").strip(): p for p in ctx.payload["pairs"]}
-            by_tgt = {(p.get("tgt_name") or "").strip(): p for p in ctx.payload["pairs"]}
+            # Key by the (src, tgt) tuple so we never combine src_id from
+            # one candidate pair with tgt_id from another when the chunk
+            # has multiple candidates sharing a name.
+            by_pair = {
+                (
+                    (p.get("src_name") or "").strip(),
+                    (p.get("tgt_name") or "").strip(),
+                ): p
+                for p in ctx.payload["pairs"]
+            }
             new_edges: list[GraphRelationship] = []
             for link in parsed:
                 src_name = (link.get("src") or "").strip()
                 tgt_name = (link.get("tgt") or "").strip()
-                src_pair = by_src.get(src_name)
-                tgt_pair = by_tgt.get(tgt_name)
-                if src_pair is None or tgt_pair is None:
+                pair = by_pair.get((src_name, tgt_name))
+                if pair is None:
                     skipped += 1
                     continue
+                # NB: ``source_chunk_ids`` provenance is intentionally NOT
+                # written here. ``GraphStore.upsert_relationships`` only
+                # unions provenance for RELATES edges; arbitrary typed
+                # backfill edges would have their lists overwritten on
+                # subsequent MERGE, so we skip the field rather than
+                # appear to track provenance that we'd silently lose.
                 new_edges.append(
                     GraphRelationship(
-                        start_node_id=src_pair["src_id"],
-                        end_node_id=tgt_pair["tgt_id"],
+                        start_node_id=pair["src_id"],
+                        end_node_id=pair["tgt_id"],
                         type=rel_label,
                         properties={
                             "description": link.get("description", ""),
-                            "source_chunk_ids": [ctx.chunk_id],
                         },
                     )
                 )
@@ -1077,6 +1143,11 @@ class GraphRAG:
             merge_fn=_merge,
         )
         result.target_nodes = sum(len(r["pairs"]) for r in chunk_rows)
+        result.chunks_skipped = max(
+            0,
+            await self._graph_store.count_chunks_marked_with_op(op_id)
+            - (result.chunks_scanned + len(result.failed_chunks)),
+        )
         return result
 
     async def backfill_attribute_semantic(
@@ -1150,7 +1221,7 @@ class GraphRAG:
                         node_id,
                         exc,
                     )
-                    result.failed_chunks.append(node_id)
+                    result.failed_node_ids.append(node_id)
 
         await asyncio.gather(*[_coerce_one(nid, val) for nid, val in rows])
         # After coercion, update the ontology graph's declared type.
