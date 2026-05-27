@@ -138,39 +138,56 @@ class BackfillExecutor:
         ``chunks`` is consumed once. ``op_id`` is the deterministic
         operation signature used both for the chunk marker and the
         ``BackfillResult.operation_id`` echo.
+
+        Concurrency is bounded by a worker-pool pattern: ``concurrency``
+        long-lived worker tasks consume ``ChunkContext`` instances from a
+        bounded :py:class:`asyncio.Queue`. Live ``asyncio.Task`` count is
+        therefore O(concurrency) regardless of corpus size — without this
+        pattern, a 50k-chunk backfill would create 50k pending tasks up
+        front and hold them all in memory.
         """
         result = BackfillResult(operation_id=op_id)
         start = time.monotonic()
-        sem = asyncio.Semaphore(self._concurrency)
+        # Queue size = 2x concurrency to keep workers warm without
+        # backpressuring the producer too eagerly.
+        queue: asyncio.Queue[ChunkContext | None] = asyncio.Queue(maxsize=self._concurrency * 2)
 
-        async def _process_one(ctx: ChunkContext) -> None:
-            async with sem:
+        async def _worker() -> None:
+            while True:
+                ctx = await queue.get()
                 try:
-                    prompt = prompt_builder(ctx)
-                    response = await self._llm.ainvoke(prompt)
-                    result.llm_calls += 1
-                    parsed = parse_fn(response.content, ctx)
-                    stats = await merge_fn(parsed, ctx)
-                    result.values_filled += stats.values_filled
-                    result.values_skipped += stats.values_skipped
-                    result.dropped_for_coercion += stats.dropped_for_coercion
-                    await self._graph_store.mark_chunk_extracted(ctx.chunk_id, op_id)
-                    result.chunks_scanned += 1
-                except Exception as exc:
-                    logger.warning(
-                        "Backfill chunk %s failed for op '%s': %s",
-                        ctx.chunk_id,
-                        op_id,
-                        exc,
-                    )
-                    logger.debug("Backfill chunk failure details", exc_info=True)
-                    result.failed_chunks.append(ctx.chunk_id)
+                    if ctx is None:
+                        return
+                    try:
+                        prompt = prompt_builder(ctx)
+                        response = await self._llm.ainvoke(prompt)
+                        result.llm_calls += 1
+                        parsed = parse_fn(response.content, ctx)
+                        stats = await merge_fn(parsed, ctx)
+                        result.values_filled += stats.values_filled
+                        result.values_skipped += stats.values_skipped
+                        result.dropped_for_coercion += stats.dropped_for_coercion
+                        await self._graph_store.mark_chunk_extracted(ctx.chunk_id, op_id)
+                        result.chunks_scanned += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "Backfill chunk %s failed for op '%s': %s",
+                            ctx.chunk_id,
+                            op_id,
+                            exc,
+                        )
+                        logger.debug("Backfill chunk failure details", exc_info=True)
+                        result.failed_chunks.append(ctx.chunk_id)
+                finally:
+                    queue.task_done()
 
-        tasks: list[asyncio.Task[None]] = []
+        workers = [asyncio.create_task(_worker()) for _ in range(self._concurrency)]
         async for ctx in chunks:
-            tasks.append(asyncio.create_task(_process_one(ctx)))
-        if tasks:
-            await asyncio.gather(*tasks)
+            await queue.put(ctx)
+        # One sentinel per worker — graceful stop after the queue drains.
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers)
 
         result.elapsed_s = time.monotonic() - start
         logger.info(

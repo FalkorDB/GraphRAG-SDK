@@ -24,13 +24,11 @@ from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
 from graphrag_sdk.ingestion.backfill import (
     BackfillExecutor,
     BackfillMergeStats,
-    BackfillResult,
     ChunkContext,
 )
 from graphrag_sdk.storage.ontology_store import OntologyStore
 
 from .conftest import MockLLM
-
 
 # ── Fixtures ─────────────────────────────────────────────────────
 
@@ -89,9 +87,7 @@ class TestBackfillExecutor:
         mock_graph_store.mark_chunk_extracted = AsyncMock()
 
         async def chunks():
-            yield ChunkContext(
-                chunk_id="c1", chunk_text="hi", payload={}, ontology=small_ontology
-            )
+            yield ChunkContext(chunk_id="c1", chunk_text="hi", payload={}, ontology=small_ontology)
 
         async def merge_fn(parsed, ctx):
             return BackfillMergeStats(values_filled=2)
@@ -108,6 +104,52 @@ class TestBackfillExecutor:
         assert result.chunks_scanned == 1
         assert result.failed_chunks == []
         assert result.llm_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_live_task_count_stays_bounded(self, small_ontology, mock_graph_store):
+        """Worker-pool pattern: live ``asyncio.Task`` count stays O(concurrency)
+        regardless of corpus size. The previous implementation created one
+        task per chunk up-front, which scales linearly with the corpus
+        and pins memory until the LLM drains."""
+        import asyncio as _asyncio
+
+        chunk_count = 200
+        concurrency = 4
+        llm = MockLLM(responses=['{"results": {}}'])
+        executor = BackfillExecutor(llm, mock_graph_store, concurrency=concurrency)
+        mock_graph_store.mark_chunk_extracted = AsyncMock()
+
+        peak = 0
+
+        async def chunks():
+            nonlocal peak
+            for i in range(chunk_count):
+                # Each yield happens after the previous chunks have been
+                # consumed by workers, so this samples the live count
+                # roughly when one chunk is in flight.
+                peak = max(peak, len(_asyncio.all_tasks()))
+                yield ChunkContext(
+                    chunk_id=f"c{i}",
+                    chunk_text="",
+                    payload={},
+                    ontology=small_ontology,
+                )
+
+        async def merge_fn(parsed, ctx):
+            return BackfillMergeStats(values_filled=1)
+
+        await executor.run(
+            op_id="op:bounded",
+            chunks=chunks(),
+            prompt_builder=lambda c: "p",
+            parse_fn=lambda t, c: {},
+            merge_fn=merge_fn,
+        )
+        # Sanity ceiling: at most concurrency + producer + test driver +
+        # a small constant. If the executor regresses to one-task-per-chunk
+        # this leaps to ~chunk_count.
+        assert peak < chunk_count, f"task count exploded: peak={peak}, chunks={chunk_count}"
+        assert peak <= concurrency + 8
 
     @pytest.mark.asyncio
     async def test_failures_dont_poison_run(self, small_ontology, mock_graph_store):
@@ -170,7 +212,9 @@ class TestBackfillAttribute:
         rag._graph_store.set_node_property_by_id.assert_awaited_once_with(
             "Person", "alice", "age", 42
         )
-        rag._graph_store.mark_chunk_extracted.assert_awaited_once_with("c1", "backfill_attribute:Person:age")
+        rag._graph_store.mark_chunk_extracted.assert_awaited_once_with(
+            "c1", "backfill_attribute:Person:age"
+        )
 
     @pytest.mark.asyncio
     async def test_op_id_is_deterministic(self, rag):
@@ -249,11 +293,7 @@ class TestBackfillEntity:
         rag.llm = MockLLM(
             responses=[
                 json.dumps(
-                    {
-                        "entities": [
-                            {"name": "Bob", "description": "A founder", "attributes": {}}
-                        ]
-                    }
+                    {"entities": [{"name": "Bob", "description": "A founder", "attributes": {}}]}
                 )
             ]
         )
@@ -279,9 +319,7 @@ class TestBackfillRelationPattern:
     @pytest.mark.asyncio
     async def test_rejects_unsupported_scope(self, rag):
         with pytest.raises(ValueError, match="unsupported scope"):
-            await rag.backfill_relation_pattern(
-                "WORKS_AT", "Person", "Company", scope="all"
-            )
+            await rag.backfill_relation_pattern("WORKS_AT", "Person", "Company", scope="all")
 
     @pytest.mark.asyncio
     async def test_pair_lookup_is_tuple_keyed_no_id_mismatch(self, rag):
@@ -292,11 +330,7 @@ class TestBackfillRelationPattern:
         rag.llm = MockLLM(
             responses=[
                 json.dumps(
-                    {
-                        "links": [
-                            {"src": "Alice", "tgt": "Globex", "description": "joined later"}
-                        ]
-                    }
+                    {"links": [{"src": "Alice", "tgt": "Globex", "description": "joined later"}]}
                 )
             ]
         )
@@ -338,9 +372,7 @@ class TestBackfillRelationPattern:
         RELATES, so writing it on (e.g.) WORKS_AT would be silently
         overwritten by future MERGE calls."""
         rag.llm = MockLLM(
-            responses=[
-                json.dumps({"links": [{"src": "Alice", "tgt": "Acme", "description": "x"}]})
-            ]
+            responses=[json.dumps({"links": [{"src": "Alice", "tgt": "Acme", "description": "x"}]})]
         )
         rag._graph_store.list_chunks_for_relation_pattern_backfill = AsyncMock(
             return_value=[
@@ -348,8 +380,12 @@ class TestBackfillRelationPattern:
                     "chunk_id": "c1",
                     "chunk_text": "...",
                     "pairs": [
-                        {"src_id": "alice", "src_name": "Alice",
-                         "tgt_id": "acme", "tgt_name": "Acme"}
+                        {
+                            "src_id": "alice",
+                            "src_name": "Alice",
+                            "tgt_id": "acme",
+                            "tgt_name": "Acme",
+                        }
                     ],
                 }
             ]
@@ -364,11 +400,7 @@ class TestBackfillRelationPattern:
         rag.llm = MockLLM(
             responses=[
                 json.dumps(
-                    {
-                        "links": [
-                            {"src": "Alice", "tgt": "Acme", "description": "joined 2020"}
-                        ]
-                    }
+                    {"links": [{"src": "Alice", "tgt": "Acme", "description": "joined 2020"}]}
                 )
             ]
         )

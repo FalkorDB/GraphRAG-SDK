@@ -11,15 +11,14 @@ import os
 
 import pytest
 
-from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
+from graphrag_sdk.core.models import Attribute, Entity, Ontology
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("RUN_INTEGRATION") or not os.getenv("OPENAI_API_KEY"),
+    os.getenv("RUN_INTEGRATION") != "1" or not os.getenv("OPENAI_API_KEY"),
     reason="Requires RUN_INTEGRATION=1 and OPENAI_API_KEY",
 )
 
 
-@pytest.mark.asyncio
 async def test_backfill_attribute_fills_missing_values(
     real_falkordb_rag_factory,
 ):
@@ -33,9 +32,7 @@ async def test_backfill_attribute_fills_missing_values(
     starter = Ontology(
         entities=[Entity(label="Person")],
     )
-    rag = real_falkordb_rag_factory(
-        llm=llm, resolver=ExactMatchResolution(), ontology=starter
-    )
+    rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution(), ontology=starter)
     await rag.ingest(
         text="Alice is 32 years old. Bob is 27. They are both engineers.",
         document_id="people",

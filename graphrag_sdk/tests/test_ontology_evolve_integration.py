@@ -16,7 +16,7 @@ from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
 from .conftest import _scripted_extraction_llm
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("RUN_INTEGRATION"),
+    os.getenv("RUN_INTEGRATION") != "1",
     reason="Set RUN_INTEGRATION=1 to run real-FalkorDB integration tests",
 )
 
@@ -38,9 +38,7 @@ def starter_ontology() -> Ontology:
 
 
 @pytest.mark.asyncio
-async def test_rename_entity_relabels_data_nodes(
-    real_falkordb_rag_factory, starter_ontology
-):
+async def test_rename_entity_relabels_data_nodes(real_falkordb_rag_factory, starter_ontology):
     from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
         ExactMatchResolution,
     )
@@ -82,16 +80,12 @@ async def test_drop_attribute_removes_property_and_declaration(
 
 
 @pytest.mark.asyncio
-async def test_drop_entity_cascades_relations(
-    real_falkordb_rag_factory, starter_ontology
-):
+async def test_drop_entity_cascades_relations(real_falkordb_rag_factory, starter_ontology):
     from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
         ExactMatchResolution,
     )
 
-    llm = _scripted_extraction_llm(
-        [("Alice", "Person", "x"), ("Acme", "Company", "y")]
-    )
+    llm = _scripted_extraction_llm([("Alice", "Person", "x"), ("Acme", "Company", "y")])
     rag = real_falkordb_rag_factory(
         llm=llm, resolver=ExactMatchResolution(), ontology=starter_ontology
     )
@@ -100,7 +94,4 @@ async def test_drop_entity_cascades_relations(
     assert not any(e.label == "Company" for e in new_ontology.entities)
     # The WORKS_AT pattern (Person, Company) is no longer declarable since
     # the Company entity is gone.
-    assert all(
-        ("Company" not in (s, t) for s, t in r.patterns)
-        for r in new_ontology.relations
-    )
+    assert all(("Company" not in (s, t) for s, t in r.patterns) for r in new_ontology.relations)

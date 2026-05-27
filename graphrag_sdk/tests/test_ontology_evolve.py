@@ -11,7 +11,7 @@ FalkorDB.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -21,7 +21,6 @@ from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
 from graphrag_sdk.storage.ontology_store import OntologyStore
 
 from .test_ontology_store import _FakeGraph
-
 
 # ── Shared fixtures ──────────────────────────────────────────────
 
@@ -115,7 +114,8 @@ class TestAddEntityProperty:
             "Person", Attribute(name="email", type="STRING", description="email addr")
         )
         prop_merges = [
-            c for c in fake.calls
+            c
+            for c in fake.calls
             if "MATCH (e:Entity {label: $owner})" in c[0]
             and "MERGE (e)-[:HAS_PROPERTY]->(p:Property {label: $name})" in c[0]
         ]
@@ -130,11 +130,10 @@ class TestAddRelationProperty:
     @pytest.mark.asyncio
     async def test_merges_on_every_relation_node_with_label(self, store_factory):
         store, fake = store_factory()
-        await store.add_relation_property(
-            "WORKS_AT", Attribute(name="since", type="DATE")
-        )
+        await store.add_relation_property("WORKS_AT", Attribute(name="since", type="DATE"))
         merges = [
-            c for c in fake.calls
+            c
+            for c in fake.calls
             if "MATCH (r:Relation {label: $rel_label})" in c[0]
             and "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name})" in c[0]
         ]
@@ -157,7 +156,8 @@ class TestAddRelationPatternNode:
         merge_calls = [c for c in fake.calls if "MERGE (s:Entity {label: $src})" in c[0]]
         assert len(merge_calls) == 1
         copy_calls = [
-            c for c in fake.calls
+            c
+            for c in fake.calls
             if "MATCH (existing:Relation {label: $rel_label})" in c[0]
             and "MERGE (new)-[:HAS_PROPERTY]" in c[0]
         ]
@@ -237,7 +237,10 @@ class TestDropEntityLabel:
         await store.drop_entity_label("Company")
         # Three Cypher writes: drop entity props, drop relation pattern nodes
         # that reference the entity, drop the entity node itself.
-        assert any("DETACH DELETE p" in c[0] and "(e:Entity {label: $label})-[:HAS_PROPERTY]" in c[0] for c in fake.calls)
+        assert any(
+            "DETACH DELETE p" in c[0] and "(e:Entity {label: $label})-[:HAS_PROPERTY]" in c[0]
+            for c in fake.calls
+        )
         assert any("[:SOURCE|TARGET]->(e:Entity {label: $label})" in c[0] for c in fake.calls)
         assert any("MATCH (e:Entity {label: $label}) DETACH DELETE e" in c[0] for c in fake.calls)
 
@@ -285,13 +288,10 @@ class TestAddPropertyRefusesRetype:
 
         fake.query = _scripted_query  # type: ignore[method-assign]
         with pytest.raises(OntologyContradictionError, match="already registered"):
-            await store.add_entity_property(
-                "Person", Attribute(name="age", type="STRING")
-            )
+            await store.add_entity_property("Person", Attribute(name="age", type="STRING"))
         # No SET p.type write — the contradiction check fires before the upsert.
         assert not any(
-            "MERGE (e)-[:HAS_PROPERTY]" in c[0] and "SET p.type" in c[0]
-            for c in fake.calls
+            "MERGE (e)-[:HAS_PROPERTY]" in c[0] and "SET p.type" in c[0] for c in fake.calls
         )
 
 
@@ -366,7 +366,9 @@ class TestRenameEntity:
     async def test_data_migration_runs_before_ontology_update(self, graphrag_evolving):
         await graphrag_evolving.rename_entity("Person", "Human")
         graphrag_evolving._graph_store.rename_label.assert_awaited_once_with("Person", "Human")
-        graphrag_evolving._ontology_store.rename_entity_label.assert_awaited_once_with("Person", "Human")
+        graphrag_evolving._ontology_store.rename_entity_label.assert_awaited_once_with(
+            "Person", "Human"
+        )
 
     @pytest.mark.asyncio
     async def test_rejects_existing_target(self, graphrag_evolving):
@@ -436,13 +438,17 @@ class TestDropAttribute:
     async def test_entity_owner_drops_data_and_ontology(self, graphrag_evolving):
         await graphrag_evolving.drop_attribute("Person", "age")
         graphrag_evolving._graph_store.drop_node_property.assert_awaited_once_with("Person", "age")
-        graphrag_evolving._ontology_store.drop_entity_property.assert_awaited_once_with("Person", "age")
+        graphrag_evolving._ontology_store.drop_entity_property.assert_awaited_once_with(
+            "Person", "age"
+        )
 
     @pytest.mark.asyncio
     async def test_relation_owner_skips_data_graph(self, graphrag_evolving, caplog):
         await graphrag_evolving.drop_attribute("WORKS_AT", "since")
         graphrag_evolving._graph_store.drop_node_property.assert_not_awaited()
-        graphrag_evolving._ontology_store.drop_relation_property.assert_awaited_once_with("WORKS_AT", "since")
+        graphrag_evolving._ontology_store.drop_relation_property.assert_awaited_once_with(
+            "WORKS_AT", "since"
+        )
 
 
 class TestDropEntity:

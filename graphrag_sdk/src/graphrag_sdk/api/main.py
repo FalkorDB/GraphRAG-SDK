@@ -1183,47 +1183,63 @@ class GraphRAG:
         import time as _time
 
         start = _time.monotonic()
-        sem = asyncio.Semaphore(concurrency)
+        # Worker-pool pattern: live task count stays O(concurrency)
+        # regardless of len(rows). With a plain asyncio.gather + per-row
+        # task, a 100k-node coercion would create 100k pending tasks up
+        # front, holding their captured state in memory until completion.
+        queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue(maxsize=concurrency * 2)
 
-        async def _coerce_one(node_id: str, current: Any) -> None:
-            async with sem:
+        async def _worker() -> None:
+            while True:
+                item = await queue.get()
                 try:
-                    prompt = BACKFILL_SEMANTIC_COERCION_PROMPT.format(
-                        owner_label=owner_label,
-                        attr_name=name,
-                        target_type=target_type,
-                        current_value=current,
-                    )
-                    response = await self.llm.ainvoke(prompt)
-                    result.llm_calls += 1
-                    payload = _strip_and_load_json(response.content)
-                    new_value = payload.get("value") if isinstance(payload, dict) else None
-                    if new_value is None:
-                        await self._graph_store.set_node_property_by_id(
-                            owner_label, node_id, name, None
-                        )
-                        result.dropped_for_coercion += 1
+                    if item is None:
                         return
-                    ok, coerced = _coerce_attribute_value(new_value, target_type)
-                    if not ok:
-                        await self._graph_store.set_node_property_by_id(
-                            owner_label, node_id, name, None
+                    node_id, current = item
+                    try:
+                        prompt = BACKFILL_SEMANTIC_COERCION_PROMPT.format(
+                            owner_label=owner_label,
+                            attr_name=name,
+                            target_type=target_type,
+                            current_value=current,
                         )
-                        result.dropped_for_coercion += 1
-                        return
-                    await self._graph_store.set_node_property_by_id(
-                        owner_label, node_id, name, coerced
-                    )
-                    result.values_filled += 1
-                except Exception as exc:
-                    logger.warning(
-                        "backfill_attribute_semantic: node %s failed: %s",
-                        node_id,
-                        exc,
-                    )
-                    result.failed_node_ids.append(node_id)
+                        response = await self.llm.ainvoke(prompt)
+                        result.llm_calls += 1
+                        payload = _strip_and_load_json(response.content)
+                        new_value = payload.get("value") if isinstance(payload, dict) else None
+                        if new_value is None:
+                            await self._graph_store.set_node_property_by_id(
+                                owner_label, node_id, name, None
+                            )
+                            result.dropped_for_coercion += 1
+                            continue
+                        ok, coerced = _coerce_attribute_value(new_value, target_type)
+                        if not ok:
+                            await self._graph_store.set_node_property_by_id(
+                                owner_label, node_id, name, None
+                            )
+                            result.dropped_for_coercion += 1
+                            continue
+                        await self._graph_store.set_node_property_by_id(
+                            owner_label, node_id, name, coerced
+                        )
+                        result.values_filled += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "backfill_attribute_semantic: node %s failed: %s",
+                            node_id,
+                            exc,
+                        )
+                        result.failed_node_ids.append(node_id)
+                finally:
+                    queue.task_done()
 
-        await asyncio.gather(*[_coerce_one(nid, val) for nid, val in rows])
+        workers = [asyncio.create_task(_worker()) for _ in range(concurrency)]
+        for node_id, value in rows:
+            await queue.put((node_id, value))
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers)
         # After coercion, update the ontology graph's declared type.
         await self._ontology_store.retype_property("entity", owner_label, name, target_type)
         result.elapsed_s = _time.monotonic() - start

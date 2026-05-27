@@ -1188,17 +1188,25 @@ class GraphStore:
         *,
         op_id: str,
         limit: int | None = None,
+        pairs_per_chunk: int = 50,
     ) -> list[dict[str, Any]]:
         """Return chunks where at least one ``src_label`` entity and one
         ``tgt_label`` entity co-occur (both have ``MENTIONED_IN`` to the
         same chunk), excluding already-processed chunks.
 
         Each row carries the candidate pairs so the LLM can answer
-        per-pair without re-scanning.
+        per-pair without re-scanning. ``pairs_per_chunk`` (default 50)
+        caps the candidate Cartesian product per chunk — without it, a
+        single chunk with M source-type and N target-type entities
+        would emit ``M*N`` pairs and explode both the LLM prompt size
+        and the per-call cost. Tune up if you have evidence many of the
+        clipped pairs are real edges; leave at the default for typical
+        domain corpora.
         """
         safe_src = sanitize_cypher_label(src_label)
         safe_tgt = sanitize_cypher_label(tgt_label)
         limit_clause = f" LIMIT {int(limit)}" if limit else ""
+        cap = max(1, int(pairs_per_chunk))
         result = await self._conn.query(
             f"MATCH (s:`{safe_src}`)-[:MENTIONED_IN]->(c:Chunk) "
             f"MATCH (t:`{safe_tgt}`)-[:MENTIONED_IN]->(c) "
@@ -1206,7 +1214,8 @@ class GraphStore:
             "AND NOT $op IN coalesce(c.extracted_ops, []) "
             "WITH c, collect(DISTINCT {src_id: s.id, src_name: s.name, "
             "tgt_id: t.id, tgt_name: t.name}) AS pairs "
-            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs{limit_clause}",
+            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs"
+            f"{limit_clause}",
             {"op": op_id},
         )
         return [
