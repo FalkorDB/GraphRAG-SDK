@@ -625,9 +625,7 @@ class OntologyStore:
             )
         elif kind in ("entity_property", "relation_property"):
             if owner_label is None:
-                raise ValueError(
-                    "set_description(kind='%s', ...) requires owner_label" % kind
-                )
+                raise ValueError(f"set_description(kind='{kind}', ...) requires owner_label")
             owner_lbl = "Entity" if kind == "entity_property" else "Relation"
             await self._query(
                 f"MATCH (o:{owner_lbl} {{label: $owner}})-[:HAS_PROPERTY]->"
@@ -670,8 +668,7 @@ class OntologyStore:
         """
         # Drop property children first (they're owner-scoped).
         await self._query(
-            "MATCH (e:Entity {label: $label})-[:HAS_PROPERTY]->(p:Property) "
-            "DETACH DELETE p",
+            "MATCH (e:Entity {label: $label})-[:HAS_PROPERTY]->(p:Property) DETACH DELETE p",
             {"label": label},
         )
         # Drop Relation pattern nodes that pointed at this entity, and their
@@ -701,9 +698,7 @@ class OntologyStore:
             {"label": label},
         )
 
-    async def drop_relation_pattern_node(
-        self, rel_label: str, src: str, tgt: str
-    ) -> None:
+    async def drop_relation_pattern_node(self, rel_label: str, src: str, tgt: str) -> None:
         """Remove a single ``(src, tgt)`` pattern of a relation.
 
         Other patterns of the same relation label are untouched.

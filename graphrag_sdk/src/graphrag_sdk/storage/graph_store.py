@@ -909,16 +909,11 @@ class GraphStore:
         if safe_old == safe_new:
             return 0
         r = await self._conn.query(
-            f"MATCH (n:`{safe_old}`) "
-            f"SET n:`{safe_new}` "
-            f"REMOVE n:`{safe_old}` "
-            f"RETURN count(n) AS n",
+            f"MATCH (n:`{safe_old}`) SET n:`{safe_new}` REMOVE n:`{safe_old}` RETURN count(n) AS n",
         )
         return r.result_set[0][0] if r.result_set else 0
 
-    async def rename_node_property(
-        self, label: str, old: str, new: str
-    ) -> int:
+    async def rename_node_property(self, label: str, old: str, new: str) -> int:
         """Rename property ``old`` to ``new`` on every node carrying ``label``.
 
         Property keys cannot be parameterised in Cypher, so the names are
@@ -985,15 +980,15 @@ class GraphStore:
         safe_new = sanitize_cypher_label(new)
         if safe_old == safe_new:
             return 0
-        count_r = await self._conn.query(
-            f"MATCH ()-[r:`{safe_old}`]->() RETURN count(r) AS n"
-        )
+        count_r = await self._conn.query(f"MATCH ()-[r:`{safe_old}`]->() RETURN count(r) AS n")
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count > 10_000:
             logger.warning(
                 "rename_relation_type: %d [%s] edges will be recreated as "
                 "[%s] (expensive); FalkorDB lacks in-place type rewrite.",
-                count, safe_old, safe_new,
+                count,
+                safe_old,
+                safe_new,
             )
         if count == 0:
             return 0
@@ -1010,9 +1005,7 @@ class GraphStore:
     async def delete_relations_by_type(self, rel_type: str) -> int:
         """``DELETE`` every edge of type ``rel_type``. Returns the count."""
         safe = sanitize_cypher_label(rel_type)
-        count_r = await self._conn.query(
-            f"MATCH ()-[r:`{safe}`]->() RETURN count(r) AS n"
-        )
+        count_r = await self._conn.query(f"MATCH ()-[r:`{safe}`]->() RETURN count(r) AS n")
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count == 0:
             return 0
@@ -1031,8 +1024,7 @@ class GraphStore:
         safe_src = sanitize_cypher_label(src_label)
         safe_tgt = sanitize_cypher_label(tgt_label)
         count_r = await self._conn.query(
-            f"MATCH (s:`{safe_src}`)-[r:`{safe_rel}`]->(t:`{safe_tgt}`) "
-            "RETURN count(r) AS n"
+            f"MATCH (s:`{safe_src}`)-[r:`{safe_rel}`]->(t:`{safe_tgt}`) RETURN count(r) AS n"
         )
         count = count_r.result_set[0][0] if count_r.result_set else 0
         if count == 0:
@@ -1174,10 +1166,7 @@ class GraphStore:
                 f"RETURN c.id AS chunk_id, c.text AS chunk_text{limit_clause}",
                 {"op": op_id, "ids": chunk_ids},
             )
-        return [
-            {"chunk_id": row[0], "chunk_text": row[1]}
-            for row in (result.result_set or [])
-        ]
+        return [{"chunk_id": row[0], "chunk_text": row[1]} for row in (result.result_set or [])]
 
     async def list_chunks_for_relation_pattern_backfill(
         self,

@@ -36,11 +36,16 @@ from graphrag_sdk.core.models import (
     IngestionResult,
     Ontology,
     RagResult,
-    Relation,
     RetrieverResult,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.ingestion.backfill import (
+    BackfillExecutor,
+    BackfillMergeStats,
+    BackfillResult,
+    ChunkContext,
+)
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
@@ -48,14 +53,6 @@ from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
-)
-from graphrag_sdk.ingestion.backfill import (
-    BackfillExecutor,
-    BackfillMergeStats,
-    BackfillResult,
-    ChunkContext,
-)
-from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     _strip_markdown_fences,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
@@ -494,9 +491,7 @@ class GraphRAG:
 
     # ── Group 1: pure ontology (no data, no LLM) ─────────────────
 
-    async def set_entity_description(
-        self, label: str, description: str | None
-    ) -> Ontology:
+    async def set_entity_description(self, label: str, description: str | None) -> Ontology:
         """Set or clear the description on an existing entity type."""
         await self._ensure_ontology_initialized()
         if not any(e.label == label for e in self._global_ontology.entities):
@@ -504,9 +499,7 @@ class GraphRAG:
         await self._ontology_store.set_description("entity", label, description)
         return await self._refresh_global_ontology()
 
-    async def set_relation_description(
-        self, label: str, description: str | None
-    ) -> Ontology:
+    async def set_relation_description(self, label: str, description: str | None) -> Ontology:
         """Set or clear the description on an existing relation type."""
         await self._ensure_ontology_initialized()
         if not any(r.label == label for r in self._global_ontology.relations):
@@ -550,9 +543,7 @@ class GraphRAG:
         await self._ontology_store.add_entity_property(entity_label, attribute)
         return await self._refresh_global_ontology()
 
-    async def add_relation_pattern(
-        self, rel_label: str, source: str, target: str
-    ) -> Ontology:
+    async def add_relation_pattern(self, rel_label: str, source: str, target: str) -> Ontology:
         """Declare a new ``(source, target)`` pattern for a relation. Adds
         no data — call ``backfill_relation_pattern`` afterwards.
 
@@ -589,14 +580,10 @@ class GraphRAG:
             )
         nodes_moved = await self._graph_store.rename_label(old, new)
         await self._ontology_store.rename_entity_label(old, new)
-        logger.info(
-            "rename_entity %s → %s: %d data nodes relabelled", old, new, nodes_moved
-        )
+        logger.info("rename_entity %s → %s: %d data nodes relabelled", old, new, nodes_moved)
         return await self._refresh_global_ontology()
 
-    async def rename_attribute(
-        self, owner_label: str, old_name: str, new_name: str
-    ) -> Ontology:
+    async def rename_attribute(self, owner_label: str, old_name: str, new_name: str) -> Ontology:
         """Rename an attribute on an entity (data + ontology) or on a
         relation (ontology only — relation-property data migration is
         not implemented in this version; a warning is logged).
@@ -616,12 +603,13 @@ class GraphRAG:
                 "rename (edge-property rename is out of scope for v1).",
                 owner_label,
             )
-        await self._ontology_store.rename_property_label(
-            kind, owner_label, old_name, new_name
-        )
+        await self._ontology_store.rename_property_label(kind, owner_label, old_name, new_name)
         logger.info(
             "rename_attribute %s.%s → %s: %d nodes touched",
-            owner_label, old_name, new_name, nodes_touched,
+            owner_label,
+            old_name,
+            new_name,
+            nodes_touched,
         )
         return await self._refresh_global_ontology()
 
@@ -644,7 +632,9 @@ class GraphRAG:
         await self._ontology_store.rename_relation_label(old, new)
         logger.info(
             "rename_relation %s → %s: %d data edges recreated",
-            old, new, edges_moved,
+            old,
+            new,
+            edges_moved,
         )
         return await self._refresh_global_ontology()
 
@@ -656,9 +646,7 @@ class GraphRAG:
         kind = self._resolve_owner_kind(owner_label)
         nodes_touched = 0
         if kind == "entity":
-            nodes_touched = await self._graph_store.drop_node_property(
-                owner_label, name
-            )
+            nodes_touched = await self._graph_store.drop_node_property(owner_label, name)
             await self._ontology_store.drop_entity_property(owner_label, name)
         else:
             logger.warning(
@@ -667,9 +655,7 @@ class GraphRAG:
                 owner_label,
             )
             await self._ontology_store.drop_relation_property(owner_label, name)
-        logger.info(
-            "drop_attribute %s.%s: %d nodes touched", owner_label, name, nodes_touched
-        )
+        logger.info("drop_attribute %s.%s: %d nodes touched", owner_label, name, nodes_touched)
         return await self._refresh_global_ontology()
 
     async def drop_entity(self, label: str) -> Ontology:
@@ -699,9 +685,7 @@ class GraphRAG:
         logger.info("drop_relation %s: %d data edges deleted", label, edges_deleted)
         return await self._refresh_global_ontology()
 
-    async def drop_relation_pattern(
-        self, rel_label: str, source: str, target: str
-    ) -> Ontology:
+    async def drop_relation_pattern(self, rel_label: str, source: str, target: str) -> Ontology:
         """Drop a single ``(source, target)`` pattern of a relation.
 
         Sibling patterns of the same relation (with different endpoint
@@ -716,13 +700,14 @@ class GraphRAG:
         await self._ontology_store.drop_relation_pattern_node(rel_label, source, target)
         logger.info(
             "drop_relation_pattern %s (%s→%s): %d data edges deleted",
-            rel_label, source, target, edges_deleted,
+            rel_label,
+            source,
+            target,
+            edges_deleted,
         )
         return await self._refresh_global_ontology()
 
-    async def retype_attribute(
-        self, owner_label: str, name: str, new_type: str
-    ) -> Ontology:
+    async def retype_attribute(self, owner_label: str, name: str, new_type: str) -> Ontology:
         """Mechanically coerce an attribute's data-graph values to a new
         Cypher type and update the ontology graph.
 
@@ -750,7 +735,11 @@ class GraphRAG:
         await self._ontology_store.retype_property(kind, owner_label, name, new_type)
         logger.info(
             "retype_attribute %s.%s → %s: %d coerced, %d dropped",
-            owner_label, name, new_type, coerced, dropped,
+            owner_label,
+            name,
+            new_type,
+            coerced,
+            dropped,
         )
         return await self._refresh_global_ontology()
 
@@ -789,8 +778,7 @@ class GraphRAG:
         attribute = next((a for a in entity.properties if a.name == name), None)
         if attribute is None:
             raise ValueError(
-                f"Unknown attribute {owner_label}.{name!r} — declare it first "
-                f"via add_attribute()."
+                f"Unknown attribute {owner_label}.{name!r} — declare it first via add_attribute()."
             )
 
         op_id = f"backfill_attribute:{owner_label}:{name}"
@@ -807,13 +795,17 @@ class GraphRAG:
                     ontology=self._global_ontology,
                 )
 
-        attr_desc_line = f"- description: {attribute.description}\n" if attribute.description else ""
+        attr_desc_line = (
+            f"- description: {attribute.description}\n" if attribute.description else ""
+        )
 
         def _prompt(ctx: ChunkContext) -> str:
-            entity_lines = "\n".join(
-                f"- {ent.get('name') or ent.get('id')}"
-                for ent in ctx.payload["entities"]
-            ) or "(none)"
+            entity_lines = (
+                "\n".join(
+                    f"- {ent.get('name') or ent.get('id')}" for ent in ctx.payload["entities"]
+                )
+                or "(none)"
+            )
             return BACKFILL_ATTRIBUTE_PROMPT.format(
                 owner_label=owner_label,
                 attr_name=name,
@@ -827,14 +819,9 @@ class GraphRAG:
             payload = _strip_and_load_json(text)
             return payload.get("results", {}) if isinstance(payload, dict) else {}
 
-        async def _merge(
-            parsed: dict[str, Any], ctx: ChunkContext
-        ) -> BackfillMergeStats:
+        async def _merge(parsed: dict[str, Any], ctx: ChunkContext) -> BackfillMergeStats:
             filled = skipped = dropped = 0
-            by_name = {
-                (ent.get("name") or "").strip(): ent
-                for ent in ctx.payload["entities"]
-            }
+            by_name = {(ent.get("name") or "").strip(): ent for ent in ctx.payload["entities"]}
             for ent_name, raw_value in parsed.items():
                 ent = by_name.get((ent_name or "").strip())
                 if ent is None:
@@ -933,9 +920,7 @@ class GraphRAG:
             payload = _strip_and_load_json(text)
             return payload.get("entities", []) if isinstance(payload, dict) else []
 
-        async def _merge(
-            parsed: list[dict[str, Any]], ctx: ChunkContext
-        ) -> BackfillMergeStats:
+        async def _merge(parsed: list[dict[str, Any]], ctx: ChunkContext) -> BackfillMergeStats:
             filled = skipped = 0
             from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
                 compute_entity_id,
@@ -1035,10 +1020,12 @@ class GraphRAG:
         rel_desc_line = f"- description: {relation.description}\n" if relation.description else ""
 
         def _prompt(ctx: ChunkContext) -> str:
-            pair_lines = "\n".join(
-                f"- {p.get('src_name') or p.get('src_id')} → {p.get('tgt_name') or p.get('tgt_id')}"
-                for p in ctx.payload["pairs"]
-            ) or "(none)"
+            def _pair_line(p: dict[str, Any]) -> str:
+                src = p.get("src_name") or p.get("src_id")
+                tgt = p.get("tgt_name") or p.get("tgt_id")
+                return f"- {src} → {tgt}"
+
+            pair_lines = "\n".join(_pair_line(p) for p in ctx.payload["pairs"]) or "(none)"
             return BACKFILL_RELATION_PATTERN_PROMPT.format(
                 rel_label=rel_label,
                 src_label=source,
@@ -1052,16 +1039,10 @@ class GraphRAG:
             payload = _strip_and_load_json(text)
             return payload.get("links", []) if isinstance(payload, dict) else []
 
-        async def _merge(
-            parsed: list[dict[str, Any]], ctx: ChunkContext
-        ) -> BackfillMergeStats:
+        async def _merge(parsed: list[dict[str, Any]], ctx: ChunkContext) -> BackfillMergeStats:
             filled = skipped = 0
-            by_src = {
-                (p.get("src_name") or "").strip(): p for p in ctx.payload["pairs"]
-            }
-            by_tgt = {
-                (p.get("tgt_name") or "").strip(): p for p in ctx.payload["pairs"]
-            }
+            by_src = {(p.get("src_name") or "").strip(): p for p in ctx.payload["pairs"]}
+            by_tgt = {(p.get("tgt_name") or "").strip(): p for p in ctx.payload["pairs"]}
             new_edges: list[GraphRelationship] = []
             for link in parsed:
                 src_name = (link.get("src") or "").strip()
@@ -1124,9 +1105,7 @@ class GraphRAG:
                 "implemented in v1 (relation-property coercion would require "
                 "iterating edges)."
             )
-        rows = await self._graph_store.list_node_values_for_semantic_coerce(
-            owner_label, name
-        )
+        rows = await self._graph_store.list_node_values_for_semantic_coerce(owner_label, name)
         op_id = f"backfill_attribute_semantic:{owner_label}:{name}:{target_type}"
 
         result = BackfillResult(operation_id=op_id, target_nodes=len(rows))
@@ -1168,15 +1147,14 @@ class GraphRAG:
                 except Exception as exc:
                     logger.warning(
                         "backfill_attribute_semantic: node %s failed: %s",
-                        node_id, exc,
+                        node_id,
+                        exc,
                     )
                     result.failed_chunks.append(node_id)
 
         await asyncio.gather(*[_coerce_one(nid, val) for nid, val in rows])
         # After coercion, update the ontology graph's declared type.
-        await self._ontology_store.retype_property(
-            "entity", owner_label, name, target_type
-        )
+        await self._ontology_store.retype_property("entity", owner_label, name, target_type)
         result.elapsed_s = _time.monotonic() - start
         await self._refresh_global_ontology()
         return result

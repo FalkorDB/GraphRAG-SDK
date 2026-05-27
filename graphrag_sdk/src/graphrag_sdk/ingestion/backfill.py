@@ -147,7 +147,9 @@ class BackfillExecutor:
                 except Exception as exc:
                     logger.warning(
                         "Backfill chunk %s failed for op '%s': %s",
-                        ctx.chunk_id, op_id, exc,
+                        ctx.chunk_id,
+                        op_id,
+                        exc,
                     )
                     logger.debug("Backfill chunk failure details", exc_info=True)
                     result.failed_chunks.append(ctx.chunk_id)
