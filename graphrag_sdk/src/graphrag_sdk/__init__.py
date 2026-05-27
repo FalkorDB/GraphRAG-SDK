@@ -62,6 +62,12 @@ from graphrag_sdk.core.providers import (
 )
 
 # ── Ingestion Strategies ────────────────────────────────────────
+from graphrag_sdk.ingestion.backfill import (
+    BackfillExecutor,
+    BackfillMergeStats,
+    BackfillResult,
+    ChunkContext,
+)
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import (
     CallableChunking,
@@ -162,6 +168,10 @@ __all__ = [
     "TextChunks",
     "UpdateResult",
     # Ingestion
+    "BackfillExecutor",
+    "BackfillMergeStats",
+    "BackfillResult",
+    "ChunkContext",
     "ChunkingStrategy",
     "CallableChunking",
     "ContextualChunking",

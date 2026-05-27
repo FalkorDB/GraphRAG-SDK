@@ -55,7 +55,7 @@ them — no sharing across labels.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.models import (
@@ -64,6 +64,13 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
 )
+
+_VALID_PROPERTY_TYPES: frozenset[str] = frozenset(
+    {"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"}
+)
+
+OwnerKind = Literal["entity", "relation"]
+DescriptionKind = Literal["entity", "relation", "entity_property", "relation_property"]
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +478,269 @@ class OntologyStore:
                 "type": prop.type,
                 "description": prop.description,
             },
+        )
+
+    # ── Evolution primitives (bypass register() strictness) ──────
+    #
+    # These lower-level methods are called by ``GraphRAG`` ontology-evolution
+    # APIs (``rename_entity``, ``add_attribute``, ``drop_relation``, …). They
+    # deliberately mutate already-registered labels in ways ``register()``
+    # rejects, because the public ``GraphRAG`` methods are responsible for
+    # keeping the data graph in lockstep (or for explicitly running a backfill
+    # to populate new structure on existing data).
+
+    async def add_entity_property(self, entity_label: str, attribute: Attribute) -> None:
+        """Attach a new ``Property`` node to an existing ``Entity``.
+
+        No-op if a property with the same name already hangs off this
+        entity. Description is coalesced (existing wins unless the caller
+        supplies a non-null one).
+        """
+        await self._upsert_entity_property(entity_label, attribute)
+
+    async def add_relation_property(self, rel_label: str, attribute: Attribute) -> None:
+        """Attach a new ``Property`` node to every ``Relation`` node carrying
+        ``rel_label`` — i.e. every pattern of that relation, plus the
+        open-mode node if any.
+
+        Mirrors how :py:meth:`_upsert_relation_type` lays out properties
+        per-pattern, so the property appears uniformly across all patterns
+        of the relation.
+        """
+        await self._query(
+            "MATCH (r:Relation {label: $rel_label}) "
+            "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
+            "SET p.type = $type, "
+            "p.description = coalesce($description, p.description)",
+            {
+                "rel_label": rel_label,
+                "name": attribute.name,
+                "type": attribute.type,
+                "description": attribute.description,
+            },
+        )
+
+    async def add_relation_pattern_node(
+        self, rel_label: str, src: str, tgt: str, *, description: str | None = None
+    ) -> None:
+        """Add a new ``(src, tgt)`` pattern to an existing relation label.
+
+        MERGEs source/target ``Entity`` nodes (idempotent — if they exist they
+        are reused), creates a fresh ``:Relation`` pattern node, and copies
+        properties from any existing pattern node of the same label so the
+        new pattern lines up with siblings.
+        """
+        await self._query(
+            "MERGE (s:Entity {label: $src}) "
+            "MERGE (t:Entity {label: $tgt}) "
+            "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})-[:TARGET]->(t) "
+            "SET r.description = coalesce($description, r.description)",
+            {"src": src, "tgt": tgt, "rel_label": rel_label, "description": description},
+        )
+        # Copy properties from any sibling pattern node, if one exists.
+        # The MERGE above may have created a fresh Relation node; ensure
+        # any properties declared on the original carry over to the new
+        # pattern so retrieval-time prompts surface identical attrs.
+        await self._query(
+            "MATCH (existing:Relation {label: $rel_label})-[:HAS_PROPERTY]->(p:Property) "
+            "MATCH (new:Relation {label: $rel_label})-[:SOURCE]->(s:Entity {label: $src}) "
+            "MATCH (new)-[:TARGET]->(t:Entity {label: $tgt}) "
+            "WHERE existing <> new "
+            "MERGE (new)-[:HAS_PROPERTY]->(p2:Property {label: p.label}) "
+            "SET p2.type = p.type, p2.description = p.description",
+            {"rel_label": rel_label, "src": src, "tgt": tgt},
+        )
+
+    async def rename_entity_label(self, old: str, new: str) -> None:
+        """Rename the ``:Entity`` label on the ontology graph.
+
+        Only updates the ``label`` property on the ontology graph's
+        ``:Entity`` node — the underlying data-graph rename is the
+        caller's responsibility (handled by ``GraphRAG.rename_entity``).
+        """
+        await self._query(
+            "MATCH (e:Entity {label: $old}) SET e.label = $new",
+            {"old": old, "new": new},
+        )
+
+    async def rename_relation_label(self, old: str, new: str) -> None:
+        """Rename the ``:Relation`` label on the ontology graph.
+
+        Updates every ``:Relation`` node carrying this label (i.e. all
+        declared patterns of the relation, plus the open-mode node if any).
+        """
+        await self._query(
+            "MATCH (r:Relation {label: $old}) SET r.label = $new",
+            {"old": old, "new": new},
+        )
+
+    async def rename_property_label(
+        self,
+        owner_kind: OwnerKind,
+        owner_label: str,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        """Rename a property hanging off an Entity or every Relation node
+        with the given label.
+
+        Properties are scoped per-owner in the schema graph (one ``:Property``
+        node per owner via the ``HAS_PROPERTY`` edge), so the MATCH pattern
+        ensures we only touch the right node and never collide with
+        same-named properties on a different owner.
+        """
+        owner_label_cypher = "Entity" if owner_kind == "entity" else "Relation"
+        await self._query(
+            f"MATCH (o:{owner_label_cypher} {{label: $owner}})-[:HAS_PROPERTY]->"
+            "(p:Property {label: $old_name}) "
+            "SET p.label = $new_name",
+            {"owner": owner_label, "old_name": old_name, "new_name": new_name},
+        )
+
+    async def set_description(
+        self,
+        kind: DescriptionKind,
+        label: str,
+        description: str | None,
+        *,
+        owner_label: str | None = None,
+    ) -> None:
+        """Update the ``description`` on an Entity, Relation, or Property node.
+
+        For ``kind in {"entity", "relation"}``, ``label`` identifies the
+        node directly. For ``kind in {"entity_property", "relation_property"}``,
+        ``label`` is the property name and ``owner_label`` MUST be passed —
+        property nodes are scoped per owner so we always disambiguate.
+        Setting ``description=None`` clears the description.
+        """
+        if kind == "entity":
+            await self._query(
+                "MATCH (e:Entity {label: $label}) SET e.description = $description",
+                {"label": label, "description": description},
+            )
+        elif kind == "relation":
+            await self._query(
+                "MATCH (r:Relation {label: $label}) SET r.description = $description",
+                {"label": label, "description": description},
+            )
+        elif kind in ("entity_property", "relation_property"):
+            if owner_label is None:
+                raise ValueError(
+                    "set_description(kind='%s', ...) requires owner_label" % kind
+                )
+            owner_lbl = "Entity" if kind == "entity_property" else "Relation"
+            await self._query(
+                f"MATCH (o:{owner_lbl} {{label: $owner}})-[:HAS_PROPERTY]->"
+                "(p:Property {label: $name}) "
+                "SET p.description = $description",
+                {"owner": owner_label, "name": label, "description": description},
+            )
+        else:
+            raise ValueError(f"Unknown description kind: {kind}")
+
+    async def drop_entity_property(self, entity_label: str, prop_name: str) -> None:
+        """Remove a property declaration from an Entity in the ontology graph.
+
+        DETACH DELETEs the ``:Property`` node scoped to this entity. Properties
+        are owner-scoped so a same-named property on another entity is
+        untouched.
+        """
+        await self._query(
+            "MATCH (e:Entity {label: $owner})-[:HAS_PROPERTY]->(p:Property {label: $name}) "
+            "DETACH DELETE p",
+            {"owner": entity_label, "name": prop_name},
+        )
+
+    async def drop_relation_property(self, rel_label: str, prop_name: str) -> None:
+        """Remove a property declaration from every Relation node with this label."""
+        await self._query(
+            "MATCH (r:Relation {label: $owner})-[:HAS_PROPERTY]->(p:Property {label: $name}) "
+            "DETACH DELETE p",
+            {"owner": rel_label, "name": prop_name},
+        )
+
+    async def drop_entity_label(self, label: str) -> None:
+        """Remove an entity from the ontology graph entirely.
+
+        Cascades:
+        - Property nodes attached to this Entity → deleted.
+        - Relation pattern nodes that referenced this Entity as SOURCE or
+          TARGET → deleted along with their property children (the pattern is
+          no longer expressible without one of its endpoints).
+        """
+        # Drop property children first (they're owner-scoped).
+        await self._query(
+            "MATCH (e:Entity {label: $label})-[:HAS_PROPERTY]->(p:Property) "
+            "DETACH DELETE p",
+            {"label": label},
+        )
+        # Drop Relation pattern nodes that pointed at this entity, and their
+        # property children.  Two passes because the property children hang
+        # off the Relation node, not the Entity.
+        await self._query(
+            "MATCH (r:Relation)-[:SOURCE|TARGET]->(e:Entity {label: $label}) "
+            "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:Property) "
+            "DETACH DELETE r, p",
+            {"label": label},
+        )
+        await self._query(
+            "MATCH (e:Entity {label: $label}) DETACH DELETE e",
+            {"label": label},
+        )
+
+    async def drop_relation_label(self, label: str) -> None:
+        """Remove a relation from the ontology graph entirely.
+
+        Cascades all Relation pattern nodes carrying this label plus their
+        property children.
+        """
+        await self._query(
+            "MATCH (r:Relation {label: $label}) "
+            "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:Property) "
+            "DETACH DELETE r, p",
+            {"label": label},
+        )
+
+    async def drop_relation_pattern_node(
+        self, rel_label: str, src: str, tgt: str
+    ) -> None:
+        """Remove a single ``(src, tgt)`` pattern of a relation.
+
+        Other patterns of the same relation label are untouched.
+        """
+        await self._query(
+            "MATCH (s:Entity {label: $src})<-[:SOURCE]-(r:Relation {label: $rel_label})"
+            "-[:TARGET]->(t:Entity {label: $tgt}) "
+            "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:Property) "
+            "DETACH DELETE r, p",
+            {"rel_label": rel_label, "src": src, "tgt": tgt},
+        )
+
+    async def retype_property(
+        self,
+        owner_kind: OwnerKind,
+        owner_label: str,
+        prop_name: str,
+        new_type: str,
+    ) -> None:
+        """Change the declared type of a property on the ontology graph.
+
+        Validates ``new_type`` against the SDK's supported property types
+        before issuing the write. The caller is responsible for coercing
+        the data-graph values to match.
+        """
+        normalized = (new_type or "STRING").strip().upper()
+        if normalized not in _VALID_PROPERTY_TYPES:
+            raise ValueError(
+                f"retype_property: unsupported type {new_type!r}. "
+                f"Allowed: {sorted(_VALID_PROPERTY_TYPES)}"
+            )
+        owner_lbl = "Entity" if owner_kind == "entity" else "Relation"
+        await self._query(
+            f"MATCH (o:{owner_lbl} {{label: $owner}})-[:HAS_PROPERTY]->"
+            "(p:Property {label: $name}) "
+            "SET p.type = $new_type",
+            {"owner": owner_label, "name": prop_name, "new_type": normalized},
         )
 
     # ── Clear ────────────────────────────────────────────────────
