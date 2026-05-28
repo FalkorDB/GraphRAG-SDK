@@ -125,11 +125,12 @@ async def main() -> None:
         # mentioned Person has been LLM-asked for their role (null where
         # the LLM honestly doesn't know).
 
-        # ── 3. Re-running is idempotent ────────────────────────────
+        # ── 3. Add another attribute (independent atomic backfill) ─
         # Re-issuing the same add_attribute would raise ValueError now
-        # because role is declared. Instead, observe idempotency by
-        # adding a DIFFERENT attribute that hits the same chunks.
-        banner("3. Add another attribute — re-uses chunk markers if applicable")
+        # because `role` is already declared. This is a fresh, independent
+        # backfill operation — different op_id (Person.join_year), so it
+        # gets its own chunk markers and runs its own LLM scan.
+        banner("3. Add another attribute — independent atomic backfill")
         result = await rag.add_attribute("Person", Attribute(name="join_year", type="INTEGER"))
         print_evolution("Person.join_year", result)
 

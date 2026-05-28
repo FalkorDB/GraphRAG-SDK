@@ -108,8 +108,9 @@ class EvolutionResult:
     - The ontology graph has been updated.
     - Every chunk in scope was processed (LLM call + merge) or skipped
       because a prior idempotent run already marked it.
-    - ``failed_chunks`` is empty — hard failures would have raised
-      :py:class:`OntologyEvolutionError` instead.
+    - No chunk failures remain — hard failures would have raised
+      :py:class:`OntologyEvolutionError` instead, which carries the
+      failing chunk ids on ``OntologyEvolutionError.failed_chunks``.
     """
 
     ontology: Any  # graphrag_sdk.core.models.Ontology (avoid circular import)

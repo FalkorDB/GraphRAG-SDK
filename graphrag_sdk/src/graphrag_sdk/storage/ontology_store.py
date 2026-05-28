@@ -65,10 +65,6 @@ from graphrag_sdk.core.models import (
     Relation,
 )
 
-_VALID_PROPERTY_TYPES: frozenset[str] = frozenset(
-    {"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"}
-)
-
 OwnerKind = Literal["entity", "relation"]
 DescriptionKind = Literal["entity", "relation", "entity_property", "relation_property"]
 
@@ -499,9 +495,11 @@ class OntologyStore:
 
         Raised pre-write so a stray ``add_entity_property(... type="STRING")``
         on an existing INTEGER property doesn't silently retype the schema
-        (and leave the data graph mistyped). Use :py:meth:`retype_property`
-        or ``GraphRAG.retype_attribute`` / ``backfill_attribute_semantic``
-        to deliberately change types.
+        (and leave the data graph mistyped). To deliberately change a
+        property's type, callers must go through
+        ``GraphRAG.drop_attribute`` + ``GraphRAG.add_attribute`` with the
+        new type — the LLM re-derives values from chunks, keeping the
+        data and ontology aligned.
         """
         owner_lbl = "Entity" if owner_kind == "entity" else "Relation"
         result = await self._query(
@@ -514,8 +512,9 @@ class OntologyStore:
         if rows and rows[0] and rows[0][0] and rows[0][0] != attribute.type:
             raise OntologyContradictionError(
                 f"Property '{owner_label}.{attribute.name}' is already registered "
-                f"as {rows[0][0]}; refusing to redefine as {attribute.type}. Use "
-                f"retype_property() to deliberately change the declared type."
+                f"as {rows[0][0]}; refusing to redefine as {attribute.type}. "
+                f"To change the type, call drop_attribute() then add_attribute() "
+                f"with the new type — the LLM will re-derive values."
             )
 
     async def add_entity_property(self, entity_label: str, attribute: Attribute) -> None:
@@ -524,9 +523,9 @@ class OntologyStore:
         Idempotent on identical re-declarations. Raises
         :py:class:`OntologyContradictionError` if the same property name
         already exists with a different type — the caller must explicitly
-        ``retype_property`` (or ``backfill_attribute_semantic``) to
-        change a type. Description is coalesced (existing wins unless the
-        caller supplies a non-null one).
+        ``GraphRAG.drop_attribute`` + ``GraphRAG.add_attribute`` with the
+        new type to change a type. Description is coalesced (existing
+        wins unless the caller supplies a non-null one).
         """
         await self._check_no_property_retype("entity", entity_label, attribute)
         await self._upsert_entity_property(entity_label, attribute)
@@ -745,33 +744,6 @@ class OntologyStore:
             "OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(p:Property) "
             "DETACH DELETE r, p",
             {"rel_label": rel_label, "src": src, "tgt": tgt},
-        )
-
-    async def retype_property(
-        self,
-        owner_kind: OwnerKind,
-        owner_label: str,
-        prop_name: str,
-        new_type: str,
-    ) -> None:
-        """Change the declared type of a property on the ontology graph.
-
-        Validates ``new_type`` against the SDK's supported property types
-        before issuing the write. The caller is responsible for coercing
-        the data-graph values to match.
-        """
-        normalized = (new_type or "STRING").strip().upper()
-        if normalized not in _VALID_PROPERTY_TYPES:
-            raise ValueError(
-                f"retype_property: unsupported type {new_type!r}. "
-                f"Allowed: {sorted(_VALID_PROPERTY_TYPES)}"
-            )
-        owner_lbl = "Entity" if owner_kind == "entity" else "Relation"
-        await self._query(
-            f"MATCH (o:{owner_lbl} {{label: $owner}})-[:HAS_PROPERTY]->"
-            "(p:Property {label: $name}) "
-            "SET p.type = $new_type",
-            {"owner": owner_label, "name": prop_name, "new_type": normalized},
         )
 
     # ── Clear ────────────────────────────────────────────────────

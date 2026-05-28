@@ -85,7 +85,6 @@ def graphrag_evolving(embedder, llm, evolving_ontology, mock_graph_store):
     rag._ontology_store.drop_entity_label = AsyncMock()
     rag._ontology_store.drop_relation_label = AsyncMock()
     rag._ontology_store.drop_relation_pattern_node = AsyncMock()
-    rag._ontology_store.retype_property = AsyncMock()
     # Pretend the lazy init has already happened so methods don't try to
     # re-register the (mocked-away) initial ontology.
     rag._ontology_initialized = True
@@ -99,7 +98,6 @@ def graphrag_evolving(embedder, llm, evolving_ontology, mock_graph_store):
     rag._graph_store.delete_nodes_by_label = AsyncMock(return_value=5)
     rag._graph_store.delete_relations_by_type = AsyncMock(return_value=7)
     rag._graph_store.delete_relations_by_pattern = AsyncMock(return_value=3)
-    rag._graph_store.coerce_node_property = AsyncMock(return_value=(10, 1))
     return rag
 
 
@@ -245,31 +243,13 @@ class TestDropEntityLabel:
         assert any("MATCH (e:Entity {label: $label}) DETACH DELETE e" in c[0] for c in fake.calls)
 
 
-class TestRetypeProperty:
-    @pytest.mark.asyncio
-    async def test_valid_type(self, store_factory):
-        store, fake = store_factory()
-        await store.retype_property("entity", "Person", "age", "INTEGER")
-        sets = [c for c in fake.calls if "SET p.type = $new_type" in c[0]]
-        assert len(sets) == 1
-        assert sets[0][1]["new_type"] == "INTEGER"
-
-    @pytest.mark.asyncio
-    async def test_invalid_type_rejected_before_query(self, store_factory):
-        store, fake = store_factory()
-        with pytest.raises(ValueError, match="unsupported type"):
-            await store.retype_property("entity", "Person", "age", "WIDGET")
-        # No write happened.
-        assert not any("SET p.type" in c[0] for c in fake.calls)
-
-
 class TestAddPropertyRefusesRetype:
     """``add_entity_property`` / ``add_relation_property`` must NOT silently
     retype an existing property — without this guard a stray
     ``add_attribute('Person', Attribute(name='age', type='STRING'))`` on a
-    Person.age INTEGER would mutate the schema in place. Use
-    ``retype_property`` / ``GraphRAG.retype_attribute`` for deliberate
-    type changes."""
+    Person.age INTEGER would mutate the schema in place. To change a
+    declared type, callers must go through ``GraphRAG.drop_attribute`` +
+    ``GraphRAG.add_attribute`` with the new type."""
 
     @pytest.mark.asyncio
     async def test_add_entity_property_raises_on_type_conflict(self, store_factory):

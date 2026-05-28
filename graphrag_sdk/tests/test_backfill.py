@@ -228,7 +228,7 @@ class TestAddAttributeAtomic:
             "Person", "alice", "role", "engineer"
         )
         rag._graph_store.mark_chunk_extracted.assert_awaited_once_with(
-            "c1", "add_attribute:Person:role"
+            "c1", "add_attribute:Person:role:STRING"
         )
         # Ontology commit happened LAST.
         rag._ontology_store.add_entity_property.assert_awaited_once_with("Person", attr)
@@ -271,7 +271,43 @@ class TestAddAttributeAtomic:
         )
         await rag.add_attribute("Person", Attribute(name="role"))
         # The mark call carries the op_id; assert it matches the signature.
-        rag._graph_store.mark_chunk_extracted.assert_awaited_with("c1", "add_attribute:Person:role")
+        rag._graph_store.mark_chunk_extracted.assert_awaited_with(
+            "c1", "add_attribute:Person:role:STRING"
+        )
+
+    @pytest.mark.asyncio
+    async def test_op_id_includes_type_so_drop_add_rescans(self, rag):
+        """The documented type-change pattern is drop_attribute + add_attribute
+        with the new type. Without the type in op_id, chunk markers from
+        the prior backfill would short-circuit the second add — committing
+        the new schema while leaving the data graph at the old type.
+        Regression test for PR #268 comment #3319054109."""
+        from graphrag_sdk.core.models import Attribute
+
+        rag.llm = MockLLM(responses=[json.dumps({"results": {}})])
+        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "", "entities": []}]
+        )
+        await rag.add_attribute("Person", Attribute(name="role", type="STRING"))
+        first_op = rag._graph_store.mark_chunk_extracted.await_args.args[1]
+
+        # Pretend a drop + re-add with new type.
+        rag._graph_store.mark_chunk_extracted.reset_mock()
+        rag.llm = MockLLM(responses=[json.dumps({"results": {}})])
+        # Simulate "role is no longer declared" by mutating the fixture
+        # ontology in place (the actual drop runs in production).
+        person = next(
+            e for e in rag._global_ontology.entities if e.label == "Person"
+        )
+        person.properties = [p for p in person.properties if p.name != "role"]
+        await rag.add_attribute("Person", Attribute(name="role", type="INTEGER"))
+        second_op = rag._graph_store.mark_chunk_extracted.await_args.args[1]
+
+        assert first_op != second_op, (
+            f"op_id must differ between type changes; got {first_op!r} both times"
+        )
+        assert first_op.endswith(":STRING")
+        assert second_op.endswith(":INTEGER")
 
     @pytest.mark.asyncio
     async def test_id_only_entity_lookup_matches(self, rag):

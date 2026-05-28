@@ -165,24 +165,6 @@ BACKFILL_RELATION_PATTERN_PROMPT = (
     "Return ONLY valid JSON, nothing else."
 )
 
-BACKFILL_SEMANTIC_COERCION_PROMPT = (
-    "You are coercing a property value to a target type using semantic "
-    "understanding (mechanical toInteger/toFloat coercion already failed or "
-    "doesn't apply).\n\n"
-    "## Property\n"
-    "- owner label: {owner_label}\n"
-    "- name: {attr_name}\n"
-    "- target type: {target_type}\n\n"
-    "## Current value\n"
-    "{current_value!r}\n\n"
-    "## Instructions\n"
-    "Return the value coerced to the target type, or null if no sensible "
-    "coercion exists. For DATE, prefer ISO 8601 (YYYY-MM-DD). For numeric "
-    "targets, extract the canonical number. For LIST, split sensibly.\n\n"
-    'Return ONLY a JSON object: {{"value": <coerced value or null>}}\n\n'
-    "Return ONLY valid JSON, nothing else."
-)
-
 
 def _format_property_for_prompt(prop: Attribute) -> str:
     desc = f" — {prop.description}" if prop.description else ""

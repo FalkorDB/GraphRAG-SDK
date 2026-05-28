@@ -888,13 +888,6 @@ class GraphStore:
     # below). All are idempotent — re-running on already-converged state
     # is a no-op that returns count=0.
 
-    _RETYPE_COERCERS: dict[str, str] = {
-        "INTEGER": "toInteger",
-        "FLOAT": "toFloat",
-        "STRING": "toString",
-        "BOOLEAN": "toBoolean",
-    }
-
     async def rename_label(self, old: str, new: str) -> int:
         """Move every node from ``:old`` to ``:new``.
 
@@ -1034,56 +1027,6 @@ class GraphStore:
         )
         return count
 
-    async def coerce_node_property(
-        self, label: str, prop: str, target_type: str
-    ) -> tuple[int, int]:
-        """Coerce values of ``label.prop`` to ``target_type`` via Cypher.
-
-        Cypher's ``toInteger`` / ``toFloat`` / ``toString`` / ``toBoolean``
-        return ``null`` for unconvertible values. We split the work into
-        two passes:
-        1. Convert and write back where the coerced value is non-null.
-        2. ``REMOVE`` the property on rows that produced null (the value
-           was unconvertible — better dropped than left mistyped).
-
-        Returns ``(coerced, dropped)`` counts. ``LIST`` and ``DATE``
-        target types are out of scope here (LIST is structural; DATE
-        needs a parser per format) — use ``backfill_attribute_semantic``
-        for LLM-assisted coercion of those.
-        """
-        normalized = (target_type or "STRING").strip().upper()
-        if normalized not in self._RETYPE_COERCERS:
-            raise ValueError(
-                f"coerce_node_property: cannot mechanically coerce to "
-                f"{normalized!r}. Mechanical coercion supports "
-                f"{sorted(self._RETYPE_COERCERS)}. Use "
-                f"backfill_attribute_semantic for LLM-assisted coercion."
-            )
-        coercer = self._RETYPE_COERCERS[normalized]
-        safe_label = sanitize_cypher_label(label)
-        safe_prop = sanitize_cypher_label(prop)
-        # Pass 1 — coerce non-null convertible values.
-        r1 = await self._conn.query(
-            f"MATCH (n:`{safe_label}`) "
-            f"WHERE n.`{safe_prop}` IS NOT NULL "
-            f"AND {coercer}(n.`{safe_prop}`) IS NOT NULL "
-            f"SET n.`{safe_prop}` = {coercer}(n.`{safe_prop}`) "
-            f"RETURN count(n) AS n"
-        )
-        coerced = r1.result_set[0][0] if r1.result_set else 0
-        # Pass 2 — drop unconvertible. We have to compare via the coercer
-        # again rather than caching from pass 1 because FalkorDB doesn't
-        # carry "did pass 1 touch this row" state across statements.
-        r2 = await self._conn.query(
-            f"MATCH (n:`{safe_label}`) "
-            f"WHERE n.`{safe_prop}` IS NOT NULL "
-            f"AND {coercer}(n.`{safe_prop}`) IS NULL "
-            f"REMOVE n.`{safe_prop}` "
-            f"RETURN count(n) AS n"
-        )
-        dropped = r2.result_set[0][0] if r2.result_set else 0
-        return (coerced, dropped)
-
     # ── Chunk-scoped backfill helpers ───────────────────────────
 
     async def count_chunks_marked_with_op(self, op_id: str) -> int:
@@ -1222,23 +1165,6 @@ class GraphStore:
             {"chunk_id": row[0], "chunk_text": row[1], "pairs": row[2] or []}
             for row in (result.result_set or [])
         ]
-
-    async def list_node_values_for_semantic_coerce(
-        self,
-        label: str,
-        prop: str,
-    ) -> list[tuple[str, Any]]:
-        """Return ``(node_id, current_value)`` for every node carrying a
-        non-null value for ``label.prop`` — input to LLM-assisted
-        coercion (``backfill_attribute_semantic``).
-        """
-        safe_label = sanitize_cypher_label(label)
-        safe_prop = sanitize_cypher_label(prop)
-        result = await self._conn.query(
-            f"MATCH (n:`{safe_label}`) WHERE n.`{safe_prop}` IS NOT NULL "
-            f"RETURN n.id AS id, n.`{safe_prop}` AS value"
-        )
-        return [(row[0], row[1]) for row in (result.result_set or [])]
 
     async def set_node_property_by_id(
         self,

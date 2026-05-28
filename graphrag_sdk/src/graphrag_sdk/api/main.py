@@ -831,7 +831,10 @@ class GraphRAG:
         after retries — callers must NOT commit the ontology graph in
         that case. Re-running is safe (chunk markers skip done work).
         """
-        op_id = f"add_attribute:{owner_label}:{attribute.name}"
+        # op_id includes the type — drop+add with a new type must trigger
+        # a fresh LLM rescan, not be filtered out by chunk markers from
+        # the previous (different-type) backfill of the same name.
+        op_id = f"add_attribute:{owner_label}:{attribute.name}:{attribute.type}"
         attr_name = attribute.name
         chunk_rows = await self._graph_store.list_chunks_for_attribute_backfill(
             owner_label, attr_name, op_id=op_id
