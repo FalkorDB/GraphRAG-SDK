@@ -254,10 +254,10 @@ class TestDoclingBaseLoader:
         assert "age" in elements[0].content
         assert "city" in elements[0].content
 
-    async def test_html_script_style_stripping(self, ctx, tmp_path):
-        """Verify HTML loader strips script and style elements."""
+    async def test_html_pass_through(self, ctx, tmp_path):
+        """Verify HTML loader processes paragraph elements returned by docling."""
         file = tmp_path / "test.html"
-        file.write_text("<html><head><script>alert('x')</script><style>.x{}</style></head><body><p>Hello</p></body></html>")
+        file.write_text("<html><body><p>Hello</p></body></html>")
 
         mock_items = [
             (MagicMock(label=LabelEnum.PARAGRAPH, text="Hello"), 1),
@@ -278,8 +278,6 @@ class TestDoclingBaseLoader:
         elements = result.elements
         assert len(elements) == 1
         assert elements[0].content == "Hello"
-        assert "script" not in elements[0].content.lower()
-        assert "style" not in elements[0].content.lower()
 
     async def test_xlsx_multi_sheet(self, ctx, tmp_path):
         """Verify XLSX loader handles multiple sheets."""

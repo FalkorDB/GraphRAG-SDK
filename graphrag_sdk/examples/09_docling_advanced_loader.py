@@ -11,7 +11,7 @@ Prerequisites:
 
 Usage:
     export OPENAI_API_KEY="sk-..."
-    python 09_docling_advanced_loader.py
+    python graphrag_sdk/examples/09_docling_advanced_loader.py
 """
 
 import asyncio
