@@ -97,6 +97,55 @@ class BackfillResult:
     estimated_cost_usd: float | None = None
 
 
+@dataclass
+class EvolutionResult:
+    """Return value of an atomic ontology-evolution call.
+
+    Carries the refreshed ontology plus the observability counters from
+    the internal LLM backfill. Returned by ``GraphRAG.add_attribute``
+    and any future atomic-evolve methods. On a successful return:
+
+    - The ontology graph has been updated.
+    - Every chunk in scope was processed (LLM call + merge) or skipped
+      because a prior idempotent run already marked it.
+    - ``failed_chunks`` is empty — hard failures would have raised
+      :py:class:`OntologyEvolutionError` instead.
+    """
+
+    ontology: Any  # graphrag_sdk.core.models.Ontology (avoid circular import)
+    chunks_scanned: int = 0
+    chunks_skipped: int = 0
+    llm_calls: int = 0
+    values_filled: int = 0
+    values_skipped: int = 0  # LLM returned null
+    elapsed_s: float = 0.0
+
+
+class OntologyEvolutionError(RuntimeError):
+    """Raised when an atomic evolution call cannot complete its data migration.
+
+    The ontology graph is NOT updated when this is raised — the data graph
+    has been partially mutated but the schema still reflects the pre-call
+    state. Re-running the same evolution call is safe and idempotent
+    (chunk markers ensure already-processed chunks are skipped).
+
+    Inspect :py:attr:`failed_chunks` to identify the chunks that hard-failed
+    (LLM error, parse error, etc.) so the underlying cause can be addressed
+    before retry.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failed_chunks: list[str],
+        chunks_scanned: int,
+    ) -> None:
+        super().__init__(message)
+        self.failed_chunks = list(failed_chunks)
+        self.chunks_scanned = chunks_scanned
+
+
 PromptBuilder = Callable[[ChunkContext], str]
 ParseFn = Callable[[str, ChunkContext], Any]
 MergeFn = Callable[[Any, ChunkContext], Awaitable[BackfillMergeStats]]

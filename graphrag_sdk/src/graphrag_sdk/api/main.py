@@ -45,6 +45,8 @@ from graphrag_sdk.ingestion.backfill import (
     BackfillMergeStats,
     BackfillResult,
     ChunkContext,
+    EvolutionResult,
+    OntologyEvolutionError,
 )
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
@@ -59,7 +61,6 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     BACKFILL_ATTRIBUTE_PROMPT,
     BACKFILL_ENTITY_PROMPT,
     BACKFILL_RELATION_PATTERN_PROMPT,
-    BACKFILL_SEMANTIC_COERCION_PROMPT,
     GraphExtraction,
     _coerce_attribute_value,
 )
@@ -544,22 +545,81 @@ class GraphRAG:
         await self._ontology_store.register(Ontology(entities=[entity]))
         return await self._refresh_global_ontology()
 
-    async def add_attribute(self, owner_label: str, attribute: Attribute) -> Ontology:
-        """Declare a new attribute on an existing entity OR relation type.
+    async def add_attribute(
+        self,
+        owner_label: str,
+        attribute: Attribute,
+        *,
+        concurrency: int = 4,
+    ) -> EvolutionResult:
+        """Atomically declare an attribute and populate it from existing chunks.
 
-        Adds no data — call ``backfill_attribute`` afterwards to populate
-        values from already-ingested chunks (entities only; relation
-        attributes are ontology-only in v1, see ``rename_attribute``).
-        Resolves entity-vs-relation dynamically, like the other attribute
-        evolution methods.
+        Workflow:
+          1. Validate (owner is a known entity, attribute not already declared).
+          2. LLM-extract the attribute value from every chunk mentioning an
+             entity of ``owner_label``. Per-chunk idempotency via
+             ``extracted_ops`` markers — re-runs skip completed chunks.
+          3. SET the value on matching entities (null where the LLM doesn't
+             know, which is honest absence; querying with
+             ``WHERE n.<attr> IS NULL`` finds these).
+          4. Commit the ontology graph (write the ``:Property`` node) as the
+             final step.
+
+        Atomicity: the ontology graph write happens LAST. If any chunk
+        hard-fails (LLM error / parse error beyond retries),
+        :py:class:`OntologyEvolutionError` is raised and the ontology stays
+        at its pre-call state. The data graph has been partially mutated
+        but the schema doesn't yet promise the attribute exists, so callers
+        see a consistent (old) view of the world. Retrying is safe and
+        idempotent.
+
+        Cost: ~one LLM call per chunk that mentions an ``owner_label``
+        entity. Use sparingly on large corpora.
+
+        **Concurrency rule:** do NOT run ``ingest()`` concurrently with
+        ``add_attribute()``. The extractor reads the persisted ontology to
+        decide what to extract; while ``add_attribute`` is mid-flight, new
+        ingests would produce entities without the new attribute and leave
+        the data graph misaligned. Coordinate at the application level.
+
+        v1: entity owners only. Relation-attribute evolution raises
+        ``NotImplementedError`` — workaround is ``delete_all()`` followed by
+        a fresh ``ingest()`` against the new ontology.
         """
         await self._ensure_ontology_initialized()
         kind = self._resolve_owner_kind(owner_label)
-        if kind == "entity":
-            await self._ontology_store.add_entity_property(owner_label, attribute)
-        else:
-            await self._ontology_store.add_relation_property(owner_label, attribute)
-        return await self._refresh_global_ontology()
+        if kind != "entity":
+            raise NotImplementedError(
+                f"add_attribute on relation owners is not implemented "
+                f"(label={owner_label!r}). Relation-attribute evolution would "
+                f"require re-scanning edges; for now, delete_all() and re-ingest "
+                f"with the updated ontology."
+            )
+        owner = self._owner_for_kind(owner_label, kind)
+        if any(a.name == attribute.name for a in owner.properties):
+            raise ValueError(
+                f"Attribute {owner_label}.{attribute.name!r} is already declared. "
+                f"To change its type, call drop_attribute() first, then "
+                f"add_attribute() with the new type — the LLM will re-derive "
+                f"values from the chunks."
+            )
+
+        backfill = await self._run_atomic_attribute_backfill(
+            owner_label, attribute, concurrency=concurrency
+        )
+        # Commit the ontology graph as the LAST step. Reaching here means
+        # every chunk in scope was processed or skipped successfully.
+        await self._ontology_store.add_entity_property(owner_label, attribute)
+        refreshed = await self._refresh_global_ontology()
+        return EvolutionResult(
+            ontology=refreshed,
+            chunks_scanned=backfill.chunks_scanned,
+            chunks_skipped=backfill.chunks_skipped,
+            llm_calls=backfill.llm_calls,
+            values_filled=backfill.values_filled,
+            values_skipped=backfill.values_skipped,
+            elapsed_s=backfill.elapsed_s,
+        )
 
     async def add_relation_pattern(self, rel_label: str, source: str, target: str) -> Ontology:
         """Declare a new ``(source, target)`` pattern for a relation. Adds
@@ -674,22 +734,29 @@ class GraphRAG:
         return await self._refresh_global_ontology()
 
     async def drop_attribute(self, owner_label: str, name: str) -> Ontology:
-        """Drop an attribute from data + ontology (for entities) or
-        ontology only (for relations — see ``rename_attribute``'s note).
+        """Atomically remove an attribute from data and ontology.
+
+        For entity owners: ``REMOVE n.<name>`` on every instance of
+        ``owner_label``, then delete the ``:Property`` declaration. Cheap,
+        no LLM, idempotent. Data migration runs first so a crash between
+        the two steps leaves the data graph already cleaned and a retry
+        completes the ontology side.
+
+        v1: entity owners only. Relation-attribute evolution raises
+        ``NotImplementedError`` — workaround is ``delete_all()`` followed by
+        a fresh ``ingest()`` against the updated ontology.
         """
         await self._ensure_ontology_initialized()
         kind = self._resolve_owner_kind(owner_label)
-        nodes_touched = 0
-        if kind == "entity":
-            nodes_touched = await self._graph_store.drop_node_property(owner_label, name)
-            await self._ontology_store.drop_entity_property(owner_label, name)
-        else:
-            logger.warning(
-                "drop_attribute on relation %s: skipping data-graph property "
-                "drop (edge-property drop is out of scope for v1).",
-                owner_label,
+        if kind != "entity":
+            raise NotImplementedError(
+                f"drop_attribute on relation owners is not implemented "
+                f"(label={owner_label!r}). Relation-attribute evolution would "
+                f"require iterating edges; for now, delete_all() and re-ingest "
+                f"with the updated ontology."
             )
-            await self._ontology_store.drop_relation_property(owner_label, name)
+        nodes_touched = await self._graph_store.drop_node_property(owner_label, name)
+        await self._ontology_store.drop_entity_property(owner_label, name)
         logger.info("drop_attribute %s.%s: %d nodes touched", owner_label, name, nodes_touched)
         return await self._refresh_global_ontology()
 
@@ -742,83 +809,32 @@ class GraphRAG:
         )
         return await self._refresh_global_ontology()
 
-    async def retype_attribute(self, owner_label: str, name: str, new_type: str) -> Ontology:
-        """Mechanically coerce an attribute's data-graph values to a new
-        Cypher type and update the ontology graph.
+    # ── Group 3 internals: atomic-backfill engine ───────────────
+    #
+    # The previous PR exposed ``backfill_attribute`` /
+    # ``backfill_attribute_semantic`` / ``retype_attribute`` as public
+    # methods. Under the strict alignment design (atomic add_attribute,
+    # no retype, drop+add for type changes) those are gone — the
+    # backfill engine below is internal to ``add_attribute``.
 
-        Mechanical coercion handles ``INTEGER``, ``FLOAT``, ``STRING``,
-        ``BOOLEAN``. ``DATE`` and ``LIST`` require LLM-assisted
-        coercion — use ``backfill_attribute_semantic`` for those.
-
-        Values that don't convert (e.g. ``"twelve"`` → INTEGER) are
-        DROPPED from the affected nodes; the count is logged. Re-running
-        is idempotent because converted values stay converted.
-        """
-        await self._ensure_ontology_initialized()
-        kind = self._resolve_owner_kind(owner_label)
-        coerced = dropped = 0
-        if kind == "entity":
-            coerced, dropped = await self._graph_store.coerce_node_property(
-                owner_label, name, new_type
-            )
-        else:
-            logger.warning(
-                "retype_attribute on relation %s: skipping data-graph coercion "
-                "(edge-property coercion is out of scope for v1).",
-                owner_label,
-            )
-        await self._ontology_store.retype_property(kind, owner_label, name, new_type)
-        logger.info(
-            "retype_attribute %s.%s → %s: %d coerced, %d dropped",
-            owner_label,
-            name,
-            new_type,
-            coerced,
-            dropped,
-        )
-        return await self._refresh_global_ontology()
-
-    # ── Group 3: LLM-driven backfill ─────────────────────────────
-
-    async def backfill_attribute(
+    async def _run_atomic_attribute_backfill(
         self,
         owner_label: str,
-        name: str,
+        attribute: Attribute,
         *,
-        scope: str = "missing",
-        concurrency: int = 4,
+        concurrency: int,
     ) -> BackfillResult:
-        """Fill a newly-declared attribute on an existing entity type by
-        re-scanning chunks that mention entities of ``owner_label``
-        currently missing this attribute.
+        """LLM-extract ``attribute`` for every entity of ``owner_label``
+        from existing chunks. Internal helper of :py:meth:`add_attribute`.
 
-        ``scope="missing"`` is the only mode in v1 — entities already
-        carrying a value are left alone. Idempotent: chunks already
-        processed are skipped via the ``extracted_ops`` marker.
-
-        Cost: roughly one LLM call per chunk that has at least one
-        missing-attribute entity. Use sparingly on large corpora.
+        Raises :py:class:`OntologyEvolutionError` if any chunk hard-fails
+        after retries — callers must NOT commit the ontology graph in
+        that case. Re-running is safe (chunk markers skip done work).
         """
-        if scope != "missing":
-            raise ValueError(
-                f"backfill_attribute: unsupported scope {scope!r}; only 'missing' is implemented."
-            )
-        await self._ensure_ontology_initialized()
-        entity = next(
-            (e for e in self._global_ontology.entities if e.label == owner_label),
-            None,
-        )
-        if entity is None:
-            raise ValueError(f"Unknown entity label: {owner_label!r}")
-        attribute = next((a for a in entity.properties if a.name == name), None)
-        if attribute is None:
-            raise ValueError(
-                f"Unknown attribute {owner_label}.{name!r} — declare it first via add_attribute()."
-            )
-
-        op_id = f"backfill_attribute:{owner_label}:{name}"
+        op_id = f"add_attribute:{owner_label}:{attribute.name}"
+        attr_name = attribute.name
         chunk_rows = await self._graph_store.list_chunks_for_attribute_backfill(
-            owner_label, name, op_id=op_id
+            owner_label, attr_name, op_id=op_id
         )
 
         async def _iter() -> Any:
@@ -843,7 +859,7 @@ class GraphRAG:
             )
             return BACKFILL_ATTRIBUTE_PROMPT.format(
                 owner_label=owner_label,
-                attr_name=name,
+                attr_name=attr_name,
                 attr_type=attribute.type,
                 attr_description=attr_desc_line,
                 entities_block=entity_lines,
@@ -879,7 +895,7 @@ class GraphRAG:
                     dropped += 1
                     continue
                 await self._graph_store.set_node_property_by_id(
-                    owner_label, ent["id"], name, coerced
+                    owner_label, ent["id"], attr_name, coerced
                 )
                 filled += 1
             return BackfillMergeStats(
@@ -897,10 +913,23 @@ class GraphRAG:
             merge_fn=_merge,
         )
         result.target_nodes = sum(len(r["entities"]) for r in chunk_rows)
-        result.chunks_skipped = await self._graph_store.count_chunks_marked_with_op(op_id) - (
-            result.chunks_scanned + len(result.failed_chunks)
+        result.chunks_skipped = max(
+            0,
+            await self._graph_store.count_chunks_marked_with_op(op_id)
+            - (result.chunks_scanned + len(result.failed_chunks)),
         )
-        result.chunks_skipped = max(0, result.chunks_skipped)
+        # Hard-failure → caller must NOT commit the ontology. The data
+        # graph may be partially mutated, but chunk markers make a retry
+        # of add_attribute idempotent.
+        if result.failed_chunks:
+            raise OntologyEvolutionError(
+                f"add_attribute({owner_label}, {attr_name!r}) hard-failed on "
+                f"{len(result.failed_chunks)} chunk(s); ontology NOT committed. "
+                f"First few: {result.failed_chunks[:5]}. "
+                f"Resolve and retry — the call is idempotent.",
+                failed_chunks=result.failed_chunks,
+                chunks_scanned=result.chunks_scanned,
+            )
         return result
 
     async def backfill_entity(
@@ -1148,102 +1177,6 @@ class GraphRAG:
             await self._graph_store.count_chunks_marked_with_op(op_id)
             - (result.chunks_scanned + len(result.failed_chunks)),
         )
-        return result
-
-    async def backfill_attribute_semantic(
-        self,
-        owner_label: str,
-        name: str,
-        target_type: str,
-        *,
-        concurrency: int = 4,
-    ) -> BackfillResult:
-        """LLM-assisted coercion of an attribute's existing string values
-        to ``target_type``. Use when mechanical Cypher coercion would
-        drop too many values (e.g. ``"twelve"`` → 12, free-form dates
-        → ISO 8601).
-
-        Operates on existing node values directly — no chunk re-scan.
-        Updates the ontology graph's declared type once values land;
-        nodes whose value couldn't be coerced have the property
-        dropped.
-        """
-        await self._ensure_ontology_initialized()
-        kind = self._resolve_owner_kind(owner_label)
-        if kind != "entity":
-            raise ValueError(
-                "backfill_attribute_semantic on relation owners is not "
-                "implemented in v1 (relation-property coercion would require "
-                "iterating edges)."
-            )
-        rows = await self._graph_store.list_node_values_for_semantic_coerce(owner_label, name)
-        op_id = f"backfill_attribute_semantic:{owner_label}:{name}:{target_type}"
-
-        result = BackfillResult(operation_id=op_id, target_nodes=len(rows))
-        import time as _time
-
-        start = _time.monotonic()
-        # Worker-pool pattern: live task count stays O(concurrency)
-        # regardless of len(rows). With a plain asyncio.gather + per-row
-        # task, a 100k-node coercion would create 100k pending tasks up
-        # front, holding their captured state in memory until completion.
-        queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue(maxsize=concurrency * 2)
-
-        async def _worker() -> None:
-            while True:
-                item = await queue.get()
-                try:
-                    if item is None:
-                        return
-                    node_id, current = item
-                    try:
-                        prompt = BACKFILL_SEMANTIC_COERCION_PROMPT.format(
-                            owner_label=owner_label,
-                            attr_name=name,
-                            target_type=target_type,
-                            current_value=current,
-                        )
-                        response = await self.llm.ainvoke(prompt)
-                        result.llm_calls += 1
-                        payload = _strip_and_load_json(response.content)
-                        new_value = payload.get("value") if isinstance(payload, dict) else None
-                        if new_value is None:
-                            await self._graph_store.set_node_property_by_id(
-                                owner_label, node_id, name, None
-                            )
-                            result.dropped_for_coercion += 1
-                            continue
-                        ok, coerced = _coerce_attribute_value(new_value, target_type)
-                        if not ok:
-                            await self._graph_store.set_node_property_by_id(
-                                owner_label, node_id, name, None
-                            )
-                            result.dropped_for_coercion += 1
-                            continue
-                        await self._graph_store.set_node_property_by_id(
-                            owner_label, node_id, name, coerced
-                        )
-                        result.values_filled += 1
-                    except Exception as exc:
-                        logger.warning(
-                            "backfill_attribute_semantic: node %s failed: %s",
-                            node_id,
-                            exc,
-                        )
-                        result.failed_node_ids.append(node_id)
-                finally:
-                    queue.task_done()
-
-        workers = [asyncio.create_task(_worker()) for _ in range(concurrency)]
-        for node_id, value in rows:
-            await queue.put((node_id, value))
-        for _ in workers:
-            await queue.put(None)
-        await asyncio.gather(*workers)
-        # After coercion, update the ontology graph's declared type.
-        await self._ontology_store.retype_property("entity", owner_label, name, target_type)
-        result.elapsed_s = _time.monotonic() - start
-        await self._refresh_global_ontology()
         return result
 
     # ── Graph admin ──────────────────────────────────────────────

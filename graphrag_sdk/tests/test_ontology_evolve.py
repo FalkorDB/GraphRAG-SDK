@@ -336,21 +336,25 @@ class TestAddDeclarations:
             await graphrag_evolving.add_attribute("Alien", Attribute(name="x"))
 
     @pytest.mark.asyncio
-    async def test_add_attribute_on_relation_calls_relation_property(self, graphrag_evolving):
-        attr = Attribute(name="since", type="DATE")
-        await graphrag_evolving.add_attribute("WORKS_AT", attr)
-        graphrag_evolving._ontology_store.add_relation_property.assert_awaited_once_with(
-            "WORKS_AT", attr
-        )
+    async def test_add_attribute_on_relation_raises_not_implemented(self, graphrag_evolving):
+        """Under the strict alignment design, attribute evolution on relation
+        owners would require iterating edges. Relation-attribute mutation
+        raises NotImplementedError until that's implemented; the workaround
+        is documented in the error message."""
+        with pytest.raises(NotImplementedError, match="relation owners"):
+            await graphrag_evolving.add_attribute("WORKS_AT", Attribute(name="since"))
+        # The data graph must not have been touched either.
+        graphrag_evolving._ontology_store.add_relation_property.assert_not_awaited()
         graphrag_evolving._ontology_store.add_entity_property.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_add_attribute_calls_lower_level_primitive(self, graphrag_evolving):
-        attr = Attribute(name="email", type="STRING")
-        await graphrag_evolving.add_attribute("Person", attr)
-        graphrag_evolving._ontology_store.add_entity_property.assert_awaited_once_with(
-            "Person", attr
-        )
+    async def test_add_attribute_rejects_already_declared(self, graphrag_evolving):
+        """add_attribute is an atomic 'declare + backfill'. Re-declaring an
+        existing attribute would either be a no-op (wasteful) or a type
+        change (drift-prone). For type changes the user must drop_attribute
+        first — the LLM then re-derives values from chunks."""
+        with pytest.raises(ValueError, match="already declared"):
+            await graphrag_evolving.add_attribute("Person", Attribute(name="age", type="STRING"))
 
     @pytest.mark.asyncio
     async def test_add_relation_pattern_requires_known_endpoints(self, graphrag_evolving):
@@ -443,12 +447,14 @@ class TestDropAttribute:
         )
 
     @pytest.mark.asyncio
-    async def test_relation_owner_skips_data_graph(self, graphrag_evolving, caplog):
-        await graphrag_evolving.drop_attribute("WORKS_AT", "since")
+    async def test_relation_owner_raises_not_implemented(self, graphrag_evolving):
+        """Drop on a relation owner would leave edge properties orphaned
+        (no edge-property removal primitive yet). Raises under the strict
+        alignment invariant to prevent silent drift."""
+        with pytest.raises(NotImplementedError, match="relation owners"):
+            await graphrag_evolving.drop_attribute("WORKS_AT", "since")
         graphrag_evolving._graph_store.drop_node_property.assert_not_awaited()
-        graphrag_evolving._ontology_store.drop_relation_property.assert_awaited_once_with(
-            "WORKS_AT", "since"
-        )
+        graphrag_evolving._ontology_store.drop_relation_property.assert_not_awaited()
 
 
 class TestDropEntity:
@@ -479,13 +485,11 @@ class TestDropRelationPattern:
         )
 
 
-class TestRetypeAttribute:
-    @pytest.mark.asyncio
-    async def test_entity_owner_runs_mechanical_coercion(self, graphrag_evolving):
-        await graphrag_evolving.retype_attribute("Person", "age", "INTEGER")
-        graphrag_evolving._graph_store.coerce_node_property.assert_awaited_once_with(
-            "Person", "age", "INTEGER"
-        )
-        graphrag_evolving._ontology_store.retype_property.assert_awaited_once_with(
-            "entity", "Person", "age", "INTEGER"
-        )
+class TestRetypeRemoved:
+    """Under the strict alignment design, ``retype_attribute`` is gone.
+    Users compose ``drop_attribute`` + ``add_attribute`` with the new type
+    — the LLM re-derives values from chunks. Re-deriving is the only
+    honest move when the ontology's source of truth is the corpus."""
+
+    def test_retype_attribute_does_not_exist(self, graphrag_evolving):
+        assert not hasattr(graphrag_evolving, "retype_attribute")

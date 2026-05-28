@@ -4,13 +4,19 @@ GraphRAG SDK — Ontology evolution walkthrough
 Companion to ``08_ontology_lifecycle.py`` (which demonstrates strict
 additive evolution). This script shows the *mutating* evolution API:
 
+The design enforces a strict alignment invariant: **a declared attribute
+exists on every instance of its owner entity type**. To honor this,
+``add_attribute`` is atomic — it LLM-extracts values from existing
+chunks before committing the schema change.
+
 1. Ingest a small corpus with a starter ontology.
-2. **Group 1** — pure ontology changes: ``add_attribute``, ``add_relation_pattern``.
-3. **Group 2** — mechanical data migration: ``rename_entity``,
-   ``drop_attribute``, ``retype_attribute``.
-4. **Group 3** — LLM-driven backfill: ``backfill_attribute``,
-   ``backfill_entity``, ``backfill_relation_pattern``.
-5. Idempotency demo — re-run a backfill and observe ``llm_calls == 0``.
+2. Group 1 — pure declarations: ``add_entity``, ``add_relation_pattern``.
+3. Group 2 — mechanical migration: ``rename_entity``, ``rename_attribute``.
+4. Atomic attribute evolution: ``add_attribute`` (LLM backfill + commit
+   in one call), ``drop_attribute`` (cheap data + ontology removal).
+5. Type changes: ``drop_attribute`` + ``add_attribute`` with the new
+   type — the LLM re-derives values from the chunks.
+6. Opportunistic discovery: ``backfill_entity``, ``backfill_relation_pattern``.
 
 Prereqs::
 
@@ -22,10 +28,11 @@ Run::
 
     python 09_ontology_evolution.py
 
-The focused backfill prompts are intentionally narrower than the
-production ``VERIFY_EXTRACT_RELS_PROMPT``. They have not been A/B-tested
-on a representative corpus yet — expect to refine wording per your
-domain.
+Important: do NOT run ``ingest()`` concurrently with ``add_attribute()``
+or ``drop_attribute()``. The extractor reads the persisted ontology to
+decide what to extract; concurrent ingest during attribute evolution
+would create entities without the new attribute. Coordinate at the
+application level.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ from graphrag_sdk import (
     Attribute,
     ConnectionConfig,
     Entity,
+    EvolutionResult,
     GraphRAG,
     LiteLLM,
     LiteLLMEmbedder,
@@ -79,6 +87,16 @@ def banner(title: str) -> None:
     print("=" * 70)
 
 
+def print_evolution(label: str, result: EvolutionResult) -> None:
+    print(
+        f"  {label}: filled={result.values_filled} "
+        f"chunks_scanned={result.chunks_scanned} "
+        f"chunks_skipped={result.chunks_skipped} "
+        f"llm_calls={result.llm_calls} "
+        f"elapsed={result.elapsed_s:.2f}s"
+    )
+
+
 async def main() -> None:
     if not os.getenv("OPENAI_API_KEY"):
         raise SystemExit("Set OPENAI_API_KEY before running this example.")
@@ -95,58 +113,52 @@ async def main() -> None:
     )
 
     try:
-        # ── 1. Ingest the corpus with the starter ontology ─────────
+        # ── 1. Ingest with the starter ontology ────────────────────
         banner("1. Ingest")
         await rag.ingest(text=SAMPLE_TEXT, document_id="evolution-demo")
 
-        # ── 2. Group 1: declare new structure (no data change) ─────
-        banner("2. Declare a new attribute on Person (no values yet)")
-        await rag.add_attribute("Person", Attribute(name="role", type="STRING"))
-        await rag.add_attribute("Person", Attribute(name="join_year", type="INTEGER"))
-        ontology = await rag.get_ontology()
-        person = next(e for e in ontology.entities if e.label == "Person")
-        print("  Person attrs:", [(a.name, a.type) for a in person.properties])
+        # ── 2. Atomic add_attribute (declare + LLM backfill + commit) ─
+        banner("2. add_attribute('Person', 'role') — atomic evolve+backfill")
+        result = await rag.add_attribute("Person", Attribute(name="role", type="STRING"))
+        print_evolution("Person.role", result)
+        # On return, the ontology graph has the new property AND every
+        # mentioned Person has been LLM-asked for their role (null where
+        # the LLM honestly doesn't know).
 
-        # ── 3. Group 2: mechanical data migration ─────────────────
-        banner("3. Mechanical migration: rename Person → Employee, drop join_year")
+        # ── 3. Re-running is idempotent ────────────────────────────
+        # Re-issuing the same add_attribute would raise ValueError now
+        # because role is declared. Instead, observe idempotency by
+        # adding a DIFFERENT attribute that hits the same chunks.
+        banner("3. Add another attribute — re-uses chunk markers if applicable")
+        result = await rag.add_attribute("Person", Attribute(name="join_year", type="INTEGER"))
+        print_evolution("Person.join_year", result)
+
+        # ── 4. Type change: drop + add (LLM re-derives) ────────────
+        banner("4. Change Person.join_year STRING via drop + add")
+        await rag.drop_attribute("Person", "join_year")
+        result = await rag.add_attribute("Person", Attribute(name="join_year", type="STRING"))
+        print_evolution("Person.join_year retyped", result)
+
+        # ── 5. Group 1 / 2 operations (cheap, no LLM) ──────────────
+        banner("5. Cheap structural changes")
         await rag.rename_entity("Person", "Employee")
-        await rag.drop_attribute("Employee", "join_year")
+        await rag.rename_attribute("Employee", "role", "title")
         ontology = await rag.get_ontology()
         labels = [e.label for e in ontology.entities]
-        print(f"  Entity labels after rename: {labels}")
+        print(f"  Entity labels: {labels}")
+        emp = next(e for e in ontology.entities if e.label == "Employee")
+        print(f"  Employee attrs: {[(a.name, a.type) for a in emp.properties]}")
 
-        # ── 4. Group 3: LLM-driven backfill ───────────────────────
-        banner("4. Backfill Employee.role from the existing chunks")
-        result = await rag.backfill_attribute("Employee", "role")
-        print(f"  op_id={result.operation_id}")
-        print(f"  chunks_scanned={result.chunks_scanned} values_filled={result.values_filled}")
-        print(f"  llm_calls={result.llm_calls} elapsed={result.elapsed_s:.2f}s")
-
-        # ── 5. Idempotency ────────────────────────────────────────
-        banner("5. Re-run the same backfill — should be a no-op (markers hit)")
-        result2 = await rag.backfill_attribute("Employee", "role")
-        print(f"  llm_calls={result2.llm_calls} (expected 0)")
-        print(f"  chunks_skipped={result2.chunks_skipped}")
-
-        # ── 6. Add a new entity type and backfill its instances ───
-        banner("6. Declare a new entity type (City) and backfill instances")
+        # ── 6. Opportunistic discovery (opt-in, not invariant-enforcing) ─
+        banner("6. backfill_entity — opportunistic: scan corpus for missed Cities")
         await rag.add_entity(Entity(label="City", description="A geographic place"))
-        entity_result = await rag.backfill_entity("City", scope="all")
-        print(
-            f"  City entities found: {entity_result.values_filled} "
-            f"across {entity_result.chunks_scanned} chunks"
-        )
+        bf = await rag.backfill_entity("City", scope="all")
+        print(f"  City entities found via opportunistic scan: {bf.values_filled}")
 
-        # ── 7. Add a new relation pattern and backfill edges ──────
-        banner("7. Declare a new relation pattern (BASED_IN) and backfill edges")
+        banner("7. backfill_relation_pattern — opportunistic edge discovery")
         await rag.add_relation_pattern("BASED_IN", "Company", "City")
-        pattern_result = await rag.backfill_relation_pattern(
-            "BASED_IN", "Company", "City"
-        )
-        print(
-            f"  BASED_IN edges added: {pattern_result.values_filled} "
-            f"across {pattern_result.chunks_scanned} chunks"
-        )
+        bf = await rag.backfill_relation_pattern("BASED_IN", "Company", "City")
+        print(f"  BASED_IN edges added: {bf.values_filled}")
 
         # ── 8. Inspect final ontology ─────────────────────────────
         banner("8. Final ontology")

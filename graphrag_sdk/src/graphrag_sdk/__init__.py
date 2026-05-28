@@ -67,6 +67,8 @@ from graphrag_sdk.ingestion.backfill import (
     BackfillMergeStats,
     BackfillResult,
     ChunkContext,
+    EvolutionResult,
+    OntologyEvolutionError,
 )
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import (
@@ -173,6 +175,8 @@ __all__ = [
     "BackfillResult",
     "ChunkContext",
     "ChunkingStrategy",
+    "EvolutionResult",
+    "OntologyEvolutionError",
     "CallableChunking",
     "ContextualChunking",
     "FixedSizeChunking",

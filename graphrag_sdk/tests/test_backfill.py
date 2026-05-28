@@ -1,14 +1,11 @@
-"""Unit tests for Group-3 (LLM-driven backfill) ontology evolution.
+"""Unit tests for LLM-backed ontology evolution + discovery.
 
 Exercises:
 - :py:class:`BackfillExecutor` (concurrency, idempotency markers, partial failure)
-- ``GraphRAG.backfill_attribute`` (scope → LLM → merge → marker)
-- ``GraphRAG.backfill_entity`` (full chunk re-scan, new MENTIONED_IN edges)
-- ``GraphRAG.backfill_relation_pattern`` (candidate-pair filter)
-- ``GraphRAG.backfill_attribute_semantic`` (no-chunk LLM coercion)
-
-The LLM is always ``MockLLM(strict=True)`` so the second run of an
-idempotent backfill catches itself if it tries to make extra calls.
+- ``GraphRAG.add_attribute`` — atomic declare + LLM backfill + commit
+  (the invariant-enforcing core)
+- ``GraphRAG.backfill_entity`` — opportunistic: scan chunks for missed instances
+- ``GraphRAG.backfill_relation_pattern`` — opportunistic: discover missed edges
 """
 
 from __future__ import annotations
@@ -61,7 +58,7 @@ def rag(embedder, small_ontology, mock_graph_store):
     rag._graph_store = mock_graph_store
     rag._ontology_store = MagicMock(spec=OntologyStore)
     rag._ontology_store.load = AsyncMock(return_value=small_ontology)
-    rag._ontology_store.retype_property = AsyncMock()
+    rag._ontology_store.add_entity_property = AsyncMock()
     rag._ontology_initialized = True
     rag._global_ontology = small_ontology
     rag.ontology = small_ontology
@@ -69,7 +66,6 @@ def rag(embedder, small_ontology, mock_graph_store):
     rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(return_value=[])
     rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(return_value=[])
     rag._graph_store.list_chunks_for_relation_pattern_backfill = AsyncMock(return_value=[])
-    rag._graph_store.list_node_values_for_semantic_coerce = AsyncMock(return_value=[])
     rag._graph_store.mark_chunk_extracted = AsyncMock()
     rag._graph_store.set_node_property_by_id = AsyncMock()
     rag._graph_store.count_chunks_marked_with_op = AsyncMock(return_value=0)
@@ -180,98 +176,124 @@ class TestBackfillExecutor:
         assert result.values_filled == 1
 
 
-# ── backfill_attribute ──────────────────────────────────────────
+# ── add_attribute (atomic declare + LLM backfill + commit) ──────
 
 
-class TestBackfillAttribute:
-    @pytest.mark.asyncio
-    async def test_rejects_unsupported_scope(self, rag):
-        with pytest.raises(ValueError, match="unsupported scope"):
-            await rag.backfill_attribute("Person", "age", scope="all")
-
-    @pytest.mark.asyncio
-    async def test_rejects_unknown_attribute(self, rag):
-        with pytest.raises(ValueError, match="Unknown attribute"):
-            await rag.backfill_attribute("Person", "phone")
+class TestAddAttributeAtomic:
+    """``add_attribute`` is atomic: LLM backfill → ontology graph write
+    as commit point. On hard failure the ontology stays at its pre-call
+    state; the data graph may be partially mutated but is idempotent on
+    retry via chunk markers."""
 
     @pytest.mark.asyncio
-    async def test_fills_value_and_marks_chunk(self, rag):
-        rag.llm = MockLLM(responses=[json.dumps({"results": {"Alice": "42"}})])
+    async def test_relation_owner_raises_not_implemented(self, rag):
+        from graphrag_sdk.core.models import Attribute
+
+        with pytest.raises(NotImplementedError, match="relation owners"):
+            await rag.add_attribute("WORKS_AT", Attribute(name="since"))
+
+    @pytest.mark.asyncio
+    async def test_already_declared_raises(self, rag):
+        """Type changes go through drop+add, not a silent retype on add."""
+        from graphrag_sdk.core.models import Attribute
+
+        with pytest.raises(ValueError, match="already declared"):
+            await rag.add_attribute("Person", Attribute(name="age", type="STRING"))
+
+    @pytest.mark.asyncio
+    async def test_unknown_label_raises(self, rag):
+        from graphrag_sdk.core.models import Attribute
+
+        with pytest.raises(ValueError, match="Unknown ontology label"):
+            await rag.add_attribute("Alien", Attribute(name="x"))
+
+    @pytest.mark.asyncio
+    async def test_happy_path_backfills_then_commits(self, rag):
+        from graphrag_sdk.core.models import Attribute
+
+        attr = Attribute(name="role", type="STRING")
+        rag.llm = MockLLM(responses=[json.dumps({"results": {"Alice": "engineer"}})])
         rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
             return_value=[
                 {
                     "chunk_id": "c1",
-                    "chunk_text": "Alice is 42 years old.",
+                    "chunk_text": "Alice is an engineer.",
                     "entities": [{"id": "alice", "name": "Alice"}],
                 }
             ]
         )
-        result = await rag.backfill_attribute("Person", "age")
-        assert result.values_filled == 1
-        assert result.dropped_for_coercion == 0
+        result = await rag.add_attribute("Person", attr)
+        # Data write happened.
         rag._graph_store.set_node_property_by_id.assert_awaited_once_with(
-            "Person", "alice", "age", 42
+            "Person", "alice", "role", "engineer"
         )
         rag._graph_store.mark_chunk_extracted.assert_awaited_once_with(
-            "c1", "backfill_attribute:Person:age"
+            "c1", "add_attribute:Person:role"
         )
+        # Ontology commit happened LAST.
+        rag._ontology_store.add_entity_property.assert_awaited_once_with("Person", attr)
+        # EvolutionResult returned with backfill stats.
+        from graphrag_sdk.ingestion.backfill import EvolutionResult
+
+        assert isinstance(result, EvolutionResult)
+        assert result.values_filled == 1
+        assert result.chunks_scanned == 1
 
     @pytest.mark.asyncio
-    async def test_op_id_is_deterministic(self, rag):
+    async def test_hard_failure_does_not_commit_ontology(self, rag):
+        """If any chunk hard-fails (malformed JSON beyond retries),
+        OntologyEvolutionError is raised and the ontology graph write is
+        skipped. Schema stays at pre-call state; data graph may be
+        partially mutated but a retry of the same add_attribute call is
+        idempotent (chunk markers)."""
+        from graphrag_sdk.core.models import Attribute
+        from graphrag_sdk.ingestion.backfill import OntologyEvolutionError
+
+        rag.llm = MockLLM(responses=["this is not json"])
+        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c-bad", "chunk_text": "", "entities": []}]
+        )
+        with pytest.raises(OntologyEvolutionError) as excinfo:
+            await rag.add_attribute("Person", Attribute(name="role"))
+        assert excinfo.value.failed_chunks == ["c-bad"]
+        # Commit point NOT reached.
+        rag._ontology_store.add_entity_property.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_op_id_is_deterministic_from_signature(self, rag):
+        """Re-running the same add_attribute call generates the same op_id,
+        so chunk markers from a partial prior run are respected on retry."""
+        from graphrag_sdk.core.models import Attribute
+
         rag.llm = MockLLM(responses=[json.dumps({"results": {}})])
         rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
             return_value=[{"chunk_id": "c1", "chunk_text": "", "entities": []}]
         )
-        result = await rag.backfill_attribute("Person", "email")
-        assert result.operation_id == "backfill_attribute:Person:email"
+        await rag.add_attribute("Person", Attribute(name="role"))
+        # The mark call carries the op_id; assert it matches the signature.
+        rag._graph_store.mark_chunk_extracted.assert_awaited_with("c1", "add_attribute:Person:role")
 
     @pytest.mark.asyncio
-    async def test_lookup_keys_by_both_name_and_id(self, rag):
-        """If the LLM echoes the entity id (because the entity had no name and
-        the prompt fell back to id), the merge must still match — keying by
-        name alone would silently drop the value."""
-        rag.llm = MockLLM(responses=[json.dumps({"results": {"alice-id-7": "42"}})])
+    async def test_id_only_entity_lookup_matches(self, rag):
+        """LLM may echo the entity id when the entity has no name (the prompt
+        falls back to id). The merge must match either."""
+        from graphrag_sdk.core.models import Attribute
+
+        rag.llm = MockLLM(responses=[json.dumps({"results": {"alice-id-7": "engineer"}})])
         rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
             return_value=[
                 {
                     "chunk_id": "c1",
                     "chunk_text": "...",
-                    # Entity has no name — only an id.
                     "entities": [{"id": "alice-id-7", "name": None}],
                 }
             ]
         )
-        result = await rag.backfill_attribute("Person", "age")
+        result = await rag.add_attribute("Person", Attribute(name="role", type="STRING"))
         assert result.values_filled == 1
         rag._graph_store.set_node_property_by_id.assert_awaited_once_with(
-            "Person", "alice-id-7", "age", 42
+            "Person", "alice-id-7", "role", "engineer"
         )
-
-    @pytest.mark.asyncio
-    async def test_chunks_skipped_reflects_prior_run(self, rag):
-        """``chunks_skipped`` should count chunks already marked from a
-        previous run — i.e. work this run didn't have to redo."""
-        rag.llm = MockLLM(responses=[json.dumps({"results": {}})])
-        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
-            return_value=[{"chunk_id": "c1", "chunk_text": "", "entities": []}]
-        )
-        # Pretend 5 prior chunks are already marked.
-        rag._graph_store.count_chunks_marked_with_op = AsyncMock(return_value=6)
-        result = await rag.backfill_attribute("Person", "age")
-        # 1 scanned this run, 6 marked total → 5 skipped from prior runs.
-        assert result.chunks_skipped == 5
-
-    @pytest.mark.asyncio
-    async def test_malformed_json_lands_in_failed_chunks(self, rag):
-        """Malformed JSON must raise from the parser so the BackfillExecutor
-        adds the chunk to ``failed_chunks`` instead of marking it done."""
-        rag.llm = MockLLM(responses=["this is not json"])
-        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
-            return_value=[{"chunk_id": "c-bad", "chunk_text": "", "entities": []}]
-        )
-        result = await rag.backfill_attribute("Person", "age")
-        assert result.failed_chunks == ["c-bad"]
-        rag._graph_store.mark_chunk_extracted.assert_not_awaited()
 
 
 # ── backfill_entity ─────────────────────────────────────────────
@@ -430,57 +452,9 @@ class TestBackfillRelationPattern:
         assert rel.end_node_id == "acme"
 
 
-# ── backfill_attribute_semantic ─────────────────────────────────
-
-
-class TestBackfillAttributeSemantic:
-    @pytest.mark.asyncio
-    async def test_coerces_node_values(self, rag):
-        rag.llm = MockLLM(responses=[json.dumps({"value": 12})])
-        rag._graph_store.list_node_values_for_semantic_coerce = AsyncMock(
-            return_value=[("alice", "twelve")]
-        )
-        result = await rag.backfill_attribute_semantic("Person", "age", "INTEGER")
-        rag._graph_store.set_node_property_by_id.assert_awaited_once_with(
-            "Person", "alice", "age", 12
-        )
-        rag._ontology_store.retype_property.assert_awaited_once_with(
-            "entity", "Person", "age", "INTEGER"
-        )
-        assert result.values_filled == 1
-        assert result.dropped_for_coercion == 0
-
-    @pytest.mark.asyncio
-    async def test_drops_unconvertible(self, rag):
-        rag.llm = MockLLM(responses=[json.dumps({"value": None})])
-        rag._graph_store.list_node_values_for_semantic_coerce = AsyncMock(
-            return_value=[("alice", "gibberish")]
-        )
-        result = await rag.backfill_attribute_semantic("Person", "age", "INTEGER")
-        rag._graph_store.set_node_property_by_id.assert_awaited_once_with(
-            "Person", "alice", "age", None
-        )
-        assert result.dropped_for_coercion == 1
-        assert result.values_filled == 0
-
-    @pytest.mark.asyncio
-    async def test_relation_owner_rejected(self, rag):
-        with pytest.raises(ValueError, match="relation owners"):
-            await rag.backfill_attribute_semantic("WORKS_AT", "since", "DATE")
-
-    @pytest.mark.asyncio
-    async def test_failures_land_in_failed_node_ids(self, rag):
-        """Per-node failures in semantic backfill must populate
-        ``failed_node_ids`` (not ``failed_chunks`` — these aren't chunks)
-        so callers retry against the right surface."""
-
-        async def _boom(prompt, **kwargs):
-            raise RuntimeError("LLM down")
-
-        rag.llm.ainvoke = _boom  # type: ignore[method-assign]
-        rag._graph_store.list_node_values_for_semantic_coerce = AsyncMock(
-            return_value=[("alice", "twelve")]
-        )
-        result = await rag.backfill_attribute_semantic("Person", "age", "INTEGER")
-        assert result.failed_node_ids == ["alice"]
-        assert result.failed_chunks == []
+# Under the strict alignment design, retype_attribute and the
+# backfill_attribute_semantic that supported it are gone. Type changes
+# go through drop_attribute + add_attribute; the LLM re-derives values
+# from the chunks. The Attribute-Semantic tests are removed; coverage
+# of the LLM-coercion path lives in test_attribute_prompt for the
+# parser side and in TestAddAttributeAtomic for the end-to-end shape.
