@@ -46,14 +46,10 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
-from graphrag_sdk.ingestion.loaders.csv_loader import CsvLoader
-from graphrag_sdk.ingestion.loaders.docx_loader import DocxLoader
-from graphrag_sdk.ingestion.loaders.html_loader import HtmlLoader
+from graphrag_sdk.ingestion.loaders.docling_loader import DoclingLoader
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
-from graphrag_sdk.ingestion.loaders.pptx_loader import PptxLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
-from graphrag_sdk.ingestion.loaders.xlsx_loader import XlsxLoader
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
@@ -834,17 +830,9 @@ class GraphRAG:
             return PdfLoader()
         if lower.endswith(".md"):
             return MarkdownLoader()
-        if lower.endswith(".docx"):
-            return DocxLoader()
-        if lower.endswith(".xlsx"):
-            return XlsxLoader()
-        if lower.endswith(".pptx"):
-            return PptxLoader()
-        if lower.endswith(".html") or lower.endswith(".xhtml"):
-            return HtmlLoader()
-        if lower.endswith(".csv"):
-            return CsvLoader()
-        return TextLoader()
+        if lower.endswith(".txt"):
+            return TextLoader()
+        return DoclingLoader()
 
     # ── Incremental Updates ─────────────────────────────────────
     #

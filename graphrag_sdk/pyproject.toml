@@ -103,7 +103,8 @@ filterwarnings = [
     "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
     "ignore:.*hf_xet.download_files\\(\\) is deprecated.*:DeprecationWarning",
     "ignore:.*`torch.jit.script` is deprecated.*:DeprecationWarning",
-    "ignore:.*The `resume_download` argument is deprecated.*:UserWarning"
+    "ignore:.*The `resume_download` argument is deprecated.*:UserWarning",
+]
 markers = [
     "integration: tests that require a live FalkorDB instance",
 ]

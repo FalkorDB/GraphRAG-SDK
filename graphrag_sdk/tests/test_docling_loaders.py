@@ -1,14 +1,15 @@
-import pytest
 import sys
 from unittest.mock import MagicMock, patch
-from graphrag_sdk.core.exceptions import LoaderError
-from graphrag_sdk.core.models import DocumentOutput, DocumentInfo, DocumentElement
-from graphrag_sdk.ingestion.loaders.docling_base import DoclingBaseLoader
 
-class MockDocxLoader(DoclingBaseLoader):
-    @property
-    def extension_name(self) -> str:
-        return "docx"
+import pytest
+
+from graphrag_sdk.core.exceptions import LoaderError
+from graphrag_sdk.ingestion.loaders.docling_loader import DoclingLoader
+
+
+class MockDoclingLoader(DoclingLoader):
+    """Mock loader for testing with custom extension_name."""
+    pass
 
 class MockLabel:
     def __init__(self, val): self.value = val
@@ -35,23 +36,23 @@ class TestDoclingBaseLoader:
         """Mock the docling module namespace in sys.modules."""
         mock_datamodel = MagicMock()
         mock_datamodel.DocItemLabel = LabelEnum
-        
+
         mock_converter_mod = MagicMock()
         mock_converter_mod.DocumentConverter = MagicMock()
 
         mock_docling = MagicMock()
         mock_docling.__path__ = []
-        
+
         mock_datamodel_pkg = MagicMock()
         mock_datamodel_pkg.__path__ = []
-        
+
         modules = {
             "docling": mock_docling,
             "docling.datamodel": mock_datamodel_pkg,
             "docling.datamodel.document": mock_datamodel,
             "docling.document_converter": mock_converter_mod,
         }
-        
+
         with patch.dict("sys.modules", modules):
             yield
 
@@ -59,8 +60,8 @@ class TestDoclingBaseLoader:
         """Verify that ImportError when docling is missing is wrapped in LoaderError."""
         file = tmp_path / "test.docx"
         file.write_text("dummy content")
-        
-        loader = MockDocxLoader()
+
+        loader = MockDoclingLoader()
 
         # Mocking the import to raise ImportError
         real_import = __import__
@@ -70,11 +71,11 @@ class TestDoclingBaseLoader:
             return real_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=_import):
-            with pytest.raises(LoaderError, match=r"DOCX parsing requires 'docling'"):
+            with pytest.raises(LoaderError, match=r"This format requires 'docling'"):
                 await loader.load(str(file), ctx)
 
     async def test_label_mapping_and_metadata_preservation(self, ctx, tmp_path):
-        """Verify mapping of DocItemLabel and preservation of labels in metadata for fallback cases."""
+        """Verify DocItemLabel mapping and metadata preservation for fallback cases."""
         file = tmp_path / "test.docx"
         file.write_text("dummy content")
 
@@ -82,15 +83,15 @@ class TestDoclingBaseLoader:
         mock_item_header = MagicMock()
         mock_item_header.label = LabelEnum.SECTION_HEADER
         mock_item_header.text = "Header 1"
-        
+
         mock_item_para = MagicMock()
         mock_item_para.label = LabelEnum.PARAGRAPH
         mock_item_para.text = "Paragraph 1"
-        
+
         mock_item_footnote = MagicMock()
         mock_item_footnote.label = LabelEnum.FOOTNOTE
         mock_item_footnote.text = "Footnote content"
-        
+
         mock_doc = MagicMock()
         mock_doc.iterate_items.return_value = [
             (mock_item_header, 1),
@@ -100,9 +101,11 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
 
-        loader = MockDocxLoader()
+        loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
 
         elements = result.elements
@@ -114,7 +117,7 @@ class TestDoclingBaseLoader:
         # Check fallback and metadata preservation
         assert elements[2].type == "paragraph"
         assert elements[2].content == "Footnote content"
-        assert elements[2].metadata["label"] == LabelEnum.FOOTNOTE.value
+        assert elements[2].metadata["label"] == str(LabelEnum.FOOTNOTE)
 
     async def test_breadcrumbs_construction(self, ctx, tmp_path):
         """Verify the breadcrumbs are built correctly following the header hierarchy."""
@@ -133,9 +136,11 @@ class TestDoclingBaseLoader:
         mock_doc.iterate_items.return_value = mock_items
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
 
-        loader = MockDocxLoader()
+        loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
 
         elements = result.elements
@@ -147,7 +152,7 @@ class TestDoclingBaseLoader:
 
     async def test_file_not_found(self, ctx):
         """Verify that LoaderError is raised when the file does not exist."""
-        loader = MockDocxLoader()
+        loader = MockDoclingLoader()
         with pytest.raises(LoaderError, match="File not found"):
             await loader.load("/non/existent/path.docx", ctx)
 
@@ -158,9 +163,11 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.side_effect = Exception("Conversion failed")
-        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
 
-        loader = MockDocxLoader()
+        loader = MockDoclingLoader()
         with pytest.raises(LoaderError, match="Docling failed to process"):
             await loader.load(str(file), ctx)
 
@@ -173,15 +180,17 @@ class TestDoclingBaseLoader:
         mock_item.label = LabelEnum.PARAGRAPH
         mock_item.text = ""
         mock_item.export_to_markdown.return_value = "Fallback Markdown Content"
-        
+
         mock_doc = MagicMock()
         mock_doc.iterate_items.return_value = [(mock_item, 1)]
-        
+
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
 
-        loader = MockDocxLoader()
+        loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
 
         assert len(result.elements) == 1
@@ -197,18 +206,139 @@ class TestDoclingBaseLoader:
             (MagicMock(label=LabelEnum.TABLE, text="Table content"), 1),
             (MagicMock(label=LabelEnum.CODE, text="print('hello')"), 1),
         ]
-        
+
         mock_doc = MagicMock()
         mock_doc.iterate_items.return_value = mock_items
-        
+
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
 
-        loader = MockDocxLoader()
+        loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
 
         elements = result.elements
         assert elements[0].type == "list"
         assert elements[1].type == "table"
         assert elements[2].type == "code"
+
+    async def test_csv_header_row(self, ctx, tmp_path):
+        """Verify CSV loader preserves header row in elements."""
+        file = tmp_path / "test.csv"
+        file.write_text("name,age,city\nAlice,30,NYC\nBob,25,LA")
+
+        mock_items = [
+            (MagicMock(label=LabelEnum.SECTION_HEADER, text="name,age,city"), 1),
+            (MagicMock(label=LabelEnum.PARAGRAPH, text="Alice,30,NYC"), 2),
+            (MagicMock(label=LabelEnum.PARAGRAPH, text="Bob,25,LA"), 2),
+        ]
+
+        mock_doc = MagicMock()
+        mock_doc.iterate_items.return_value = mock_items
+
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value.document = mock_doc
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
+
+        loader = MockDoclingLoader()
+        result = await loader.load(str(file), ctx)
+
+        elements = result.elements
+        assert len(elements) == 3
+        assert elements[0].type == "header"
+        assert "name" in elements[0].content
+        assert "age" in elements[0].content
+        assert "city" in elements[0].content
+
+    async def test_html_script_style_stripping(self, ctx, tmp_path):
+        """Verify HTML loader strips script and style elements."""
+        file = tmp_path / "test.html"
+        file.write_text("<html><head><script>alert('x')</script><style>.x{}</style></head><body><p>Hello</p></body></html>")
+
+        mock_items = [
+            (MagicMock(label=LabelEnum.PARAGRAPH, text="Hello"), 1),
+        ]
+
+        mock_doc = MagicMock()
+        mock_doc.iterate_items.return_value = mock_items
+
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value.document = mock_doc
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
+
+        loader = MockDoclingLoader()
+        result = await loader.load(str(file), ctx)
+
+        elements = result.elements
+        assert len(elements) == 1
+        assert elements[0].content == "Hello"
+        assert "script" not in elements[0].content.lower()
+        assert "style" not in elements[0].content.lower()
+
+    async def test_xlsx_multi_sheet(self, ctx, tmp_path):
+        """Verify XLSX loader handles multiple sheets."""
+        file = tmp_path / "test.xlsx"
+        file.write_text("dummy")
+
+        mock_items = [
+            (MagicMock(label=LabelEnum.SECTION_HEADER, text="Sheet1"), 1),
+            (MagicMock(label=LabelEnum.PARAGRAPH, text="A1,B1,C1"), 2),
+            (MagicMock(label=LabelEnum.SECTION_HEADER, text="Sheet2"), 1),
+            (MagicMock(label=LabelEnum.PARAGRAPH, text="X1,Y1,Z1"), 2),
+        ]
+
+        mock_doc = MagicMock()
+        mock_doc.iterate_items.return_value = mock_items
+
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value.document = mock_doc
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
+
+        loader = MockDoclingLoader()
+        result = await loader.load(str(file), ctx)
+
+        elements = result.elements
+        assert len(elements) == 4
+        assert elements[0].type == "header"
+        assert elements[0].content == "Sheet1"
+        assert elements[2].type == "header"
+        assert elements[2].content == "Sheet2"
+
+    async def test_markdown_breadcrumbs(self, ctx, tmp_path):
+        """Verify Markdown loader builds correct breadcrumbs from headers."""
+        file = tmp_path / "test.md"
+        file.write_text("# Title\n## Section\n### Subsection\nParagraph text")
+
+        mock_items = [
+            (MagicMock(label=LabelEnum.TITLE, text="Title"), 1),
+            (MagicMock(label=LabelEnum.SECTION_HEADER, text="Section"), 2),
+            (MagicMock(label=LabelEnum.SECTION_HEADER, text="Subsection"), 3),
+            (MagicMock(label=LabelEnum.PARAGRAPH, text="Paragraph text"), 4),
+        ]
+
+        mock_doc = MagicMock()
+        mock_doc.iterate_items.return_value = mock_items
+
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value.document = mock_doc
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
+
+        loader = MockDoclingLoader()
+        result = await loader.load(str(file), ctx)
+
+        elements = result.elements
+        assert len(elements) == 4
+        assert elements[0].breadcrumbs == ["Title"]
+        assert elements[1].breadcrumbs == ["Title", "Section"]
+        assert elements[2].breadcrumbs == ["Title", "Section", "Subsection"]
+        assert elements[3].breadcrumbs == ["Title", "Section", "Subsection"]

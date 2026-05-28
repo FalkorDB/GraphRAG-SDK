@@ -1,5 +1,5 @@
-# GraphRAG SDK — Ingestion: Docling Base Loader
-# Pattern: Strategy Base Class
+# GraphRAG SDK — Ingestion: Docling Universal Loader
+# Pattern: Universal Strategy — one loader for all docling-supported formats
 
 from __future__ import annotations
 
@@ -16,10 +16,11 @@ from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 logger = logging.getLogger(__name__)
 
 
-class DoclingBaseLoader(LoaderStrategy):
-    """Base loader using docling for advanced document parsing.
+class DoclingLoader(LoaderStrategy):
+    """Universal loader using docling for advanced document parsing.
 
-    Subclasses should define the `extension_name` property.
+    Handles PDF, DOCX, XLSX, PPTX, HTML, CSV, Markdown, URLs, and more.
+    Format auto-detection is handled by docling's DocumentConverter.
     """
 
     def __init__(self, **docling_kwargs: Any) -> None:
@@ -32,12 +33,8 @@ class DoclingBaseLoader(LoaderStrategy):
         """
         self.docling_kwargs = docling_kwargs
 
-    @property
-    def extension_name(self) -> str:
-        return "unknown"
-
     async def load(self, source: str, ctx: Context) -> DocumentOutput:
-        ctx.log(f"Loading {self.extension_name.upper()} file via docling: {source}")
+        ctx.log(f"Loading file via docling: {source}")
         # Run synchronous docling extraction in a non-blocking thread
         return await asyncio.to_thread(self._load_sync, source)
 
@@ -51,8 +48,7 @@ class DoclingBaseLoader(LoaderStrategy):
             from docling.document_converter import DocumentConverter
         except ImportError:
             raise LoaderError(
-                f"{self.extension_name.upper()} parsing requires 'docling'. Install with:\n"
-                "  pip install graphrag-sdk[docling]"
+                "This format requires 'docling'. Install with:\n  pip install graphrag-sdk[docling]"
             )
 
         try:
@@ -134,7 +130,7 @@ class DoclingBaseLoader(LoaderStrategy):
                         type="paragraph",
                         content=content,
                         breadcrumbs=[b[1] for b in current_breadcrumbs],
-                        metadata={"label": label.value if hasattr(label, "value") else label},
+                        metadata={"label": str(label)},
                     )
                 )
 
@@ -146,7 +142,7 @@ class DoclingBaseLoader(LoaderStrategy):
                 path=str(path),
                 metadata={
                     "size_bytes": path.stat().st_size,
-                    "loader": self.extension_name,
+                    "loader": "docling",
                     "suffix": path.suffix,
                 },
             ),
