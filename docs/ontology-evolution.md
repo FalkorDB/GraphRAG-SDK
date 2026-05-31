@@ -8,9 +8,9 @@ If you're new to the ontology, start with [Graph Schema](graph-schema.md). This 
 
 ## The Invariant
 
-GraphRAG SDK treats the ontology as a **contract**: a declared attribute exists on every instance of its owner entity type. There is no API that can declare schema your data doesn't match.
+GraphRAG SDK treats the ontology as a **contract**: every instance of a declared attribute's owner entity type is queryable for that attribute. Values the LLM didn't determine read as `null` — Cypher treats absent and explicit-null identically under `WHERE n.attr IS NULL`, so callers get a consistent view regardless of which one underlies a given entity. There is no API that can declare schema your data doesn't match.
 
-This means one thing in practice: when you add an attribute, the SDK runs an LLM backfill across your existing chunks **as part of the same call** and only commits the schema change once the data is aligned. Adding an attribute is therefore expensive — pay attention to corpus size.
+This means one thing in practice: when you add an attribute, the SDK runs an LLM backfill across your existing chunks **as part of the same call** and only commits the schema change once the data is aligned. Adding an attribute is therefore expensive — pay attention to corpus size and use `dry_run=True` to preview before running for real.
 
 The invariant covers attributes only. Declaring a new entity type or relation pattern is cheap (no data implication — "this is allowed" is not "this exists"). For those, there are opt-in discovery tools that re-scan the corpus.
 
@@ -50,10 +50,11 @@ rag.drop_relation_pattern(rel_label, source, target)
 Return: `EvolutionResult`. The ontology graph write is the **commit point** — backfill runs first, schema change last.
 
 ```python
-rag.add_attribute(owner_label, attribute, *, concurrency=4)
+rag.add_attribute(owner_label, attribute, *, concurrency=4, dry_run=False)
 # Atomic: LLM extracts values from every chunk mentioning the owner
 # type, sets them on matching entities (null where the LLM doesn't
 # know), then commits the new :Property to the ontology graph.
+# Pass dry_run=True to preview cost without invoking the LLM.
 
 rag.drop_attribute(owner_label, name)
 # Atomic: REMOVE n.<name> on every instance, then delete the :Property
@@ -67,14 +68,16 @@ Entity owners only in v1. Relation-attribute mutation raises `NotImplementedErro
 Return: `BackfillResult`. Use after `add_entity` / `add_relation_pattern` if you want to populate instances from the existing corpus.
 
 ```python
-rag.backfill_entity(label, *, scope="all" | list[chunk_id])
+rag.backfill_entity(label, *, scope="all" | list[chunk_id], dry_run=False)
 # "Re-scan chunks for any entities of this type I might have missed."
 
-rag.backfill_relation_pattern(rel_label, source, target)
+rag.backfill_relation_pattern(rel_label, source, target, *, dry_run=False)
 # "Re-scan candidate co-mention chunks for any edges of this pattern."
 ```
 
 These don't enforce anything. Declaring an entity type or relation pattern just says *the schema allows this* — zero instances is a valid state.
+
+> **Provenance:** `backfill_relation_pattern` does NOT write `source_chunk_ids` on the new edges. `GraphStore.upsert_relationships` only unions provenance for `:RELATES` edges; writing it on arbitrary-typed edges would be silently overwritten by future MERGE writes. If you need chunk-level traceability on these backfilled edges, query the underlying co-mentioned chunks via the source/target entities' `MENTIONED_IN` edges instead.
 
 ---
 
@@ -145,15 +148,36 @@ This is the only honest move when the source of truth is the corpus. A mechanica
 
 ---
 
-## Concurrency Rule
+## Concurrency
 
-**Do not run `ingest()` concurrently with `add_attribute()` or `drop_attribute()`.**
+**Evolution calls are not safe to run concurrently with `ingest()` or with each other on the same graph.** Coordinate at the application level — treat evolution as a maintenance operation: pause new ingestion, run the evolution, resume.
 
-The extractor reads the persisted ontology to decide what to extract from new chunks. While `add_attribute` is mid-flight, the ontology hasn't been committed yet — the extractor doesn't know about the new attribute — and any concurrent `ingest()` would produce entities without it. The invariant would silently break the moment the schema commits.
+The constraint has two sources:
 
-Coordinate at the application level. Treat attribute evolution as a maintenance operation: pause new ingestion, run the evolution, resume.
+- **`add_attribute` / `drop_attribute`** — the extractor reads the persisted ontology to decide what to extract from new chunks. While `add_attribute` is mid-flight, the ontology hasn't been committed yet, and any concurrent `ingest()` would produce entities without the new attribute. The invariant would silently break the moment the schema commits.
+- **Mechanical Group 2 calls and `backfill_*`** — internally use a count-then-mutate pattern across two Cypher statements. Concurrent writes can change the count between the two queries.
 
-The other Group 1 / Group 2 / Group 4 calls don't have this constraint.
+For multi-process deployments where this matters, gate evolution behind an application-level lock (Redis, etc.) that also blocks `ingest()`.
+
+---
+
+## Cost Preview (`dry_run=True`)
+
+`add_attribute`, `backfill_entity`, and `backfill_relation_pattern` accept a `dry_run` keyword. When `True`, the scope query runs but the LLM is not invoked and no writes happen. The returned result carries `chunks_in_scope` — the number of chunks this run *would* scan.
+
+```python
+preview = await rag.add_attribute(
+    "Person", Attribute(name="role", type="STRING"),
+    dry_run=True,
+)
+print(f"Would scan {preview.chunks_in_scope} chunks "
+      f"(~{preview.chunks_in_scope} LLM calls)")
+# Decide whether to proceed.
+if preview.chunks_in_scope < 1000:
+    result = await rag.add_attribute("Person", Attribute(name="role", type="STRING"))
+```
+
+The count reflects what *this run* would scan: chunks already marked from a prior partial run are already filtered out, so the preview is accurate for the work that remains, not a hypothetical clean slate.
 
 ---
 
@@ -231,11 +255,12 @@ A more comprehensive walkthrough lives in `examples/09_ontology_evolution.py`.
 
 ## EvolutionResult Reference
 
-Returned by `add_attribute`. All counters are populated; `failed_chunks` is empty on a successful return because hard failures raise instead.
+Returned by `add_attribute`. On a successful (non-dry-run) return, all counters are populated; hard failures raise `OntologyEvolutionError` instead of returning.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `ontology` | `Ontology` | Refreshed ontology after the schema commit |
+| `chunks_in_scope` | `int` | Total chunks matching the scope query — equal to `chunks_scanned + chunks_skipped` on success; the only meaningful field under `dry_run=True` |
 | `chunks_scanned` | `int` | Chunks processed by the LLM this run |
 | `chunks_skipped` | `int` | Chunks already marked from a prior run (idempotent re-runs) |
 | `llm_calls` | `int` | Total LLM invocations |

@@ -147,12 +147,22 @@ class TestAddRelationProperty:
 
 class TestAddRelationPatternNode:
     @pytest.mark.asyncio
-    async def test_creates_new_pattern_node_and_copies_properties(self, store_factory):
+    async def test_matches_entities_does_not_merge_them(self, store_factory):
+        """Endpoints must MATCH, not MERGE. The public facade validates the
+        endpoint labels already; if the OntologyStore primitive MERGEd, a
+        stray direct call would create phantom :Entity nodes — exactly the
+        drift the alignment invariant exists to prevent.
+        """
         store, fake = store_factory()
         await store.add_relation_pattern_node("WORKS_AT", "Person", "Startup")
-        # Two queries: (1) the MERGE pattern, (2) the property-copy from siblings.
-        merge_calls = [c for c in fake.calls if "MERGE (s:Entity {label: $src})" in c[0]]
-        assert len(merge_calls) == 1
+        # The Cypher MATCHes the endpoint entities (does NOT MERGE them) and
+        # only MERGEs the new pattern node.
+        match_calls = [c for c in fake.calls if "MATCH (s:Entity {label: $src})" in c[0]]
+        assert len(match_calls) == 1
+        # Must NOT MERGE the endpoints.
+        for cypher, _ in fake.calls:
+            assert "MERGE (s:Entity {label: $src})" not in cypher
+            assert "MERGE (t:Entity {label: $tgt})" not in cypher
         copy_calls = [
             c
             for c in fake.calls
@@ -384,6 +394,17 @@ class TestRenameAttributeValidation:
         with pytest.raises(ValueError, match="already exists"):
             await graphrag_evolving.rename_attribute("Person", "age", "email")
         graphrag_evolving._graph_store.rename_node_property.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_relation_owner_raises_not_implemented(self, graphrag_evolving):
+        """Under the strict alignment design, rename on a relation owner
+        used to half-apply: ontology graph renamed, edges kept their old
+        property key — silent drift. Must raise NotImplementedError,
+        matching add_attribute / drop_attribute on relations."""
+        with pytest.raises(NotImplementedError, match="relation owners"):
+            await graphrag_evolving.rename_attribute("WORKS_AT", "since", "started")
+        graphrag_evolving._graph_store.rename_node_property.assert_not_awaited()
+        graphrag_evolving._ontology_store.rename_property_label.assert_not_awaited()
 
 
 class TestRefreshGlobalOntologySyncsSelf:

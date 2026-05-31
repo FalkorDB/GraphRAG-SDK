@@ -66,18 +66,18 @@ class BackfillMergeStats:
 class BackfillResult:
     """Post-run summary of a backfill operation.
 
-    Returned by every Group-3 ``GraphRAG`` method. ``failed_chunks`` carries
-    chunk ids that raised so the caller can retry just those; the
-    operation as a whole does not raise on per-chunk failures.
-
-    ``failed_node_ids`` is the parallel field for operations that don't
-    iterate chunks (``backfill_attribute_semantic`` walks node values
-    directly). Both lists are present so callers always know what to
-    retry without parsing the operation_id.
+    Returned by the opportunistic-discovery methods
+    (``GraphRAG.backfill_entity`` and ``GraphRAG.backfill_relation_pattern``).
+    ``failed_chunks`` carries chunk ids that raised so the caller can retry
+    just those; these methods do not raise on per-chunk failures.
 
     ``chunks_skipped`` counts chunks already marked with the same
     ``op_id`` from a prior run — i.e. work this run did NOT have to redo.
     Read it to confirm idempotency on reruns.
+
+    ``chunks_in_scope`` is the total chunks that match the scope query
+    before the marker filter — populated even on a dry run so callers
+    can preview LLM cost before incurring it.
 
     ``estimated_cost_usd`` is ``None`` in v1 — :py:class:`LLMInterface` does
     not expose usage stats. A future provider-specific hook can populate it.
@@ -85,6 +85,7 @@ class BackfillResult:
 
     operation_id: str
     target_nodes: int = 0
+    chunks_in_scope: int = 0
     chunks_scanned: int = 0
     chunks_skipped: int = 0
     llm_calls: int = 0
@@ -92,7 +93,6 @@ class BackfillResult:
     values_skipped: int = 0
     dropped_for_coercion: int = 0
     failed_chunks: list[str] = field(default_factory=list)
-    failed_node_ids: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
     estimated_cost_usd: float | None = None
 
@@ -111,9 +111,17 @@ class EvolutionResult:
     - No chunk failures remain — hard failures would have raised
       :py:class:`OntologyEvolutionError` instead, which carries the
       failing chunk ids on ``OntologyEvolutionError.failed_chunks``.
+
+    ``chunks_in_scope`` is the total chunks the scope query matched
+    before the marker filter. Populated even on a dry run so callers
+    can preview LLM cost before incurring it.
+
+    On a ``dry_run=True`` call ``chunks_in_scope`` is the only
+    meaningful field — no LLM was invoked, no ontology was written.
     """
 
     ontology: Any  # graphrag_sdk.core.models.Ontology (avoid circular import)
+    chunks_in_scope: int = 0
     chunks_scanned: int = 0
     chunks_skipped: int = 0
     llm_calls: int = 0

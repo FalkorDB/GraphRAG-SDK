@@ -560,14 +560,21 @@ class OntologyStore:
     ) -> None:
         """Add a new ``(src, tgt)`` pattern to an existing relation label.
 
-        MERGEs source/target ``Entity`` nodes (idempotent — if they exist they
-        are reused), creates a fresh ``:Relation`` pattern node, and copies
-        properties from any existing pattern node of the same label so the
-        new pattern lines up with siblings.
+        The source and target Entity nodes MUST already exist on the
+        ontology graph — this method MATCHes them rather than MERGEing
+        so a stray call with unknown labels is a silent no-op instead of
+        creating phantom Entity nodes. The public facade
+        (``GraphRAG.add_relation_pattern``) validates the endpoint
+        labels before calling this primitive, so the no-op is unreachable
+        from normal use.
+
+        After the pattern node is created, copies properties from any
+        existing sibling pattern node of the same relation label so the
+        new pattern lines up with its siblings.
         """
         await self._query(
-            "MERGE (s:Entity {label: $src}) "
-            "MERGE (t:Entity {label: $tgt}) "
+            "MATCH (s:Entity {label: $src}) "
+            "MATCH (t:Entity {label: $tgt}) "
             "MERGE (s)<-[:SOURCE]-(r:Relation {label: $rel_label})-[:TARGET]->(t) "
             "SET r.description = coalesce($description, r.description)",
             {"src": src, "tgt": tgt, "rel_label": rel_label, "description": description},

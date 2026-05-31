@@ -296,9 +296,7 @@ class TestAddAttributeAtomic:
         rag.llm = MockLLM(responses=[json.dumps({"results": {}})])
         # Simulate "role is no longer declared" by mutating the fixture
         # ontology in place (the actual drop runs in production).
-        person = next(
-            e for e in rag._global_ontology.entities if e.label == "Person"
-        )
+        person = next(e for e in rag._global_ontology.entities if e.label == "Person")
         person.properties = [p for p in person.properties if p.name != "role"]
         await rag.add_attribute("Person", Attribute(name="role", type="INTEGER"))
         second_op = rag._graph_store.mark_chunk_extracted.await_args.args[1]
@@ -330,6 +328,29 @@ class TestAddAttributeAtomic:
         rag._graph_store.set_node_property_by_id.assert_awaited_once_with(
             "Person", "alice-id-7", "role", "engineer"
         )
+
+    @pytest.mark.asyncio
+    async def test_dry_run_returns_chunks_in_scope_without_llm(self, rag):
+        """dry_run=True runs the scope query and returns chunks_in_scope
+        but does NOT invoke the LLM, write to the data graph, or commit
+        the ontology — letting callers preview cost on large corpora."""
+        from graphrag_sdk.core.models import Attribute
+
+        rag.llm = MockLLM(strict=True)  # any LLM call would assert
+        rag._graph_store.list_chunks_for_attribute_backfill = AsyncMock(
+            return_value=[
+                {"chunk_id": f"c{i}", "chunk_text": "...", "entities": []} for i in range(7)
+            ]
+        )
+        result = await rag.add_attribute(
+            "Person", Attribute(name="role", type="STRING"), dry_run=True
+        )
+        assert result.chunks_in_scope == 7
+        assert result.chunks_scanned == 0
+        assert result.llm_calls == 0
+        rag._graph_store.set_node_property_by_id.assert_not_awaited()
+        rag._ontology_store.add_entity_property.assert_not_awaited()
+        rag._graph_store.mark_chunk_extracted.assert_not_awaited()
 
 
 # ── backfill_entity ─────────────────────────────────────────────
@@ -368,6 +389,18 @@ class TestBackfillEntity:
         assert rel_call[0].type == "MENTIONED_IN"
         assert rel_call[0].end_node_id == "c1"
         assert result.values_filled == 1
+
+    @pytest.mark.asyncio
+    async def test_dry_run_returns_chunks_in_scope_without_llm(self, rag):
+        rag.llm = MockLLM(strict=True)
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": f"c{i}", "chunk_text": "..."} for i in range(3)]
+        )
+        rag._graph_store.upsert_nodes = AsyncMock()
+        result = await rag.backfill_entity("Person", scope="all", dry_run=True)
+        assert result.chunks_in_scope == 3
+        assert result.llm_calls == 0
+        rag._graph_store.upsert_nodes.assert_not_awaited()
 
 
 # ── backfill_relation_pattern ───────────────────────────────────
@@ -452,6 +485,22 @@ class TestBackfillRelationPattern:
         await rag.backfill_relation_pattern("WORKS_AT", "Person", "Company")
         edge = rag._graph_store.upsert_relationships.await_args.args[0][0]
         assert "source_chunk_ids" not in edge.properties
+
+    @pytest.mark.asyncio
+    async def test_dry_run_returns_chunks_in_scope_without_llm(self, rag):
+        rag.llm = MockLLM(strict=True)
+        rag._graph_store.list_chunks_for_relation_pattern_backfill = AsyncMock(
+            return_value=[
+                {"chunk_id": "c1", "chunk_text": "...", "pairs": [{}, {}]},
+                {"chunk_id": "c2", "chunk_text": "...", "pairs": [{}]},
+            ]
+        )
+        rag._graph_store.upsert_relationships = AsyncMock()
+        result = await rag.backfill_relation_pattern("WORKS_AT", "Person", "Company", dry_run=True)
+        assert result.chunks_in_scope == 2
+        assert result.target_nodes == 3  # 2 + 1 candidate pairs
+        assert result.llm_calls == 0
+        rag._graph_store.upsert_relationships.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_links_recognised_pairs(self, rag):

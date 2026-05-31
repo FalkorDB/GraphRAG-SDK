@@ -446,8 +446,8 @@ class GraphRAG:
     # Three tiers (see plan & module docstring of ingestion/backfill.py):
     #
     # - **Group 1** — pure ontology changes (descriptions, declarations).
-    # - **Group 2** — mechanical data migration via Cypher (renames,
-    #   drops, mechanical retypes).
+    # - **Group 2** — mechanical data migration via Cypher (renames
+    #   and drops).
     # - **Group 3** — LLM-driven re-scan over stored chunks.
     #
     # Each method is a thin orchestrator: it validates input against the
@@ -551,6 +551,7 @@ class GraphRAG:
         attribute: Attribute,
         *,
         concurrency: int = 4,
+        dry_run: bool = False,
     ) -> EvolutionResult:
         """Atomically declare an attribute and populate it from existing chunks.
 
@@ -574,13 +575,15 @@ class GraphRAG:
         idempotent.
 
         Cost: ~one LLM call per chunk that mentions an ``owner_label``
-        entity. Use sparingly on large corpora.
+        entity. See the :doc:`Concurrency rule </ontology-evolution>` in
+        the docs.
 
-        **Concurrency rule:** do NOT run ``ingest()`` concurrently with
-        ``add_attribute()``. The extractor reads the persisted ontology to
-        decide what to extract; while ``add_attribute`` is mid-flight, new
-        ingests would produce entities without the new attribute and leave
-        the data graph misaligned. Coordinate at the application level.
+        Pass ``dry_run=True`` to preview the LLM cost without invoking it.
+        The returned :py:class:`EvolutionResult` carries
+        ``chunks_in_scope`` (the count this run *would* scan); no LLM is
+        invoked and no ontology write happens. Cost preview is accurate
+        for this single run — chunk markers from prior partial runs are
+        already filtered into the count.
 
         v1: entity owners only. Relation-attribute evolution raises
         ``NotImplementedError`` — workaround is ``delete_all()`` followed by
@@ -604,6 +607,16 @@ class GraphRAG:
                 f"values from the chunks."
             )
 
+        if dry_run:
+            op_id = f"add_attribute:{owner_label}:{attribute.name}:{attribute.type}"
+            chunks = await self._graph_store.list_chunks_for_attribute_backfill(
+                owner_label, attribute.name, op_id=op_id
+            )
+            return EvolutionResult(
+                ontology=self._global_ontology,
+                chunks_in_scope=len(chunks),
+            )
+
         backfill = await self._run_atomic_attribute_backfill(
             owner_label, attribute, concurrency=concurrency
         )
@@ -613,6 +626,7 @@ class GraphRAG:
         refreshed = await self._refresh_global_ontology()
         return EvolutionResult(
             ontology=refreshed,
+            chunks_in_scope=backfill.chunks_scanned + backfill.chunks_skipped,
             chunks_scanned=backfill.chunks_scanned,
             chunks_skipped=backfill.chunks_skipped,
             llm_calls=backfill.llm_calls,
@@ -662,17 +676,26 @@ class GraphRAG:
         return await self._refresh_global_ontology()
 
     async def rename_attribute(self, owner_label: str, old_name: str, new_name: str) -> Ontology:
-        """Rename an attribute on an entity (data + ontology) or on a
-        relation (ontology only — relation-property data migration is
-        not implemented in this version; a warning is logged).
+        """Rename an attribute on an entity in data + ontology, atomically.
 
         Validates that ``old_name`` exists and ``new_name`` does not before
         touching either graph — without this guard a typo silently no-ops
         the rename, and a collision with an existing attribute would
         overwrite values on the data graph.
+
+        v1: entity owners only. Relation-attribute evolution raises
+        ``NotImplementedError`` — workaround is ``delete_all()`` followed by
+        a fresh ``ingest()`` against the updated ontology.
         """
         await self._ensure_ontology_initialized()
         kind = self._resolve_owner_kind(owner_label)
+        if kind != "entity":
+            raise NotImplementedError(
+                f"rename_attribute on relation owners is not implemented "
+                f"(label={owner_label!r}). Relation-attribute evolution would "
+                f"require iterating edges; for now, delete_all() and re-ingest "
+                f"with the updated ontology."
+            )
         if old_name == new_name:
             return self._global_ontology
         owner = self._owner_for_kind(owner_label, kind)
@@ -687,17 +710,9 @@ class GraphRAG:
                 f"Attribute {owner_label}.{new_name!r} already exists; "
                 f"merging attributes is not supported by rename_attribute."
             )
-        nodes_touched = 0
-        if kind == "entity":
-            nodes_touched = await self._graph_store.rename_node_property(
-                owner_label, old_name, new_name
-            )
-        else:
-            logger.warning(
-                "rename_attribute on relation %s: skipping data-graph property "
-                "rename (edge-property rename is out of scope for v1).",
-                owner_label,
-            )
+        nodes_touched = await self._graph_store.rename_node_property(
+            owner_label, old_name, new_name
+        )
         await self._ontology_store.rename_property_label(kind, owner_label, old_name, new_name)
         logger.info(
             "rename_attribute %s.%s → %s: %d nodes touched",
@@ -941,6 +956,7 @@ class GraphRAG:
         *,
         scope: str | list[str] = "all",
         concurrency: int = 4,
+        dry_run: bool = False,
     ) -> BackfillResult:
         """Find new instances of a newly-declared entity type by re-scanning
         chunks.
@@ -952,6 +968,11 @@ class GraphRAG:
         Newly-found entities are inserted with ``MENTIONED_IN`` edges to
         the originating chunk. Cost is proportional to the chunk count
         in scope.
+
+        Pass ``dry_run=True`` to preview the LLM cost without invoking
+        it. The returned :py:class:`BackfillResult` carries
+        ``chunks_in_scope`` (the count this run *would* scan) and
+        nothing else.
         """
         await self._ensure_ontology_initialized()
         entity = next(
@@ -970,6 +991,12 @@ class GraphRAG:
         chunk_rows = await self._graph_store.list_chunks_for_entity_backfill(
             op_id=op_id, chunk_ids=chunk_ids
         )
+        if dry_run:
+            return BackfillResult(
+                operation_id=op_id,
+                chunks_in_scope=len(chunk_rows),
+                target_nodes=len(chunk_rows),
+            )
 
         async def _iter() -> Any:
             for row in chunk_rows:
@@ -1056,6 +1083,9 @@ class GraphRAG:
             await self._graph_store.count_chunks_marked_with_op(op_id)
             - (result.chunks_scanned + len(result.failed_chunks)),
         )
+        result.chunks_in_scope = (
+            result.chunks_scanned + result.chunks_skipped + len(result.failed_chunks)
+        )
         return result
 
     async def backfill_relation_pattern(
@@ -1066,6 +1096,7 @@ class GraphRAG:
         *,
         scope: str = "candidate-pairs",
         concurrency: int = 4,
+        dry_run: bool = False,
     ) -> BackfillResult:
         """Find new ``(source) -[rel_label]-> (target)`` edges by asking
         the LLM about candidate co-mention pairs in already-ingested
@@ -1075,6 +1106,11 @@ class GraphRAG:
         scan to chunks where both source-type and target-type entities
         co-occur — the universe of plausible new edges. Edges that
         already exist between the same pair are skipped at MERGE time.
+
+        Pass ``dry_run=True`` to preview the LLM cost without invoking
+        it. The returned :py:class:`BackfillResult` carries
+        ``chunks_in_scope`` (the count this run *would* scan) and
+        nothing else.
         """
         if scope != "candidate-pairs":
             raise ValueError(
@@ -1093,6 +1129,12 @@ class GraphRAG:
         chunk_rows = await self._graph_store.list_chunks_for_relation_pattern_backfill(
             source, target, op_id=op_id
         )
+        if dry_run:
+            return BackfillResult(
+                operation_id=op_id,
+                chunks_in_scope=len(chunk_rows),
+                target_nodes=sum(len(r["pairs"]) for r in chunk_rows),
+            )
 
         async def _iter() -> Any:
             for row in chunk_rows:
@@ -1179,6 +1221,9 @@ class GraphRAG:
             0,
             await self._graph_store.count_chunks_marked_with_op(op_id)
             - (result.chunks_scanned + len(result.failed_chunks)),
+        )
+        result.chunks_in_scope = (
+            result.chunks_scanned + result.chunks_skipped + len(result.failed_chunks)
         )
         return result
 
