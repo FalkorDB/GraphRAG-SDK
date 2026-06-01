@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG

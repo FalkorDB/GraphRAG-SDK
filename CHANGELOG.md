@@ -7,6 +7,202 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-01
+
+Two large, related additions: a persistent ontology graph with
+schema-driven typed attributes (#256), and a mutating evolution API
+that lets you safely change the ontology after first ingest (#268).
+Both ship under a strict alignment invariant: **a declared attribute
+is queryable on every instance of its owner entity type** — the SDK
+exposes no API that can declare schema your data doesn't match.
+
+No breaking changes. The vocabulary rename (`GraphSchema` →
+`Ontology`, `EntityType` → `Entity`, `RelationType` → `Relation`,
+`PropertyType` → `Attribute`) ships with backwards-compatible aliases
+that emit `DeprecationWarning` on each access.
+
+### Added
+
+#### Persistent ontology graph + typed attributes (#256)
+
+- **Three-node schema graph** lives in a paired
+  `<data_graph>__ontology` graph: `:Entity`, `:Relation`, and
+  `:Property` nodes, connected by `HAS_PROPERTY` / `SOURCE` / `TARGET`
+  edges. One `:Relation` node per declared `(label, src, tgt)` triple;
+  open-mode relations are a single node without `SOURCE`/`TARGET`.
+  Always-on per `GraphRAG` instance; created lazily on first use,
+  dropped on `delete_all()`.
+
+- **`Attribute(name, type, description)`** Pydantic model with typed
+  values (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`).
+  Declared per `Entity` / `Relation` via `properties=[...]`; the
+  extractor surfaces declared attributes in the LLM prompt, parses
+  typed values out of the response, and stores them on the data
+  graph with type coercion at write time.
+
+- **`GraphRAG.get_ontology()` / `refresh_ontology()` /
+  `set_ontology(ontology)` / `save_ontology(path)`** — facade for
+  reading and exporting the persisted ontology. `set_ontology()` is
+  the public seam for swapping the working ontology between ingest
+  passes (additive only — modification rules below).
+
+- **`OntologyStore.register(ontology)`** enforces strict ingest
+  semantics: new labels are accepted, re-declarations of existing
+  labels must be a strict subset of the persisted definition, and
+  any attempt to add properties / patterns to an existing label
+  raises `OntologyModificationNotAllowedError`. Type contradictions
+  raise `OntologyContradictionError`. Both are raised before any
+  partial state persists.
+
+- **`examples/08_ontology_lifecycle.py`** — runnable walkthrough of
+  declaring typed attributes, round-tripping the ontology through a
+  JSON file (`Ontology.save_to_file` / `from_file`), and the additive
+  evolution rules.
+
+#### Mutating evolution API (#268)
+
+15 new public methods on `GraphRAG`, grouped by what they touch.
+
+**Group 1 — pure declarations (cheap, no LLM)** — return `Ontology`:
+- `set_entity_description(label, description)`
+- `set_relation_description(label, description)`
+- `set_attribute_description(owner_label, attribute_name, description)`
+- `add_entity(entity)` (declaration only)
+- `add_relation_pattern(rel_label, source, target)` (declaration only)
+
+**Group 2 — mechanical data migration (Cypher, no LLM)** — return
+`Ontology`. Data migration runs first; ontology graph is updated
+second. Idempotent on crash.
+- `rename_entity(old, new)`
+- `rename_attribute(owner_label, old_name, new_name)`
+- `rename_relation(old, new)` (recreate-and-delete via UNWIND;
+  warns at >10k edges)
+- `drop_entity(label)` (cascades to relation patterns referencing it)
+- `drop_relation(label)`
+- `drop_relation_pattern(rel_label, source, target)`
+
+**Group 3 — atomic attribute evolution (LLM, invariant-enforcing)** —
+return `EvolutionResult`:
+- `add_attribute(owner_label, attribute, *, concurrency=4, dry_run=False)`
+  — declare + LLM backfill across chunks mentioning the owner +
+  ontology commit, atomically. The ontology graph write is the
+  commit point (last). Entity owners only.
+- `drop_attribute(owner_label, name)` — REMOVE on every instance +
+  ontology delete. Entity owners only.
+
+Type changes deliberately go through `drop_attribute` + `add_attribute`
+(the LLM re-derives values from chunks). There is no `retype_attribute`.
+
+**Group 4 — opportunistic discovery (opt-in, not invariant-enforcing)**
+— return `BackfillResult`:
+- `backfill_entity(label, *, scope, concurrency=4, dry_run=False)` —
+  re-scan chunks for any entities of this type you might have missed.
+- `backfill_relation_pattern(rel_label, source, target, *, dry_run=False)`
+  — re-scan candidate co-mention chunks for any edges of this pattern.
+
+**Supporting types:**
+- **`EvolutionResult`** — return of `add_attribute`. Carries the
+  refreshed ontology plus observability counters (`chunks_in_scope`,
+  `chunks_scanned`, `chunks_skipped`, `llm_calls`, `values_filled`,
+  `values_skipped`, `elapsed_s`).
+- **`OntologyEvolutionError`** — raised by `add_attribute` when one
+  or more chunks hard-fail. The ontology graph is NOT updated when
+  raised. Carries `failed_chunks: list[str]` and `chunks_scanned`.
+- **`BackfillResult`** — return of Group 4. Carries `chunks_in_scope`,
+  `chunks_scanned`, `chunks_skipped`, `llm_calls`, `values_filled`,
+  `failed_chunks: list[str]`, etc. `failed_chunks` here is collected,
+  not raised on — opportunistic discovery isn't invariant-enforcing.
+- **`BackfillExecutor`** — worker-pool executor backing all Group 3/4
+  methods. Live `asyncio.Task` count stays O(concurrency) regardless
+  of corpus size (workers consume `ChunkContext` items from a bounded
+  `asyncio.Queue`).
+- **`ChunkContext`**, **`BackfillMergeStats`** — handed to the
+  per-operation prompt/parse/merge callbacks.
+
+All exported from the top-level package.
+
+- **`examples/09_ontology_evolution.py`** — runnable walkthrough of
+  the full evolution API.
+
+- **`docs/ontology-evolution.md`** — design doc: the invariant, all
+  four groups, atomicity model, failure & retry, type-change pattern,
+  concurrency rule, cost preview (`dry_run`), end-to-end example,
+  reference tables, and what's not in the API and why.
+
+### Changed
+
+- **Vocabulary rename** (non-breaking via aliases): `GraphSchema` →
+  `Ontology`, `EntityType` → `Entity`, `RelationType` → `Relation`,
+  `PropertyType` → `Attribute`,
+  `SchemaModificationNotAllowedError` →
+  `OntologyModificationNotAllowedError`, and the `schema=` keyword on
+  `GraphRAG(...)` / `OntologyStore.register()` / `IngestionPipeline(...)`
+  / retrieval strategy constructors → `ontology=`. The old names
+  remain importable and the old keywords still accepted, each emitting
+  a `DeprecationWarning` pointing at the new name. Will be removed
+  in a future release.
+
+- **`set_ontology()` and `get_ontology()` propagate to retrieval.**
+  Updating the working ontology (via `set_ontology`, `get_ontology`,
+  or any Group 1–3 evolution method) reassigns
+  `_retrieval_strategy._ontology` in lockstep with `_global_ontology`
+  and `self.ontology`. Concurrent retrieval calls always see the
+  same ontology snapshot as the most recent evolution write.
+
+### Deprecated
+
+- **Legacy ontology vocabulary.** Importing `GraphSchema`,
+  `EntityType`, `RelationType`, `PropertyType`,
+  `SchemaModificationNotAllowedError` from `graphrag_sdk` or
+  `graphrag_sdk.core.models` emits `DeprecationWarning`. Passing
+  `schema=` to `GraphRAG(...)` or `OntologyStore.register()` also
+  emits one. Old names continue to work; replace at your convenience.
+
+### Notes
+
+- **Alignment invariant.** Group 3 (`add_attribute`,
+  `drop_attribute`) is the only invariant-enforcing tier:
+  `add_attribute` runs the LLM backfill **before** committing the
+  ontology graph, so the schema never claims a property that the
+  data graph hasn't been asked to populate. Entities for which the
+  LLM returned `null` (or which weren't mentioned in any chunk) read
+  as `null` — Cypher treats absent and explicit-null identically
+  under `WHERE n.attr IS NULL`, so callers get a consistent view
+  regardless of which underlies a given entity.
+
+- **Concurrency rule.** Evolution calls are not safe to run
+  concurrently with `ingest()` or with each other on the same graph.
+  The extractor reads the persisted ontology to decide what to
+  extract; Group 2/4 calls internally use a count-then-mutate
+  pattern across two Cypher statements. Gate evolution behind an
+  application-level lock in multi-process deployments. Treat
+  evolution as a maintenance operation: pause ingest, run the
+  evolution, resume.
+
+- **Cost preview.** `add_attribute`, `backfill_entity`, and
+  `backfill_relation_pattern` accept `dry_run=True` to run the scope
+  query and return `chunks_in_scope` (the count this run *would*
+  scan) without invoking the LLM or committing anything. The count
+  reflects work that remains for this run — chunks already marked
+  from a prior partial run are filtered out — so the preview is
+  honest about the actual remaining cost.
+
+- **Idempotent retries.** Both atomic evolution and opportunistic
+  discovery use per-chunk `extracted_ops` markers on `:Chunk` nodes.
+  `op_id` is deterministic from the operation signature
+  (`f"add_attribute:{owner_label}:{attribute.name}:{attribute.type}"`)
+  including the type — so `drop_attribute` + `add_attribute` with a
+  new type triggers a fresh rescan rather than being filtered out
+  by stale markers from the previous type's run.
+
+- **Relation-attribute evolution is not implemented in 1.2.0.**
+  `add_attribute` / `drop_attribute` / `rename_attribute` on a
+  relation owner raise `NotImplementedError` — the workaround is
+  `delete_all()` + re-ingest with the updated ontology. Tracked
+  in #269 along with other deferred follow-ups (richer
+  `OntologyEvolutionError` payload, token-cost preview, provenance
+  on backfilled non-RELATES edges).
+
 ## [1.1.1] - 2026-05-13
 
 Closes a usability gap in v1.1.0's `apply_changes` convenience wrapper:
