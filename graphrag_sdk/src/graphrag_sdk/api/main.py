@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -23,12 +24,15 @@ from graphrag_sdk.core.exceptions import (
 )
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
+    Attribute,
     BatchEntry,
     ChatMessage,
     DeleteDocumentResult,
     DocumentInfo,
     Entity,
     FinalizeResult,
+    GraphNode,
+    GraphRelationship,
     IngestionResult,
     Ontology,
     RagResult,
@@ -36,6 +40,14 @@ from graphrag_sdk.core.models import (
     UpdateResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.ingestion.backfill import (
+    BackfillExecutor,
+    BackfillMergeStats,
+    BackfillResult,
+    ChunkContext,
+    EvolutionResult,
+    OntologyEvolutionError,
+)
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
@@ -43,8 +55,15 @@ from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
+    _strip_markdown_fences,
 )
-from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    BACKFILL_ATTRIBUTE_PROMPT,
+    BACKFILL_ENTITY_PROMPT,
+    BACKFILL_RELATION_PATTERN_PROMPT,
+    GraphExtraction,
+    _coerce_attribute_value,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -122,6 +141,17 @@ _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
 def _neutralize_context_close_tag(text: str) -> str:
     """Disarm any literal ``</context>`` that appears inside untrusted text."""
     return _CONTEXT_CLOSE_RE.sub("</ context>", text)
+
+
+def _strip_and_load_json(text: str) -> Any:
+    """Parse LLM-emitted JSON, tolerating optional markdown fences.
+
+    Raises ``ValueError`` on malformed JSON so the calling
+    :py:class:`BackfillExecutor` lands the chunk in
+    ``BackfillResult.failed_chunks`` instead of marking it done — otherwise
+    a parser-corrupted chunk would be permanently skipped on every rerun.
+    """
+    return json.loads(_strip_markdown_fences(text))
 
 
 _QUESTION_REWRITE_PROMPT = (
@@ -410,6 +440,792 @@ class GraphRAG:
         """
         ontology = await self.get_ontology()
         ontology.save_to_file(path, indent=indent)
+
+    # ── Ontology evolution ──────────────────────────────────────
+    #
+    # Three tiers (see plan & module docstring of ingestion/backfill.py):
+    #
+    # - **Group 1** — pure ontology changes (descriptions, declarations).
+    # - **Group 2** — mechanical data migration via Cypher (renames
+    #   and drops).
+    # - **Group 3** — LLM-driven re-scan over stored chunks.
+    #
+    # Each method is a thin orchestrator: it validates input against the
+    # current ontology, runs the data migration first (so a crash leaves
+    # the data graph ahead of the ontology — re-running is then idempotent),
+    # updates the ontology graph, and refreshes the cached
+    # ``_global_ontology`` + retrieval strategy.
+
+    async def _refresh_global_ontology(self) -> Ontology:
+        """Reload the persisted ontology and re-propagate to retrieval.
+
+        Internal helper shared by every evolution method so the refresh
+        path lives in one place. Updates ``self.ontology`` in lockstep so
+        a follow-up ``ingest()`` (which reads ``self.ontology.entities``
+        in ``_default_extractor``) sees the post-mutation label set.
+        """
+        self._global_ontology = await self._ontology_store.load()
+        self.ontology = self._global_ontology
+        if hasattr(self._retrieval_strategy, "_ontology"):
+            self._retrieval_strategy._ontology = self._global_ontology
+        return self._global_ontology
+
+    def _resolve_owner_kind(self, owner_label: str) -> Literal["entity", "relation"]:
+        """Decide whether ``owner_label`` names an entity or a relation.
+
+        Resolved against the current ``_global_ontology``. Raises
+        ``ValueError`` when the label is unknown, or when it is shared by
+        an entity and a relation (ambiguous; the caller must split).
+        """
+        is_entity = any(e.label == owner_label for e in self._global_ontology.entities)
+        is_relation = any(r.label == owner_label for r in self._global_ontology.relations)
+        if is_entity and is_relation:
+            raise ValueError(
+                f"Label '{owner_label}' is declared as both an entity and a "
+                f"relation in the current ontology; disambiguate by calling "
+                f"the entity- or relation-specific evolution method directly."
+            )
+        if is_entity:
+            return "entity"
+        if is_relation:
+            return "relation"
+        raise ValueError(f"Unknown ontology label: {owner_label!r}")
+
+    def _owner_for_kind(self, owner_label: str, kind: Literal["entity", "relation"]) -> Any:
+        """Return the :py:class:`Entity` or :py:class:`Relation` for a known label.
+
+        Companion to :py:meth:`_resolve_owner_kind`; only intended to be
+        called after the kind has been resolved. ``KeyError`` here would
+        indicate a programming error (the kind was wrong).
+        """
+        if kind == "entity":
+            return next(e for e in self._global_ontology.entities if e.label == owner_label)
+        return next(r for r in self._global_ontology.relations if r.label == owner_label)
+
+    # ── Group 1: pure ontology (no data, no LLM) ─────────────────
+
+    async def set_entity_description(self, label: str, description: str | None) -> Ontology:
+        """Set or clear the description on an existing entity type."""
+        await self._ensure_ontology_initialized()
+        if not any(e.label == label for e in self._global_ontology.entities):
+            raise ValueError(f"Unknown entity label: {label!r}")
+        await self._ontology_store.set_description("entity", label, description)
+        return await self._refresh_global_ontology()
+
+    async def set_relation_description(self, label: str, description: str | None) -> Ontology:
+        """Set or clear the description on an existing relation type."""
+        await self._ensure_ontology_initialized()
+        if not any(r.label == label for r in self._global_ontology.relations):
+            raise ValueError(f"Unknown relation label: {label!r}")
+        await self._ontology_store.set_description("relation", label, description)
+        return await self._refresh_global_ontology()
+
+    async def set_attribute_description(
+        self,
+        owner_label: str,
+        attribute_name: str,
+        description: str | None,
+    ) -> Ontology:
+        """Set or clear the description on an attribute of an entity or relation."""
+        await self._ensure_ontology_initialized()
+        kind = self._resolve_owner_kind(owner_label)
+        await self._ontology_store.set_description(
+            f"{kind}_property", attribute_name, description, owner_label=owner_label
+        )
+        return await self._refresh_global_ontology()
+
+    async def add_entity(self, entity: Entity) -> Ontology:
+        """Declare a new entity type. Adds no data — call ``backfill_entity``
+        afterwards to populate instances from already-ingested chunks.
+        """
+        await self._ensure_ontology_initialized()
+        if any(e.label == entity.label for e in self._global_ontology.entities):
+            raise ValueError(f"Entity label {entity.label!r} already exists")
+        # Re-use register()'s additive path — it accepts brand-new labels.
+        await self._ontology_store.register(Ontology(entities=[entity]))
+        return await self._refresh_global_ontology()
+
+    async def add_attribute(
+        self,
+        owner_label: str,
+        attribute: Attribute,
+        *,
+        concurrency: int = 4,
+        dry_run: bool = False,
+    ) -> EvolutionResult:
+        """Atomically declare an attribute and populate it from existing chunks.
+
+        Workflow:
+          1. Validate (owner is a known entity, attribute not already declared).
+          2. LLM-extract the attribute value from every chunk mentioning an
+             entity of ``owner_label``. Per-chunk idempotency via
+             ``extracted_ops`` markers — re-runs skip completed chunks.
+          3. SET the value on matching entities (null where the LLM doesn't
+             know, which is honest absence; querying with
+             ``WHERE n.<attr> IS NULL`` finds these).
+          4. Commit the ontology graph (write the ``:Property`` node) as the
+             final step.
+
+        Atomicity: the ontology graph write happens LAST. If any chunk
+        hard-fails (LLM error / parse error beyond retries),
+        :py:class:`OntologyEvolutionError` is raised and the ontology stays
+        at its pre-call state. The data graph has been partially mutated
+        but the schema doesn't yet promise the attribute exists, so callers
+        see a consistent (old) view of the world. Retrying is safe and
+        idempotent.
+
+        Cost: ~one LLM call per chunk that mentions an ``owner_label``
+        entity. See the :doc:`Concurrency rule </ontology-evolution>` in
+        the docs.
+
+        Pass ``dry_run=True`` to preview the LLM cost without invoking it.
+        The returned :py:class:`EvolutionResult` carries
+        ``chunks_in_scope`` (the count this run *would* scan); no LLM is
+        invoked and no ontology write happens. Cost preview is accurate
+        for this single run — chunk markers from prior partial runs are
+        already filtered into the count.
+
+        v1: entity owners only. Relation-attribute evolution raises
+        ``NotImplementedError`` — workaround is ``delete_all()`` followed by
+        a fresh ``ingest()`` against the new ontology.
+        """
+        await self._ensure_ontology_initialized()
+        kind = self._resolve_owner_kind(owner_label)
+        if kind != "entity":
+            raise NotImplementedError(
+                f"add_attribute on relation owners is not implemented "
+                f"(label={owner_label!r}). Relation-attribute evolution would "
+                f"require re-scanning edges; for now, delete_all() and re-ingest "
+                f"with the updated ontology."
+            )
+        owner = self._owner_for_kind(owner_label, kind)
+        if any(a.name == attribute.name for a in owner.properties):
+            raise ValueError(
+                f"Attribute {owner_label}.{attribute.name!r} is already declared. "
+                f"To change its type, call drop_attribute() first, then "
+                f"add_attribute() with the new type — the LLM will re-derive "
+                f"values from the chunks."
+            )
+
+        if dry_run:
+            op_id = f"add_attribute:{owner_label}:{attribute.name}:{attribute.type}"
+            chunks = await self._graph_store.list_chunks_for_attribute_backfill(
+                owner_label, attribute.name, op_id=op_id
+            )
+            return EvolutionResult(
+                ontology=self._global_ontology,
+                chunks_in_scope=len(chunks),
+            )
+
+        backfill = await self._run_atomic_attribute_backfill(
+            owner_label, attribute, concurrency=concurrency
+        )
+        # Commit the ontology graph as the LAST step. Reaching here means
+        # every chunk in scope was processed or skipped successfully.
+        await self._ontology_store.add_entity_property(owner_label, attribute)
+        refreshed = await self._refresh_global_ontology()
+        return EvolutionResult(
+            ontology=refreshed,
+            chunks_in_scope=backfill.chunks_scanned + backfill.chunks_skipped,
+            chunks_scanned=backfill.chunks_scanned,
+            chunks_skipped=backfill.chunks_skipped,
+            llm_calls=backfill.llm_calls,
+            values_filled=backfill.values_filled,
+            values_skipped=backfill.values_skipped,
+            elapsed_s=backfill.elapsed_s,
+        )
+
+    async def add_relation_pattern(self, rel_label: str, source: str, target: str) -> Ontology:
+        """Declare a new ``(source, target)`` pattern for a relation. Adds
+        no data — call ``backfill_relation_pattern`` afterwards.
+
+        The relation may be new (in which case the call is equivalent to a
+        single-pattern ``register()``) or existing (a fresh pattern is
+        added alongside any sibling patterns).
+        """
+        await self._ensure_ontology_initialized()
+        if not any(e.label == source for e in self._global_ontology.entities):
+            raise ValueError(f"Unknown source entity label: {source!r}")
+        if not any(e.label == target for e in self._global_ontology.entities):
+            raise ValueError(f"Unknown target entity label: {target!r}")
+        await self._ontology_store.add_relation_pattern_node(rel_label, source, target)
+        return await self._refresh_global_ontology()
+
+    # ── Group 2: mechanical data migration ───────────────────────
+
+    async def rename_entity(self, old: str, new: str) -> Ontology:
+        """Rename an entity label across both data and ontology graphs.
+
+        Data migration runs first (relabels every ``:old`` node to
+        ``:new``) so a crash between the two leaves the data graph
+        already migrated; re-running is idempotent.
+        """
+        await self._ensure_ontology_initialized()
+        if not any(e.label == old for e in self._global_ontology.entities):
+            raise ValueError(f"Unknown entity label: {old!r}")
+        if old == new:
+            return self._global_ontology
+        if any(e.label == new for e in self._global_ontology.entities):
+            raise ValueError(
+                f"Entity {new!r} already exists; merging entity types is not "
+                f"supported by rename_entity — drop one or use a fresh label."
+            )
+        nodes_moved = await self._graph_store.rename_label(old, new)
+        await self._ontology_store.rename_entity_label(old, new)
+        logger.info("rename_entity %s → %s: %d data nodes relabelled", old, new, nodes_moved)
+        return await self._refresh_global_ontology()
+
+    async def rename_attribute(self, owner_label: str, old_name: str, new_name: str) -> Ontology:
+        """Rename an attribute on an entity in data + ontology, atomically.
+
+        Validates that ``old_name`` exists and ``new_name`` does not before
+        touching either graph — without this guard a typo silently no-ops
+        the rename, and a collision with an existing attribute would
+        overwrite values on the data graph.
+
+        v1: entity owners only. Relation-attribute evolution raises
+        ``NotImplementedError`` — workaround is ``delete_all()`` followed by
+        a fresh ``ingest()`` against the updated ontology.
+        """
+        await self._ensure_ontology_initialized()
+        kind = self._resolve_owner_kind(owner_label)
+        if kind != "entity":
+            raise NotImplementedError(
+                f"rename_attribute on relation owners is not implemented "
+                f"(label={owner_label!r}). Relation-attribute evolution would "
+                f"require iterating edges; for now, delete_all() and re-ingest "
+                f"with the updated ontology."
+            )
+        if old_name == new_name:
+            return self._global_ontology
+        owner = self._owner_for_kind(owner_label, kind)
+        attr_names = {p.name for p in owner.properties}
+        if old_name not in attr_names:
+            raise ValueError(
+                f"Unknown attribute {owner_label}.{old_name!r}; declared "
+                f"attributes are {sorted(attr_names)}."
+            )
+        if new_name in attr_names:
+            raise ValueError(
+                f"Attribute {owner_label}.{new_name!r} already exists; "
+                f"merging attributes is not supported by rename_attribute."
+            )
+        nodes_touched = await self._graph_store.rename_node_property(
+            owner_label, old_name, new_name
+        )
+        await self._ontology_store.rename_property_label(kind, owner_label, old_name, new_name)
+        logger.info(
+            "rename_attribute %s.%s → %s: %d nodes touched",
+            owner_label,
+            old_name,
+            new_name,
+            nodes_touched,
+        )
+        return await self._refresh_global_ontology()
+
+    async def rename_relation(self, old: str, new: str) -> Ontology:
+        """Rename a relation type. Recreates every ``[:old]`` edge as
+        ``[:new]`` in the data graph (expensive — logs a warning when
+        edge count > 10k), then updates the ontology graph.
+        """
+        await self._ensure_ontology_initialized()
+        if not any(r.label == old for r in self._global_ontology.relations):
+            raise ValueError(f"Unknown relation label: {old!r}")
+        if old == new:
+            return self._global_ontology
+        if any(r.label == new for r in self._global_ontology.relations):
+            raise ValueError(
+                f"Relation {new!r} already exists; merging relations is not "
+                f"supported by rename_relation."
+            )
+        edges_moved = await self._graph_store.rename_relation_type(old, new)
+        await self._ontology_store.rename_relation_label(old, new)
+        logger.info(
+            "rename_relation %s → %s: %d data edges recreated",
+            old,
+            new,
+            edges_moved,
+        )
+        return await self._refresh_global_ontology()
+
+    async def drop_attribute(self, owner_label: str, name: str) -> Ontology:
+        """Atomically remove an attribute from data and ontology.
+
+        For entity owners: ``REMOVE n.<name>`` on every instance of
+        ``owner_label``, then delete the ``:Property`` declaration. Cheap,
+        no LLM, idempotent. Data migration runs first so a crash between
+        the two steps leaves the data graph already cleaned and a retry
+        completes the ontology side.
+
+        v1: entity owners only. Relation-attribute evolution raises
+        ``NotImplementedError`` — workaround is ``delete_all()`` followed by
+        a fresh ``ingest()`` against the updated ontology.
+        """
+        await self._ensure_ontology_initialized()
+        kind = self._resolve_owner_kind(owner_label)
+        if kind != "entity":
+            raise NotImplementedError(
+                f"drop_attribute on relation owners is not implemented "
+                f"(label={owner_label!r}). Relation-attribute evolution would "
+                f"require iterating edges; for now, delete_all() and re-ingest "
+                f"with the updated ontology."
+            )
+        nodes_touched = await self._graph_store.drop_node_property(owner_label, name)
+        await self._ontology_store.drop_entity_property(owner_label, name)
+        logger.info("drop_attribute %s.%s: %d nodes touched", owner_label, name, nodes_touched)
+        return await self._refresh_global_ontology()
+
+    async def drop_entity(self, label: str) -> Ontology:
+        """Drop an entity type. ``DETACH DELETE``s every node with that
+        label (cascading their incident RELATES edges) and removes the
+        entity (and any relation patterns referencing it) from the
+        ontology graph.
+        """
+        await self._ensure_ontology_initialized()
+        if not any(e.label == label for e in self._global_ontology.entities):
+            raise ValueError(f"Unknown entity label: {label!r}")
+        nodes_deleted = await self._graph_store.delete_nodes_by_label(label)
+        await self._ontology_store.drop_entity_label(label)
+        logger.info("drop_entity %s: %d data nodes deleted", label, nodes_deleted)
+        return await self._refresh_global_ontology()
+
+    async def drop_relation(self, label: str) -> Ontology:
+        """Drop a relation type. Deletes every edge with that type from
+        the data graph and the corresponding Relation nodes from the
+        ontology graph.
+        """
+        await self._ensure_ontology_initialized()
+        if not any(r.label == label for r in self._global_ontology.relations):
+            raise ValueError(f"Unknown relation label: {label!r}")
+        edges_deleted = await self._graph_store.delete_relations_by_type(label)
+        await self._ontology_store.drop_relation_label(label)
+        logger.info("drop_relation %s: %d data edges deleted", label, edges_deleted)
+        return await self._refresh_global_ontology()
+
+    async def drop_relation_pattern(self, rel_label: str, source: str, target: str) -> Ontology:
+        """Drop a single ``(source, target)`` pattern of a relation.
+
+        Sibling patterns of the same relation (with different endpoint
+        labels) are preserved.
+        """
+        await self._ensure_ontology_initialized()
+        if not any(r.label == rel_label for r in self._global_ontology.relations):
+            raise ValueError(f"Unknown relation label: {rel_label!r}")
+        edges_deleted = await self._graph_store.delete_relations_by_pattern(
+            rel_label, source, target
+        )
+        await self._ontology_store.drop_relation_pattern_node(rel_label, source, target)
+        logger.info(
+            "drop_relation_pattern %s (%s→%s): %d data edges deleted",
+            rel_label,
+            source,
+            target,
+            edges_deleted,
+        )
+        return await self._refresh_global_ontology()
+
+    # ── Group 3 internals: atomic-backfill engine ───────────────
+    #
+    # The previous PR exposed ``backfill_attribute`` /
+    # ``backfill_attribute_semantic`` / ``retype_attribute`` as public
+    # methods. Under the strict alignment design (atomic add_attribute,
+    # no retype, drop+add for type changes) those are gone — the
+    # backfill engine below is internal to ``add_attribute``.
+
+    async def _run_atomic_attribute_backfill(
+        self,
+        owner_label: str,
+        attribute: Attribute,
+        *,
+        concurrency: int,
+    ) -> BackfillResult:
+        """LLM-extract ``attribute`` for every entity of ``owner_label``
+        from existing chunks. Internal helper of :py:meth:`add_attribute`.
+
+        Raises :py:class:`OntologyEvolutionError` if any chunk hard-fails
+        after retries — callers must NOT commit the ontology graph in
+        that case. Re-running is safe (chunk markers skip done work).
+        """
+        # op_id includes the type — drop+add with a new type must trigger
+        # a fresh LLM rescan, not be filtered out by chunk markers from
+        # the previous (different-type) backfill of the same name.
+        op_id = f"add_attribute:{owner_label}:{attribute.name}:{attribute.type}"
+        attr_name = attribute.name
+        chunk_rows = await self._graph_store.list_chunks_for_attribute_backfill(
+            owner_label, attr_name, op_id=op_id
+        )
+
+        async def _iter() -> Any:
+            for row in chunk_rows:
+                yield ChunkContext(
+                    chunk_id=row["chunk_id"],
+                    chunk_text=row["chunk_text"],
+                    payload={"entities": row["entities"]},
+                    ontology=self._global_ontology,
+                )
+
+        attr_desc_line = (
+            f"- description: {attribute.description}\n" if attribute.description else ""
+        )
+
+        def _prompt(ctx: ChunkContext) -> str:
+            entity_lines = (
+                "\n".join(
+                    f"- {ent.get('name') or ent.get('id')}" for ent in ctx.payload["entities"]
+                )
+                or "(none)"
+            )
+            return BACKFILL_ATTRIBUTE_PROMPT.format(
+                owner_label=owner_label,
+                attr_name=attr_name,
+                attr_type=attribute.type,
+                attr_description=attr_desc_line,
+                entities_block=entity_lines,
+                chunk_text=ctx.chunk_text,
+            )
+
+        def _parse(text: str, _ctx: ChunkContext) -> dict[str, Any]:
+            payload = _strip_and_load_json(text)
+            return payload.get("results", {}) if isinstance(payload, dict) else {}
+
+        async def _merge(parsed: dict[str, Any], ctx: ChunkContext) -> BackfillMergeStats:
+            filled = skipped = dropped = 0
+            # Key by BOTH name and id so the merge tolerates LLM responses
+            # that echo either the human name or the entity id (the prompt
+            # falls back to id when name is missing).
+            by_key: dict[str, dict[str, Any]] = {}
+            for ent in ctx.payload["entities"]:
+                name_key = (ent.get("name") or "").strip()
+                id_key = (ent.get("id") or "").strip()
+                if name_key:
+                    by_key[name_key] = ent
+                if id_key:
+                    by_key[id_key] = ent
+            for ent_name, raw_value in parsed.items():
+                ent = by_key.get((ent_name or "").strip())
+                if ent is None:
+                    continue
+                if raw_value is None or raw_value == "":
+                    skipped += 1
+                    continue
+                ok, coerced = _coerce_attribute_value(raw_value, attribute.type)
+                if not ok:
+                    dropped += 1
+                    continue
+                await self._graph_store.set_node_property_by_id(
+                    owner_label, ent["id"], attr_name, coerced
+                )
+                filled += 1
+            return BackfillMergeStats(
+                values_filled=filled,
+                values_skipped=skipped,
+                dropped_for_coercion=dropped,
+            )
+
+        executor = BackfillExecutor(self.llm, self._graph_store, concurrency=concurrency)
+        result = await executor.run(
+            op_id=op_id,
+            chunks=_iter(),
+            prompt_builder=_prompt,
+            parse_fn=_parse,
+            merge_fn=_merge,
+        )
+        result.target_nodes = sum(len(r["entities"]) for r in chunk_rows)
+        result.chunks_skipped = max(
+            0,
+            await self._graph_store.count_chunks_marked_with_op(op_id)
+            - (result.chunks_scanned + len(result.failed_chunks)),
+        )
+        # Hard-failure → caller must NOT commit the ontology. The data
+        # graph may be partially mutated, but chunk markers make a retry
+        # of add_attribute idempotent.
+        if result.failed_chunks:
+            raise OntologyEvolutionError(
+                f"add_attribute({owner_label}, {attr_name!r}) hard-failed on "
+                f"{len(result.failed_chunks)} chunk(s); ontology NOT committed. "
+                f"First few: {result.failed_chunks[:5]}. "
+                f"Resolve and retry — the call is idempotent.",
+                failed_chunks=result.failed_chunks,
+                chunks_scanned=result.chunks_scanned,
+            )
+        return result
+
+    async def backfill_entity(
+        self,
+        label: str,
+        *,
+        scope: str | list[str] = "all",
+        concurrency: int = 4,
+        dry_run: bool = False,
+    ) -> BackfillResult:
+        """Find new instances of a newly-declared entity type by re-scanning
+        chunks.
+
+        ``scope="all"`` re-scans every chunk in the graph. Pass a list of
+        chunk ids to constrain. Idempotent via the ``extracted_ops``
+        marker.
+
+        Newly-found entities are inserted with ``MENTIONED_IN`` edges to
+        the originating chunk. Cost is proportional to the chunk count
+        in scope.
+
+        Pass ``dry_run=True`` to preview the LLM cost without invoking
+        it. The returned :py:class:`BackfillResult` carries
+        ``chunks_in_scope`` (the count this run *would* scan) and
+        nothing else.
+        """
+        await self._ensure_ontology_initialized()
+        entity = next(
+            (e for e in self._global_ontology.entities if e.label == label),
+            None,
+        )
+        if entity is None:
+            raise ValueError(f"Unknown entity label: {label!r}")
+
+        op_id = f"backfill_entity:{label}"
+        chunk_ids = scope if isinstance(scope, list) else None
+        if not isinstance(scope, list) and scope != "all":
+            raise ValueError(
+                f"backfill_entity: scope must be 'all' or a list of chunk ids; got {scope!r}"
+            )
+        chunk_rows = await self._graph_store.list_chunks_for_entity_backfill(
+            op_id=op_id, chunk_ids=chunk_ids
+        )
+        if dry_run:
+            return BackfillResult(
+                operation_id=op_id,
+                chunks_in_scope=len(chunk_rows),
+                target_nodes=len(chunk_rows),
+            )
+
+        async def _iter() -> Any:
+            for row in chunk_rows:
+                yield ChunkContext(
+                    chunk_id=row["chunk_id"],
+                    chunk_text=row["chunk_text"],
+                    payload={},
+                    ontology=self._global_ontology,
+                )
+
+        attribute_block = (
+            "\n".join(
+                f"- {a.name} ({a.type})" + (f" — {a.description}" if a.description else "")
+                for a in entity.properties
+            )
+            or "(none)"
+        )
+        target_desc_line = f"- description: {entity.description}\n" if entity.description else ""
+
+        def _prompt(ctx: ChunkContext) -> str:
+            return BACKFILL_ENTITY_PROMPT.format(
+                target_label=label,
+                target_description=target_desc_line,
+                attribute_block=attribute_block,
+                chunk_text=ctx.chunk_text,
+            )
+
+        def _parse(text: str, _ctx: ChunkContext) -> list[dict[str, Any]]:
+            payload = _strip_and_load_json(text)
+            return payload.get("entities", []) if isinstance(payload, dict) else []
+
+        async def _merge(parsed: list[dict[str, Any]], ctx: ChunkContext) -> BackfillMergeStats:
+            filled = skipped = 0
+            from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+                compute_entity_id,
+                is_valid_entity_name,
+            )
+
+            new_nodes: list[GraphNode] = []
+            new_mentions: list[GraphRelationship] = []
+            for ent in parsed:
+                ent_name = (ent.get("name") or "").strip()
+                if not is_valid_entity_name(ent_name):
+                    skipped += 1
+                    continue
+                ent_id = compute_entity_id(label, ent_name)
+                props: dict[str, Any] = {
+                    "name": ent_name,
+                    "description": ent.get("description", ""),
+                }
+                for attr in entity.properties:
+                    raw = (ent.get("attributes") or {}).get(attr.name)
+                    if raw is None:
+                        continue
+                    ok, coerced = _coerce_attribute_value(raw, attr.type)
+                    if ok:
+                        props[attr.name] = coerced
+                new_nodes.append(GraphNode(id=ent_id, label=label, properties=props))
+                new_mentions.append(
+                    GraphRelationship(
+                        start_node_id=ent_id,
+                        end_node_id=ctx.chunk_id,
+                        type="MENTIONED_IN",
+                        properties={},
+                    )
+                )
+                filled += 1
+            if new_nodes:
+                await self._graph_store.upsert_nodes(new_nodes)
+                await self._graph_store.upsert_relationships(new_mentions)
+            return BackfillMergeStats(values_filled=filled, values_skipped=skipped)
+
+        executor = BackfillExecutor(self.llm, self._graph_store, concurrency=concurrency)
+        result = await executor.run(
+            op_id=op_id,
+            chunks=_iter(),
+            prompt_builder=_prompt,
+            parse_fn=_parse,
+            merge_fn=_merge,
+        )
+        result.target_nodes = len(chunk_rows)
+        result.chunks_skipped = max(
+            0,
+            await self._graph_store.count_chunks_marked_with_op(op_id)
+            - (result.chunks_scanned + len(result.failed_chunks)),
+        )
+        result.chunks_in_scope = (
+            result.chunks_scanned + result.chunks_skipped + len(result.failed_chunks)
+        )
+        return result
+
+    async def backfill_relation_pattern(
+        self,
+        rel_label: str,
+        source: str,
+        target: str,
+        *,
+        scope: str = "candidate-pairs",
+        concurrency: int = 4,
+        dry_run: bool = False,
+    ) -> BackfillResult:
+        """Find new ``(source) -[rel_label]-> (target)`` edges by asking
+        the LLM about candidate co-mention pairs in already-ingested
+        chunks.
+
+        ``scope="candidate-pairs"`` (the only mode in v1) restricts the
+        scan to chunks where both source-type and target-type entities
+        co-occur — the universe of plausible new edges. Edges that
+        already exist between the same pair are skipped at MERGE time.
+
+        Pass ``dry_run=True`` to preview the LLM cost without invoking
+        it. The returned :py:class:`BackfillResult` carries
+        ``chunks_in_scope`` (the count this run *would* scan) and
+        nothing else.
+        """
+        if scope != "candidate-pairs":
+            raise ValueError(
+                f"backfill_relation_pattern: unsupported scope {scope!r}; "
+                f"only 'candidate-pairs' is implemented."
+            )
+        await self._ensure_ontology_initialized()
+        relation = next(
+            (r for r in self._global_ontology.relations if r.label == rel_label),
+            None,
+        )
+        if relation is None:
+            raise ValueError(f"Unknown relation label: {rel_label!r}")
+
+        op_id = f"backfill_relation_pattern:{rel_label}:{source}:{target}"
+        chunk_rows = await self._graph_store.list_chunks_for_relation_pattern_backfill(
+            source, target, op_id=op_id
+        )
+        if dry_run:
+            return BackfillResult(
+                operation_id=op_id,
+                chunks_in_scope=len(chunk_rows),
+                target_nodes=sum(len(r["pairs"]) for r in chunk_rows),
+            )
+
+        async def _iter() -> Any:
+            for row in chunk_rows:
+                yield ChunkContext(
+                    chunk_id=row["chunk_id"],
+                    chunk_text=row["chunk_text"],
+                    payload={"pairs": row["pairs"]},
+                    ontology=self._global_ontology,
+                )
+
+        rel_desc_line = f"- description: {relation.description}\n" if relation.description else ""
+
+        def _prompt(ctx: ChunkContext) -> str:
+            def _pair_line(p: dict[str, Any]) -> str:
+                src = p.get("src_name") or p.get("src_id")
+                tgt = p.get("tgt_name") or p.get("tgt_id")
+                return f"- {src} → {tgt}"
+
+            pair_lines = "\n".join(_pair_line(p) for p in ctx.payload["pairs"]) or "(none)"
+            return BACKFILL_RELATION_PATTERN_PROMPT.format(
+                rel_label=rel_label,
+                src_label=source,
+                tgt_label=target,
+                rel_description=rel_desc_line,
+                pairs_block=pair_lines,
+                chunk_text=ctx.chunk_text,
+            )
+
+        def _parse(text: str, _ctx: ChunkContext) -> list[dict[str, Any]]:
+            payload = _strip_and_load_json(text)
+            return payload.get("links", []) if isinstance(payload, dict) else []
+
+        async def _merge(parsed: list[dict[str, Any]], ctx: ChunkContext) -> BackfillMergeStats:
+            filled = skipped = 0
+            # Key by the (src, tgt) tuple so we never combine src_id from
+            # one candidate pair with tgt_id from another when the chunk
+            # has multiple candidates sharing a name.
+            by_pair = {
+                (
+                    (p.get("src_name") or "").strip(),
+                    (p.get("tgt_name") or "").strip(),
+                ): p
+                for p in ctx.payload["pairs"]
+            }
+            new_edges: list[GraphRelationship] = []
+            for link in parsed:
+                src_name = (link.get("src") or "").strip()
+                tgt_name = (link.get("tgt") or "").strip()
+                pair = by_pair.get((src_name, tgt_name))
+                if pair is None:
+                    skipped += 1
+                    continue
+                # NB: ``source_chunk_ids`` provenance is intentionally NOT
+                # written here. ``GraphStore.upsert_relationships`` only
+                # unions provenance for RELATES edges; arbitrary typed
+                # backfill edges would have their lists overwritten on
+                # subsequent MERGE, so we skip the field rather than
+                # appear to track provenance that we'd silently lose.
+                new_edges.append(
+                    GraphRelationship(
+                        start_node_id=pair["src_id"],
+                        end_node_id=pair["tgt_id"],
+                        type=rel_label,
+                        properties={
+                            "description": link.get("description", ""),
+                        },
+                    )
+                )
+                filled += 1
+            if new_edges:
+                await self._graph_store.upsert_relationships(new_edges)
+            return BackfillMergeStats(values_filled=filled, values_skipped=skipped)
+
+        executor = BackfillExecutor(self.llm, self._graph_store, concurrency=concurrency)
+        result = await executor.run(
+            op_id=op_id,
+            chunks=_iter(),
+            prompt_builder=_prompt,
+            parse_fn=_parse,
+            merge_fn=_merge,
+        )
+        result.target_nodes = sum(len(r["pairs"]) for r in chunk_rows)
+        result.chunks_skipped = max(
+            0,
+            await self._graph_store.count_chunks_marked_with_op(op_id)
+            - (result.chunks_scanned + len(result.failed_chunks)),
+        )
+        result.chunks_in_scope = (
+            result.chunks_scanned + result.chunks_skipped + len(result.failed_chunks)
+        )
+        return result
 
     # ── Graph admin ──────────────────────────────────────────────
 

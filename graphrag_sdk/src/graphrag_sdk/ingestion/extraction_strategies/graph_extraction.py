@@ -96,6 +96,76 @@ _JSON_EXAMPLE_WITH_ATTRS = (
 )
 
 
+# ── Backfill prompts (LLM-driven ontology evolution) ────────────────
+#
+# These are NARROWER than VERIFY_EXTRACT_RELS_PROMPT — each focuses on a
+# single new piece of structure (one attribute, one entity label, one
+# relation pattern) so the LLM doesn't have to juggle the whole ontology
+# while doing a corrective pass. Used by GraphRAG.backfill_* methods via
+# BackfillExecutor; see ingestion/backfill.py.
+
+BACKFILL_ATTRIBUTE_PROMPT = (
+    "You are extracting a SINGLE new attribute for already-known entities.\n\n"
+    "## Entity type: {owner_label}\n"
+    "## New attribute\n"
+    "- name: {attr_name}\n"
+    "- type: {attr_type}\n"
+    "{attr_description}\n\n"
+    "## Entities mentioned in this chunk\n"
+    "{entities_block}\n\n"
+    "## Chunk text\n"
+    "{chunk_text}\n\n"
+    "## Instructions\n"
+    "For each entity above, decide whether the chunk states or strongly implies "
+    "a value for the new attribute. If yes, return the value (typed to match the "
+    "attribute's declared type). If no, return null — do not guess.\n\n"
+    "Return ONLY a JSON object mapping entity name → value or null:\n"
+    '{{"results": {{"Entity Name": "value or null", ...}}}}\n\n'
+    "Return ONLY valid JSON, nothing else."
+)
+
+BACKFILL_ENTITY_PROMPT = (
+    "You are extracting entities of a SINGLE new label from text that has "
+    "already been processed for other labels.\n\n"
+    "## Target entity type\n"
+    "- label: {target_label}\n"
+    "{target_description}\n"
+    "## Declared attributes (extract when present)\n"
+    "{attribute_block}\n\n"
+    "## Chunk text\n"
+    "{chunk_text}\n\n"
+    "## Instructions\n"
+    "Find every distinct entity of the target type in the chunk. For each,\n"
+    "provide its name as it appears in the text plus any declared attributes "
+    "that the chunk states.\n\n"
+    "Return ONLY a JSON object:\n"
+    '{{"entities": [{{"name": "...", "description": "...", "attributes": {{}}}}, ...]}}\n\n'
+    "Return ONLY valid JSON, nothing else."
+)
+
+BACKFILL_RELATION_PATTERN_PROMPT = (
+    "You are extracting a SINGLE new relation pattern between already-known "
+    "entities.\n\n"
+    "## Relation\n"
+    "- type: {rel_label}\n"
+    "- pattern: ({src_label}) -[{rel_label}]-> ({tgt_label})\n"
+    "{rel_description}\n\n"
+    "## Candidate entity pairs in this chunk\n"
+    "{pairs_block}\n\n"
+    "## Chunk text\n"
+    "{chunk_text}\n\n"
+    "## Instructions\n"
+    "For each candidate pair, decide whether the chunk states a relationship "
+    "of the target type from source to target. Return only the pairs that ARE "
+    "linked. Skip uncertain or absent cases — false positives are worse than "
+    "misses.\n\n"
+    "Return ONLY a JSON object:\n"
+    '{{"links": [{{"src": "Source Name", "tgt": "Target Name", '
+    '"description": "..."}}, ...]}}\n\n'
+    "Return ONLY valid JSON, nothing else."
+)
+
+
 def _format_property_for_prompt(prop: Attribute) -> str:
     desc = f" — {prop.description}" if prop.description else ""
     return f"    - {prop.name} ({prop.type}){desc}"
