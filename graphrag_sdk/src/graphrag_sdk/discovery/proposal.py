@@ -136,10 +136,7 @@ class SchemaExtensionProposal(BaseModel):
     def is_empty(self) -> bool:
         """True when the proposal has no additions to apply."""
         return not (
-            self.new_entities
-            or self.new_relations
-            or self.new_patterns
-            or self.new_attributes
+            self.new_entities or self.new_relations or self.new_patterns or self.new_attributes
         )
 
     def summary(self) -> str:

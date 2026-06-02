@@ -12,6 +12,7 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
+    _SDK_MANAGED_ATTRIBUTE_NAMES,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -22,7 +23,6 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
     TextChunks,
-    _SDK_MANAGED_ATTRIBUTE_NAMES,
 )
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
@@ -190,9 +190,7 @@ def _render_attribute_block(ontology: Ontology) -> str:
     for et in ontology.entities:
         # Drop SDK-managed names — they are documented in the schema but
         # populated by step-1 NER, not by per-entity attribute extraction.
-        managed_props = [
-            p for p in et.properties if p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES
-        ]
+        managed_props = [p for p in et.properties if p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES]
         if not managed_props:
             continue
         ent_lines.append(f"- {et.label}:")

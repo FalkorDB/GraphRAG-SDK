@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -155,8 +156,7 @@ async def extract_with_retry(
 
     raise OntologyDiscoveryError(
         f"Failed to obtain a valid {response_model.__name__} after "
-        f"{attempts} attempt(s)"
-        + (f" for chunk {chunk_id}" if chunk_id else ""),
+        f"{attempts} attempt(s)" + (f" for chunk {chunk_id}" if chunk_id else ""),
         chunk_id=chunk_id,
         attempts=attempts,
         last_error=last_error,

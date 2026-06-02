@@ -119,9 +119,7 @@ def chunk_proposal_prompt(
     soft controlled vocabulary.
     """
     scope_line = f"## Scope\n{boundaries}\n\n" if boundaries else ""
-    main_entities = (
-        ", ".join(doc_summary.main_entities) if doc_summary.main_entities else "—"
-    )
+    main_entities = ", ".join(doc_summary.main_entities) if doc_summary.main_entities else "—"
     aboutness = doc_summary.aboutness or "—"
     return (
         f"{scope_line}"

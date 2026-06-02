@@ -32,6 +32,9 @@ from typing import TYPE_CHECKING
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
+    _PROPERTY_TYPES,
+    _RESERVED_ATTRIBUTE_NAMES,
+    _SDK_MANAGED_ATTRIBUTE_NAMES,
     Attribute,
     DocumentOutput,
     Entity,
@@ -39,9 +42,6 @@ from graphrag_sdk.core.models import (
     Relation,
     TextChunk,
     TextChunks,
-    _PROPERTY_TYPES,
-    _RESERVED_ATTRIBUTE_NAMES,
-    _SDK_MANAGED_ATTRIBUTE_NAMES,
 )
 from graphrag_sdk.discovery.instructor import extract_with_retry
 from graphrag_sdk.discovery.prompts import (
@@ -251,7 +251,7 @@ def _ensure_sdk_managed_attributes(ontology: Ontology) -> Ontology:
 
 
 async def _run_doc_summary(
-    llm: "LLMInterface",
+    llm: LLMInterface,
     document: DocumentOutput,
     *,
     boundaries: str | None,
@@ -276,8 +276,7 @@ async def _run_doc_summary(
         )
     except OntologyDiscoveryError as exc:
         logger.warning(
-            "Doc summary failed for %s after %d attempts; continuing "
-            "without anchor: %s",
+            "Doc summary failed for %s after %d attempts; continuing without anchor: %s",
             doc_id,
             exc.attempts,
             exc.last_error,
@@ -286,7 +285,7 @@ async def _run_doc_summary(
 
 
 async def _run_chunk_proposal(
-    llm: "LLMInterface",
+    llm: LLMInterface,
     chunk: TextChunk,
     *,
     doc_summary: DocSummary,
@@ -319,8 +318,7 @@ async def _run_chunk_proposal(
         )
     except OntologyDiscoveryError as exc:
         logger.warning(
-            "Chunk proposal failed for chunk %s after %d attempts; "
-            "skipping. Last error: %s",
+            "Chunk proposal failed for chunk %s after %d attempts; skipping. Last error: %s",
             chunk.uid,
             exc.attempts,
             exc.last_error,
@@ -329,7 +327,7 @@ async def _run_chunk_proposal(
 
 
 async def _run_normalization(
-    llm: "LLMInterface",
+    llm: LLMInterface,
     merged: Ontology,
     *,
     existing: Ontology | None,
@@ -348,9 +346,7 @@ async def _run_normalization(
         normalized = await extract_with_retry(
             llm,
             system_prompt=SYSTEM_PROMPT,
-            user_prompt=normalization_prompt(
-                draft_json, existing=existing, response_schema=schema
-            ),
+            user_prompt=normalization_prompt(draft_json, existing=existing, response_schema=schema),
             response_model=NormalizedDraft,
             extra_validate=_validate_proposal,
             max_retries=max_retries,
@@ -371,7 +367,7 @@ async def _run_normalization(
 
 
 async def _process_document(
-    llm: "LLMInterface",
+    llm: LLMInterface,
     source: str,
     *,
     loader: LoaderStrategy | None,
@@ -456,7 +452,7 @@ async def _process_document(
 
 async def discover_ontology(
     sources: str | list[str],
-    llm: "LLMInterface",
+    llm: LLMInterface,
     *,
     boundaries: str | None = None,
     existing: Ontology | None = None,
@@ -543,9 +539,7 @@ async def discover_ontology(
         merged = merged.merge(doc_ont)
 
     # Normalization pass.
-    normalized = await _run_normalization(
-        llm, merged, existing=existing, max_retries=max_retries
-    )
+    normalized = await _run_normalization(llm, merged, existing=existing, max_retries=max_retries)
 
     # Final merge with existing prior, if provided.
     if existing is not None:
@@ -567,9 +561,7 @@ async def discover_ontology(
 # ── Layer B: schema extension proposal ──────────────────────────────
 
 
-def _diff_ontologies(
-    existing: Ontology, discovered: Ontology
-) -> SchemaExtensionProposal:
+def _diff_ontologies(existing: Ontology, discovered: Ontology) -> SchemaExtensionProposal:
     """Compute additions from ``existing`` to ``discovered``.
 
     Pure structural diff, no LLM. Identity is by label for entities and
@@ -637,7 +629,7 @@ def _diff_ontologies(
 async def suggest_extensions(
     existing: Ontology,
     sources: str | list[str],
-    llm: "LLMInterface",
+    llm: LLMInterface,
     *,
     boundaries: str | None = None,
     sample_chunks_per_doc: int = 3,
@@ -668,7 +660,5 @@ async def suggest_extensions(
         seed=seed,
     )
     proposal = _diff_ontologies(existing, discovered)
-    proposal.sources_scanned = (
-        [sources] if isinstance(sources, str) else list(sources)
-    )
+    proposal.sources_scanned = [sources] if isinstance(sources, str) else list(sources)
     return proposal
