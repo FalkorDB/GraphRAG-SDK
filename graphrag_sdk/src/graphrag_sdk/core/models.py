@@ -308,12 +308,18 @@ class Ontology(DataModel):
     async def from_sources(
         cls,
         sources: str | list[str],
-        llm: Any,
+        llm: Any | None = None,
         *,
+        method: Literal["llm", "grounded"] = "llm",
+        # method="llm" parameters
         boundaries: str | None = None,
+        max_retries: int = 3,
+        # method="grounded" parameters
+        catalog: Any | None = None,
+        entity_extractor: Any | None = None,
+        # shared parameters
         existing: Ontology | None = None,
         sample_chunks_per_doc: int = 3,
-        max_retries: int = 3,
         concurrency: int = 4,
         chunker: Any | None = None,
         loader: Any | None = None,
@@ -322,50 +328,117 @@ class Ontology(DataModel):
     ) -> Ontology:
         """Auto-discover an ontology from a corpus of documents.
 
-        Samples chunks from each source, asks the LLM to propose entity
-        types and relation types, merges across the corpus, and runs a
-        normalization pass to collapse synonyms before returning. The
-        returned ontology is intended as a *draft* — inspect, edit, save
-        with :py:meth:`save_to_file`, then pass into ``GraphRAG``.
+        Two methods, selected via ``method=``:
 
-        When ``existing`` is supplied, its labels are used as a soft
-        controlled vocabulary in the prompts and the discovery output is
-        merged with it on return — re-running with the same ``existing``
-        prior across new documents lets the ontology grow coherently
-        instead of drifting.
+        - ``method="llm"`` (default) — Sample chunks from each source,
+          ask the LLM to propose entity types and relation types from
+          the text, merge across the corpus, run a single normalization
+          pass to collapse synonyms. Requires ``llm``.
+        - ``method="grounded"`` — Adapts barakb/text-to-rdf's
+          "find entities, look up their schemas" technique. Run NER on
+          each sampled chunk against ``catalog``'s known types, collect
+          the types actually detected in the corpus, ask the catalog
+          for each type's schema definition (properties + canonical
+          URI) and for the relations between detected types. Zero LLM
+          calls. Requires ``catalog``.
+
+        The returned ontology is intended as a *draft* — inspect, edit,
+        save with :py:meth:`save_to_file`, then pass into ``GraphRAG``.
+
+        When ``existing`` is supplied, the LLM method uses it as a soft
+        controlled vocabulary in the prompts, the grounded method merges
+        the catalog-derived output into it, and both methods return the
+        merge. Re-running with the same ``existing`` prior across new
+        documents lets the ontology grow coherently.
 
         See :py:class:`~graphrag_sdk.discovery.OntologyDiscoveryError`
         for the exception raised by hard failures inside individual LLM
         calls. The pipeline itself is soft-fail: a single bad chunk does
         not abort the run.
 
-        Example::
+        Args:
+            sources: Single source string or a list of them. Same union
+                ``GraphRAG.ingest`` accepts.
+            llm: Required for ``method="llm"``. Any
+                :class:`~graphrag_sdk.core.providers.LLMInterface`.
+            method: Discovery method. ``"llm"`` (default) or ``"grounded"``.
+            boundaries: Free-text scope hint. ``method="llm"`` only.
+            max_retries: Retry budget per LLM call. ``method="llm"`` only.
+            catalog: Required for ``method="grounded"``. Any
+                :class:`~graphrag_sdk.discovery.catalog.Catalog`.
+            entity_extractor: NER backend for ``method="grounded"``.
+                Defaults to ``GLiNERExtractor()``.
+            existing: Optional structured prior, merged into the result.
+            sample_chunks_per_doc: How many chunks per document to sample.
+            concurrency: Max in-flight LLM / NER calls.
+            chunker: Override the default chunker.
+            loader: Override the per-source auto-detected loader.
+            ctx: Optional execution context for logging / tenancy.
+            seed: Optional RNG seed for deterministic chunk sampling.
 
+        Examples::
+
+            # LLM-driven discovery (the default).
             draft = await Ontology.from_sources(
                 ["docs/paper1.md", "docs/paper2.pdf"],
                 llm=LiteLLM(model="openai/gpt-4o-mini"),
                 boundaries="biotech research papers about CRISPR",
-                sample_chunks_per_doc=3,
             )
-            draft.save_to_file("ontology.json")  # user edits / curates
-        """
-        # Lazy import so models.py stays Pydantic-only at module-load time
-        # (no LLM provider / loader imports pulled into the data model).
-        from graphrag_sdk.discovery.pipeline import discover_ontology
 
-        return await discover_ontology(
-            sources,
-            llm,
-            boundaries=boundaries,
-            existing=existing,
-            sample_chunks_per_doc=sample_chunks_per_doc,
-            max_retries=max_retries,
-            concurrency=concurrency,
-            chunker=chunker,
-            loader=loader,
-            ctx=ctx,
-            seed=seed,
-        )
+            # Catalog-grounded discovery (no LLM).
+            from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+            draft = await Ontology.from_sources(
+                ["docs/news/*.md"],
+                method="grounded",
+                catalog=SchemaOrgCatalog(),
+            )
+        """
+        if method == "llm":
+            if llm is None:
+                raise ValueError(
+                    "method='llm' requires `llm=<LLMInterface>` "
+                    "(pass it positionally or as a keyword)."
+                )
+            # Lazy import so models.py stays Pydantic-only at module-load time
+            # (no LLM provider / loader imports pulled into the data model).
+            from graphrag_sdk.discovery.pipeline import discover_ontology
+
+            return await discover_ontology(
+                sources,
+                llm,
+                boundaries=boundaries,
+                existing=existing,
+                sample_chunks_per_doc=sample_chunks_per_doc,
+                max_retries=max_retries,
+                concurrency=concurrency,
+                chunker=chunker,
+                loader=loader,
+                ctx=ctx,
+                seed=seed,
+            )
+
+        if method == "grounded":
+            if catalog is None:
+                raise ValueError(
+                    "method='grounded' requires `catalog=<Catalog>` "
+                    "(e.g. `catalog=SchemaOrgCatalog()`)."
+                )
+            from graphrag_sdk.discovery.pipeline import discover_grounded
+
+            return await discover_grounded(
+                sources,
+                catalog=catalog,
+                entity_extractor=entity_extractor,
+                existing=existing,
+                sample_chunks_per_doc=sample_chunks_per_doc,
+                concurrency=concurrency,
+                chunker=chunker,
+                loader=loader,
+                ctx=ctx,
+                seed=seed,
+            )
+
+        raise ValueError(f"unknown method={method!r}; expected 'llm' or 'grounded'")
 
     def save_to_file(self, path: str, *, indent: int = 2) -> None:
         """Write this schema to ``path`` as JSON (overwrites existing files)."""

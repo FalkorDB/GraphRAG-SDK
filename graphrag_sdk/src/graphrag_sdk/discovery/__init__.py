@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+from graphrag_sdk.discovery.catalog import Catalog, SchemaOrgCatalog
 from graphrag_sdk.discovery.instructor import extract_with_retry
 from graphrag_sdk.discovery.pipeline import (
+    discover_grounded,
     discover_ontology,
     suggest_extensions,
 )
@@ -23,11 +25,14 @@ from graphrag_sdk.discovery.proposal import (
 )
 
 __all__ = [
+    "Catalog",
     "ChunkProposal",
     "DocSummary",
     "NormalizedDraft",
     "OntologyDiscoveryError",
     "SchemaExtensionProposal",
+    "SchemaOrgCatalog",
+    "discover_grounded",
     "discover_ontology",
     "extract_with_retry",
     "suggest_extensions",

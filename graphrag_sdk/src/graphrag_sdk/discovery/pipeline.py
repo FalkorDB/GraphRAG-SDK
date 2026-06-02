@@ -43,6 +43,7 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
+from graphrag_sdk.discovery.catalog import Catalog
 from graphrag_sdk.discovery.instructor import extract_with_retry
 from graphrag_sdk.discovery.prompts import (
     SYSTEM_PROMPT,
@@ -63,6 +64,9 @@ from graphrag_sdk.discovery.proposal import (
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
+)
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    EntityExtractor,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -556,6 +560,151 @@ async def discover_ontology(
         level=logging.INFO,
     )
     return normalized
+
+
+# ── Grounded discovery (catalog-based, no LLM schema invention) ────
+
+
+async def _detect_types_in_chunk(
+    extractor: EntityExtractor,
+    chunk: TextChunk,
+    candidate_types: list[str],
+) -> set[str]:
+    """Return the set of catalog types detected in one chunk."""
+    try:
+        entities = await extractor.extract_entities(chunk.text, candidate_types, chunk.uid)
+    except Exception as exc:
+        logger.warning(
+            "grounded discovery: NER failed on chunk %s (skipping): %s",
+            chunk.uid,
+            exc,
+        )
+        return set()
+    return {e.type for e in entities if e.type and e.type != "Unknown"}
+
+
+async def discover_grounded(
+    sources: str | list[str],
+    *,
+    catalog: Catalog,
+    entity_extractor: EntityExtractor | None = None,
+    existing: Ontology | None = None,
+    sample_chunks_per_doc: int = 3,
+    concurrency: int = 4,
+    chunker: ChunkingStrategy | None = None,
+    loader: LoaderStrategy | None = None,
+    ctx: Context | None = None,
+    seed: int | None = None,
+) -> Ontology:
+    """Implementation of :py:meth:`Ontology.from_sources` for ``method="grounded"``.
+
+    The grounded path adapts barakb/text-to-rdf's "find entities, look
+    up their schemas" technique to schema discovery:
+
+    1. Load + chunk + sample (same as the LLM path).
+    2. Run NER on each sampled chunk against the catalog's known types
+       — the NER is what tells us *which* types the corpus actually
+       contains, instead of asking the LLM to invent them.
+    3. Aggregate the detected types across the corpus.
+    4. Ask the catalog for each detected type's schema definition
+       (properties + canonical URI).
+    5. Ask the catalog for every relation whose source and target are
+       both in the detected set.
+    6. Merge with ``existing`` if provided.
+
+    Zero LLM calls. The schema is entirely catalog-derived; the corpus
+    only determines which subset of the catalog to include. No
+    hallucination, no drift — at the cost of being limited to what the
+    catalog knows.
+    """
+    if sample_chunks_per_doc < 1:
+        raise ValueError("sample_chunks_per_doc must be >= 1")
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
+
+    sources_list = [sources] if isinstance(sources, str) else list(sources)
+    if not sources_list:
+        return existing or Ontology()
+
+    if entity_extractor is None:
+        # Default to GLiNER — local, no network, no LLM. Lazy import so
+        # gliner package isn't required when the user supplies their own.
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            GLiNERExtractor,
+        )
+
+        entity_extractor = GLiNERExtractor()
+
+    used_chunker = chunker or SentenceTokenCapChunking()
+    used_ctx = ctx or Context()
+    sem = asyncio.Semaphore(concurrency)
+    candidate_types = list(catalog.known_types())
+
+    used_ctx.log(
+        f"grounded discovery: scanning {len(sources_list)} source(s) for "
+        f"{len(candidate_types)} candidate type(s)",
+        level=logging.INFO,
+    )
+
+    def _per_source_rng(src: str) -> random.Random:
+        if seed is None:
+            return random.Random()
+        return random.Random(f"{seed}:{src}")
+
+    async def _process(src: str) -> set[str]:
+        used_loader = loader or _default_loader_for(src)
+        document = await used_loader.load(src, used_ctx)
+        text_chunks: TextChunks = await used_chunker.chunk_document(document, used_ctx)
+        if not text_chunks.chunks:
+            return set()
+        pool = text_chunks.chunks
+        n = min(sample_chunks_per_doc, len(pool))
+        rng = _per_source_rng(src)
+        sampled = rng.sample(pool, n) if n < len(pool) else list(pool)
+
+        async def _bounded(chunk: TextChunk) -> set[str]:
+            async with sem:
+                return await _detect_types_in_chunk(entity_extractor, chunk, candidate_types)
+
+        per_chunk = await asyncio.gather(*[_bounded(c) for c in sampled])
+        return set().union(*per_chunk) if per_chunk else set()
+
+    per_source = await asyncio.gather(*[_process(s) for s in sources_list])
+    detected_types = set().union(*per_source) if per_source else set()
+
+    used_ctx.log(
+        f"grounded discovery: NER detected {len(detected_types)} type(s) "
+        f"({sorted(detected_types)})",
+        level=logging.INFO,
+    )
+
+    # Build Ontology from the catalog's view of the detected types.
+    entities: list[Entity] = []
+    for type_name in sorted(detected_types):
+        entity = catalog.lookup(type_name)
+        if entity is None:
+            logger.debug(
+                "grounded discovery: type %r detected but not in catalog (skipping)",
+                type_name,
+            )
+            continue
+        entities.append(entity)
+
+    relations = catalog.relations_among(detected_types)
+
+    discovered = Ontology(entities=entities, relations=relations)
+
+    if existing is not None:
+        discovered = existing.merge(discovered)
+
+    discovered = _ensure_sdk_managed_attributes(discovered)
+
+    used_ctx.log(
+        f"grounded discovery: produced {len(discovered.entities)} entity type(s), "
+        f"{len(discovered.relations)} relation type(s)",
+        level=logging.INFO,
+    )
+    return discovered
 
 
 # ── Layer B: schema extension proposal ──────────────────────────────

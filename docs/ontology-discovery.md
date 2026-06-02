@@ -24,21 +24,21 @@ Two cooperating entry points. Both return artifacts you inspect before any data 
 
 ### Bootstrap — `Ontology.from_sources`
 
-A classmethod on the `Ontology` data model. Pure function, no DB connection needed.
+A classmethod on the `Ontology` data model. Pure function, no DB connection needed. Two discovery algorithms, selected via the `method=` argument.
+
+#### `method="llm"` (default) — LLM-driven schema invention
 
 ```python
 draft = await Ontology.from_sources(
     sources,                          # str or list[str], same as ingest()
     llm,                              # any LLMInterface
+    method="llm",                     # explicit, but this is the default
     boundaries="biotech papers about CRISPR",   # free-text scope hint
     existing=None,                    # optional structured prior
     sample_chunks_per_doc=3,
     max_retries=3,
     concurrency=4,
 )
-
-draft.save_to_file("ontology.json")   # review, edit by hand if you want
-GraphRAG(..., ontology=Ontology.from_file("ontology.json"))
 ```
 
 Behavior:
@@ -49,6 +49,60 @@ Behavior:
 - When `existing` is supplied, its labels are passed into every prompt as a soft controlled vocabulary, and the returned draft is merged with `existing` on the way out.
 
 Returns: a new `Ontology`.
+
+#### `method="grounded"` — catalog lookup, zero LLM calls
+
+Adapts [`barakb/text-to-rdf`](https://github.com/barakb/text-to-rdf)'s "find entities, look up their schemas" technique to schema discovery. The corpus tells you *which* types to include; the catalog tells you *what* their schemas are.
+
+```python
+from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+draft = await Ontology.from_sources(
+    sources,
+    method="grounded",
+    catalog=SchemaOrgCatalog(),       # required for method="grounded"
+    sample_chunks_per_doc=3,          # used for NER, not LLM
+    concurrency=4,
+)
+```
+
+Behavior:
+
+- For each source: load → chunk → sample → run NER on each sampled chunk with the catalog's known types as candidates.
+- Aggregate the union of types detected across the corpus.
+- Ask the catalog for each detected type's schema definition (`Entity` with attributes + canonical URI).
+- Ask the catalog for every relation whose source and target are both in the detected set.
+- Merge with `existing` if supplied.
+
+Zero LLM calls. No hallucination, no drift — the schema is entirely catalog-derived; the corpus only chooses the subset. At the cost of being **limited to what the catalog knows** — domain-specific types that aren't in the catalog won't appear.
+
+The default NER backend is `GLiNERExtractor()` (no API calls, local model). Override with `entity_extractor=` to plug in `LLMExtractor` or any custom `EntityExtractor`.
+
+Returns: a new `Ontology`.
+
+#### Catalogs
+
+A `Catalog` is the source of truth for ontology vocabulary. Concrete catalogs that ship today:
+
+| Class | Source | Network at runtime |
+|---|---|---|
+| `SchemaOrgCatalog` | Bundled JSON-LD snapshot of Schema.org (regenerated via `scripts/generate_schema_org_data.py`) | No |
+
+The bundled `SchemaOrgCatalog` carries a curated subset (10 types: Person, Organization, Place, Country, City, EducationalOrganization, Event, CreativeWork, Article, Book). To use a richer subset, regenerate `graphrag_sdk/data/schema_org.json` via the script and instantiate `SchemaOrgCatalog(path="…")`.
+
+The `Catalog` ABC has three abstract methods — `known_types() / lookup(name) / relations_among(names)` — so adding a `WikidataCatalog`, `DBpediaCatalog`, or a domain-specific catalog is a focused subclass.
+
+#### Choosing between `method="llm"` and `method="grounded"`
+
+| | `method="llm"` | `method="grounded"` |
+|---|---|---|
+| LLM cost | Yes (~`D × (S + 1) + 1` calls per corpus) | None |
+| Catalog needed | No | Yes |
+| Determinism | Stochastic (LLM) | Fully deterministic for a given corpus + catalog |
+| Coverage | Whatever the LLM extracts from the text | Whatever the catalog defines for detected types |
+| Domain-specific types | Yes (LLM can invent them) | Only if the catalog has them |
+| Best for | Unfamiliar / domain-specific corpora | General web / news / biographies where Schema.org fits |
+| Composition | `method="llm"` with `existing=catalog.as_ontology()` is the strongest hybrid (TODO) | `method="grounded"` then refine the output via a second `method="llm"` pass with `existing=draft` |
 
 ### Live-graph delta — `GraphRAG.suggest_schema_extensions`
 
@@ -136,8 +190,9 @@ Other reserved-system names (`id`, `description`, `source_chunk_ids`, `spans`, `
 
 | Situation | Use |
 |---|---|
-| Brand-new project, no ontology, unfamiliar corpus | `Ontology.from_sources(sources, llm)` |
-| You have a draft from somewhere and want to refresh it against more docs | `Ontology.from_sources(new_sources, llm, existing=current_draft)` |
+| Brand-new project, no ontology, unfamiliar / domain-specific corpus | `Ontology.from_sources(sources, llm, method="llm")` |
+| General web content / news / biographies — Schema.org vocabulary fits | `Ontology.from_sources(sources, method="grounded", catalog=SchemaOrgCatalog())` |
+| You have a draft and want to refresh it against more docs | `Ontology.from_sources(new_sources, llm, existing=current_draft)` |
 | You've ingested with a committed ontology and new docs are coming in | `rag.suggest_schema_extensions(new_sources)` → review → apply with the mutation API |
 | You already know the schema | Hand-author `Ontology(...)` — discovery only buys overhead |
 | The corpus has hard structural constraints (e.g. a known taxonomy) | Hand-author the core; use `suggest_schema_extensions` to find what you missed |

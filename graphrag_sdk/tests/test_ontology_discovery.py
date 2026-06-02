@@ -719,3 +719,235 @@ class TestSuggestExtensions:
         assert proposal.is_empty
         # Coarse evidence still populated.
         assert proposal.sources_scanned == [str(src)]
+
+
+# ── Catalog + grounded discovery ───────────────────────────────────
+
+
+class TestSchemaOrgCatalog:
+    """Bundled Schema.org-derived catalog. Real data, not hand-typed."""
+
+    def test_known_types_includes_curated(self) -> None:
+        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+        catalog = SchemaOrgCatalog()
+        types = catalog.known_types()
+        # Curated subset minimums.
+        assert {"Person", "Organization", "Place", "Event", "CreativeWork"} <= types
+
+    def test_lookup_returns_real_schema_org_data(self) -> None:
+        """The Entity returned should carry properties whose descriptions
+        record the original Schema.org camelCase name — proof the data
+        is sourced from Schema.org, not invented."""
+        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+        catalog = SchemaOrgCatalog()
+        person = catalog.lookup("Person")
+        assert person is not None
+        assert person.label == "Person"
+        assert person.description and "schema.org" in person.description.lower()
+        # At least one property whose description references its
+        # Schema.org camelCase origin.
+        camel_refs = [
+            a for a in person.properties if a.description and "Schema.org" in a.description
+        ]
+        assert camel_refs, "Properties should reference their Schema.org names"
+
+    def test_lookup_returns_none_for_unknown(self) -> None:
+        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+        assert SchemaOrgCatalog().lookup("Penguin") is None
+
+    def test_relations_among_filters_to_input_set(self) -> None:
+        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+        catalog = SchemaOrgCatalog()
+        relations = catalog.relations_among({"Person", "Organization"})
+        # Every pattern's endpoints must be inside the requested set.
+        for r in relations:
+            for src, tgt in r.patterns:
+                assert src in {"Person", "Organization"}
+                assert tgt in {"Person", "Organization"}
+        # Schema.org has a Person->Organization relation (worksFor / affiliation / ...).
+        assert any(("Person", "Organization") in r.patterns for r in relations)
+
+    def test_relations_among_dedupes_by_label(self) -> None:
+        """Schema.org may emit a label more than once across (src, tgt)
+        pairs — the catalog should group them under one Relation."""
+        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+        catalog = SchemaOrgCatalog()
+        relations = catalog.relations_among(
+            {"Person", "Organization", "EducationalOrganization"}
+        )
+        labels = [r.label for r in relations]
+        assert len(labels) == len(set(labels))
+
+
+class TestDiscoverGrounded:
+    """End-to-end grounded discovery with a mock catalog + mock extractor."""
+
+    @pytest.fixture
+    def tiny_catalog(self):
+        """A toy in-process catalog: 3 types, 2 relations among them."""
+        from graphrag_sdk.discovery.catalog import Catalog
+
+        class _ToyCatalog(Catalog):
+            def known_types(self) -> set[str]:
+                return {"Person", "Organization", "Place"}
+
+            def lookup(self, name: str):
+                if name == "Person":
+                    return Entity(
+                        label="Person",
+                        properties=[Attribute(name="role", type="STRING")],
+                    )
+                if name == "Organization":
+                    return Entity(
+                        label="Organization",
+                        properties=[Attribute(name="founded", type="DATE")],
+                    )
+                if name == "Place":
+                    return Entity(label="Place", properties=[])
+                return None
+
+            def relations_among(self, names):
+                wanted = set(names)
+                result = []
+                if {"Person", "Organization"} <= wanted:
+                    result.append(
+                        Relation(
+                            label="WORKS_AT", patterns=[("Person", "Organization")]
+                        )
+                    )
+                if {"Person", "Place"} <= wanted:
+                    result.append(
+                        Relation(label="BORN_IN", patterns=[("Person", "Place")])
+                    )
+                return result
+
+        return _ToyCatalog()
+
+    class _FakeExtractor:
+        """Returns scripted ExtractedEntities by type for each chunk."""
+
+        def __init__(self, types_per_chunk: list[list[str]]) -> None:
+            self._scripts = list(types_per_chunk)
+            self._calls = 0
+
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            from graphrag_sdk.core.models import ExtractedEntity
+
+            types = self._scripts[min(self._calls, len(self._scripts) - 1)]
+            self._calls += 1
+            return [
+                ExtractedEntity(name=f"E{i}", type=t)
+                for i, t in enumerate(types)
+            ]
+
+    @pytest.mark.asyncio
+    async def test_returns_only_types_detected_in_corpus(
+        self, tmp_path: Path, tiny_catalog
+    ) -> None:
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice works at Acme")
+        # Detect only Person + Organization — Place is in the catalog but
+        # not in the corpus, so it must not appear in the result.
+        extractor = self._FakeExtractor([["Person", "Organization"]])
+        ontology = await discover_grounded(
+            str(src),
+            catalog=tiny_catalog,
+            entity_extractor=extractor,
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice works at Acme"]),
+            seed=42,
+        )
+        labels = {e.label for e in ontology.entities}
+        assert labels == {"Person", "Organization"}
+        rel_labels = {r.label for r in ontology.relations}
+        assert "WORKS_AT" in rel_labels
+        assert "BORN_IN" not in rel_labels
+
+    @pytest.mark.asyncio
+    async def test_existing_prior_is_merged(
+        self, tmp_path: Path, tiny_catalog
+    ) -> None:
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice")
+        existing = Ontology(entities=[Entity(label="Document")])
+        extractor = self._FakeExtractor([["Person"]])
+        result = await discover_grounded(
+            str(src),
+            catalog=tiny_catalog,
+            entity_extractor=extractor,
+            existing=existing,
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice"]),
+            seed=42,
+        )
+        labels = {e.label for e in result.entities}
+        assert "Document" in labels
+        assert "Person" in labels
+
+    @pytest.mark.asyncio
+    async def test_from_sources_dispatches_to_grounded(
+        self, tmp_path: Path, tiny_catalog
+    ) -> None:
+        """Public API: from_sources(method='grounded') routes to grounded path."""
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice works at Acme")
+        extractor = self._FakeExtractor([["Person", "Organization"]])
+        ontology = await Ontology.from_sources(
+            str(src),
+            method="grounded",
+            catalog=tiny_catalog,
+            entity_extractor=extractor,
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice works at Acme"]),
+            seed=42,
+        )
+        assert {"Person", "Organization"} <= {e.label for e in ontology.entities}
+
+    @pytest.mark.asyncio
+    async def test_from_sources_grounded_requires_catalog(
+        self, tmp_path: Path
+    ) -> None:
+        src = tmp_path / "doc.txt"
+        src.write_text("text")
+        with pytest.raises(ValueError, match="catalog"):
+            await Ontology.from_sources(
+                str(src),
+                method="grounded",
+                sample_chunks_per_doc=1,
+            )
+
+    @pytest.mark.asyncio
+    async def test_from_sources_llm_requires_llm(self, tmp_path: Path) -> None:
+        src = tmp_path / "doc.txt"
+        src.write_text("text")
+        with pytest.raises(ValueError, match="llm"):
+            await Ontology.from_sources(
+                str(src),
+                method="llm",
+                sample_chunks_per_doc=1,
+            )
+
+    @pytest.mark.asyncio
+    async def test_from_sources_unknown_method_raises(
+        self, tmp_path: Path
+    ) -> None:
+        src = tmp_path / "doc.txt"
+        src.write_text("text")
+        with pytest.raises(ValueError, match="unknown method"):
+            await Ontology.from_sources(
+                str(src),
+                method="bogus",
+                sample_chunks_per_doc=1,
+            )

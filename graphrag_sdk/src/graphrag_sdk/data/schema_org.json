@@ -1,0 +1,2252 @@
+{
+  "source_url": "https://schema.org/version/latest/schemaorg-current-https.jsonld",
+  "curated_types": [
+    "Article",
+    "Book",
+    "City",
+    "Country",
+    "CreativeWork",
+    "EducationalOrganization",
+    "Event",
+    "Organization",
+    "Person",
+    "Place"
+  ],
+  "types": {
+    "Article": {
+      "label": "Article",
+      "canonical_uri": "https://schema.org/Article",
+      "description": "An article, such as a news article or piece of investigative report. Newspapers and magazines have articles of many different types and this is intended to cover them all.\\n\\nSee also [blog post](https://blog.schema.org/2014/09/02/schema-org-support-for-bibliographic-relationships-and-periodicals/).",
+      "properties": [
+        {
+          "name": "article_section",
+          "type": "STRING",
+          "schema_name": "articleSection",
+          "description": "Articles may belong to one or more 'sections' in a magazine or newspaper, such as Sports, Lifestyle, etc."
+        },
+        {
+          "name": "article_body",
+          "type": "STRING",
+          "schema_name": "articleBody",
+          "description": "The actual body of the article."
+        },
+        {
+          "name": "backstory",
+          "type": "STRING",
+          "schema_name": "backstory",
+          "description": "For an [[Article]], typically a [[NewsArticle]], the backstory property provides a textual summary giving a brief explanation of why and how an article was created. In a journalistic setting this coul"
+        },
+        {
+          "name": "word_count",
+          "type": "INTEGER",
+          "schema_name": "wordCount",
+          "description": "The number of words in the text of the CreativeWork such as an Article, Book, etc."
+        },
+        {
+          "name": "speakable",
+          "type": "STRING",
+          "schema_name": "speakable",
+          "description": "Indicates sections of a Web page that are particularly 'speakable' in the sense of being highlighted as being especially appropriate for text-to-speech conversion. Other sections of a page may also be"
+        },
+        {
+          "name": "pagination",
+          "type": "STRING",
+          "schema_name": "pagination",
+          "description": "Any description of pages that is not separated into pageStart and pageEnd; for example, \"1-6, 9, 55\" or \"10-12, 46-49\"."
+        },
+        {
+          "name": "page_end",
+          "type": "INTEGER",
+          "schema_name": "pageEnd",
+          "description": "The page on which the work ends; for example \"138\" or \"xvi\"."
+        },
+        {
+          "name": "page_start",
+          "type": "INTEGER",
+          "schema_name": "pageStart",
+          "description": "The page on which the work starts; for example \"135\" or \"xiii\"."
+        }
+      ]
+    },
+    "Book": {
+      "label": "Book",
+      "canonical_uri": "https://schema.org/Book",
+      "description": "A book.",
+      "properties": [
+        {
+          "name": "abridged",
+          "type": "BOOLEAN",
+          "schema_name": "abridged",
+          "description": "Indicates whether the book is an abridged edition."
+        },
+        {
+          "name": "book_edition",
+          "type": "STRING",
+          "schema_name": "bookEdition",
+          "description": "The edition of the book."
+        },
+        {
+          "name": "number_of_pages",
+          "type": "INTEGER",
+          "schema_name": "numberOfPages",
+          "description": "The number of pages in the book."
+        },
+        {
+          "name": "isbn",
+          "type": "STRING",
+          "schema_name": "isbn",
+          "description": "The ISBN of the book."
+        }
+      ]
+    },
+    "City": {
+      "label": "City",
+      "canonical_uri": "https://schema.org/City",
+      "description": "A city or town.",
+      "properties": []
+    },
+    "Country": {
+      "label": "Country",
+      "canonical_uri": "https://schema.org/Country",
+      "description": "A country.",
+      "properties": []
+    },
+    "CreativeWork": {
+      "label": "CreativeWork",
+      "canonical_uri": "https://schema.org/CreativeWork",
+      "description": "The most generic kind of creative work, including books, movies, photographs, software programs, etc.",
+      "properties": [
+        {
+          "name": "educational_use",
+          "type": "STRING",
+          "schema_name": "educationalUse",
+          "description": "The purpose of a work in the context of education; for example, 'assignment', 'group work'."
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "schema_name": "text",
+          "description": "The textual content of this CreativeWork."
+        },
+        {
+          "name": "alternative_headline",
+          "type": "STRING",
+          "schema_name": "alternativeHeadline",
+          "description": "A secondary title of the CreativeWork."
+        },
+        {
+          "name": "learning_resource_type",
+          "type": "STRING",
+          "schema_name": "learningResourceType",
+          "description": "The predominant type or kind characterizing the learning resource. For example, 'presentation', 'handout'."
+        },
+        {
+          "name": "temporal",
+          "type": "STRING",
+          "schema_name": "temporal",
+          "description": "The \"temporal\" property can be used in cases where more specific properties\n(e.g. [[temporalCoverage]], [[dateCreated]], [[dateModified]], [[datePublished]]) are not known to be appropriate."
+        },
+        {
+          "name": "date_created",
+          "type": "DATE",
+          "schema_name": "dateCreated",
+          "description": "The date on which the CreativeWork was created or the item was added to a DataFeed."
+        },
+        {
+          "name": "discussion_url",
+          "type": "STRING",
+          "schema_name": "discussionUrl",
+          "description": "A link to the page containing the comments of the CreativeWork."
+        },
+        {
+          "name": "typical_age_range",
+          "type": "STRING",
+          "schema_name": "typicalAgeRange",
+          "description": "The typical expected age range, e.g. '7-9', '11-'."
+        },
+        {
+          "name": "content_rating",
+          "type": "STRING",
+          "schema_name": "contentRating",
+          "description": "Official rating of a piece of content&#x2014;for example, 'MPAA PG-13'."
+        },
+        {
+          "name": "license",
+          "type": "STRING",
+          "schema_name": "license",
+          "description": "A license document that applies to this content, typically indicated by URL."
+        },
+        {
+          "name": "conditions_of_access",
+          "type": "STRING",
+          "schema_name": "conditionsOfAccess",
+          "description": "Conditions that affect the availability of, or method(s) of access to, an item. Typically used for real world items such as an [[ArchiveComponent]] held by an [[ArchiveOrganization]]. This property is"
+        },
+        {
+          "name": "date_modified",
+          "type": "DATE",
+          "schema_name": "dateModified",
+          "description": "The date on which the CreativeWork was most recently modified or when the item's entry was modified within a DataFeed."
+        },
+        {
+          "name": "is_part_of",
+          "type": "STRING",
+          "schema_name": "isPartOf",
+          "description": "Indicates an item or CreativeWork that this item, or CreativeWork (in some sense), is part of."
+        },
+        {
+          "name": "expires",
+          "type": "DATE",
+          "schema_name": "expires",
+          "description": "Date the content expires and is no longer useful or available. For example a [[VideoObject]] or [[NewsArticle]] whose availability or relevance is time-limited, a [[ClaimReview]] fact check whose publ"
+        },
+        {
+          "name": "citation",
+          "type": "STRING",
+          "schema_name": "citation",
+          "description": "A citation or reference to another creative work, such as another publication, web page, scholarly article, etc."
+        },
+        {
+          "name": "material_extent",
+          "type": "STRING",
+          "schema_name": "materialExtent",
+          "description": "The quantity of the materials being described or an expression of the physical space they occupy."
+        },
+        {
+          "name": "word_count",
+          "type": "INTEGER",
+          "schema_name": "wordCount",
+          "description": "The number of words in the text of the CreativeWork such as an Article, Book, etc."
+        },
+        {
+          "name": "assesses",
+          "type": "STRING",
+          "schema_name": "assesses",
+          "description": "The item being described is intended to assess the competency or learning outcome defined by the referenced term."
+        },
+        {
+          "name": "credit_text",
+          "type": "STRING",
+          "schema_name": "creditText",
+          "description": "Text that can be used to credit person(s) and/or organization(s) associated with a published Creative Work."
+        },
+        {
+          "name": "encoding_format",
+          "type": "STRING",
+          "schema_name": "encodingFormat",
+          "description": "Media type typically expressed using a MIME format (see [IANA site](http://www.iana.org/assignments/media-types/media-types.xhtml) and [MDN reference](https://developer.mozilla.org/en-US/docs/Web/HTTP"
+        },
+        {
+          "name": "size",
+          "type": "STRING",
+          "schema_name": "size",
+          "description": "A standardized size of a product or creative work, specified either through a simple textual string (for example 'XL', '32Wx34L'), a  QuantitativeValue with a unitCode, or a comprehensive and structur"
+        },
+        {
+          "name": "interactivity_type",
+          "type": "STRING",
+          "schema_name": "interactivityType",
+          "description": "The predominant mode of learning supported by the learning resource. Acceptable values are 'active', 'expositive', or 'mixed'."
+        },
+        {
+          "name": "keywords",
+          "type": "STRING",
+          "schema_name": "keywords",
+          "description": "Keywords or tags used to describe some item. Multiple textual entries in a keywords list are typically delimited by commas, or by repeating the property."
+        },
+        {
+          "name": "accessibility_summary",
+          "type": "STRING",
+          "schema_name": "accessibilitySummary",
+          "description": "A human-readable summary of specific accessibility features or deficiencies, consistent with the other accessibility metadata but expressing subtleties such as \"short descriptions are present but long"
+        },
+        {
+          "name": "publishing_principles",
+          "type": "STRING",
+          "schema_name": "publishingPrinciples",
+          "description": "The publishingPrinciples property indicates (typically via [[URL]]) a document describing the editorial principles of an [[Organization]] (or individual, e.g. a [[Person]] writing a blog) that relate "
+        },
+        {
+          "name": "date_published",
+          "type": "DATE",
+          "schema_name": "datePublished",
+          "description": "Date of first publication or broadcast. For example the date a [[CreativeWork]] was broadcast or a [[Certification]] was issued."
+        },
+        {
+          "name": "accessibility_api",
+          "type": "STRING",
+          "schema_name": "accessibilityAPI",
+          "description": "Indicates that the resource is compatible with the referenced accessibility API. Values should be drawn from the [approved vocabulary](https://www.w3.org/2021/a11y-discov-vocab/latest/#accessibilityAP"
+        },
+        {
+          "name": "copyright_notice",
+          "type": "STRING",
+          "schema_name": "copyrightNotice",
+          "description": "Text of a notice appropriate for describing the copyright aspects of this Creative Work, ideally indicating the owner of the copyright for the Work."
+        },
+        {
+          "name": "archived_at",
+          "type": "STRING",
+          "schema_name": "archivedAt",
+          "description": "Indicates a page or other link involved in archival of a [[CreativeWork]]. In the case of [[MediaReview]], the items in a [[MediaReviewItem]] may often become inaccessible, but be archived by archival"
+        },
+        {
+          "name": "sd_date_published",
+          "type": "DATE",
+          "schema_name": "sdDatePublished",
+          "description": "Indicates the date on which the current structured data was generated / published. Typically used alongside [[sdPublisher]]."
+        },
+        {
+          "name": "thumbnail_url",
+          "type": "STRING",
+          "schema_name": "thumbnailUrl",
+          "description": "A thumbnail image relevant to the Thing."
+        },
+        {
+          "name": "acquire_license_page",
+          "type": "STRING",
+          "schema_name": "acquireLicensePage",
+          "description": "Indicates a page documenting how licenses can be purchased or otherwise acquired, for the current item."
+        },
+        {
+          "name": "copyright_year",
+          "type": "FLOAT",
+          "schema_name": "copyrightYear",
+          "description": "The year during which the claimed copyright for the CreativeWork was first asserted."
+        },
+        {
+          "name": "is_family_friendly",
+          "type": "BOOLEAN",
+          "schema_name": "isFamilyFriendly",
+          "description": "Indicates whether this content is family friendly."
+        },
+        {
+          "name": "correction",
+          "type": "STRING",
+          "schema_name": "correction",
+          "description": "Indicates a correction to a [[CreativeWork]], either via a [[CorrectionComment]], textually or in another document."
+        },
+        {
+          "name": "is_based_on",
+          "type": "STRING",
+          "schema_name": "isBasedOn",
+          "description": "A resource from which this work is derived or from which it is a modification or adaptation."
+        },
+        {
+          "name": "is_based_on_url",
+          "type": "STRING",
+          "schema_name": "isBasedOnUrl",
+          "description": "A resource that was used in the creation of this resource. This term can be repeated for multiple sources. For example, http://example.com/great-multiplication-intro.html."
+        },
+        {
+          "name": "awards",
+          "type": "STRING",
+          "schema_name": "awards",
+          "description": "Awards won by or for this item."
+        },
+        {
+          "name": "headline",
+          "type": "STRING",
+          "schema_name": "headline",
+          "description": "Headline of the article."
+        },
+        {
+          "name": "teaches",
+          "type": "STRING",
+          "schema_name": "teaches",
+          "description": "The item being described is intended to help a person learn the competency or learning outcome defined by the referenced term."
+        },
+        {
+          "name": "version",
+          "type": "STRING",
+          "schema_name": "version",
+          "description": "The version of the CreativeWork embodied by a specified resource."
+        },
+        {
+          "name": "temporal_coverage",
+          "type": "STRING",
+          "schema_name": "temporalCoverage",
+          "description": "The temporalCoverage of a CreativeWork indicates the period that the content applies to, i.e. that it describes, either as a DateTime or as a textual string indicating a time period in [ISO 8601 time "
+        },
+        {
+          "name": "accessibility_feature",
+          "type": "STRING",
+          "schema_name": "accessibilityFeature",
+          "description": "Content features of the resource, such as accessible media, alternatives and supported enhancements for accessibility. Values should be drawn from the [approved vocabulary](https://www.w3.org/2021/a11"
+        },
+        {
+          "name": "creative_work_status",
+          "type": "STRING",
+          "schema_name": "creativeWorkStatus",
+          "description": "The status of a creative work in terms of its stage in a lifecycle. Example terms include Incomplete, Draft, Published, Obsolete. Some organizations define a set of terms for the stages of their publi"
+        },
+        {
+          "name": "edit_eidr",
+          "type": "STRING",
+          "schema_name": "editEIDR",
+          "description": "An [EIDR](https://eidr.org/) (Entertainment Identifier Registry) [[identifier]] representing a specific edit / edition for a work of film or television.\n\nFor example, the motion picture known as \"Ghos"
+        },
+        {
+          "name": "content_reference_time",
+          "type": "DATE",
+          "schema_name": "contentReferenceTime",
+          "description": "The specific time described by a creative work, for works (e.g. articles, video objects etc.) that emphasise a particular moment within an Event."
+        },
+        {
+          "name": "comment_count",
+          "type": "INTEGER",
+          "schema_name": "commentCount",
+          "description": "The number of comments this CreativeWork (e.g. Article, Question or Answer) has received. This is most applicable to works published in Web sites with commenting system; additional comments may exist "
+        },
+        {
+          "name": "access_mode",
+          "type": "STRING",
+          "schema_name": "accessMode",
+          "description": "The human sensory perceptual system or cognitive faculty through which a person may process or perceive the intellectual content of a resource, not including any adaptations of the content (e.g., text"
+        },
+        {
+          "name": "position",
+          "type": "STRING",
+          "schema_name": "position",
+          "description": "The position of an item in a series or sequence of items."
+        },
+        {
+          "name": "material",
+          "type": "STRING",
+          "schema_name": "material",
+          "description": "A material that something is made from, e.g. leather, wool, cotton, paper."
+        },
+        {
+          "name": "pattern",
+          "type": "STRING",
+          "schema_name": "pattern",
+          "description": "A pattern that something has, for example 'polka dot', 'striped', 'Canadian flag'. Values are typically expressed as text, although links to controlled value schemes are also supported."
+        },
+        {
+          "name": "accessibility_hazard",
+          "type": "STRING",
+          "schema_name": "accessibilityHazard",
+          "description": "A characteristic of the described resource that is physiologically dangerous to some users. Related to WCAG 2.0 guideline 2.3. Values should be drawn from the [approved vocabulary](https://www.w3.org/"
+        },
+        {
+          "name": "sd_license",
+          "type": "STRING",
+          "schema_name": "sdLicense",
+          "description": "A license document that applies to this structured data, typically indicated by URL."
+        },
+        {
+          "name": "usage_info",
+          "type": "STRING",
+          "schema_name": "usageInfo",
+          "description": "The schema.org [[usageInfo]] property indicates further information about a [[CreativeWork]]. This property is applicable both to works that are freely available and to those that require payment or o"
+        },
+        {
+          "name": "award",
+          "type": "STRING",
+          "schema_name": "award",
+          "description": "An award won by or for this item."
+        },
+        {
+          "name": "schema_version",
+          "type": "STRING",
+          "schema_name": "schemaVersion",
+          "description": "Indicates (by URL or string) a particular version of a schema used in some CreativeWork. This property was created primarily to\n    indicate the use of a specific schema.org release, e.g. ```10.0``` a"
+        },
+        {
+          "name": "is_accessible_for_free",
+          "type": "BOOLEAN",
+          "schema_name": "isAccessibleForFree",
+          "description": "A flag to signal that the item, event, or place is accessible for free."
+        },
+        {
+          "name": "genre",
+          "type": "STRING",
+          "schema_name": "genre",
+          "description": "Genre of the creative work, broadcast channel or group."
+        },
+        {
+          "name": "file_format",
+          "type": "STRING",
+          "schema_name": "fileFormat",
+          "description": "Media type, typically MIME format (see [IANA site](http://www.iana.org/assignments/media-types/media-types.xhtml)) of the content, e.g. application/zip of a SoftwareApplication binary. In cases where "
+        },
+        {
+          "name": "in_language",
+          "type": "STRING",
+          "schema_name": "inLanguage",
+          "description": "The language of the content or performance or used in an action. Please use one of the language codes from the [IETF BCP 47 standard](http://tools.ietf.org/html/bcp47). See also [[availableLanguage]]."
+        },
+        {
+          "name": "accessibility_control",
+          "type": "STRING",
+          "schema_name": "accessibilityControl",
+          "description": "Identifies input methods that are sufficient to fully control the described resource. Values should be drawn from the [approved vocabulary](https://www.w3.org/2021/a11y-discov-vocab/latest/#accessibil"
+        },
+        {
+          "name": "abstract",
+          "type": "STRING",
+          "schema_name": "abstract",
+          "description": "An abstract is a short description that summarizes a [[CreativeWork]]."
+        },
+        {
+          "name": "educational_level",
+          "type": "STRING",
+          "schema_name": "educationalLevel",
+          "description": "The level in terms of progression through an educational or training context. Examples of educational levels include 'beginner', 'intermediate' or 'advanced', and formal sets of level indicators."
+        }
+      ]
+    },
+    "EducationalOrganization": {
+      "label": "EducationalOrganization",
+      "canonical_uri": "https://schema.org/EducationalOrganization",
+      "description": "An educational organization.",
+      "properties": []
+    },
+    "Event": {
+      "label": "Event",
+      "canonical_uri": "https://schema.org/Event",
+      "description": "An event happening at a certain time and location, such as a concert, lecture, or festival. Ticketing information may be added via the [[offers]] property. Repeated events may be structured as separate Event objects.",
+      "properties": [
+        {
+          "name": "typical_age_range",
+          "type": "STRING",
+          "schema_name": "typicalAgeRange",
+          "description": "The typical expected age range, e.g. '7-9', '11-'."
+        },
+        {
+          "name": "maximum_attendee_capacity",
+          "type": "INTEGER",
+          "schema_name": "maximumAttendeeCapacity",
+          "description": "The total number of individuals that may attend an event or venue."
+        },
+        {
+          "name": "previous_start_date",
+          "type": "DATE",
+          "schema_name": "previousStartDate",
+          "description": "Used in conjunction with eventStatus for rescheduled or cancelled events. This property contains the previously scheduled start date. For rescheduled events, the startDate property should be used for "
+        },
+        {
+          "name": "keywords",
+          "type": "STRING",
+          "schema_name": "keywords",
+          "description": "Keywords or tags used to describe some item. Multiple textual entries in a keywords list are typically delimited by commas, or by repeating the property."
+        },
+        {
+          "name": "location",
+          "type": "STRING",
+          "schema_name": "location",
+          "description": "The location of, for example, where an event is happening, where an organization is located, or where an action takes place."
+        },
+        {
+          "name": "maximum_virtual_attendee_capacity",
+          "type": "INTEGER",
+          "schema_name": "maximumVirtualAttendeeCapacity",
+          "description": "The maximum virtual attendee capacity of an [[Event]] whose [[eventAttendanceMode]] is [[OnlineEventAttendanceMode]] (or the online aspects, in the case of a [[MixedEventAttendanceMode]])."
+        },
+        {
+          "name": "door_time",
+          "type": "DATE",
+          "schema_name": "doorTime",
+          "description": "The time admission will commence."
+        },
+        {
+          "name": "remaining_attendee_capacity",
+          "type": "INTEGER",
+          "schema_name": "remainingAttendeeCapacity",
+          "description": "The number of attendee places for an event that remain unallocated."
+        },
+        {
+          "name": "maximum_physical_attendee_capacity",
+          "type": "INTEGER",
+          "schema_name": "maximumPhysicalAttendeeCapacity",
+          "description": "The maximum physical attendee capacity of an [[Event]] whose [[eventAttendanceMode]] is [[OfflineEventAttendanceMode]] (or the offline aspects, in the case of a [[MixedEventAttendanceMode]])."
+        },
+        {
+          "name": "end_date",
+          "type": "DATE",
+          "schema_name": "endDate",
+          "description": "The end date and time of the item (in [ISO 8601 date format](http://en.wikipedia.org/wiki/ISO_8601))."
+        },
+        {
+          "name": "start_date",
+          "type": "DATE",
+          "schema_name": "startDate",
+          "description": "The start date and time of the item (in [ISO 8601 date format](http://en.wikipedia.org/wiki/ISO_8601))."
+        },
+        {
+          "name": "is_accessible_for_free",
+          "type": "BOOLEAN",
+          "schema_name": "isAccessibleForFree",
+          "description": "A flag to signal that the item, event, or place is accessible for free."
+        },
+        {
+          "name": "in_language",
+          "type": "STRING",
+          "schema_name": "inLanguage",
+          "description": "The language of the content or performance or used in an action. Please use one of the language codes from the [IETF BCP 47 standard](http://tools.ietf.org/html/bcp47). See also [[availableLanguage]]."
+        }
+      ]
+    },
+    "Organization": {
+      "label": "Organization",
+      "canonical_uri": "https://schema.org/Organization",
+      "description": "An organization such as a school, NGO, corporation, club, etc.",
+      "properties": [
+        {
+          "name": "dissolution_date",
+          "type": "DATE",
+          "schema_name": "dissolutionDate",
+          "description": "The date that this organization was dissolved."
+        },
+        {
+          "name": "telephone",
+          "type": "STRING",
+          "schema_name": "telephone",
+          "description": "The telephone number."
+        },
+        {
+          "name": "founding_date",
+          "type": "DATE",
+          "schema_name": "foundingDate",
+          "description": "The date that this organization was founded."
+        },
+        {
+          "name": "duns",
+          "type": "STRING",
+          "schema_name": "duns",
+          "description": "The Dun & Bradstreet DUNS number for identifying an organization or business person."
+        },
+        {
+          "name": "knows_about",
+          "type": "STRING",
+          "schema_name": "knowsAbout",
+          "description": "Of a [[Person]], and less typically of an [[Organization]], to indicate a topic that is known about - suggesting possible expertise but not implying it. We do not distinguish skill levels here, or rel"
+        },
+        {
+          "name": "naics",
+          "type": "STRING",
+          "schema_name": "naics",
+          "description": "The North American Industry Classification System (NAICS) code for a particular organization or business person."
+        },
+        {
+          "name": "iso6523_code",
+          "type": "STRING",
+          "schema_name": "iso6523Code",
+          "description": "An organization identifier as defined in [ISO 6523(-1)](https://en.wikipedia.org/wiki/ISO/IEC_6523). The identifier should be in the `XXXX:YYYYYY:ZZZ` or `XXXX:YYYYYY`format. Where `XXXX` is a 4 digit"
+        },
+        {
+          "name": "address",
+          "type": "STRING",
+          "schema_name": "address",
+          "description": "Physical address of the item."
+        },
+        {
+          "name": "logo",
+          "type": "STRING",
+          "schema_name": "logo",
+          "description": "An associated logo."
+        },
+        {
+          "name": "global_location_number",
+          "type": "STRING",
+          "schema_name": "globalLocationNumber",
+          "description": "The [Global Location Number](http://www.gs1.org/gln) (GLN, sometimes also referred to as International Location Number or ILN) of the respective organization, person, or place. The GLN is a 13-digit n"
+        },
+        {
+          "name": "keywords",
+          "type": "STRING",
+          "schema_name": "keywords",
+          "description": "Keywords or tags used to describe some item. Multiple textual entries in a keywords list are typically delimited by commas, or by repeating the property."
+        },
+        {
+          "name": "tax_id",
+          "type": "STRING",
+          "schema_name": "taxID",
+          "description": "The Tax / Fiscal ID of the organization or person, e.g. the TIN in the US or the CIF/NIF in Spain."
+        },
+        {
+          "name": "publishing_principles",
+          "type": "STRING",
+          "schema_name": "publishingPrinciples",
+          "description": "The publishingPrinciples property indicates (typically via [[URL]]) a document describing the editorial principles of an [[Organization]] (or individual, e.g. a [[Person]] writing a blog) that relate "
+        },
+        {
+          "name": "corrections_policy",
+          "type": "STRING",
+          "schema_name": "correctionsPolicy",
+          "description": "For an [[Organization]] (e.g. [[NewsMediaOrganization]]), a statement describing (in news media, the newsroom\u2019s) disclosure and correction policy for errors."
+        },
+        {
+          "name": "legal_name",
+          "type": "STRING",
+          "schema_name": "legalName",
+          "description": "The official name of the organization, e.g. the registered company name."
+        },
+        {
+          "name": "unnamed_sources_policy",
+          "type": "STRING",
+          "schema_name": "unnamedSourcesPolicy",
+          "description": "For an [[Organization]] (typically a [[NewsMediaOrganization]]), a statement about policy on use of unnamed sources and the decision process required."
+        },
+        {
+          "name": "location",
+          "type": "STRING",
+          "schema_name": "location",
+          "description": "The location of, for example, where an event is happening, where an organization is located, or where an action takes place."
+        },
+        {
+          "name": "email",
+          "type": "STRING",
+          "schema_name": "email",
+          "description": "Email address."
+        },
+        {
+          "name": "knows_language",
+          "type": "STRING",
+          "schema_name": "knowsLanguage",
+          "description": "Of a [[Person]], and less typically of an [[Organization]], to indicate a known language. We do not distinguish skill levels or reading/writing/speaking/signing here. Use language codes from the [IETF"
+        },
+        {
+          "name": "vat_id",
+          "type": "STRING",
+          "schema_name": "vatID",
+          "description": "The value-added Tax ID of the organization or person with national prefix (for example IT123456789). Can also be described as [[iso6523Code]] with proper prefix."
+        },
+        {
+          "name": "ethics_policy",
+          "type": "STRING",
+          "schema_name": "ethicsPolicy",
+          "description": "Statement about ethics policy, e.g. of a [[NewsMediaOrganization]] regarding journalistic and publishing practices, or of a [[Restaurant]], a page describing food source policies. In the case of a [[N"
+        },
+        {
+          "name": "awards",
+          "type": "STRING",
+          "schema_name": "awards",
+          "description": "Awards won by or for this item."
+        },
+        {
+          "name": "has_gs1_digital_link",
+          "type": "STRING",
+          "schema_name": "hasGS1DigitalLink",
+          "description": "The <a href=\"https://www.gs1.org/standards/gs1-digital-link\">GS1 digital link</a> associated with the object. This URL should conform to the particular requirements of digital links. The link should o"
+        },
+        {
+          "name": "diversity_staffing_report",
+          "type": "STRING",
+          "schema_name": "diversityStaffingReport",
+          "description": "For an [[Organization]] (often but not necessarily a [[NewsMediaOrganization]]), a report on staffing diversity issues. In a news context this might be for example ASNE or RTDNA (US) reports, or self-"
+        },
+        {
+          "name": "accepted_payment_method",
+          "type": "STRING",
+          "schema_name": "acceptedPaymentMethod",
+          "description": "The payment method(s) that are accepted in general by an organization, or for some specific demand or offer."
+        },
+        {
+          "name": "actionable_feedback_policy",
+          "type": "STRING",
+          "schema_name": "actionableFeedbackPolicy",
+          "description": "For a [[NewsMediaOrganization]] or other news-related [[Organization]], a statement about public engagement activities (for news media, the newsroom\u2019s), including involving the public - digitally or o"
+        },
+        {
+          "name": "slogan",
+          "type": "STRING",
+          "schema_name": "slogan",
+          "description": "A slogan or motto associated with the item."
+        },
+        {
+          "name": "award",
+          "type": "STRING",
+          "schema_name": "award",
+          "description": "An award won by or for this item."
+        },
+        {
+          "name": "skills",
+          "type": "STRING",
+          "schema_name": "skills",
+          "description": "A statement of knowledge, skill, ability, task or any other assertion expressing a competency that is either claimed by a person, an organization or desired or required to fulfill a role or to work in"
+        },
+        {
+          "name": "lei_code",
+          "type": "STRING",
+          "schema_name": "leiCode",
+          "description": "An organization identifier that uniquely identifies a legal entity as defined in ISO 17442."
+        },
+        {
+          "name": "fax_number",
+          "type": "STRING",
+          "schema_name": "faxNumber",
+          "description": "The fax number."
+        },
+        {
+          "name": "isic_v4",
+          "type": "STRING",
+          "schema_name": "isicV4",
+          "description": "The International Standard of Industrial Classification of All Economic Activities (ISIC), Revision 4 code for a particular organization, business person, or place."
+        },
+        {
+          "name": "diversity_policy",
+          "type": "STRING",
+          "schema_name": "diversityPolicy",
+          "description": "Statement on diversity policy by an [[Organization]] e.g. a [[NewsMediaOrganization]]. For a [[NewsMediaOrganization]], a statement describing the newsroom\u2019s diversity policy on both staffing and sour"
+        },
+        {
+          "name": "area_served",
+          "type": "STRING",
+          "schema_name": "areaServed",
+          "description": "The geographic area where a service or offered item is provided."
+        },
+        {
+          "name": "ownership_funding_info",
+          "type": "STRING",
+          "schema_name": "ownershipFundingInfo",
+          "description": "For an [[Organization]] (often but not necessarily a [[NewsMediaOrganization]]), a description of organizational ownership structure; funding and grants. In a news/media setting, this is with particul"
+        }
+      ]
+    },
+    "Person": {
+      "label": "Person",
+      "canonical_uri": "https://schema.org/Person",
+      "description": "A person (alive, dead, undead, or fictional).",
+      "properties": [
+        {
+          "name": "death_date",
+          "type": "DATE",
+          "schema_name": "deathDate",
+          "description": "Date of death."
+        },
+        {
+          "name": "telephone",
+          "type": "STRING",
+          "schema_name": "telephone",
+          "description": "The telephone number."
+        },
+        {
+          "name": "duns",
+          "type": "STRING",
+          "schema_name": "duns",
+          "description": "The Dun & Bradstreet DUNS number for identifying an organization or business person."
+        },
+        {
+          "name": "knows_about",
+          "type": "STRING",
+          "schema_name": "knowsAbout",
+          "description": "Of a [[Person]], and less typically of an [[Organization]], to indicate a topic that is known about - suggesting possible expertise but not implying it. We do not distinguish skill levels here, or rel"
+        },
+        {
+          "name": "call_sign",
+          "type": "STRING",
+          "schema_name": "callSign",
+          "description": "A [callsign](https://en.wikipedia.org/wiki/Call_sign), as used in broadcasting and radio communications to identify people, radio and TV stations, or vehicles."
+        },
+        {
+          "name": "additional_name",
+          "type": "STRING",
+          "schema_name": "additionalName",
+          "description": "An additional name for a Person, can be used for a middle name."
+        },
+        {
+          "name": "naics",
+          "type": "STRING",
+          "schema_name": "naics",
+          "description": "The North American Industry Classification System (NAICS) code for a particular organization or business person."
+        },
+        {
+          "name": "honorific_suffix",
+          "type": "STRING",
+          "schema_name": "honorificSuffix",
+          "description": "An honorific suffix following a Person's name such as M.D./PhD/MSCSW."
+        },
+        {
+          "name": "address",
+          "type": "STRING",
+          "schema_name": "address",
+          "description": "Physical address of the item."
+        },
+        {
+          "name": "global_location_number",
+          "type": "STRING",
+          "schema_name": "globalLocationNumber",
+          "description": "The [Global Location Number](http://www.gs1.org/gln) (GLN, sometimes also referred to as International Location Number or ILN) of the respective organization, person, or place. The GLN is a 13-digit n"
+        },
+        {
+          "name": "given_name",
+          "type": "STRING",
+          "schema_name": "givenName",
+          "description": "Given name. In the U.S., the first name of a Person."
+        },
+        {
+          "name": "gender",
+          "type": "STRING",
+          "schema_name": "gender",
+          "description": "Gender of something, typically a [[Person]], but possibly also fictional characters, animals, etc. While https://schema.org/Male and https://schema.org/Female may be used, text strings are also accept"
+        },
+        {
+          "name": "tax_id",
+          "type": "STRING",
+          "schema_name": "taxID",
+          "description": "The Tax / Fiscal ID of the organization or person, e.g. the TIN in the US or the CIF/NIF in Spain."
+        },
+        {
+          "name": "publishing_principles",
+          "type": "STRING",
+          "schema_name": "publishingPrinciples",
+          "description": "The publishingPrinciples property indicates (typically via [[URL]]) a document describing the editorial principles of an [[Organization]] (or individual, e.g. a [[Person]] writing a blog) that relate "
+        },
+        {
+          "name": "email",
+          "type": "STRING",
+          "schema_name": "email",
+          "description": "Email address."
+        },
+        {
+          "name": "knows_language",
+          "type": "STRING",
+          "schema_name": "knowsLanguage",
+          "description": "Of a [[Person]], and less typically of an [[Organization]], to indicate a known language. We do not distinguish skill levels or reading/writing/speaking/signing here. Use language codes from the [IETF"
+        },
+        {
+          "name": "vat_id",
+          "type": "STRING",
+          "schema_name": "vatID",
+          "description": "The value-added Tax ID of the organization or person with national prefix (for example IT123456789). Can also be described as [[iso6523Code]] with proper prefix."
+        },
+        {
+          "name": "family_name",
+          "type": "STRING",
+          "schema_name": "familyName",
+          "description": "Family name. In the U.S., the last name of a Person."
+        },
+        {
+          "name": "awards",
+          "type": "STRING",
+          "schema_name": "awards",
+          "description": "Awards won by or for this item."
+        },
+        {
+          "name": "job_title",
+          "type": "STRING",
+          "schema_name": "jobTitle",
+          "description": "The job title of the person (for example, Financial Manager)."
+        },
+        {
+          "name": "birth_date",
+          "type": "DATE",
+          "schema_name": "birthDate",
+          "description": "Date of birth."
+        },
+        {
+          "name": "pronouns",
+          "type": "STRING",
+          "schema_name": "pronouns",
+          "description": "A short string listing or describing pronouns for a person. Typically the person concerned is the best authority as pronouns are a critical part of personal identity and expression. Publishers and con"
+        },
+        {
+          "name": "honorific_prefix",
+          "type": "STRING",
+          "schema_name": "honorificPrefix",
+          "description": "An honorific prefix preceding a Person's name such as Dr/Mrs/Mr."
+        },
+        {
+          "name": "award",
+          "type": "STRING",
+          "schema_name": "award",
+          "description": "An award won by or for this item."
+        },
+        {
+          "name": "skills",
+          "type": "STRING",
+          "schema_name": "skills",
+          "description": "A statement of knowledge, skill, ability, task or any other assertion expressing a competency that is either claimed by a person, an organization or desired or required to fulfill a role or to work in"
+        },
+        {
+          "name": "colleague",
+          "type": "STRING",
+          "schema_name": "colleague",
+          "description": "A colleague of the person."
+        },
+        {
+          "name": "fax_number",
+          "type": "STRING",
+          "schema_name": "faxNumber",
+          "description": "The fax number."
+        },
+        {
+          "name": "isic_v4",
+          "type": "STRING",
+          "schema_name": "isicV4",
+          "description": "The International Standard of Industrial Classification of All Economic Activities (ISIC), Revision 4 code for a particular organization, business person, or place."
+        }
+      ]
+    },
+    "Place": {
+      "label": "Place",
+      "canonical_uri": "https://schema.org/Place",
+      "description": "Entities that have a somewhat fixed, physical extension.",
+      "properties": [
+        {
+          "name": "telephone",
+          "type": "STRING",
+          "schema_name": "telephone",
+          "description": "The telephone number."
+        },
+        {
+          "name": "public_access",
+          "type": "BOOLEAN",
+          "schema_name": "publicAccess",
+          "description": "A flag to signal that the [[Place]] is open to public visitors.  If this property is omitted there is no assumed default boolean value."
+        },
+        {
+          "name": "branch_code",
+          "type": "STRING",
+          "schema_name": "branchCode",
+          "description": "A short textual code (also called \"store code\") that uniquely identifies a place of business. The code is typically assigned by the parentOrganization and used in structured URLs.\\n\\nFor example, in t"
+        },
+        {
+          "name": "address",
+          "type": "STRING",
+          "schema_name": "address",
+          "description": "Physical address of the item."
+        },
+        {
+          "name": "logo",
+          "type": "STRING",
+          "schema_name": "logo",
+          "description": "An associated logo."
+        },
+        {
+          "name": "global_location_number",
+          "type": "STRING",
+          "schema_name": "globalLocationNumber",
+          "description": "The [Global Location Number](http://www.gs1.org/gln) (GLN, sometimes also referred to as International Location Number or ILN) of the respective organization, person, or place. The GLN is a 13-digit n"
+        },
+        {
+          "name": "maximum_attendee_capacity",
+          "type": "INTEGER",
+          "schema_name": "maximumAttendeeCapacity",
+          "description": "The total number of individuals that may attend an event or venue."
+        },
+        {
+          "name": "keywords",
+          "type": "STRING",
+          "schema_name": "keywords",
+          "description": "Keywords or tags used to describe some item. Multiple textual entries in a keywords list are typically delimited by commas, or by repeating the property."
+        },
+        {
+          "name": "map",
+          "type": "STRING",
+          "schema_name": "map",
+          "description": "A URL to a map of the place."
+        },
+        {
+          "name": "smoking_allowed",
+          "type": "BOOLEAN",
+          "schema_name": "smokingAllowed",
+          "description": "Indicates whether it is allowed to smoke in the place, e.g. in the restaurant, hotel or hotel room."
+        },
+        {
+          "name": "longitude",
+          "type": "STRING",
+          "schema_name": "longitude",
+          "description": "The longitude of a location. For example ```-122.08585``` ([WGS 84](https://en.wikipedia.org/wiki/World_Geodetic_System))."
+        },
+        {
+          "name": "tour_booking_page",
+          "type": "STRING",
+          "schema_name": "tourBookingPage",
+          "description": "A page providing information on how to book a tour of some [[Place]], such as an [[Accommodation]] or [[ApartmentComplex]] in a real estate setting, as well as other kinds of tours as appropriate."
+        },
+        {
+          "name": "has_map",
+          "type": "STRING",
+          "schema_name": "hasMap",
+          "description": "A URL to a map of the place."
+        },
+        {
+          "name": "has_gs1_digital_link",
+          "type": "STRING",
+          "schema_name": "hasGS1DigitalLink",
+          "description": "The <a href=\"https://www.gs1.org/standards/gs1-digital-link\">GS1 digital link</a> associated with the object. This URL should conform to the particular requirements of digital links. The link should o"
+        },
+        {
+          "name": "slogan",
+          "type": "STRING",
+          "schema_name": "slogan",
+          "description": "A slogan or motto associated with the item."
+        },
+        {
+          "name": "has_drive_through_service",
+          "type": "BOOLEAN",
+          "schema_name": "hasDriveThroughService",
+          "description": "Indicates whether some facility (e.g. [[FoodEstablishment]], [[CovidTestingFacility]]) offers a service that can be used by driving through in a car. In the case of [[CovidTestingFacility]] such facil"
+        },
+        {
+          "name": "latitude",
+          "type": "STRING",
+          "schema_name": "latitude",
+          "description": "The latitude of a location. For example ```37.42242``` ([WGS 84](https://en.wikipedia.org/wiki/World_Geodetic_System))."
+        },
+        {
+          "name": "maps",
+          "type": "STRING",
+          "schema_name": "maps",
+          "description": "A URL to a map of the place."
+        },
+        {
+          "name": "fax_number",
+          "type": "STRING",
+          "schema_name": "faxNumber",
+          "description": "The fax number."
+        },
+        {
+          "name": "is_accessible_for_free",
+          "type": "BOOLEAN",
+          "schema_name": "isAccessibleForFree",
+          "description": "A flag to signal that the item, event, or place is accessible for free."
+        },
+        {
+          "name": "isic_v4",
+          "type": "STRING",
+          "schema_name": "isicV4",
+          "description": "The International Standard of Industrial Classification of All Economic Activities (ISIC), Revision 4 code for a particular organization, business person, or place."
+        }
+      ]
+    }
+  },
+  "relations": [
+    {
+      "label": "ACCOUNTABLE_PERSON",
+      "schema_name": "accountablePerson",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "Specifies the Person that is legally accountable for the CreativeWork."
+    },
+    {
+      "label": "ACQUIRE_LICENSE_PAGE",
+      "schema_name": "acquireLicensePage",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "Indicates a page documenting how licenses can be purchased or otherwise acquired, for the current item."
+    },
+    {
+      "label": "ACTIONABLE_FEEDBACK_POLICY",
+      "schema_name": "actionableFeedbackPolicy",
+      "source": "Organization",
+      "target": "CreativeWork",
+      "description": "For a [[NewsMediaOrganization]] or other news-related [[Organization]], a statement about public engagement activities (for news media, the newsroom\u2019s), including involving the public - digitally or o"
+    },
+    {
+      "label": "ACTOR",
+      "schema_name": "actor",
+      "source": "Event",
+      "target": "Person",
+      "description": "An actor (individual or a group), e.g. in TV, radio, movie, video games etc., or in an event. Actors can be associated with individual items or with a series, episode, clip."
+    },
+    {
+      "label": "AFFILIATION",
+      "schema_name": "affiliation",
+      "source": "Person",
+      "target": "Organization",
+      "description": "An organization that this person is affiliated with. For example, a school/university, a club, or a team."
+    },
+    {
+      "label": "ALUMNI",
+      "schema_name": "alumni",
+      "source": "EducationalOrganization",
+      "target": "Person",
+      "description": "Alumni of an organization."
+    },
+    {
+      "label": "ALUMNI",
+      "schema_name": "alumni",
+      "source": "Organization",
+      "target": "Person",
+      "description": "Alumni of an organization."
+    },
+    {
+      "label": "ALUMNI_OF",
+      "schema_name": "alumniOf",
+      "source": "Person",
+      "target": "EducationalOrganization",
+      "description": "An organization that the person is an alumni of."
+    },
+    {
+      "label": "ALUMNI_OF",
+      "schema_name": "alumniOf",
+      "source": "Person",
+      "target": "Organization",
+      "description": "An organization that the person is an alumni of."
+    },
+    {
+      "label": "AREA_SERVED",
+      "schema_name": "areaServed",
+      "source": "Organization",
+      "target": "Place",
+      "description": "The geographic area where a service or offered item is provided."
+    },
+    {
+      "label": "ATTENDEE",
+      "schema_name": "attendee",
+      "source": "Event",
+      "target": "Organization",
+      "description": "A person or organization attending the event."
+    },
+    {
+      "label": "ATTENDEE",
+      "schema_name": "attendee",
+      "source": "Event",
+      "target": "Person",
+      "description": "A person or organization attending the event."
+    },
+    {
+      "label": "ATTENDEES",
+      "schema_name": "attendees",
+      "source": "Event",
+      "target": "Organization",
+      "description": "A person attending the event."
+    },
+    {
+      "label": "ATTENDEES",
+      "schema_name": "attendees",
+      "source": "Event",
+      "target": "Person",
+      "description": "A person attending the event."
+    },
+    {
+      "label": "AUTHOR",
+      "schema_name": "author",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The author of this content or rating. Please note that author is special in that HTML 5 provides a special mechanism for indicating authorship via the rel tag. That is equivalent to this and may be us"
+    },
+    {
+      "label": "AUTHOR",
+      "schema_name": "author",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "The author of this content or rating. Please note that author is special in that HTML 5 provides a special mechanism for indicating authorship via the rel tag. That is equivalent to this and may be us"
+    },
+    {
+      "label": "BACKSTORY",
+      "schema_name": "backstory",
+      "source": "Article",
+      "target": "CreativeWork",
+      "description": "For an [[Article]], typically a [[NewsArticle]], the backstory property provides a textual summary giving a brief explanation of why and how an article was created. In a journalistic setting this coul"
+    },
+    {
+      "label": "BIRTH_PLACE",
+      "schema_name": "birthPlace",
+      "source": "Person",
+      "target": "Place",
+      "description": "The place where the person was born."
+    },
+    {
+      "label": "BRAND",
+      "schema_name": "brand",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "The brand(s) associated with a product or service, or the brand(s) maintained by an organization or business person."
+    },
+    {
+      "label": "BRAND",
+      "schema_name": "brand",
+      "source": "Person",
+      "target": "Organization",
+      "description": "The brand(s) associated with a product or service, or the brand(s) maintained by an organization or business person."
+    },
+    {
+      "label": "CHARACTER",
+      "schema_name": "character",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "Fictional person connected with a creative work."
+    },
+    {
+      "label": "CHILDREN",
+      "schema_name": "children",
+      "source": "Person",
+      "target": "Person",
+      "description": "A child of the person."
+    },
+    {
+      "label": "CITATION",
+      "schema_name": "citation",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "A citation or reference to another creative work, such as another publication, web page, scholarly article, etc."
+    },
+    {
+      "label": "COLLEAGUE",
+      "schema_name": "colleague",
+      "source": "Person",
+      "target": "Person",
+      "description": "A colleague of the person."
+    },
+    {
+      "label": "COLLEAGUES",
+      "schema_name": "colleagues",
+      "source": "Person",
+      "target": "Person",
+      "description": "A colleague of the person."
+    },
+    {
+      "label": "COMPOSER",
+      "schema_name": "composer",
+      "source": "Event",
+      "target": "Organization",
+      "description": "The person or organization who wrote a composition, or who is the composer of a work performed at some event."
+    },
+    {
+      "label": "COMPOSER",
+      "schema_name": "composer",
+      "source": "Event",
+      "target": "Person",
+      "description": "The person or organization who wrote a composition, or who is the composer of a work performed at some event."
+    },
+    {
+      "label": "CONTAINED_IN",
+      "schema_name": "containedIn",
+      "source": "Place",
+      "target": "Place",
+      "description": "The basic containment relation between a place and one that contains it."
+    },
+    {
+      "label": "CONTAINED_IN_PLACE",
+      "schema_name": "containedInPlace",
+      "source": "Place",
+      "target": "Place",
+      "description": "The basic containment relation between a place and one that contains it."
+    },
+    {
+      "label": "CONTAINS_PLACE",
+      "schema_name": "containsPlace",
+      "source": "Place",
+      "target": "Place",
+      "description": "The basic containment relation between a place and another that it contains."
+    },
+    {
+      "label": "CONTENT_LOCATION",
+      "schema_name": "contentLocation",
+      "source": "CreativeWork",
+      "target": "Place",
+      "description": "The location depicted or described in the content. For example, the location in a photograph or painting."
+    },
+    {
+      "label": "CONTRIBUTOR",
+      "schema_name": "contributor",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "A secondary contributor to the CreativeWork or Event."
+    },
+    {
+      "label": "CONTRIBUTOR",
+      "schema_name": "contributor",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "A secondary contributor to the CreativeWork or Event."
+    },
+    {
+      "label": "CONTRIBUTOR",
+      "schema_name": "contributor",
+      "source": "Event",
+      "target": "Organization",
+      "description": "A secondary contributor to the CreativeWork or Event."
+    },
+    {
+      "label": "CONTRIBUTOR",
+      "schema_name": "contributor",
+      "source": "Event",
+      "target": "Person",
+      "description": "A secondary contributor to the CreativeWork or Event."
+    },
+    {
+      "label": "COPYRIGHT_HOLDER",
+      "schema_name": "copyrightHolder",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The party holding the legal copyright to the CreativeWork."
+    },
+    {
+      "label": "COPYRIGHT_HOLDER",
+      "schema_name": "copyrightHolder",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "The party holding the legal copyright to the CreativeWork."
+    },
+    {
+      "label": "CORRECTIONS_POLICY",
+      "schema_name": "correctionsPolicy",
+      "source": "Organization",
+      "target": "CreativeWork",
+      "description": "For an [[Organization]] (e.g. [[NewsMediaOrganization]]), a statement describing (in news media, the newsroom\u2019s) disclosure and correction policy for errors."
+    },
+    {
+      "label": "COUNTRY_OF_ORIGIN",
+      "schema_name": "countryOfOrigin",
+      "source": "CreativeWork",
+      "target": "Country",
+      "description": "The country of origin of something, including products as well as creative  works such as movie and TV content.\n\nIn the case of TV and movie, this would be the country of the principle offices of the "
+    },
+    {
+      "label": "CREATOR",
+      "schema_name": "creator",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The creator/author of this CreativeWork. This is the same as the Author property for CreativeWork."
+    },
+    {
+      "label": "CREATOR",
+      "schema_name": "creator",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "The creator/author of this CreativeWork. This is the same as the Author property for CreativeWork."
+    },
+    {
+      "label": "DEATH_PLACE",
+      "schema_name": "deathPlace",
+      "source": "Person",
+      "target": "Place",
+      "description": "The place where the person died."
+    },
+    {
+      "label": "DEPARTMENT",
+      "schema_name": "department",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "A relationship between an organization and a department of that organization, also described as an organization (allowing different urls, logos, opening hours). For example: a store with a pharmacy, o"
+    },
+    {
+      "label": "DIRECTOR",
+      "schema_name": "director",
+      "source": "Event",
+      "target": "Person",
+      "description": "A director of e.g. TV, radio, movie, video gaming etc. content, or of an event. Directors can be associated with individual items or with a series, episode, clip."
+    },
+    {
+      "label": "DISPLAY_LOCATION",
+      "schema_name": "displayLocation",
+      "source": "CreativeWork",
+      "target": "Place",
+      "description": "The location at which an item can be viewed or experienced in-person."
+    },
+    {
+      "label": "DIVERSITY_POLICY",
+      "schema_name": "diversityPolicy",
+      "source": "Organization",
+      "target": "CreativeWork",
+      "description": "Statement on diversity policy by an [[Organization]] e.g. a [[NewsMediaOrganization]]. For a [[NewsMediaOrganization]], a statement describing the newsroom\u2019s diversity policy on both staffing and sour"
+    },
+    {
+      "label": "DIVERSITY_STAFFING_REPORT",
+      "schema_name": "diversityStaffingReport",
+      "source": "Organization",
+      "target": "Article",
+      "description": "For an [[Organization]] (often but not necessarily a [[NewsMediaOrganization]]), a report on staffing diversity issues. In a news context this might be for example ASNE or RTDNA (US) reports, or self-"
+    },
+    {
+      "label": "EDITOR",
+      "schema_name": "editor",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "Specifies the Person who edited the CreativeWork."
+    },
+    {
+      "label": "EMPLOYEE",
+      "schema_name": "employee",
+      "source": "Organization",
+      "target": "Person",
+      "description": "Someone working for this organization."
+    },
+    {
+      "label": "EMPLOYEES",
+      "schema_name": "employees",
+      "source": "Organization",
+      "target": "Person",
+      "description": "People working for this organization."
+    },
+    {
+      "label": "ETHICS_POLICY",
+      "schema_name": "ethicsPolicy",
+      "source": "Organization",
+      "target": "CreativeWork",
+      "description": "Statement about ethics policy, e.g. of a [[NewsMediaOrganization]] regarding journalistic and publishing practices, or of a [[Restaurant]], a page describing food source policies. In the case of a [[N"
+    },
+    {
+      "label": "EVENT",
+      "schema_name": "event",
+      "source": "Organization",
+      "target": "Event",
+      "description": "Upcoming or past event associated with this place, organization, or action."
+    },
+    {
+      "label": "EVENT",
+      "schema_name": "event",
+      "source": "Place",
+      "target": "Event",
+      "description": "Upcoming or past event associated with this place, organization, or action."
+    },
+    {
+      "label": "EVENTS",
+      "schema_name": "events",
+      "source": "Organization",
+      "target": "Event",
+      "description": "Upcoming or past events associated with this place or organization."
+    },
+    {
+      "label": "EVENTS",
+      "schema_name": "events",
+      "source": "Place",
+      "target": "Event",
+      "description": "Upcoming or past events associated with this place or organization."
+    },
+    {
+      "label": "EXAMPLE_OF_WORK",
+      "schema_name": "exampleOfWork",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "A creative work that this work is an example/instance/realization/derivation of."
+    },
+    {
+      "label": "FOLLOWS",
+      "schema_name": "follows",
+      "source": "Person",
+      "target": "Person",
+      "description": "The most generic uni-directional social relation."
+    },
+    {
+      "label": "FOUNDER",
+      "schema_name": "founder",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "A person or organization who founded this organization."
+    },
+    {
+      "label": "FOUNDER",
+      "schema_name": "founder",
+      "source": "Organization",
+      "target": "Person",
+      "description": "A person or organization who founded this organization."
+    },
+    {
+      "label": "FOUNDERS",
+      "schema_name": "founders",
+      "source": "Organization",
+      "target": "Person",
+      "description": "A person who founded this organization."
+    },
+    {
+      "label": "FOUNDING_LOCATION",
+      "schema_name": "foundingLocation",
+      "source": "Organization",
+      "target": "Place",
+      "description": "The place where the Organization was founded."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "Event",
+      "target": "Organization",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "Event",
+      "target": "Person",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "Organization",
+      "target": "Person",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "Person",
+      "target": "Organization",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "FUNDER",
+      "schema_name": "funder",
+      "source": "Person",
+      "target": "Person",
+      "description": "A person or organization that supports (sponsors) something through some kind of financial contribution."
+    },
+    {
+      "label": "GEO_CONTAINS",
+      "schema_name": "geoContains",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents a relationship between two geometries (or the places they represent), relating a containing geometry to a contained geometry. \"a contains b iff no points of b lie in the exterior of a, and "
+    },
+    {
+      "label": "GEO_COVERED_BY",
+      "schema_name": "geoCoveredBy",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents a relationship between two geometries (or the places they represent), relating a geometry to another that covers it. As defined in [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM)."
+    },
+    {
+      "label": "GEO_COVERS",
+      "schema_name": "geoCovers",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents a relationship between two geometries (or the places they represent), relating a covering geometry to a covered geometry. \"Every point of b is a point of (the interior or boundary of) a\". A"
+    },
+    {
+      "label": "GEO_CROSSES",
+      "schema_name": "geoCrosses",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents a relationship between two geometries (or the places they represent), relating a geometry to another that crosses it: \"a crosses b: they have some but not all interior points in common, and"
+    },
+    {
+      "label": "GEO_DISJOINT",
+      "schema_name": "geoDisjoint",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents spatial relations in which two geometries (or the places they represent) are topologically disjoint: \"they have no point in common. They form a set of disconnected geometries.\" (A symmetric"
+    },
+    {
+      "label": "GEO_EQUALS",
+      "schema_name": "geoEquals",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents spatial relations in which two geometries (or the places they represent) are topologically equal, as defined in [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM). \"Two geometries are topologic"
+    },
+    {
+      "label": "GEO_INTERSECTS",
+      "schema_name": "geoIntersects",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents spatial relations in which two geometries (or the places they represent) have at least one point in common. As defined in [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM)."
+    },
+    {
+      "label": "GEO_OVERLAPS",
+      "schema_name": "geoOverlaps",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents a relationship between two geometries (or the places they represent), relating a geometry to another that geospatially overlaps it, i.e. they have some but not all points in common. As defi"
+    },
+    {
+      "label": "GEO_TOUCHES",
+      "schema_name": "geoTouches",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents spatial relations in which two geometries (or the places they represent) touch: \"they have at least one boundary point in common, but no interior points.\" (A symmetric relationship, as defi"
+    },
+    {
+      "label": "GEO_WITHIN",
+      "schema_name": "geoWithin",
+      "source": "Place",
+      "target": "Place",
+      "description": "Represents a relationship between two geometries (or the places they represent), relating a geometry to one that contains it, i.e. it is inside (i.e. within) its interior. As defined in [DE-9IM](https"
+    },
+    {
+      "label": "HAS_PART",
+      "schema_name": "hasPart",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "Indicates an item or CreativeWork that is part of this item, or CreativeWork (in some sense)."
+    },
+    {
+      "label": "HAS_POS",
+      "schema_name": "hasPOS",
+      "source": "Organization",
+      "target": "Place",
+      "description": "Points-of-Sales operated by the organization or person."
+    },
+    {
+      "label": "HAS_POS",
+      "schema_name": "hasPOS",
+      "source": "Person",
+      "target": "Place",
+      "description": "Points-of-Sales operated by the organization or person."
+    },
+    {
+      "label": "HOME_LOCATION",
+      "schema_name": "homeLocation",
+      "source": "Person",
+      "target": "Place",
+      "description": "A contact location for a person's residence."
+    },
+    {
+      "label": "ILLUSTRATOR",
+      "schema_name": "illustrator",
+      "source": "Book",
+      "target": "Person",
+      "description": "The illustrator of the book."
+    },
+    {
+      "label": "IS_BASED_ON",
+      "schema_name": "isBasedOn",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "A resource from which this work is derived or from which it is a modification or adaptation."
+    },
+    {
+      "label": "IS_BASED_ON_URL",
+      "schema_name": "isBasedOnUrl",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "A resource that was used in the creation of this resource. This term can be repeated for multiple sources. For example, http://example.com/great-multiplication-intro.html."
+    },
+    {
+      "label": "IS_PART_OF",
+      "schema_name": "isPartOf",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "Indicates an item or CreativeWork that this item, or CreativeWork (in some sense), is part of."
+    },
+    {
+      "label": "KNOWS",
+      "schema_name": "knows",
+      "source": "Person",
+      "target": "Person",
+      "description": "The most generic bi-directional social/work relation."
+    },
+    {
+      "label": "LEGAL_REPRESENTATIVE",
+      "schema_name": "legalRepresentative",
+      "source": "Organization",
+      "target": "Person",
+      "description": "One or multiple persons who represent this organization legally such as CEO or sole administrator."
+    },
+    {
+      "label": "LICENSE",
+      "schema_name": "license",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "A license document that applies to this content, typically indicated by URL."
+    },
+    {
+      "label": "LIFE_EVENT",
+      "schema_name": "lifeEvent",
+      "source": "Person",
+      "target": "Event",
+      "description": "A life event like baptism, communions, Bar Mitzvahs, Aqiqah, Namakarana, Miyamairi, burial, ...."
+    },
+    {
+      "label": "LOCATION",
+      "schema_name": "location",
+      "source": "Event",
+      "target": "Place",
+      "description": "The location of, for example, where an event is happening, where an organization is located, or where an action takes place."
+    },
+    {
+      "label": "LOCATION",
+      "schema_name": "location",
+      "source": "Organization",
+      "target": "Place",
+      "description": "The location of, for example, where an event is happening, where an organization is located, or where an action takes place."
+    },
+    {
+      "label": "LOCATION_CREATED",
+      "schema_name": "locationCreated",
+      "source": "CreativeWork",
+      "target": "Place",
+      "description": "The location where the CreativeWork was created, which may not be the same as the location depicted in the CreativeWork."
+    },
+    {
+      "label": "MAINTAINER",
+      "schema_name": "maintainer",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "A maintainer of a [[Dataset]], software package ([[SoftwareApplication]]), or other [[Project]]. A maintainer is a [[Person]] or [[Organization]] that manages contributions to, and/or publication of, "
+    },
+    {
+      "label": "MAINTAINER",
+      "schema_name": "maintainer",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "A maintainer of a [[Dataset]], software package ([[SoftwareApplication]]), or other [[Project]]. A maintainer is a [[Person]] or [[Organization]] that manages contributions to, and/or publication of, "
+    },
+    {
+      "label": "MEMBER",
+      "schema_name": "member",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "A member of an Organization or a ProgramMembership. Organizations can be members of organizations; ProgramMembership is typically for individuals."
+    },
+    {
+      "label": "MEMBER",
+      "schema_name": "member",
+      "source": "Organization",
+      "target": "Person",
+      "description": "A member of an Organization or a ProgramMembership. Organizations can be members of organizations; ProgramMembership is typically for individuals."
+    },
+    {
+      "label": "MEMBERS",
+      "schema_name": "members",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "A member of this organization."
+    },
+    {
+      "label": "MEMBERS",
+      "schema_name": "members",
+      "source": "Organization",
+      "target": "Person",
+      "description": "A member of this organization."
+    },
+    {
+      "label": "MEMBER_OF",
+      "schema_name": "memberOf",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "An Organization (or ProgramMembership) to which this Person or Organization belongs."
+    },
+    {
+      "label": "MEMBER_OF",
+      "schema_name": "memberOf",
+      "source": "Person",
+      "target": "Organization",
+      "description": "An Organization (or ProgramMembership) to which this Person or Organization belongs."
+    },
+    {
+      "label": "NATIONALITY",
+      "schema_name": "nationality",
+      "source": "Person",
+      "target": "Country",
+      "description": "Nationality of the person."
+    },
+    {
+      "label": "ORGANIZER",
+      "schema_name": "organizer",
+      "source": "Event",
+      "target": "Organization",
+      "description": "An organizer of an Event."
+    },
+    {
+      "label": "ORGANIZER",
+      "schema_name": "organizer",
+      "source": "Event",
+      "target": "Person",
+      "description": "An organizer of an Event."
+    },
+    {
+      "label": "OWNERSHIP_FUNDING_INFO",
+      "schema_name": "ownershipFundingInfo",
+      "source": "Organization",
+      "target": "CreativeWork",
+      "description": "For an [[Organization]] (often but not necessarily a [[NewsMediaOrganization]]), a description of organizational ownership structure; funding and grants. In a news/media setting, this is with particul"
+    },
+    {
+      "label": "PARENT",
+      "schema_name": "parent",
+      "source": "Person",
+      "target": "Person",
+      "description": "A parent of this person."
+    },
+    {
+      "label": "PARENTS",
+      "schema_name": "parents",
+      "source": "Person",
+      "target": "Person",
+      "description": "A parents of the person."
+    },
+    {
+      "label": "PARENT_ORGANIZATION",
+      "schema_name": "parentOrganization",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "The larger organization that this organization is a [[subOrganization]] of, if any."
+    },
+    {
+      "label": "PERFORMER",
+      "schema_name": "performer",
+      "source": "Event",
+      "target": "Organization",
+      "description": "A performer at the event&#x2014;for example, a presenter, musician, musical group or actor."
+    },
+    {
+      "label": "PERFORMER",
+      "schema_name": "performer",
+      "source": "Event",
+      "target": "Person",
+      "description": "A performer at the event&#x2014;for example, a presenter, musician, musical group or actor."
+    },
+    {
+      "label": "PERFORMERS",
+      "schema_name": "performers",
+      "source": "Event",
+      "target": "Organization",
+      "description": "The main performer or performers of the event&#x2014;for example, a presenter, musician, or actor."
+    },
+    {
+      "label": "PERFORMERS",
+      "schema_name": "performers",
+      "source": "Event",
+      "target": "Person",
+      "description": "The main performer or performers of the event&#x2014;for example, a presenter, musician, or actor."
+    },
+    {
+      "label": "PERFORMER_IN",
+      "schema_name": "performerIn",
+      "source": "Person",
+      "target": "Event",
+      "description": "Event that this person is a performer or participant in."
+    },
+    {
+      "label": "PRODUCER",
+      "schema_name": "producer",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The person or organization who produced the work (e.g. music album, movie, TV/radio series etc.)."
+    },
+    {
+      "label": "PRODUCER",
+      "schema_name": "producer",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "The person or organization who produced the work (e.g. music album, movie, TV/radio series etc.)."
+    },
+    {
+      "label": "PROVIDER",
+      "schema_name": "provider",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The service provider, service operator, or service performer; the goods producer. Another party (a seller) may offer those services or goods on behalf of the provider. A provider may also serve as the"
+    },
+    {
+      "label": "PROVIDER",
+      "schema_name": "provider",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "The service provider, service operator, or service performer; the goods producer. Another party (a seller) may offer those services or goods on behalf of the provider. A provider may also serve as the"
+    },
+    {
+      "label": "PUBLISHER",
+      "schema_name": "publisher",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The publisher of the article in question."
+    },
+    {
+      "label": "PUBLISHER",
+      "schema_name": "publisher",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "The publisher of the article in question."
+    },
+    {
+      "label": "PUBLISHER_IMPRINT",
+      "schema_name": "publisherImprint",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The publishing division which published the comic."
+    },
+    {
+      "label": "PUBLISHING_PRINCIPLES",
+      "schema_name": "publishingPrinciples",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "The publishingPrinciples property indicates (typically via [[URL]]) a document describing the editorial principles of an [[Organization]] (or individual, e.g. a [[Person]] writing a blog) that relate "
+    },
+    {
+      "label": "PUBLISHING_PRINCIPLES",
+      "schema_name": "publishingPrinciples",
+      "source": "Organization",
+      "target": "CreativeWork",
+      "description": "The publishingPrinciples property indicates (typically via [[URL]]) a document describing the editorial principles of an [[Organization]] (or individual, e.g. a [[Person]] writing a blog) that relate "
+    },
+    {
+      "label": "PUBLISHING_PRINCIPLES",
+      "schema_name": "publishingPrinciples",
+      "source": "Person",
+      "target": "CreativeWork",
+      "description": "The publishingPrinciples property indicates (typically via [[URL]]) a document describing the editorial principles of an [[Organization]] (or individual, e.g. a [[Person]] writing a blog) that relate "
+    },
+    {
+      "label": "RECORDED_AT",
+      "schema_name": "recordedAt",
+      "source": "CreativeWork",
+      "target": "Event",
+      "description": "The Event where the CreativeWork was recorded. The CreativeWork may capture all or part of the event."
+    },
+    {
+      "label": "RECORDED_IN",
+      "schema_name": "recordedIn",
+      "source": "Event",
+      "target": "CreativeWork",
+      "description": "The CreativeWork that captured all or part of this Event."
+    },
+    {
+      "label": "RELATED_TO",
+      "schema_name": "relatedTo",
+      "source": "Person",
+      "target": "Person",
+      "description": "The most generic familial relation."
+    },
+    {
+      "label": "SD_LICENSE",
+      "schema_name": "sdLicense",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "A license document that applies to this structured data, typically indicated by URL."
+    },
+    {
+      "label": "SD_PUBLISHER",
+      "schema_name": "sdPublisher",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "Indicates the party responsible for generating and publishing the current structured data markup, typically in cases where the structured data is derived automatically from existing published content "
+    },
+    {
+      "label": "SD_PUBLISHER",
+      "schema_name": "sdPublisher",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "Indicates the party responsible for generating and publishing the current structured data markup, typically in cases where the structured data is derived automatically from existing published content "
+    },
+    {
+      "label": "SERVICE_AREA",
+      "schema_name": "serviceArea",
+      "source": "Organization",
+      "target": "Place",
+      "description": "The geographic area where the service is provided."
+    },
+    {
+      "label": "SIBLING",
+      "schema_name": "sibling",
+      "source": "Person",
+      "target": "Person",
+      "description": "A sibling of the person."
+    },
+    {
+      "label": "SIBLINGS",
+      "schema_name": "siblings",
+      "source": "Person",
+      "target": "Person",
+      "description": "A sibling of the person."
+    },
+    {
+      "label": "SOURCE_ORGANIZATION",
+      "schema_name": "sourceOrganization",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "The Organization on whose behalf the creator was working."
+    },
+    {
+      "label": "SPATIAL",
+      "schema_name": "spatial",
+      "source": "CreativeWork",
+      "target": "Place",
+      "description": "The \"spatial\" property can be used in cases when more specific properties\n(e.g. [[locationCreated]], [[spatialCoverage]], [[contentLocation]]) are not known to be appropriate."
+    },
+    {
+      "label": "SPATIAL_COVERAGE",
+      "schema_name": "spatialCoverage",
+      "source": "CreativeWork",
+      "target": "Place",
+      "description": "The spatialCoverage of a CreativeWork indicates the place(s) which are the focus of the content. It is a subproperty of\n      contentLocation intended primarily for more technical and detailed materia"
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "Event",
+      "target": "Organization",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "Event",
+      "target": "Person",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "Organization",
+      "target": "Person",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "Person",
+      "target": "Organization",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPONSOR",
+      "schema_name": "sponsor",
+      "source": "Person",
+      "target": "Person",
+      "description": "A person or organization that supports a thing through a pledge, promise, or financial contribution. E.g. a sponsor of a Medical Study or a corporate sponsor of an event."
+    },
+    {
+      "label": "SPOUSE",
+      "schema_name": "spouse",
+      "source": "Person",
+      "target": "Person",
+      "description": "The person's spouse."
+    },
+    {
+      "label": "SUB_EVENT",
+      "schema_name": "subEvent",
+      "source": "Event",
+      "target": "Event",
+      "description": "An Event that is part of this event. For example, a conference event includes many presentations, each of which is a subEvent of the conference."
+    },
+    {
+      "label": "SUB_EVENTS",
+      "schema_name": "subEvents",
+      "source": "Event",
+      "target": "Event",
+      "description": "Events that are a part of this event. For example, a conference event includes many presentations, each subEvents of the conference."
+    },
+    {
+      "label": "SUB_ORGANIZATION",
+      "schema_name": "subOrganization",
+      "source": "Organization",
+      "target": "Organization",
+      "description": "A relationship between two organizations where the first includes the second, e.g., as a subsidiary. See also: the more specific 'department' property."
+    },
+    {
+      "label": "SUPER_EVENT",
+      "schema_name": "superEvent",
+      "source": "Event",
+      "target": "Event",
+      "description": "An event that this event is a part of. For example, a collection of individual music performances might each have a music festival as their superEvent."
+    },
+    {
+      "label": "TRANSLATION_OF_WORK",
+      "schema_name": "translationOfWork",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "The work that this work has been translated from. E.g. \u7269\u79cd\u8d77\u6e90 is a translationOf \u201cOn the Origin of Species\u201d."
+    },
+    {
+      "label": "TRANSLATOR",
+      "schema_name": "translator",
+      "source": "CreativeWork",
+      "target": "Organization",
+      "description": "Organization or person who adapts a creative work to different languages, regional differences and technical requirements of a target market, or that translates during some event."
+    },
+    {
+      "label": "TRANSLATOR",
+      "schema_name": "translator",
+      "source": "CreativeWork",
+      "target": "Person",
+      "description": "Organization or person who adapts a creative work to different languages, regional differences and technical requirements of a target market, or that translates during some event."
+    },
+    {
+      "label": "TRANSLATOR",
+      "schema_name": "translator",
+      "source": "Event",
+      "target": "Organization",
+      "description": "Organization or person who adapts a creative work to different languages, regional differences and technical requirements of a target market, or that translates during some event."
+    },
+    {
+      "label": "TRANSLATOR",
+      "schema_name": "translator",
+      "source": "Event",
+      "target": "Person",
+      "description": "Organization or person who adapts a creative work to different languages, regional differences and technical requirements of a target market, or that translates during some event."
+    },
+    {
+      "label": "UNNAMED_SOURCES_POLICY",
+      "schema_name": "unnamedSourcesPolicy",
+      "source": "Organization",
+      "target": "CreativeWork",
+      "description": "For an [[Organization]] (typically a [[NewsMediaOrganization]]), a statement about policy on use of unnamed sources and the decision process required."
+    },
+    {
+      "label": "USAGE_INFO",
+      "schema_name": "usageInfo",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "The schema.org [[usageInfo]] property indicates further information about a [[CreativeWork]]. This property is applicable both to works that are freely available and to those that require payment or o"
+    },
+    {
+      "label": "WORKS_FOR",
+      "schema_name": "worksFor",
+      "source": "Person",
+      "target": "Organization",
+      "description": "Organizations that the person works for."
+    },
+    {
+      "label": "WORK_EXAMPLE",
+      "schema_name": "workExample",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "Example/instance/realization/derivation of the concept of this creative work. E.g. the paperback edition, first edition, or e-book."
+    },
+    {
+      "label": "WORK_FEATURED",
+      "schema_name": "workFeatured",
+      "source": "Event",
+      "target": "CreativeWork",
+      "description": "A work featured in some event, e.g. exhibited in an ExhibitionEvent.\n       Specific subproperties are available for workPerformed (e.g. a play), or a workPresented (a Movie at a ScreeningEvent)."
+    },
+    {
+      "label": "WORK_LOCATION",
+      "schema_name": "workLocation",
+      "source": "Person",
+      "target": "Place",
+      "description": "A contact location for a person's place of work."
+    },
+    {
+      "label": "WORK_PERFORMED",
+      "schema_name": "workPerformed",
+      "source": "Event",
+      "target": "CreativeWork",
+      "description": "A work performed in some event, for example a play performed in a TheaterEvent."
+    },
+    {
+      "label": "WORK_TRANSLATION",
+      "schema_name": "workTranslation",
+      "source": "CreativeWork",
+      "target": "CreativeWork",
+      "description": "A work that is a translation of the content of this work. E.g. \u897f\u904a\u8a18 has an English workTranslation \u201cJourney to the West\u201d, a German workTranslation \u201cMonkeys Pilgerfahrt\u201d and a Vietnamese  translation T\u00e2"
+    }
+  ]
+}
