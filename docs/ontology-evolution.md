@@ -2,7 +2,7 @@
 
 How to safely evolve the ontology (schema) of an already-populated knowledge graph — adding attributes, renaming labels, dropping types — without drifting away from the data graph.
 
-If you're new to the ontology, start with [Graph Schema](graph-schema.md). This page is about *changing* an existing ontology.
+If you're new to the ontology, start with [Graph Schema](graph-schema.md). This page is about *changing* an existing ontology. If you don't have one yet, see [Ontology Discovery](ontology-discovery.md) — `Ontology.from_sources` drafts one from a corpus and `GraphRAG.suggest_schema_extensions` proposes additions as new docs arrive.
 
 ---
 
