@@ -40,6 +40,7 @@ from graphrag_sdk.core.models import (
     UpdateResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.discovery import SchemaExtensionProposal, suggest_extensions
 from graphrag_sdk.ingestion.backfill import (
     BackfillExecutor,
     BackfillMergeStats,
@@ -1626,6 +1627,83 @@ class GraphRAG:
             await self._write_graph_config()
 
         return results
+
+    async def suggest_schema_extensions(
+        self,
+        sources: str | list[str],
+        *,
+        boundaries: str | None = None,
+        sample_chunks_per_doc: int = 3,
+        max_retries: int = 3,
+        concurrency: int = 4,
+        chunker: ChunkingStrategy | None = None,
+        loader: LoaderStrategy | None = None,
+        seed: int | None = None,
+    ) -> SchemaExtensionProposal:
+        """Propose additions to the committed ontology from new sources.
+
+        Discovers a draft schema from ``sources`` using the currently
+        committed ontology as a soft controlled vocabulary, then diffs
+        the result against the committed ontology and returns only the
+        additions. Nothing is applied — the returned proposal is for
+        review.
+
+        The companion to :py:meth:`graphrag_sdk.Ontology.from_sources`:
+        ``from_sources`` is the *bootstrap* call (no committed schema
+        yet, returns a full draft); ``suggest_schema_extensions`` is
+        the *evolution* call (committed schema exists, returns only the
+        delta).
+
+        Apply accepted parts of the proposal via the existing mutation
+        API:
+
+        - ``new_entities`` → :py:meth:`add_entity`
+        - ``new_relations`` → :py:meth:`add_relation_pattern`
+          (called once per pattern in the new relation)
+        - ``new_patterns`` → :py:meth:`add_relation_pattern`
+        - ``new_attributes`` → :py:meth:`add_attribute`
+          (atomic — LLM-backfilled across existing chunks)
+
+        Example::
+
+            proposal = await rag.suggest_schema_extensions(
+                ["docs/new-papers/*.md"],
+                boundaries="biotech research",
+            )
+            print(proposal.summary())
+            for entity in proposal.new_entities:
+                await rag.add_entity(entity)
+
+        Args:
+            sources: Source path(s) — same union ``ingest()`` accepts.
+            boundaries: Free-text scope hint passed into every prompt.
+            sample_chunks_per_doc: Chunks per document fed to the
+                per-chunk proposal step.
+            max_retries: Retry budget per individual LLM call inside
+                the validation-retry wrapper.
+            concurrency: Max in-flight LLM calls.
+            chunker: Override the default chunker.
+            loader: Override the per-source auto-detected loader.
+            seed: Optional RNG seed for deterministic chunk sampling.
+
+        Returns:
+            A :py:class:`~graphrag_sdk.SchemaExtensionProposal`. May be
+            empty (``proposal.is_empty == True``) if the new sources
+            don't motivate additions.
+        """
+        await self._ensure_ontology_initialized()
+        return await suggest_extensions(
+            self._global_ontology,
+            sources,
+            self.llm,
+            boundaries=boundaries,
+            sample_chunks_per_doc=sample_chunks_per_doc,
+            max_retries=max_retries,
+            concurrency=concurrency,
+            chunker=chunker,
+            loader=loader,
+            seed=seed,
+        )
 
     def _default_extractor(self) -> ExtractionStrategy:
         """Return default GraphExtraction with ontology entity types if available."""

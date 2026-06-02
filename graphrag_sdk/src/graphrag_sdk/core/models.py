@@ -140,6 +140,41 @@ _PROPERTY_TYPES: frozenset[str] = frozenset(
     {"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"}
 )
 
+# Keys the SDK writes on every node/edge during ingestion. Declaring an
+# Attribute with any of these names will shadow the system-written value
+# on extracted entities. The Ontology validator warns against this; the
+# discovery validator rejects it outright unless it's in
+# ``_SDK_MANAGED_ATTRIBUTE_NAMES`` below.
+_RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
+    {
+        "name",
+        "description",
+        "source_chunk_ids",
+        "spans",
+        "rel_type",
+        "fact",
+        "src_name",
+        "tgt_name",
+        "id",
+        "label",
+    }
+)
+
+# Attributes the schema may declare for documentation, even though the SDK
+# fills them automatically during extraction (top-level entity fields from
+# GLiNER + step-2 LLM, not from the per-entity ``attributes`` dict).
+#
+# The discovery layer requires these on every entity type so the schema
+# accurately reflects the data graph. The extraction layer filters them
+# out of the prompt's per-entity attribute block so the LLM is not asked
+# to extract them twice (which would cause two writes to the same field
+# and silent overwrite races).
+#
+# Concretely: ``Person.name`` appears in the saved ``ontology.json``, the
+# user sees it, but the extraction LLM is never asked "what is this
+# person's name?" — that value is the entity's identifier from step 1.
+_SDK_MANAGED_ATTRIBUTE_NAMES: frozenset[str] = frozenset({"name"})
+
 
 class Attribute(DataModel):
     """A property definition for a node or relationship type."""
@@ -268,6 +303,69 @@ class Ontology(DataModel):
         from pathlib import Path
 
         return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+    @classmethod
+    async def from_sources(
+        cls,
+        sources: str | list[str],
+        llm: Any,
+        *,
+        boundaries: str | None = None,
+        existing: Ontology | None = None,
+        sample_chunks_per_doc: int = 3,
+        max_retries: int = 3,
+        concurrency: int = 4,
+        chunker: Any | None = None,
+        loader: Any | None = None,
+        ctx: Any | None = None,
+        seed: int | None = None,
+    ) -> Ontology:
+        """Auto-discover an ontology from a corpus of documents.
+
+        Samples chunks from each source, asks the LLM to propose entity
+        types and relation types, merges across the corpus, and runs a
+        normalization pass to collapse synonyms before returning. The
+        returned ontology is intended as a *draft* — inspect, edit, save
+        with :py:meth:`save_to_file`, then pass into ``GraphRAG``.
+
+        When ``existing`` is supplied, its labels are used as a soft
+        controlled vocabulary in the prompts and the discovery output is
+        merged with it on return — re-running with the same ``existing``
+        prior across new documents lets the ontology grow coherently
+        instead of drifting.
+
+        See :py:class:`~graphrag_sdk.discovery.OntologyDiscoveryError`
+        for the exception raised by hard failures inside individual LLM
+        calls. The pipeline itself is soft-fail: a single bad chunk does
+        not abort the run.
+
+        Example::
+
+            draft = await Ontology.from_sources(
+                ["docs/paper1.md", "docs/paper2.pdf"],
+                llm=LiteLLM(model="openai/gpt-4o-mini"),
+                boundaries="biotech research papers about CRISPR",
+                sample_chunks_per_doc=3,
+            )
+            draft.save_to_file("ontology.json")  # user edits / curates
+        """
+        # Lazy import so models.py stays Pydantic-only at module-load time
+        # (no LLM provider / loader imports pulled into the data model).
+        from graphrag_sdk.discovery.pipeline import discover_ontology
+
+        return await discover_ontology(
+            sources,
+            llm,
+            boundaries=boundaries,
+            existing=existing,
+            sample_chunks_per_doc=sample_chunks_per_doc,
+            max_retries=max_retries,
+            concurrency=concurrency,
+            chunker=chunker,
+            loader=loader,
+            ctx=ctx,
+            seed=seed,
+        )
 
     def save_to_file(self, path: str, *, indent: int = 2) -> None:
         """Write this schema to ``path`` as JSON (overwrites existing files)."""
