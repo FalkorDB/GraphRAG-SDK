@@ -8,57 +8,19 @@ If you've never built an ontology by hand and you don't know where to start, sta
 
 ## The Mental Model
 
-There are four places an ontology can come from:
+There are three places an ontology can come from:
 
 1. **Hand-authored.** You write `Ontology(entities=[...], relations=[...])` because you already know what your knowledge graph should look like. The fastest path when the domain is well understood.
-2. **A standard web vocabulary.** `Ontology.from_schema_org()` returns a curated subset of [Schema.org](https://schema.org) — the standard structured-data vocabulary used by major search engines. One line, good fit for general web content / news / Wikipedia-style text.
-3. **Discovered from a corpus.** You point the SDK at some documents and ask it to draft one. Use when you're exploring an unfamiliar corpus, or when manually enumerating types upfront is brittle.
-4. **Discovered and then evolved.** The realistic workflow: draft once with discovery, ingest with that draft, then as new documents arrive use `suggest_schema_extensions` to propose additions you review and apply via the [evolution API](ontology-evolution.md).
+2. **Discovered from a corpus.** You point the SDK at some documents and ask it to draft one. Use when you're exploring an unfamiliar corpus, or when manually enumerating types upfront is brittle.
+3. **Discovered and then evolved.** The realistic workflow: draft once with discovery, ingest with that draft, then as new documents arrive use `suggest_schema_extensions` to propose additions you review and apply via the [evolution API](ontology-evolution.md).
 
-This page is about (2), (3), and (4). The same data model (`Ontology`) is used end-to-end — you can mix and match. A common composite pattern is `Ontology.from_schema_org().merge(my_domain_extras)` for "the standard web vocabulary plus my niche additions".
+This page is about (2) and (3). The same data model (`Ontology`) is used end-to-end — you can mix and match.
 
 ---
 
 ## The API at a Glance
 
 Two cooperating entry points. Both return artifacts you inspect before any data is touched.
-
-### Standard vocabulary — `Ontology.from_schema_org`
-
-Returns a curated subset of Schema.org as an `Ontology`. No LLM, no corpus, no DB — just data.
-
-```python
-ontology = Ontology.from_schema_org()
-# 5 entities: Person, Organization, Place, Event, CreativeWork
-# 8 relations: WORKS_AT, ALUMNI_OF, FOUNDED, BORN_IN, LOCATED_IN,
-#              ORGANIZED_BY, AUTHORED_BY, PUBLISHED_BY
-```
-
-This is what [`barakb/text-to-rdf`](https://github.com/barakb/text-to-rdf) hardcodes as its target vocabulary; we ship it as a one-line option so users who want the standard web vocabulary don't have to type it out (or use `from_sources` and hope it converges to roughly the same shape).
-
-Composes naturally with hand-authored extras:
-
-```python
-ontology = Ontology.from_schema_org().merge(
-    Ontology(
-        entities=[Entity(label="Patent", properties=[Attribute(name="filing_date", type="DATE")])],
-        relations=[Relation(label="PATENTED_BY", patterns=[("Patent", "Person")])],
-    )
-)
-```
-
-When to use it:
-
-- General web content, news articles, biographical text, where the standard `Person` / `Organization` / `Place` types fit.
-- You want JSON-LD interop with other systems that already speak Schema.org.
-- You want a starter schema in one line, then iterate.
-
-When **not** to use it:
-
-- Domain-specific corpora (biotech, legal, finance) where Schema.org's types are too general — use `from_sources` instead, possibly seeded with this as `existing=`.
-- You need Schema.org's full ~800-type vocabulary — `from_schema_org()` ships an opinionated subset. Extend manually for the rest.
-
-Attribute names are snake-cased (matching the SDK's convention); the original camelCase Schema.org name lives in each attribute's `description` so the mapping stays discoverable in `ontology.json`.
 
 ### Bootstrap — `Ontology.from_sources`
 
@@ -174,8 +136,6 @@ Other reserved-system names (`id`, `description`, `source_chunk_ids`, `spans`, `
 
 | Situation | Use |
 |---|---|
-| General web content / news / biographies, standard vocabulary is fine | `Ontology.from_schema_org()` |
-| Standard vocabulary plus a few domain extras | `Ontology.from_schema_org().merge(my_extras)` |
 | Brand-new project, no ontology, unfamiliar corpus | `Ontology.from_sources(sources, llm)` |
 | You have a draft from somewhere and want to refresh it against more docs | `Ontology.from_sources(new_sources, llm, existing=current_draft)` |
 | You've ingested with a committed ontology and new docs are coming in | `rag.suggest_schema_extensions(new_sources)` → review → apply with the mutation API |
