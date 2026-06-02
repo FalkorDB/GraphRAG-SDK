@@ -11,9 +11,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from graphrag_sdk.core.models import Attribute, Entity, Relation
 
+# Pydantic v2 silently *ignores* unknown keys on a BaseModel by default. For
+# discovery's LLM-emitted shapes we want the opposite — an extra field means
+# the model misunderstood the schema and the response should be rejected so
+# the validation-retry loop in ``extract_with_retry`` can feed back specific
+# correction.
+_STRICT = ConfigDict(extra="forbid")
+
 
 class _ProposedAttribute(BaseModel):
     """An attribute proposed by the LLM for an entity or relation type."""
+
+    model_config = _STRICT
 
     name: str
     type: str = "STRING"
@@ -22,6 +31,8 @@ class _ProposedAttribute(BaseModel):
 
 class _ProposedEntity(BaseModel):
     """An entity type proposed by the LLM for a chunk."""
+
+    model_config = _STRICT
 
     label: str
     description: str | None = None
@@ -35,6 +46,8 @@ class _ProposedRelation(BaseModel):
     extraction direction. Labels here must reference entities proposed in
     the same chunk; the validator enforces that.
     """
+
+    model_config = _STRICT
 
     label: str
     description: str | None = None
@@ -51,12 +64,16 @@ class DocSummary(BaseModel):
     prefix that every per-chunk prompt for that doc carries.
     """
 
+    model_config = _STRICT
+
     main_entities: list[str] = Field(default_factory=list)
     aboutness: str = ""
 
 
 class ChunkProposal(BaseModel):
     """Per-chunk LLM output: entity types and relation types observed in one chunk."""
+
+    model_config = _STRICT
 
     entities: list[_ProposedEntity] = Field(default_factory=list)
     relations: list[_ProposedRelation] = Field(default_factory=list)
@@ -71,6 +88,8 @@ class NormalizedDraft(BaseModel):
     ``ChunkProposal`` but the semantics are "final, normalized" — the
     pipeline converts this directly into an ``Ontology``.
     """
+
+    model_config = _STRICT
 
     entities: list[_ProposedEntity] = Field(default_factory=list)
     relations: list[_ProposedRelation] = Field(default_factory=list)

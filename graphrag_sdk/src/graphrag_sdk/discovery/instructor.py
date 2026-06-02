@@ -101,7 +101,12 @@ async def extract_with_retry(
 
     for attempt in range(total_attempts):
         attempts += 1
-        response = await llm.ainvoke_messages(history)
+        # ``max_retries=1`` disables the provider-level retry loop —
+        # ``extract_with_retry`` owns the retry policy. Without this the
+        # default provider budget (3 attempts) would silently triple every
+        # logical attempt here, blowing the documented budget and skewing
+        # ``OntologyDiscoveryError.attempts``.
+        response = await llm.ainvoke_messages(history, max_retries=1)
         history.append(ChatMessage(role="assistant", content=response.content))
 
         text = _strip_fences(response.content)

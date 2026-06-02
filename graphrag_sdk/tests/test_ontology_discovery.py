@@ -18,17 +18,14 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     Attribute,
     Entity,
-    LLMResponse,
     Relation,
     TextChunk,
     TextChunks,
 )
-from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.discovery.instructor import extract_with_retry
 from graphrag_sdk.discovery.pipeline import (
     _diff_ontologies,
     _ensure_sdk_managed_attributes,
-    _process_document,
     _validate_proposal,
     discover_ontology,
     suggest_extensions,
@@ -218,6 +215,52 @@ class TestExtractWithRetry:
             max_retries=0,
         )
         assert result.aboutness == "Test doc"
+
+    @pytest.mark.asyncio
+    async def test_disables_provider_retries(self) -> None:
+        """The wrapper owns retry policy — provider retries would multiply
+        the budget and skew OntologyDiscoveryError.attempts."""
+
+        # Build a MockLLM that records the kwargs each ainvoke_messages
+        # call receives so we can assert max_retries=1 is forwarded.
+        observed_max_retries: list[int] = []
+
+        class _Spy(MockLLM):
+            async def ainvoke_messages(self, messages, *, max_retries=3, **kwargs):
+                observed_max_retries.append(max_retries)
+                self.last_messages = messages
+                return self.invoke("")
+
+        llm = _Spy(responses=[_valid_doc_summary_json()], strict=True)
+        await extract_with_retry(
+            llm,
+            system_prompt="sys",
+            user_prompt="usr",
+            response_model=DocSummary,
+            max_retries=2,
+        )
+        assert observed_max_retries == [1], (
+            "extract_with_retry must pass max_retries=1 so the provider does "
+            "not silently multiply the retry budget."
+        )
+
+    @pytest.mark.asyncio
+    async def test_extra_field_in_response_triggers_retry(self) -> None:
+        """Unknown keys in the LLM JSON must be rejected (extra='forbid')
+        so the retry loop can ask the model to remove them, instead of
+        silently dropping fields that may reflect a misunderstood schema."""
+        bad = json.dumps({"main_entities": [], "aboutness": "ok", "junk": 1})
+        good = _valid_doc_summary_json()
+        llm = RecordingMockLLM([bad, good])
+        result = await extract_with_retry(
+            llm,
+            system_prompt="sys",
+            user_prompt="usr",
+            response_model=DocSummary,
+            max_retries=1,
+        )
+        assert result.aboutness == "Test doc"
+        assert len(llm.all_calls) == 2, "Expected parse-then-retry on extra='junk'"
 
 
 # ── _validate_proposal ─────────────────────────────────────────────
@@ -572,6 +615,30 @@ class TestDiffOntologies:
         proposal = _diff_ontologies(existing, discovered)
         assert [r.label for r in proposal.new_relations] == ["FOUNDED"]
         assert proposal.new_patterns == [("WORKS_AT", "Person", "NonProfit")]
+
+    def test_detects_new_attribute_on_existing_relation(self) -> None:
+        """A discovered relation that adds a new property to an existing
+        relation label must surface in proposal.new_attributes — without
+        this we silently drop relation-property additions."""
+        existing = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
+        )
+        discovered = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[
+                Relation(
+                    label="WORKS_AT",
+                    patterns=[("Person", "Company")],
+                    properties=[Attribute(name="since", type="DATE")],
+                )
+            ],
+        )
+        proposal = _diff_ontologies(existing, discovered)
+        assert any(
+            owner == "WORKS_AT" and attr.name == "since"
+            for owner, attr in proposal.new_attributes
+        )
 
     def test_does_not_propose_deletions(self) -> None:
         """Schema-shrinking is never proposed — absence from the new corpus

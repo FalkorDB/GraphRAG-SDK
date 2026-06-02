@@ -171,9 +171,30 @@ async def main() -> None:
                     await rag.add_entity(entity)
                     print(f"  + add_entity({entity.label})")
                 for relation in proposal.new_relations:
+                    if not relation.patterns:
+                        # An open-mode relation (no patterns) cannot be
+                        # committed via add_relation_pattern. Skip with a
+                        # note so the walkthrough is honest about it; a
+                        # future PR may add an add_relation primitive.
+                        print(
+                            f"  ! skipped open-mode relation {relation.label!r}: "
+                            "no patterns to apply (v1 limitation — add_relation_pattern "
+                            "requires concrete (src, tgt) pairs)"
+                        )
+                        continue
                     for src, tgt in relation.patterns:
                         await rag.add_relation_pattern(relation.label, src, tgt)
                         print(f"  + add_relation_pattern({relation.label}, {src}, {tgt})")
+                    # Preserve the proposed description after the relation
+                    # has been declared via its first pattern.
+                    if relation.description:
+                        await rag.set_relation_description(
+                            relation.label, relation.description
+                        )
+                        print(
+                            f"  + set_relation_description({relation.label}, "
+                            f"...{relation.description[:30]!r})"
+                        )
                 for rel_label, src, tgt in proposal.new_patterns:
                     await rag.add_relation_pattern(rel_label, src, tgt)
                     print(f"  + add_relation_pattern({rel_label}, {src}, {tgt})")

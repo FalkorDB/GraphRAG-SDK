@@ -84,7 +84,7 @@ _SUMMARY_TEXT_CAP = 4000
 
 
 def _default_loader_for(source: str) -> LoaderStrategy:
-    """Mirror of ``GraphRAG._default_loader_for`` (api/main.py:1639).
+    """Mirror of ``GraphRAG._default_loader_for``.
 
     Duplicated here so the discovery module does not import the
     ``GraphRAG`` facade — keeping ``Ontology.from_sources`` a pure
@@ -384,7 +384,14 @@ async def _process_document(
     chunk_sem: asyncio.Semaphore,
     rng: random.Random,
 ) -> Ontology:
-    """Load + chunk + sample + summarize + per-chunk extract + merge."""
+    """Load + chunk + sample + summarize + per-chunk extract + merge.
+
+    ``rng`` is per-document — derived from the user-supplied seed and the
+    source string by the caller — so chunk sampling is deterministic
+    regardless of how the asyncio scheduler interleaves doc tasks. Sharing
+    one mutable Random across concurrent coroutines would make the same
+    ``seed`` produce different samples across runs.
+    """
     used_loader = loader or _default_loader_for(source)
     document = await used_loader.load(source, ctx)
     text_chunks: TextChunks = await chunker.chunk_document(document, ctx)
@@ -398,16 +405,20 @@ async def _process_document(
     sample_size = min(sample_chunks_per_doc, len(pool))
     sampled = rng.sample(pool, sample_size) if sample_size < len(pool) else list(pool)
 
-    # Doc-summary anchor (concurrency 1 per doc — it's a single call).
-    doc_summary = await _run_doc_summary(
-        llm,
-        document,
-        boundaries=boundaries,
-        max_retries=max_retries,
-        doc_id=source,
-    )
+    # Doc-summary anchor — gated by the same semaphore so the documented
+    # ``concurrency`` cap genuinely bounds *total* in-flight LLM calls. Each
+    # source costs one summary call here plus N chunk calls below; without
+    # the gate, fan-out is doc_count × (1 + N) instead of the advertised cap.
+    async with chunk_sem:
+        doc_summary = await _run_doc_summary(
+            llm,
+            document,
+            boundaries=boundaries,
+            max_retries=max_retries,
+            doc_id=source,
+        )
 
-    # Per-chunk proposals under the shared semaphore.
+    # Per-chunk proposals under the same shared semaphore.
     async def _bounded(chunk: TextChunk) -> ChunkProposal | None:
         async with chunk_sem:
             return await _run_chunk_proposal(
@@ -491,14 +502,21 @@ async def discover_ontology(
     used_chunker = chunker or SentenceTokenCapChunking()
     used_ctx = ctx or Context()
     chunk_sem = asyncio.Semaphore(concurrency)
-    rng = random.Random(seed)
-
     used_ctx.log(
         f"discovery: starting from_sources on {len(sources_list)} source(s), "
         f"sample_chunks_per_doc={sample_chunks_per_doc}, "
         f"concurrency={concurrency}",
         level=logging.INFO,
     )
+
+    # Derive a per-source RNG so chunk sampling is deterministic regardless
+    # of asyncio task interleaving. Sharing one Random across concurrent
+    # _process_document tasks would make the same ``seed`` produce different
+    # samples across runs.
+    def _per_source_rng(src: str) -> random.Random:
+        if seed is None:
+            return random.Random()
+        return random.Random(f"{seed}:{src}")
 
     per_doc = await asyncio.gather(
         *[
@@ -513,7 +531,7 @@ async def discover_ontology(
                 existing=existing,
                 max_retries=max_retries,
                 chunk_sem=chunk_sem,
-                rng=rng,
+                rng=_per_source_rng(src),
             )
             for src in sources_list
         ]
@@ -596,6 +614,17 @@ def _diff_ontologies(
         for src, tgt in relation.patterns:
             if (src, tgt) not in existing_pattern_set:
                 new_patterns.append((relation.label, src, tgt))
+        # Surface relation-property additions on already-known relation
+        # labels (mirrors the entity-side property diff above). Without
+        # this, discovery on a corpus that introduces a new property to
+        # an existing relation would drop it silently from the proposal.
+        # The v1 mutation API does not yet apply relation-attribute
+        # changes — the field is surfaced for visibility; applying is the
+        # caller's responsibility once that landing lands.
+        existing_rel_attr_names = {a.name for a in existing_relation.properties}
+        for attr in relation.properties:
+            if attr.name not in existing_rel_attr_names:
+                new_attributes.append((relation.label, attr))
 
     return SchemaExtensionProposal(
         new_entities=new_entities,

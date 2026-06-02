@@ -1691,9 +1691,14 @@ class GraphRAG:
             empty (``proposal.is_empty == True``) if the new sources
             don't motivate additions.
         """
-        await self._ensure_ontology_initialized()
+        # Refresh from storage before diffing so the proposal reflects the
+        # *currently committed* ontology, not a snapshot from this instance's
+        # first ensure-initialized. ``_global_ontology`` would otherwise drift
+        # behind if another writer (or this instance's own evolution calls
+        # via a different path) registered new types since first touch.
+        current = await self.get_ontology()
         return await suggest_extensions(
-            self._global_ontology,
+            current,
             sources,
             self.llm,
             boundaries=boundaries,

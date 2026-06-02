@@ -75,16 +75,29 @@ You hand the accepted parts of the proposal to the v1.2.x mutation API:
 ```python
 for entity in proposal.new_entities:
     await rag.add_entity(entity)
+
 for relation in proposal.new_relations:
+    if not relation.patterns:
+        # Open-mode relations (no patterns) can't be applied via
+        # add_relation_pattern in v1 — see "What's Not in the API" below.
+        continue
     for src, tgt in relation.patterns:
         await rag.add_relation_pattern(relation.label, src, tgt)
+    # Preserve the proposed description once the relation has been
+    # declared via its first add_relation_pattern call.
+    if relation.description:
+        await rag.set_relation_description(relation.label, relation.description)
+
 for rel_label, src, tgt in proposal.new_patterns:
     await rag.add_relation_pattern(rel_label, src, tgt)
+
 for owner, attribute in proposal.new_attributes:
     await rag.add_attribute(owner, attribute)   # atomic, LLM-backfilled
 ```
 
 See [Ontology Evolution](ontology-evolution.md) for the invariants `add_attribute` enforces. Discovery never commits anything itself — the existing evolution machinery stays the single commit surface.
+
+**On `new_attributes` for relation owners:** the v1 mutation API does not yet apply attributes to relations (see "What's Not in the API" in Ontology Evolution — `add_attribute` raises `NotImplementedError` for relation owners). Proposals may include them so you see what discovery found, but applying them requires either waiting for the relation-attribute path to land or hand-managing it via `delete_all()` + re-`ingest()` with the updated schema. The diff still surfaces them so the proposal is honest about what discovery saw.
 
 ---
 
