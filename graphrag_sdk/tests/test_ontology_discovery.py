@@ -852,9 +852,15 @@ def _make_mock_urlopen(*, sparql_types_for: dict[str, list[str]] | None = None):
             if hasattr(url_or_request, "full_url")
             else url_or_request
         )
-        if "schema.org" in url:
+        # Use parsed-host comparison rather than substring matching so
+        # CodeQL's "incomplete URL substring sanitization" check doesn't
+        # flag the dispatcher.
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").lower()
+        if host == "schema.org":
             return io.BytesIO(_SCHEMA_ORG_FIXTURE)
-        if "sparql" in url:
+        if host == "dbpedia.org" and path.startswith("/sparql"):
             # Pull the entity name out of the SPARQL query string in the URL.
             decoded = urllib.parse.unquote(url)
             name = None
@@ -1003,9 +1009,12 @@ class TestDBpediaCatalog:
             cat = DBpediaCatalog(cache_path=cache_path)
             with pytest.raises(DBpediaFetchError) as exc_info:
                 cat.lookup("Person")
-            msg = str(exc_info.value).lower()
-            assert "schema.org" in msg
-            assert "no offline fallback" in msg
+            # Use a multi-word phrase the catalog actually emits so this
+            # doesn't look like an "is this URL Schema.org?" check (that's
+            # the CodeQL "incomplete URL substring sanitization" complaint).
+            msg = str(exc_info.value)
+            assert "Schema.org vocabulary" in msg
+            assert "no offline fallback" in msg.lower()
 
 
 class TestDiscoverGrounded:
