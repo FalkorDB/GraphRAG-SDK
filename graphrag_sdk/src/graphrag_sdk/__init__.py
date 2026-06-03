@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG
@@ -60,8 +60,17 @@ from graphrag_sdk.core.providers import (
     OpenRouterEmbedder,
     OpenRouterLLM,
 )
+from graphrag_sdk.discovery import OntologyDiscoveryError, SchemaExtensionProposal
 
 # ── Ingestion Strategies ────────────────────────────────────────
+from graphrag_sdk.ingestion.backfill import (
+    BackfillExecutor,
+    BackfillMergeStats,
+    BackfillResult,
+    ChunkContext,
+    EvolutionResult,
+    OntologyEvolutionError,
+)
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.chunking_strategies.callable_chunking import (
     CallableChunking,
@@ -162,7 +171,15 @@ __all__ = [
     "TextChunks",
     "UpdateResult",
     # Ingestion
+    "BackfillExecutor",
+    "BackfillMergeStats",
+    "BackfillResult",
+    "ChunkContext",
     "ChunkingStrategy",
+    "EvolutionResult",
+    "OntologyDiscoveryError",
+    "OntologyEvolutionError",
+    "SchemaExtensionProposal",
     "CallableChunking",
     "ContextualChunking",
     "FixedSizeChunking",

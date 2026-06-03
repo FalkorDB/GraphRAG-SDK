@@ -140,6 +140,41 @@ _PROPERTY_TYPES: frozenset[str] = frozenset(
     {"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"}
 )
 
+# Keys the SDK writes on every node/edge during ingestion. Declaring an
+# Attribute with any of these names will shadow the system-written value
+# on extracted entities. The Ontology validator warns against this; the
+# discovery validator rejects it outright unless it's in
+# ``_SDK_MANAGED_ATTRIBUTE_NAMES`` below.
+_RESERVED_ATTRIBUTE_NAMES: frozenset[str] = frozenset(
+    {
+        "name",
+        "description",
+        "source_chunk_ids",
+        "spans",
+        "rel_type",
+        "fact",
+        "src_name",
+        "tgt_name",
+        "id",
+        "label",
+    }
+)
+
+# Attributes the schema may declare for documentation, even though the SDK
+# fills them automatically during extraction (top-level entity fields from
+# GLiNER + step-2 LLM, not from the per-entity ``attributes`` dict).
+#
+# The discovery layer requires these on every entity type so the schema
+# accurately reflects the data graph. The extraction layer filters them
+# out of the prompt's per-entity attribute block so the LLM is not asked
+# to extract them twice (which would cause two writes to the same field
+# and silent overwrite races).
+#
+# Concretely: ``Person.name`` appears in the saved ``ontology.json``, the
+# user sees it, but the extraction LLM is never asked "what is this
+# person's name?" — that value is the entity's identifier from step 1.
+_SDK_MANAGED_ATTRIBUTE_NAMES: frozenset[str] = frozenset({"name"})
+
 
 class Attribute(DataModel):
     """A property definition for a node or relationship type."""
@@ -268,6 +303,156 @@ class Ontology(DataModel):
         from pathlib import Path
 
         return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+    @classmethod
+    async def from_sources(
+        cls,
+        sources: str | list[str],
+        llm: Any | None = None,
+        *,
+        method: Literal["llm", "grounded"] = "llm",
+        # method="llm" parameters
+        boundaries: str | None = None,
+        max_retries: int = 3,
+        # method="grounded" parameters
+        catalog: Any | None = None,
+        entity_extractor: Any | None = None,
+        # shared parameters
+        existing: Ontology | None = None,
+        sample_chunks_per_doc: int = 3,
+        concurrency: int = 4,
+        chunker: Any | None = None,
+        loader: Any | None = None,
+        ctx: Any | None = None,
+        seed: int | None = None,
+    ) -> Ontology:
+        """Auto-discover an ontology from a corpus of documents.
+
+        Two methods, selected via ``method=``:
+
+        - ``method="llm"`` (default) — Sample chunks from each source,
+          ask the LLM to propose entity types and relation types from
+          the text, merge across the corpus, run a single normalization
+          pass to collapse synonyms. Requires ``llm``.
+        - ``method="grounded"`` — Adapts barakb/text-to-rdf's
+          "find entities, look up their schemas" technique. Run NER on
+          each sampled chunk with a small fixed anchor label list
+          (``["person", "organization", "location", "event"]``) to
+          surface entity mention strings, then call
+          ``catalog.link_entity(name)`` per unique mention to get the
+          types each entity belongs to (e.g. ``DBpediaCatalog`` issues
+          a SPARQL query to DBpedia). Collect the union of those
+          types, ask the catalog for each detected type's schema
+          definition (properties + canonical URI) and for the
+          relations between detected types. Zero LLM calls unless
+          ``llm`` is provided — in which case a per-type trim filters
+          each type's catalog-supplied property list down to what the
+          corpus actually mentions. Requires ``catalog``.
+
+        The returned ontology is intended as a *draft* — inspect, edit,
+        save with :py:meth:`save_to_file`, then pass into ``GraphRAG``.
+
+        When ``existing`` is supplied, the LLM method uses it as a soft
+        controlled vocabulary in the prompts, the grounded method merges
+        the catalog-derived output into it, and both methods return the
+        merge. Re-running with the same ``existing`` prior across new
+        documents lets the ontology grow coherently.
+
+        See :py:class:`~graphrag_sdk.discovery.OntologyDiscoveryError`
+        for the exception raised by hard failures inside individual LLM
+        calls. The pipeline itself is soft-fail: a single bad chunk does
+        not abort the run.
+
+        Args:
+            sources: Single source string or a list of them. Same union
+                ``GraphRAG.ingest`` accepts.
+            llm: Required for ``method="llm"``. Any
+                :class:`~graphrag_sdk.core.providers.LLMInterface`.
+            method: Discovery method. ``"llm"`` (default) or ``"grounded"``.
+            boundaries: Free-text scope hint. ``method="llm"`` only.
+            max_retries: Retry budget per LLM call. ``method="llm"`` only.
+            catalog: Required for ``method="grounded"``. Any
+                :class:`~graphrag_sdk.discovery.catalog.Catalog`.
+            entity_extractor: NER backend for ``method="grounded"``.
+                Defaults to ``GLiNERExtractor()``.
+            existing: Optional structured prior, merged into the result.
+            sample_chunks_per_doc: How many chunks per document to sample.
+            concurrency: Max in-flight LLM / NER calls.
+            chunker: Override the default chunker.
+            loader: Override the per-source auto-detected loader.
+            ctx: Optional execution context for logging / tenancy.
+            seed: Optional RNG seed for deterministic chunk sampling.
+
+        Examples::
+
+            # LLM-driven discovery (the default).
+            draft = await Ontology.from_sources(
+                ["docs/paper1.md", "docs/paper2.pdf"],
+                llm=LiteLLM(model="openai/gpt-4o-mini"),
+                boundaries="biotech research papers about CRISPR",
+            )
+
+            # Catalog-grounded discovery — DBpedia + Schema.org, no LLM.
+            from graphrag_sdk.discovery.catalog import DBpediaCatalog
+            draft = await Ontology.from_sources(
+                ["docs/news/*.md"],
+                method="grounded",
+                catalog=DBpediaCatalog(),
+            )
+        """
+        if method == "llm":
+            if llm is None:
+                raise ValueError(
+                    "method='llm' requires `llm=<LLMInterface>` "
+                    "(pass it positionally or as a keyword)."
+                )
+            # Lazy import so models.py stays Pydantic-only at module-load time
+            # (no LLM provider / loader imports pulled into the data model).
+            from graphrag_sdk.discovery.pipeline import discover_ontology
+
+            return await discover_ontology(
+                sources,
+                llm,
+                boundaries=boundaries,
+                existing=existing,
+                sample_chunks_per_doc=sample_chunks_per_doc,
+                max_retries=max_retries,
+                concurrency=concurrency,
+                chunker=chunker,
+                loader=loader,
+                ctx=ctx,
+                seed=seed,
+            )
+
+        if method == "grounded":
+            if catalog is None:
+                raise ValueError(
+                    "method='grounded' requires `catalog=<Catalog>` "
+                    "(e.g. `catalog=DBpediaCatalog()`)."
+                )
+            from graphrag_sdk.discovery.pipeline import discover_grounded
+
+            # ``llm`` is optional in grounded mode — when supplied, it runs the
+            # per-type property-trim pass (filters each catalog type's
+            # generic property list down to what the corpus actually
+            # mentions). Without it, you get the catalog's full property
+            # list per detected type — fast and deterministic.
+            return await discover_grounded(
+                sources,
+                catalog=catalog,
+                llm=llm,
+                entity_extractor=entity_extractor,
+                existing=existing,
+                sample_chunks_per_doc=sample_chunks_per_doc,
+                max_retries=max_retries,
+                concurrency=concurrency,
+                chunker=chunker,
+                loader=loader,
+                ctx=ctx,
+                seed=seed,
+            )
+
+        raise ValueError(f"unknown method={method!r}; expected 'llm' or 'grounded'")
 
     def save_to_file(self, path: str, *, indent: int = 2) -> None:
         """Write this schema to ``path`` as JSON (overwrites existing files)."""

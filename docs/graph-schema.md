@@ -4,6 +4,8 @@ When you ingest documents into GraphRAG SDK, the system builds a property graph 
 
 Understanding the graph structure helps you write custom Cypher queries, debug ingestion quality, and tune retrieval.
 
+Looking to *change* an existing ontology — add/drop attributes, rename labels, retype fields? See [Ontology Evolution](ontology-evolution.md) for the atomic-evolve API and the alignment invariant it enforces.
+
 ---
 
 ## The Big Picture
