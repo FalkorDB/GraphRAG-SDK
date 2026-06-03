@@ -8,13 +8,14 @@ If you've never built an ontology by hand and you don't know where to start, sta
 
 ## The Mental Model
 
-There are three places an ontology can come from:
+There are four places an ontology can come from:
 
-1. **Hand-authored.** You write `Ontology(entities=[...], relations=[...])` because you already know what your knowledge graph should look like. The fastest path when the domain is well understood.
-2. **Discovered from a corpus.** You point the SDK at some documents and ask it to draft one. Use when you're exploring an unfamiliar corpus, or when manually enumerating types upfront is brittle.
-3. **Discovered and then evolved.** The realistic workflow: draft once with discovery, ingest with that draft, then as new documents arrive use `suggest_schema_extensions` to propose additions you review and apply via the [evolution API](ontology-evolution.md).
+1. **The built-in default.** If you construct `GraphRAG` without an `ontology=` argument and no ontology has been previously persisted to the graph, the SDK seeds the ontology graph with `DEFAULT_ENTITY_TYPES` (`Person`, `Organization`, `Technology`, `Product`, `Location`, `Date`, `Event`, `Concept`, `Law`, `Dataset`, `Method`) so extraction has something to anchor on. Good for quick exploration of small / general-purpose corpora; not enough for production graphs.
+2. **Hand-authored.** You write `Ontology(entities=[...], relations=[...])` because you already know what your knowledge graph should look like. The fastest path when the domain is well understood.
+3. **Discovered from a corpus.** You point the SDK at some documents and ask it to draft one. Use when you're exploring an unfamiliar corpus, or when manually enumerating types upfront is brittle.
+4. **Discovered and then evolved.** The realistic workflow: draft once with discovery, ingest with that draft, then as new documents arrive use `suggest_schema_extensions` to propose additions you review and apply via the [evolution API](ontology-evolution.md).
 
-This page is about (2) and (3). The same data model (`Ontology`) is used end-to-end — you can mix and match.
+This page is about (3) and (4). The same data model (`Ontology`) is used end-to-end — you can mix and match.
 
 ---
 
