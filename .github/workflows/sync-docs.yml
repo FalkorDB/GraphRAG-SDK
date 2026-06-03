@@ -1,0 +1,59 @@
+name: Sync FalkorDB docs
+
+# Runs whenever the canonical docs change on main, or on demand from the
+# Actions UI. Each run opens a fresh PR against FalkorDB/docs — never pushes
+# to main, never reuses a branch.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/site/falkordb/**"
+      - "scripts/sync_falkordb_docs.py"
+      - ".github/workflows/sync-docs.yml"
+  workflow_dispatch:
+    inputs:
+      open_pr:
+        description: "Open a PR against FalkorDB/docs after pushing"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout SDK repo (canonical source)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Checkout FalkorDB/docs target
+        uses: actions/checkout@v4
+        with:
+          repository: FalkorDB/docs
+          path: target-docs
+          token: ${{ secrets.DOCS_SYNC_PAT }}   # fine-grained PAT with `contents:write` and `pull_requests:write` on FalkorDB/docs
+          fetch-depth: 1
+
+      - name: Configure git identity for target
+        working-directory: target-docs
+        run: |
+          git config user.name "graphrag-sdk-docs-bot"
+          git config user.email "bot@falkordb.com"
+
+      - name: Run sync (commit + push + open PR)
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_SYNC_PAT }}
+        run: |
+          python scripts/sync_falkordb_docs.py \
+            --target target-docs \
+            --pr
