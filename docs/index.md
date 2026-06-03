@@ -43,6 +43,8 @@ asyncio.run(main())
 - [Getting Started](getting-started.md) -- Full tutorial from install to first query
 - [Architecture](architecture.md) -- How the 9-step pipeline works
 - [Strategies](strategies.md) -- All swappable strategy ABCs and built-in options
+- [Ontology Discovery](ontology-discovery.md) -- Auto-draft a schema from a corpus (`method="llm"` or `method="grounded"` with DBpediaCatalog)
 - [Ontology Evolution](ontology-evolution.md) -- Safely change schema on a populated graph
+- [Incremental Updates](incremental-updates.md) -- `update()`, `delete_document()`, `apply_changes()`, `finalize()`
 - [Benchmark](benchmark.md) -- Methodology and reproduction instructions
 - [API Reference](api-reference.md) -- Full API documentation
