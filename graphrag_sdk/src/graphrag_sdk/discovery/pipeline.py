@@ -827,7 +827,23 @@ async def discover_grounded(
     entities_or_none = await asyncio.gather(*[_build_entity(t) for t in sorted(detected_types)])
     entities = [e for e in entities_or_none if e is not None]
 
-    relations = catalog.relations_among(detected_types)
+    # Include ``existing`` labels in the relation lookup so bridge
+    # relations between newly-detected types and already-known types
+    # are surfaced. Example: ``existing`` carries Person; the new
+    # corpus surfaces Organization; without the union the catalog
+    # would never be asked for Person↔Organization relations because
+    # Person wouldn't be in the query set. We then filter to relations
+    # that involve at least one *newly* detected type — pure-existing
+    # relations stay in ``existing`` and will be unioned by
+    # ``existing.merge(discovered)`` below.
+    existing_labels = {e.label for e in existing.entities} if existing is not None else set()
+    relation_scope = detected_types | existing_labels
+    all_relations = catalog.relations_among(relation_scope)
+    relations = [
+        r
+        for r in all_relations
+        if any(src in detected_types or tgt in detected_types for src, tgt in r.patterns)
+    ]
 
     discovered = Ontology(entities=entities, relations=relations)
 

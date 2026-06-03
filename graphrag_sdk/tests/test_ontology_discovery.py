@@ -724,72 +724,240 @@ class TestSuggestExtensions:
 # ── Catalog + grounded discovery ───────────────────────────────────
 
 
+# Minimal Schema.org JSON-LD subset used to exercise SchemaOrgCatalog
+# without touching the network. Realistic shape — same ``@graph`` /
+# ``@type`` / ``schema:domainIncludes`` / ``rdfs:subClassOf`` keys the
+# live endpoint emits. Just enough to cover all parsing branches.
+_SCHEMA_ORG_FIXTURE = json.dumps(
+    {
+        "@context": {"schema": "https://schema.org/", "rdf": "...", "rdfs": "..."},
+        "@graph": [
+            {
+                "@id": "schema:Person",
+                "@type": "rdfs:Class",
+                "rdfs:label": "Person",
+                "rdfs:comment": "A human individual.",
+            },
+            {
+                "@id": "schema:Organization",
+                "@type": "rdfs:Class",
+                "rdfs:label": "Organization",
+                "rdfs:comment": "A business or institution.",
+            },
+            {
+                "@id": "schema:Place",
+                "@type": "rdfs:Class",
+                "rdfs:label": "Place",
+                "rdfs:comment": "A geographic place.",
+            },
+            {
+                "@id": "schema:CreativeWork",
+                "@type": "rdfs:Class",
+                "rdfs:label": "CreativeWork",
+                "rdfs:comment": "An authored work.",
+            },
+            {
+                "@id": "schema:Article",
+                "@type": "rdfs:Class",
+                "rdfs:label": "Article",
+                "rdfs:comment": "An article.",
+                "rdfs:subClassOf": {"@id": "schema:CreativeWork"},
+            },
+            # Attribute on Person: birthDate → Date (primitive range).
+            {
+                "@id": "schema:birthDate",
+                "@type": "rdf:Property",
+                "rdfs:comment": "Date of birth.",
+                "schema:domainIncludes": {"@id": "schema:Person"},
+                "schema:rangeIncludes": {"@id": "schema:Date"},
+            },
+            # Relation on Person: worksFor → Organization (entity range).
+            {
+                "@id": "schema:worksFor",
+                "@type": "rdf:Property",
+                "rdfs:comment": "Organization the Person works for.",
+                "schema:domainIncludes": {"@id": "schema:Person"},
+                "schema:rangeIncludes": {"@id": "schema:Organization"},
+            },
+            # Attribute on CreativeWork: datePublished → Date. Article
+            # should inherit this via subClassOf.
+            {
+                "@id": "schema:datePublished",
+                "@type": "rdf:Property",
+                "rdfs:comment": "Date the work was published.",
+                "schema:domainIncludes": {"@id": "schema:CreativeWork"},
+                "schema:rangeIncludes": {"@id": "schema:Date"},
+            },
+            # Relation on CreativeWork: author → Person. Article should
+            # inherit this too.
+            {
+                "@id": "schema:author",
+                "@type": "rdf:Property",
+                "rdfs:comment": "The author of the work.",
+                "schema:domainIncludes": {"@id": "schema:CreativeWork"},
+                "schema:rangeIncludes": {"@id": "schema:Person"},
+            },
+        ],
+    }
+).encode("utf-8")
+
+
+def _mock_urlopen_fixture(*args, **kwargs):
+    """Drop-in replacement for ``urllib.request.urlopen`` that yields the
+    fixture bytes as a context-manager-compatible BytesIO. Accepts and
+    discards any positional/keyword args (``timeout``, etc.) the catalog
+    might pass."""
+    import io
+
+    return io.BytesIO(_SCHEMA_ORG_FIXTURE)
+
+
 class TestSchemaOrgCatalog:
-    """Bundled Schema.org-derived catalog. Real data, not hand-typed."""
+    """Live-fetch SchemaOrgCatalog with the network mocked.
 
-    def test_known_types_includes_curated(self) -> None:
+    The catalog now downloads Schema.org's JSON-LD on first use and
+    caches the processed result under
+    ``$XDG_CACHE_HOME/graphrag-sdk/schema_org.json``. Tests redirect the
+    cache to ``tmp_path`` to keep them hermetic and patch
+    ``urllib.request.urlopen`` so no real network traffic happens.
+    """
+
+    @pytest.fixture
+    def schema_org_catalog(self, tmp_path):
+        """A fresh catalog with the network mocked and cache under tmp_path."""
+        from unittest.mock import patch
         from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
 
-        catalog = SchemaOrgCatalog()
-        types = catalog.known_types()
-        # Curated subset minimums.
-        assert {"Person", "Organization", "Place", "Event", "CreativeWork"} <= types
+        cache_path = tmp_path / "schema_org.json"
+        with patch(
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
+            new=_mock_urlopen_fixture,
+        ):
+            yield SchemaOrgCatalog(
+                cache_path=cache_path,
+                curated_types={"Person", "Organization", "Place", "CreativeWork", "Article"},
+            )
 
-    def test_lookup_returns_real_schema_org_data(self) -> None:
-        """The Entity returned should carry properties whose descriptions
-        record the original Schema.org camelCase name — proof the data
-        is sourced from Schema.org, not invented."""
-        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+    def test_known_types_returns_curated(self, schema_org_catalog) -> None:
+        assert schema_org_catalog.known_types() == {
+            "Person",
+            "Organization",
+            "Place",
+            "CreativeWork",
+            "Article",
+        }
 
-        catalog = SchemaOrgCatalog()
-        person = catalog.lookup("Person")
+    def test_lookup_returns_schema_org_provenance(self, schema_org_catalog) -> None:
+        person = schema_org_catalog.lookup("Person")
         assert person is not None
         assert person.label == "Person"
         # The catalog records the canonical URI in the description as a
-        # provenance marker in the exact form ``"Schema.org: https://schema.org/<Type>"``.
-        # Checking for that full prefix avoids the CodeQL "incomplete URL
-        # substring sanitization" false positive raised by looser checks
-        # like ``"schema.org" in description``.
+        # provenance marker in the exact form
+        # ``"Schema.org: https://schema.org/<Type>"``.
         assert person.description is not None
         assert "Schema.org: https://schema.org/Person" in person.description
-        # At least one property's description is prefixed with the exact
-        # ``"Schema.org "`` marker (e.g. ``"Schema.org birthDate"``).
-        camel_refs = [
-            a
-            for a in person.properties
-            if a.description is not None and a.description.startswith("Schema.org ")
-        ]
-        assert camel_refs, "Properties should reference their Schema.org names"
+        # ``birthDate`` is on Person directly.
+        birth = next(a for a in person.properties if a.name == "birth_date")
+        assert birth.type == "DATE"
+        assert birth.description is not None
+        assert birth.description.startswith("Schema.org birthDate")
 
-    def test_lookup_returns_none_for_unknown(self) -> None:
-        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+    def test_lookup_returns_none_for_unknown(self, schema_org_catalog) -> None:
+        assert schema_org_catalog.lookup("Penguin") is None
 
-        assert SchemaOrgCatalog().lookup("Penguin") is None
-
-    def test_relations_among_filters_to_input_set(self) -> None:
-        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
-
-        catalog = SchemaOrgCatalog()
-        relations = catalog.relations_among({"Person", "Organization"})
-        # Every pattern's endpoints must be inside the requested set.
+    def test_relations_among_filters_to_input_set(self, schema_org_catalog) -> None:
+        relations = schema_org_catalog.relations_among({"Person", "Organization"})
         for r in relations:
             for src, tgt in r.patterns:
                 assert src in {"Person", "Organization"}
                 assert tgt in {"Person", "Organization"}
-        # Schema.org has a Person->Organization relation (worksFor / affiliation / ...).
-        assert any(("Person", "Organization") in r.patterns for r in relations)
+        # The fixture has worksFor (Person → Organization) → WORKS_FOR.
+        assert any(
+            ("Person", "Organization") in r.patterns for r in relations
+        )
 
-    def test_relations_among_dedupes_by_label(self) -> None:
-        """Schema.org may emit a label more than once across (src, tgt)
-        pairs — the catalog should group them under one Relation."""
+    def test_subclass_inherits_base_class_attributes(self, schema_org_catalog) -> None:
+        """``Article`` is a subClassOf ``CreativeWork`` in the fixture.
+        Walking ``rdfs:subClassOf`` should propagate CreativeWork's
+        ``datePublished`` attribute and ``author`` relation onto Article."""
+        article = schema_org_catalog.lookup("Article")
+        creative_work = schema_org_catalog.lookup("CreativeWork")
+        assert article is not None and creative_work is not None
+        article_attrs = {a.name for a in article.properties}
+        cw_attrs = {a.name for a in creative_work.properties}
+        assert "date_published" in article_attrs
+        assert cw_attrs <= article_attrs
+
+        # The author relation should also inherit: Article → Person.
+        rels = schema_org_catalog.relations_among({"Article", "Person"})
+        rel_labels = {r.label for r in rels}
+        assert "AUTHOR" in rel_labels
+
+    def test_cache_is_used_on_second_construction(self, tmp_path) -> None:
+        """Once written, the cache file is read on a fresh construction
+        and the network is not hit again. The mocked urlopen would
+        raise on a second call, proving it wasn't called."""
+        from unittest.mock import patch, MagicMock
         from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
 
-        catalog = SchemaOrgCatalog()
-        relations = catalog.relations_among(
-            {"Person", "Organization", "EducationalOrganization"}
+        cache_path = tmp_path / "cached.json"
+
+        # First instantiation: network returns the fixture, cache is written.
+        with patch(
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
+            new=_mock_urlopen_fixture,
+        ):
+            first = SchemaOrgCatalog(cache_path=cache_path)
+            first.known_types()
+        assert cache_path.exists()
+
+        # Second instantiation: any network call would raise. Cache hit.
+        sentinel = MagicMock(side_effect=AssertionError("network should not be hit"))
+        with patch(
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
+            new=sentinel,
+        ):
+            second = SchemaOrgCatalog(cache_path=cache_path)
+            assert "Person" in second.known_types()
+
+    def test_network_failure_raises_when_cache_missing(self, tmp_path) -> None:
+        from unittest.mock import patch, MagicMock
+        from graphrag_sdk.discovery.catalog import (
+            SchemaOrgCatalog,
+            SchemaOrgFetchError,
         )
-        labels = [r.label for r in relations]
-        assert len(labels) == len(set(labels))
+
+        cache_path = tmp_path / "missing.json"
+        with patch(
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
+            new=MagicMock(side_effect=OSError("connection refused")),
+        ):
+            catalog = SchemaOrgCatalog(cache_path=cache_path)
+            with pytest.raises(SchemaOrgFetchError) as exc_info:
+                catalog.known_types()
+            # Error message should point at the URL and the fact that
+            # there is no offline fallback so the user knows what's
+            # going on.
+            msg = str(exc_info.value).lower()
+            assert "schema.org" in msg
+            assert "no offline fallback" in msg
+
+    def test_ttl_expiry_triggers_refetch(self, tmp_path) -> None:
+        """When ``cache_ttl_days=0``, every construction re-fetches."""
+        from unittest.mock import patch, MagicMock
+        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+        cache_path = tmp_path / "ttl.json"
+        urlopen_spy = MagicMock(side_effect=_mock_urlopen_fixture)
+        with patch(
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
+            new=urlopen_spy,
+        ):
+            first = SchemaOrgCatalog(cache_path=cache_path, cache_ttl_days=0)
+            first.known_types()
+            second = SchemaOrgCatalog(cache_path=cache_path, cache_ttl_days=0)
+            second.known_types()
+        assert urlopen_spy.call_count == 2
 
 
 class TestDiscoverGrounded:
@@ -878,6 +1046,41 @@ class TestDiscoverGrounded:
         rel_labels = {r.label for r in ontology.relations}
         assert "WORKS_AT" in rel_labels
         assert "BORN_IN" not in rel_labels
+
+    @pytest.mark.asyncio
+    async def test_bridge_relations_to_existing_labels_are_surfaced(
+        self, tmp_path: Path, tiny_catalog
+    ) -> None:
+        """If ``existing`` carries Person and the corpus surfaces only
+        Organization, the catalog must still be queried with the union
+        so the Person↔Organization bridge relation (``WORKS_AT``)
+        appears in the result. Regression test for the gap where
+        relations_among was called with detected_types only."""
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Acme Corp")
+        existing = Ontology(entities=[Entity(label="Person")])
+        # NER only sees Organization in the corpus.
+        extractor = self._FakeExtractor([["Organization"]])
+        ontology = await discover_grounded(
+            str(src),
+            catalog=tiny_catalog,
+            entity_extractor=extractor,
+            existing=existing,
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Acme Corp"]),
+            seed=42,
+        )
+        labels = {e.label for e in ontology.entities}
+        assert {"Person", "Organization"} <= labels
+        rel_labels = {r.label for r in ontology.relations}
+        assert "WORKS_AT" in rel_labels, (
+            "Bridge relation Person->Organization should appear because "
+            "Person is in `existing` and Organization is newly detected — "
+            "even though Person was not part of detected_types."
+        )
 
     @pytest.mark.asyncio
     async def test_existing_prior_is_merged(

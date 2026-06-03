@@ -101,11 +101,13 @@ Cost: ~1 LLM call per *type*, not per chunk — much cheaper than `method="llm"`
 
 A `Catalog` is the source of truth for ontology vocabulary. Concrete catalogs that ship today:
 
-| Class | Source | Network at runtime |
+| Class | Source | Network behaviour |
 |---|---|---|
-| `SchemaOrgCatalog` | Bundled JSON-LD snapshot of Schema.org (regenerated via `scripts/generate_schema_org_data.py`) | No |
+| `SchemaOrgCatalog` | Live fetch of Schema.org's published JSON-LD vocabulary | First call downloads; subsequent calls hit a local cache |
 
-The bundled `SchemaOrgCatalog` carries a curated subset (10 types: Person, Organization, Place, Country, City, EducationalOrganization, Event, CreativeWork, Article, Book). To use a richer subset, regenerate `graphrag_sdk/data/schema_org.json` via the script and instantiate `SchemaOrgCatalog(path="…")`.
+`SchemaOrgCatalog` is **live-fetched by default** — there is no bundled snapshot. On the first invocation of `known_types()` / `lookup()` / `relations_among()`, the catalog downloads Schema.org's official JSON-LD vocabulary from `https://schema.org/version/latest/schemaorg-current-https.jsonld`, processes it (applies `subClassOf` inheritance and filters to the curated subset), and writes the processed result to `$XDG_CACHE_HOME/graphrag-sdk/schema_org.json` (typically `~/.cache/graphrag-sdk/schema_org.json`). Subsequent instantiations on the same machine read the cache. Cache TTL defaults to 30 days; pass `cache_ttl_days=None` to disable expiry or `0` to force re-fetch on every construction. There is **no offline fallback** — if the network is unreachable and the cache is missing/stale beyond TTL, `SchemaOrgFetchError` is raised.
+
+The default curated subset has 10 common types — Person, Organization, EducationalOrganization, Place, Country, City, Event, CreativeWork, Article, Book — with `subClassOf` inheritance applied, so `Article` carries CreativeWork's attributes / relations, `EducationalOrganization` carries Organization's, etc. Override by passing `curated_types=` to widen or narrow the set.
 
 The `Catalog` ABC has three abstract methods — `known_types() / lookup(name) / relations_among(names)` — so adding a `WikidataCatalog`, `DBpediaCatalog`, or a domain-specific catalog is a focused subclass.
 
@@ -119,7 +121,7 @@ The `Catalog` ABC has three abstract methods — `known_types() / lookup(name) /
 | Coverage | Whatever the LLM extracts from the text | Whatever the catalog defines for detected types |
 | Domain-specific types | Yes (LLM can invent them) | Only if the catalog has them |
 | Best for | Unfamiliar / domain-specific corpora | General web / news / biographies where Schema.org fits |
-| Composition | `method="llm"` with `existing=catalog.as_ontology()` is the strongest hybrid (TODO) | `method="grounded"` then refine the output via a second `method="llm"` pass with `existing=draft` |
+| Composition | Run `method="grounded"` first to anchor on the catalog, then a second `method="llm"` pass with `existing=draft` to add domain-specific types | Same composition pattern, from either direction |
 
 ### Live-graph delta — `GraphRAG.suggest_schema_extensions`
 
