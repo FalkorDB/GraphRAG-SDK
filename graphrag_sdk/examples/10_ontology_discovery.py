@@ -7,14 +7,21 @@ shows the *discovery* side: how to get one from a corpus, save it,
 ingest with it, and later propose schema additions as new documents
 arrive.
 
-Two cooperating APIs:
+Three cooperating APIs:
 
-  1. ``Ontology.from_sources(...)`` — pure function on the data model.
-     Bootstraps a draft from raw documents. No DB connection needed.
-     Run it, inspect the draft, save it to JSON, then hand it to
-     ``GraphRAG``.
+  1. ``Ontology.from_sources(method="llm", ...)`` — LLM-driven schema
+     invention from raw text. Use when the domain is unfamiliar and
+     you need the LLM to *propose* entity/relation types. Requires
+     ``llm``.
 
-  2. ``GraphRAG.suggest_schema_extensions(...)`` — live-graph proposer.
+  2. ``Ontology.from_sources(method="grounded", catalog=..., ...)`` —
+     catalog-driven: NER detects which catalog types the corpus
+     contains, then the catalog hands back the schema for exactly those
+     types. Optionally pass ``llm=`` to run a per-type trim that filters
+     each type's generic property list down to what the corpus
+     actually mentions. Best when a standard vocabulary fits.
+
+  3. ``GraphRAG.suggest_schema_extensions(...)`` — live-graph proposer.
      Once you have a committed ontology and you're ingesting more docs,
      this scans new sources, uses the committed ontology as a soft
      controlled vocabulary, and returns a ``SchemaExtensionProposal``
@@ -119,15 +126,36 @@ async def main() -> None:
         doc_b.write_text(BOOTSTRAP_DOC_B)
         doc_extra.write_text(EXTENSION_DOC)
 
-        # ── 1. Bootstrap an ontology draft from raw documents ─────
-        banner("1. Ontology.from_sources — bootstrap from corpus")
+        # ── 1a. Bootstrap (method='llm') — LLM proposes types from text ─
+        banner("1a. Ontology.from_sources(method='llm') — LLM-driven")
         draft = await Ontology.from_sources(
             [str(doc_a), str(doc_b)],
             llm,
+            method="llm",
             boundaries="business news: companies, employees, locations",
             sample_chunks_per_doc=2,
         )
         print_ontology(draft)
+
+        # ── 1b. Bootstrap (method='grounded') — NER + catalog lookup ───
+        # The grounded path is much faster (no per-chunk LLM proposal)
+        # and produces a schema strictly limited to types the catalog
+        # knows about. Passing ``llm=`` here additionally runs the
+        # per-type trim, filtering each type's catalog-supplied property
+        # list down to what the corpus actually mentions.
+        banner("1b. Ontology.from_sources(method='grounded') — Schema.org-driven")
+        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+
+        grounded_draft = await Ontology.from_sources(
+            [str(doc_a), str(doc_b)],
+            llm=llm,  # enables corpus-aware property trim
+            method="grounded",
+            catalog=SchemaOrgCatalog(),
+            sample_chunks_per_doc=2,
+        )
+        print_ontology(grounded_draft)
+        # Compare to method='llm' — grounded covers Schema.org types
+        # only, but reaches them deterministically and with provenance.
 
         # ── 2. Persist the draft & re-load ─────────────────────────
         banner("2. Save / reload (schema-as-config)")

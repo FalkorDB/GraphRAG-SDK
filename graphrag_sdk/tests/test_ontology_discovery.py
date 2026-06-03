@@ -745,11 +745,19 @@ class TestSchemaOrgCatalog:
         person = catalog.lookup("Person")
         assert person is not None
         assert person.label == "Person"
-        assert person.description and "schema.org" in person.description.lower()
-        # At least one property whose description references its
-        # Schema.org camelCase origin.
+        # The catalog records the canonical URI in the description as a
+        # provenance marker in the exact form ``"Schema.org: https://schema.org/<Type>"``.
+        # Checking for that full prefix avoids the CodeQL "incomplete URL
+        # substring sanitization" false positive raised by looser checks
+        # like ``"schema.org" in description``.
+        assert person.description is not None
+        assert "Schema.org: https://schema.org/Person" in person.description
+        # At least one property's description is prefixed with the exact
+        # ``"Schema.org "`` marker (e.g. ``"Schema.org birthDate"``).
         camel_refs = [
-            a for a in person.properties if a.description and "Schema.org" in a.description
+            a
+            for a in person.properties
+            if a.description is not None and a.description.startswith("Schema.org ")
         ]
         assert camel_refs, "Properties should reference their Schema.org names"
 
