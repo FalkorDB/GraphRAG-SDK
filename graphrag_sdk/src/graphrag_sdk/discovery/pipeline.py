@@ -857,9 +857,12 @@ async def discover_grounded(
     )
 
     # Build Entities from the catalog's view of the detected types, with
-    # an optional per-type LLM trim pass.
+    # an optional per-type LLM trim pass. ``catalog.lookup`` may be
+    # synchronous and block on first-call I/O (DBpediaCatalog's Schema.org
+    # fetch is the obvious case), so it runs in a worker thread to avoid
+    # stalling the event loop while parallel trim calls / NER finishes.
     async def _build_entity(type_name: str) -> Entity | None:
-        base = catalog.lookup(type_name)
+        base = await asyncio.to_thread(catalog.lookup, type_name)
         if base is None:
             logger.debug(
                 "grounded discovery: type %r detected but not in catalog (skipping)",
@@ -895,7 +898,8 @@ async def discover_grounded(
     # ``existing.merge(discovered)`` below.
     existing_labels = {e.label for e in existing.entities} if existing is not None else set()
     relation_scope = detected_types | existing_labels
-    all_relations = catalog.relations_among(relation_scope)
+    # Same blocking-I/O concern as ``catalog.lookup`` above.
+    all_relations = await asyncio.to_thread(catalog.relations_among, relation_scope)
     relations = [
         r
         for r in all_relations

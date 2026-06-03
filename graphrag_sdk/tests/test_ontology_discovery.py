@@ -725,10 +725,11 @@ class TestSuggestExtensions:
 # ── Catalog + grounded discovery ───────────────────────────────────
 
 
-# Minimal Schema.org JSON-LD subset used to exercise SchemaOrgCatalog
-# without touching the network. Realistic shape — same ``@graph`` /
-# ``@type`` / ``schema:domainIncludes`` / ``rdfs:subClassOf`` keys the
-# live endpoint emits. Just enough to cover all parsing branches.
+# Minimal Schema.org JSON-LD subset used to exercise DBpediaCatalog's
+# Schema.org lookup branch without touching the network. Realistic
+# shape — same ``@graph`` / ``@type`` / ``schema:domainIncludes`` /
+# ``rdfs:subClassOf`` keys the live endpoint emits. Just enough to
+# cover all parsing branches.
 _SCHEMA_ORG_FIXTURE = json.dumps(
     {
         "@context": {"schema": "https://schema.org/", "rdf": "...", "rdfs": "..."},

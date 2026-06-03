@@ -117,8 +117,15 @@ class SchemaExtensionProposal(BaseModel):
             relation types that already exist. Apply with
             ``rag.add_relation_pattern(rel_label, src, tgt)``.
         new_attributes: Additional ``(owner_label, attribute)`` pairs
-            for entity types that already exist. Apply with
-            ``await rag.add_attribute(owner_label, attribute)``.
+            for *existing* entity or relation types. ``owner_label`` is
+            an entity label *or* a relation label — both kinds appear
+            in this list. Apply entity-owner pairs with
+            ``await rag.add_attribute(owner_label, attribute)``;
+            relation-owner pairs cannot be applied via the v1.2.x
+            mutation API yet (``add_attribute`` raises
+            ``NotImplementedError`` for relation owners), so they are
+            surfaced here for visibility only — see "What's Not in the
+            API" in the Ontology Evolution docs for the workaround.
         sources_scanned: Source identifiers the proposal was derived
             from. Coarse-grained evidence — see the documentation for
             the rationale and the planned upgrade path.

@@ -336,11 +336,18 @@ class Ontology(DataModel):
           pass to collapse synonyms. Requires ``llm``.
         - ``method="grounded"`` — Adapts barakb/text-to-rdf's
           "find entities, look up their schemas" technique. Run NER on
-          each sampled chunk against ``catalog``'s known types, collect
-          the types actually detected in the corpus, ask the catalog
-          for each type's schema definition (properties + canonical
-          URI) and for the relations between detected types. Zero LLM
-          calls. Requires ``catalog``.
+          each sampled chunk with a small fixed anchor label list
+          (``["person", "organization", "location", "event"]``) to
+          surface entity mention strings, then call
+          ``catalog.link_entity(name)`` per unique mention to get the
+          types each entity belongs to (e.g. ``DBpediaCatalog`` issues
+          a SPARQL query to DBpedia). Collect the union of those
+          types, ask the catalog for each detected type's schema
+          definition (properties + canonical URI) and for the
+          relations between detected types. Zero LLM calls unless
+          ``llm`` is provided — in which case a per-type trim filters
+          each type's catalog-supplied property list down to what the
+          corpus actually mentions. Requires ``catalog``.
 
         The returned ontology is intended as a *draft* — inspect, edit,
         save with :py:meth:`save_to_file`, then pass into ``GraphRAG``.
@@ -385,12 +392,12 @@ class Ontology(DataModel):
                 boundaries="biotech research papers about CRISPR",
             )
 
-            # Catalog-grounded discovery (no LLM).
-            from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+            # Catalog-grounded discovery — DBpedia + Schema.org, no LLM.
+            from graphrag_sdk.discovery.catalog import DBpediaCatalog
             draft = await Ontology.from_sources(
                 ["docs/news/*.md"],
                 method="grounded",
-                catalog=SchemaOrgCatalog(),
+                catalog=DBpediaCatalog(),
             )
         """
         if method == "llm":
@@ -421,7 +428,7 @@ class Ontology(DataModel):
             if catalog is None:
                 raise ValueError(
                     "method='grounded' requires `catalog=<Catalog>` "
-                    "(e.g. `catalog=SchemaOrgCatalog()`)."
+                    "(e.g. `catalog=DBpediaCatalog()`)."
                 )
             from graphrag_sdk.discovery.pipeline import discover_grounded
 

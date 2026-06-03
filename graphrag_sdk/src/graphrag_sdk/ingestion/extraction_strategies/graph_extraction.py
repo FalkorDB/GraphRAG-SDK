@@ -190,11 +190,13 @@ def _render_attribute_block(ontology: Ontology) -> str:
     for et in ontology.entities:
         # Drop SDK-managed names — they are documented in the schema but
         # populated by step-1 NER, not by per-entity attribute extraction.
-        managed_props = [p for p in et.properties if p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES]
-        if not managed_props:
+        # The variable name reflects what *remains* after filtering: the
+        # properties the LLM should extract per entity.
+        extractable_props = [p for p in et.properties if p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES]
+        if not extractable_props:
             continue
         ent_lines.append(f"- {et.label}:")
-        ent_lines.extend(_format_property_for_prompt(p) for p in managed_props)
+        ent_lines.extend(_format_property_for_prompt(p) for p in extractable_props)
 
     rel_lines: list[str] = []
     for rt in ontology.relations:

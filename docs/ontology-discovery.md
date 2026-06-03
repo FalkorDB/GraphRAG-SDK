@@ -68,10 +68,11 @@ draft = await Ontology.from_sources(
 
 Behavior:
 
-- For each source: load → chunk → sample → run NER on each sampled chunk with the catalog's known types as candidates.
-- Aggregate the union of types detected across the corpus.
+- For each source: load → chunk → sample → run NER on each sampled chunk with a small fixed anchor label list (`["person", "organization", "location", "event"]`) to find entity mention strings. These anchor labels never appear in the output ontology — they only help local NER spot proper nouns.
+- For each unique mention name across the corpus, call `catalog.link_entity(name)` — the catalog answers "what types is this entity?" (for `DBpediaCatalog` that's a SPARQL query to DBpedia).
+- Aggregate the union of types returned across all linked entities.
 - Ask the catalog for each detected type's schema definition (`Entity` with attributes + canonical URI).
-- Ask the catalog for every relation whose source and target are both in the detected set.
+- Ask the catalog for every relation whose source and target are both in the detected set (or in `existing` — bridge relations between newly-detected and pre-existing types are surfaced).
 - Merge with `existing` if supplied.
 
 Zero LLM calls when `llm` is not supplied. No hallucination, no drift — the schema is entirely catalog-derived; the corpus only chooses the subset. At the cost of being **limited to what the catalog knows** — domain-specific types that aren't in the catalog won't appear.
