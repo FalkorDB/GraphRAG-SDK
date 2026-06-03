@@ -51,5 +51,6 @@ nav:
   - Retrieval: retrieval.md
   - Storage: storage.md
   - Graph Schema: graph-schema.md
+  - Ontology Evolution: ontology-evolution.md
   - Benchmark: benchmark.md
   - API Reference: api-reference.md

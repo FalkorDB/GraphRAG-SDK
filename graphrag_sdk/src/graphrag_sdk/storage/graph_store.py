@@ -881,6 +881,315 @@ class GraphStore:
             deleted += r.result_set[0][0] if r.result_set else 0
         return deleted
 
+    # ── Ontology evolution (data-graph migration primitives) ────
+    #
+    # The ``GraphRAG`` evolution methods orchestrate ontology-graph writes
+    # (via ``OntologyStore``) with data-graph writes (via the helpers
+    # below). All are idempotent — re-running on already-converged state
+    # is a no-op that returns count=0.
+
+    async def rename_label(self, old: str, new: str) -> int:
+        """Move every node from ``:old`` to ``:new``.
+
+        Idempotent: nodes already moved no longer match the source label
+        so the second call's MATCH yields zero. Preserves any other
+        labels on the node (e.g. ``__Entity__``).
+
+        Returns the number of nodes relabelled.
+        """
+        safe_old = sanitize_cypher_label(old)
+        safe_new = sanitize_cypher_label(new)
+        if safe_old == safe_new:
+            return 0
+        r = await self._conn.query(
+            f"MATCH (n:`{safe_old}`) SET n:`{safe_new}` REMOVE n:`{safe_old}` RETURN count(n) AS n",
+        )
+        return r.result_set[0][0] if r.result_set else 0
+
+    async def rename_node_property(self, label: str, old: str, new: str) -> int:
+        """Rename property ``old`` to ``new`` on every node carrying ``label``.
+
+        Property keys cannot be parameterised in Cypher, so the names are
+        sanitised through the same routine used for labels (which allows
+        only ``[A-Za-z_][A-Za-z0-9_]*``) before being interpolated.
+
+        Returns the number of nodes whose property was renamed.
+        """
+        safe_label = sanitize_cypher_label(label)
+        safe_old = sanitize_cypher_label(old)
+        safe_new = sanitize_cypher_label(new)
+        if safe_old == safe_new:
+            return 0
+        r = await self._conn.query(
+            f"MATCH (n:`{safe_label}`) WHERE n.`{safe_old}` IS NOT NULL "
+            f"SET n.`{safe_new}` = n.`{safe_old}` "
+            f"REMOVE n.`{safe_old}` "
+            f"RETURN count(n) AS n",
+        )
+        return r.result_set[0][0] if r.result_set else 0
+
+    async def drop_node_property(self, label: str, prop: str) -> int:
+        """Remove ``prop`` from every node carrying ``label``.
+
+        Returns the number of nodes touched.
+        """
+        safe_label = sanitize_cypher_label(label)
+        safe_prop = sanitize_cypher_label(prop)
+        r = await self._conn.query(
+            f"MATCH (n:`{safe_label}`) WHERE n.`{safe_prop}` IS NOT NULL "
+            f"REMOVE n.`{safe_prop}` "
+            f"RETURN count(n) AS n",
+        )
+        return r.result_set[0][0] if r.result_set else 0
+
+    async def delete_nodes_by_label(self, label: str) -> int:
+        """``DETACH DELETE`` every node with this label.
+
+        Returns the count of nodes removed.
+        """
+        safe_label = sanitize_cypher_label(label)
+        # Count first, then delete — FalkorDB's count-after-DELETE returns
+        # post-delete cardinality (zero) for a non-aggregated path.
+        count_r = await self._conn.query(
+            f"MATCH (n:`{safe_label}`) RETURN count(n) AS n",
+        )
+        count = count_r.result_set[0][0] if count_r.result_set else 0
+        if count == 0:
+            return 0
+        await self._conn.query(f"MATCH (n:`{safe_label}`) DETACH DELETE n")
+        return count
+
+    async def rename_relation_type(self, old: str, new: str) -> int:
+        """Recreate every ``[:old]`` edge as ``[:new]``, preserving
+        endpoints and properties.
+
+        FalkorDB cannot mutate a relationship's type in place, so the
+        operation is recreate-and-delete. Logs a warning when the edge
+        count exceeds 10k because the rebuild is O(edges).
+
+        Returns the number of edges relabelled.
+        """
+        safe_old = sanitize_cypher_label(old)
+        safe_new = sanitize_cypher_label(new)
+        if safe_old == safe_new:
+            return 0
+        count_r = await self._conn.query(f"MATCH ()-[r:`{safe_old}`]->() RETURN count(r) AS n")
+        count = count_r.result_set[0][0] if count_r.result_set else 0
+        if count > 10_000:
+            logger.warning(
+                "rename_relation_type: %d [%s] edges will be recreated as "
+                "[%s] (expensive); FalkorDB lacks in-place type rewrite.",
+                count,
+                safe_old,
+                safe_new,
+            )
+        if count == 0:
+            return 0
+        # Two-phase rebuild: collect via id pairs, then re-MERGE.
+        await self._conn.query(
+            f"MATCH (a)-[r:`{safe_old}`]->(b) "
+            f"WITH a, b, r, properties(r) AS props "
+            f"CREATE (a)-[r2:`{safe_new}`]->(b) "
+            f"SET r2 = props "
+            f"DELETE r"
+        )
+        return count
+
+    async def delete_relations_by_type(self, rel_type: str) -> int:
+        """``DELETE`` every edge of type ``rel_type``. Returns the count."""
+        safe = sanitize_cypher_label(rel_type)
+        count_r = await self._conn.query(f"MATCH ()-[r:`{safe}`]->() RETURN count(r) AS n")
+        count = count_r.result_set[0][0] if count_r.result_set else 0
+        if count == 0:
+            return 0
+        await self._conn.query(f"MATCH ()-[r:`{safe}`]->() DELETE r")
+        return count
+
+    async def delete_relations_by_pattern(
+        self, rel_type: str, src_label: str, tgt_label: str
+    ) -> int:
+        """Delete edges of ``rel_type`` only when source/target labels match.
+
+        Used for ``drop_relation_pattern``: other patterns of the same
+        relation type (with different endpoint labels) are preserved.
+        """
+        safe_rel = sanitize_cypher_label(rel_type)
+        safe_src = sanitize_cypher_label(src_label)
+        safe_tgt = sanitize_cypher_label(tgt_label)
+        count_r = await self._conn.query(
+            f"MATCH (s:`{safe_src}`)-[r:`{safe_rel}`]->(t:`{safe_tgt}`) RETURN count(r) AS n"
+        )
+        count = count_r.result_set[0][0] if count_r.result_set else 0
+        if count == 0:
+            return 0
+        await self._conn.query(
+            f"MATCH (s:`{safe_src}`)-[r:`{safe_rel}`]->(t:`{safe_tgt}`) DELETE r"
+        )
+        return count
+
+    # ── Chunk-scoped backfill helpers ───────────────────────────
+
+    async def count_chunks_marked_with_op(self, op_id: str) -> int:
+        """Count chunks that already carry the given backfill ``op_id``.
+
+        Used to populate ``BackfillResult.chunks_skipped`` — on a fresh
+        run this is 0, on an idempotent rerun it equals the work the
+        previous run completed.
+        """
+        r = await self._conn.query(
+            "MATCH (c:Chunk) WHERE $op IN coalesce(c.extracted_ops, []) RETURN count(c) AS n",
+            {"op": op_id},
+        )
+        return r.result_set[0][0] if r.result_set else 0
+
+    async def mark_chunk_extracted(self, chunk_id: str, op_id: str) -> None:
+        """Append ``op_id`` to a chunk's ``extracted_ops`` list (idempotent).
+
+        Used by ``BackfillExecutor`` to record that a chunk has been
+        successfully processed for a given backfill operation, so a
+        resumed or repeated run skips it.
+        """
+        await self._conn.query(
+            "MATCH (c:Chunk {id: $id}) "
+            "WITH c, coalesce(c.extracted_ops, []) AS ops "
+            "WHERE NOT $op IN ops "
+            "SET c.extracted_ops = ops + [$op]",
+            {"id": chunk_id, "op": op_id},
+        )
+
+    async def list_chunks_for_attribute_backfill(
+        self,
+        owner_label: str,
+        prop_name: str,
+        *,
+        op_id: str,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return chunks mentioning entities of ``owner_label`` that
+        are missing ``prop_name``, excluding already-processed chunks.
+
+        Each row:
+            {"chunk_id": str, "chunk_text": str,
+             "entities": [{"id": str, "name": str | None}, ...]}
+        """
+        safe_label = sanitize_cypher_label(owner_label)
+        safe_prop = sanitize_cypher_label(prop_name)
+        limit_clause = f" LIMIT {int(limit)}" if limit else ""
+        result = await self._conn.query(
+            f"MATCH (e:`{safe_label}`)-[:MENTIONED_IN]->(c:Chunk) "
+            f"WHERE e.`{safe_prop}` IS NULL "
+            "AND NOT $op IN coalesce(c.extracted_ops, []) "
+            "WITH c, collect(DISTINCT {id: e.id, name: e.name}) AS ents "
+            f"RETURN c.id AS chunk_id, c.text AS chunk_text, ents{limit_clause}",
+            {"op": op_id},
+        )
+        rows: list[dict[str, Any]] = []
+        for row in result.result_set or []:
+            rows.append(
+                {
+                    "chunk_id": row[0],
+                    "chunk_text": row[1],
+                    "entities": row[2] or [],
+                }
+            )
+        return rows
+
+    async def list_chunks_for_entity_backfill(
+        self,
+        *,
+        op_id: str,
+        chunk_ids: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return chunks (entire corpus, or a constrained ``chunk_ids``
+        scope) that have not been marked with ``op_id`` yet.
+
+        Each row: ``{"chunk_id": str, "chunk_text": str}``.
+        """
+        limit_clause = f" LIMIT {int(limit)}" if limit else ""
+        if chunk_ids is None:
+            result = await self._conn.query(
+                "MATCH (c:Chunk) "
+                "WHERE NOT $op IN coalesce(c.extracted_ops, []) "
+                f"RETURN c.id AS chunk_id, c.text AS chunk_text{limit_clause}",
+                {"op": op_id},
+            )
+        else:
+            result = await self._conn.query(
+                "UNWIND $ids AS cid "
+                "MATCH (c:Chunk {id: cid}) "
+                "WHERE NOT $op IN coalesce(c.extracted_ops, []) "
+                f"RETURN c.id AS chunk_id, c.text AS chunk_text{limit_clause}",
+                {"op": op_id, "ids": chunk_ids},
+            )
+        return [{"chunk_id": row[0], "chunk_text": row[1]} for row in (result.result_set or [])]
+
+    async def list_chunks_for_relation_pattern_backfill(
+        self,
+        src_label: str,
+        tgt_label: str,
+        *,
+        op_id: str,
+        limit: int | None = None,
+        pairs_per_chunk: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return chunks where at least one ``src_label`` entity and one
+        ``tgt_label`` entity co-occur (both have ``MENTIONED_IN`` to the
+        same chunk), excluding already-processed chunks.
+
+        Each row carries the candidate pairs so the LLM can answer
+        per-pair without re-scanning. ``pairs_per_chunk`` (default 50)
+        caps the candidate Cartesian product per chunk — without it, a
+        single chunk with M source-type and N target-type entities
+        would emit ``M*N`` pairs and explode both the LLM prompt size
+        and the per-call cost. Tune up if you have evidence many of the
+        clipped pairs are real edges; leave at the default for typical
+        domain corpora.
+        """
+        safe_src = sanitize_cypher_label(src_label)
+        safe_tgt = sanitize_cypher_label(tgt_label)
+        limit_clause = f" LIMIT {int(limit)}" if limit else ""
+        cap = max(1, int(pairs_per_chunk))
+        result = await self._conn.query(
+            f"MATCH (s:`{safe_src}`)-[:MENTIONED_IN]->(c:Chunk) "
+            f"MATCH (t:`{safe_tgt}`)-[:MENTIONED_IN]->(c) "
+            "WHERE s <> t "
+            "AND NOT $op IN coalesce(c.extracted_ops, []) "
+            "WITH c, collect(DISTINCT {src_id: s.id, src_name: s.name, "
+            "tgt_id: t.id, tgt_name: t.name}) AS pairs "
+            f"RETURN c.id AS chunk_id, c.text AS chunk_text, pairs[0..{cap}] AS pairs"
+            f"{limit_clause}",
+            {"op": op_id},
+        )
+        return [
+            {"chunk_id": row[0], "chunk_text": row[1], "pairs": row[2] or []}
+            for row in (result.result_set or [])
+        ]
+
+    async def set_node_property_by_id(
+        self,
+        label: str,
+        node_id: str,
+        prop: str,
+        value: Any,
+    ) -> None:
+        """SET a single property on a node identified by ``label`` + ``id``.
+
+        Used by backfill merge fns. ``value=None`` removes the property.
+        """
+        safe_label = sanitize_cypher_label(label)
+        safe_prop = sanitize_cypher_label(prop)
+        if value is None:
+            await self._conn.query(
+                f"MATCH (n:`{safe_label}` {{id: $id}}) REMOVE n.`{safe_prop}`",
+                {"id": node_id},
+            )
+        else:
+            await self._conn.query(
+                f"MATCH (n:`{safe_label}` {{id: $id}}) SET n.`{safe_prop}` = $value",
+                {"id": node_id, "value": value},
+            )
+
     # ── Helpers ──────────────────────────────────────────────────
 
     @staticmethod
