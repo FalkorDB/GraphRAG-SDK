@@ -12,6 +12,7 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
+    _SDK_MANAGED_ATTRIBUTE_NAMES,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -177,13 +178,25 @@ def _render_attribute_block(ontology: Ontology) -> str:
     Returns ``""`` when no entity or relation type declares any property — this
     keeps the prompt identical to today for property-less schemas (no token
     drift, no quality regression for the existing extraction path).
+
+    SDK-managed attribute names (see ``_SDK_MANAGED_ATTRIBUTE_NAMES`` in
+    ``core/models.py``) are filtered out of per-entity properties: the
+    schema may declare them for documentation honesty, but the LLM is
+    not asked to extract them as attributes because they come through
+    on the top-level entity object (set from the GLiNER span / step-1
+    NER) and storage would otherwise overwrite the canonical value.
     """
     ent_lines: list[str] = []
     for et in ontology.entities:
-        if not et.properties:
+        # Drop SDK-managed names — they are documented in the schema but
+        # populated by step-1 NER, not by per-entity attribute extraction.
+        # The variable name reflects what *remains* after filtering: the
+        # properties the LLM should extract per entity.
+        extractable_props = [p for p in et.properties if p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES]
+        if not extractable_props:
             continue
         ent_lines.append(f"- {et.label}:")
-        ent_lines.extend(_format_property_for_prompt(p) for p in et.properties)
+        ent_lines.extend(_format_property_for_prompt(p) for p in extractable_props)
 
     rel_lines: list[str] = []
     for rt in ontology.relations:
@@ -213,9 +226,18 @@ def _render_attribute_block(ontology: Ontology) -> str:
 
 
 def _ontology_has_attributes(ontology: Ontology) -> bool:
-    return any(et.properties for et in ontology.entities) or any(
-        rt.properties for rt in ontology.relations
+    """True iff the ontology has at least one *extractable* attribute.
+
+    SDK-managed names (filtered by ``_render_attribute_block``) do not
+    count — a schema where every entity declares only ``name`` should
+    behave like a property-less schema for prompt-routing purposes.
+    """
+    has_entity_attrs = any(
+        any(p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES for p in et.properties)
+        for et in ontology.entities
     )
+    has_relation_attrs = any(rt.properties for rt in ontology.relations)
+    return has_entity_attrs or has_relation_attrs
 
 
 def _coerce_attribute_value(value: Any, prop_type: str) -> tuple[bool, Any]:

@@ -60,6 +60,7 @@ from graphrag_sdk.core.providers import (
     OpenRouterEmbedder,
     OpenRouterLLM,
 )
+from graphrag_sdk.discovery import OntologyDiscoveryError, SchemaExtensionProposal
 
 # ── Ingestion Strategies ────────────────────────────────────────
 from graphrag_sdk.ingestion.backfill import (
@@ -176,7 +177,9 @@ __all__ = [
     "ChunkContext",
     "ChunkingStrategy",
     "EvolutionResult",
+    "OntologyDiscoveryError",
     "OntologyEvolutionError",
+    "SchemaExtensionProposal",
     "CallableChunking",
     "ContextualChunking",
     "FixedSizeChunking",
