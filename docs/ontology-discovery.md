@@ -55,12 +55,12 @@ Returns: a new `Ontology`.
 Adapts [`barakb/text-to-rdf`](https://github.com/barakb/text-to-rdf)'s "find entities, look up their schemas" technique to schema discovery. The corpus tells you *which* types to include; the catalog tells you *what* their schemas are.
 
 ```python
-from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+from graphrag_sdk.discovery.catalog import DBpediaCatalog
 
 draft = await Ontology.from_sources(
     sources,
     method="grounded",
-    catalog=SchemaOrgCatalog(),       # required for method="grounded"
+    catalog=DBpediaCatalog(),       # required for method="grounded"
     sample_chunks_per_doc=3,          # used for NER, not LLM
     concurrency=4,
 )
@@ -89,7 +89,7 @@ draft = await Ontology.from_sources(
     sources,
     llm=llm,                          # triggers the per-type trim
     method="grounded",
-    catalog=SchemaOrgCatalog(),
+    catalog=DBpediaCatalog(),
 )
 ```
 
@@ -101,15 +101,20 @@ Cost: ~1 LLM call per *type*, not per chunk — much cheaper than `method="llm"`
 
 A `Catalog` is the source of truth for ontology vocabulary. Concrete catalogs that ship today:
 
-| Class | Source | Network behaviour |
+| Class | Per-entity source | Per-type source |
 |---|---|---|
-| `SchemaOrgCatalog` | Live fetch of Schema.org's published JSON-LD vocabulary | First call downloads; subsequent calls hit a local cache |
+| `DBpediaCatalog` | DBpedia SPARQL (`https://dbpedia.org/sparql`) | Schema.org JSON-LD (live) |
 
-`SchemaOrgCatalog` is **live-fetched by default** — there is no bundled snapshot. On the first invocation of `known_types()` / `lookup()` / `relations_among()`, the catalog downloads Schema.org's official JSON-LD vocabulary from `https://schema.org/version/latest/schemaorg-current-https.jsonld`, processes it (applies `subClassOf` inheritance and filters to the curated subset), and writes the processed result to `$XDG_CACHE_HOME/graphrag-sdk/schema_org.json` (typically `~/.cache/graphrag-sdk/schema_org.json`). Subsequent instantiations on the same machine read the cache. Cache TTL defaults to 30 days; pass `cache_ttl_days=None` to disable expiry or `0` to force re-fetch on every construction. There is **no offline fallback** — if the network is unreachable and the cache is missing/stale beyond TTL, `SchemaOrgFetchError` is raised.
+`DBpediaCatalog` is **fully live** — no bundled data. The work splits across two services:
 
-The default curated subset has 10 common types — Person, Organization, EducationalOrganization, Place, Country, City, Event, CreativeWork, Article, Book — with `subClassOf` inheritance applied, so `Article` carries CreativeWork's attributes / relations, `EducationalOrganization` carries Organization's, etc. Override by passing `curated_types=` to widen or narrow the set.
+- **`link_entity(name)`** — given an entity mention NER found in a chunk (e.g. `"Albert Einstein"`), SPARQL DBpedia for entities whose `rdfs:label` matches, filtered to `http://dbpedia.org/ontology/` types. Returns the local names (e.g. `["Person", "Scientist"]`). Results are cached in-process for the lifetime of the catalog instance — repeated mentions across chunks only get one SPARQL call.
+- **`lookup(type)` / `relations_among(types)`** — first call downloads Schema.org's full JSON-LD vocabulary, processes it (applies `rdfs:subClassOf` inheritance so e.g. `Article` carries `CreativeWork`'s attributes), and caches the processed result under `$XDG_CACHE_HOME/graphrag-sdk/schema_org.json` (typically `~/.cache/graphrag-sdk/schema_org.json`). Cache TTL defaults to 30 days; pass `cache_ttl_days=None` to disable expiry or `0` to force re-fetch every construction.
 
-The `Catalog` ABC has three abstract methods — `known_types() / lookup(name) / relations_among(names)` — so adding a `WikidataCatalog`, `DBpediaCatalog`, or a domain-specific catalog is a focused subclass.
+There is **no offline fallback**. If DBpedia or Schema.org is unreachable and the Schema.org cache is missing/stale, `DBpediaFetchError` is raised. Pre-warm the cache by running once with connectivity, or supply a pre-populated `cache_path`.
+
+No hardcoded type list: types come from real entities found in your corpus, mapped through DBpedia's ontology, then defined by Schema.org. The corpus drives which types appear in the output.
+
+The `Catalog` ABC has three abstract methods — `link_entity(name) / lookup(type_name) / relations_among(type_names)` — so adding a `WikidataCatalog`, a SPARQL-store catalog, or a domain-specific catalog is a focused subclass. The pipeline runs NER (default: `GLiNERExtractor`) to find mention strings, then asks the catalog the rest.
 
 #### Choosing between `method="llm"` and `method="grounded"`
 
@@ -210,7 +215,7 @@ Other reserved-system names (`id`, `description`, `source_chunk_ids`, `spans`, `
 | Situation | Use |
 |---|---|
 | Brand-new project, no ontology, unfamiliar / domain-specific corpus | `Ontology.from_sources(sources, llm, method="llm")` |
-| General web content / news / biographies — Schema.org vocabulary fits | `Ontology.from_sources(sources, method="grounded", catalog=SchemaOrgCatalog())` |
+| General web content / news / biographies — Schema.org vocabulary fits | `Ontology.from_sources(sources, method="grounded", catalog=DBpediaCatalog())` |
 | You have a draft and want to refresh it against more docs | `Ontology.from_sources(new_sources, llm, existing=current_draft)` |
 | You've ingested with a committed ontology and new docs are coming in | `rag.suggest_schema_extensions(new_sources)` → review → apply with the mutation API |
 | You already know the schema | Hand-author `Ontology(...)` — discovery only buys overhead |

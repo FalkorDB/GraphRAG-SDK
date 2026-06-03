@@ -8,6 +8,7 @@ Three layers covered:
 from __future__ import annotations
 
 import json
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -804,127 +805,194 @@ _SCHEMA_ORG_FIXTURE = json.dumps(
 
 def _mock_urlopen_fixture(*args, **kwargs):
     """Drop-in replacement for ``urllib.request.urlopen`` that yields the
-    fixture bytes as a context-manager-compatible BytesIO. Accepts and
-    discards any positional/keyword args (``timeout``, etc.) the catalog
-    might pass."""
+    Schema.org fixture bytes as a context-manager-compatible BytesIO."""
     import io
 
     return io.BytesIO(_SCHEMA_ORG_FIXTURE)
 
 
-class TestSchemaOrgCatalog:
-    """Live-fetch SchemaOrgCatalog with the network mocked.
+# DBpedia SPARQL result fixture for ``link_entity``.
+# Real Spotlight/SPARQL responses use this exact JSON shape.
+def _dbpedia_sparql_fixture(types: list[str]) -> bytes:
+    """Synthesise a SPARQL-results JSON payload for the given dbo: types."""
+    return json.dumps(
+        {
+            "head": {"link": [], "vars": ["type"]},
+            "results": {
+                "distinct": False,
+                "ordered": True,
+                "bindings": [
+                    {
+                        "type": {
+                            "type": "uri",
+                            "value": f"http://dbpedia.org/ontology/{t}",
+                        }
+                    }
+                    for t in types
+                ],
+            },
+        }
+    ).encode("utf-8")
 
-    The catalog now downloads Schema.org's JSON-LD on first use and
-    caches the processed result under
-    ``$XDG_CACHE_HOME/graphrag-sdk/schema_org.json``. Tests redirect the
-    cache to ``tmp_path`` to keep them hermetic and patch
-    ``urllib.request.urlopen`` so no real network traffic happens.
+
+def _make_mock_urlopen(*, sparql_types_for: dict[str, list[str]] | None = None):
+    """Return a urlopen replacement that picks the right fixture by URL.
+
+    - URLs containing ``schema.org`` → the Schema.org JSON-LD fixture
+    - URLs containing ``sparql``     → a synthesised SPARQL result based
+      on the entity name embedded in the query (via ``sparql_types_for``)
+    """
+    sparql_types_for = sparql_types_for or {}
+
+    def _mock(url_or_request, *_args, **_kwargs):
+        import io
+
+        url = (
+            url_or_request.full_url
+            if hasattr(url_or_request, "full_url")
+            else url_or_request
+        )
+        if "schema.org" in url:
+            return io.BytesIO(_SCHEMA_ORG_FIXTURE)
+        if "sparql" in url:
+            # Pull the entity name out of the SPARQL query string in the URL.
+            decoded = urllib.parse.unquote(url)
+            name = None
+            for candidate in sparql_types_for.keys():
+                if f'"{candidate}"@en' in decoded:
+                    name = candidate
+                    break
+            types = sparql_types_for.get(name or "", []) if name else []
+            return io.BytesIO(_dbpedia_sparql_fixture(types))
+        raise ValueError(f"unexpected URL in mock urlopen: {url}")
+
+    return _mock
+
+
+class TestDBpediaCatalog:
+    """Live-lookup DBpediaCatalog with the network mocked.
+
+    DBpediaCatalog uses:
+      - DBpedia SPARQL (https://dbpedia.org/sparql) for ``link_entity``
+      - Schema.org JSON-LD (live) for ``lookup`` and ``relations_among``
+
+    Both are mocked via a single replacement for
+    ``urllib.request.urlopen`` that picks the right fixture by URL.
     """
 
     @pytest.fixture
-    def schema_org_catalog(self, tmp_path):
-        """A fresh catalog with the network mocked and cache under tmp_path."""
+    def catalog(self, tmp_path):
+        """A fresh catalog with both endpoints mocked + cache under tmp_path."""
         from unittest.mock import patch
-        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+        from graphrag_sdk.discovery.catalog import DBpediaCatalog
 
+        mock = _make_mock_urlopen(
+            sparql_types_for={
+                "Albert Einstein": ["Person", "Scientist"],
+                "Acme": ["Organization"],
+            }
+        )
         cache_path = tmp_path / "schema_org.json"
         with patch(
-            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
-            new=_mock_urlopen_fixture,
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=mock
         ):
-            yield SchemaOrgCatalog(
-                cache_path=cache_path,
-                curated_types={"Person", "Organization", "Place", "CreativeWork", "Article"},
+            yield DBpediaCatalog(cache_path=cache_path)
+
+    def test_link_entity_returns_dbpedia_types(self, catalog) -> None:
+        """SPARQL response is parsed into local-name types."""
+        types = catalog.link_entity("Albert Einstein")
+        assert types == ["Person", "Scientist"]
+
+    def test_link_entity_empty_string_short_circuits(self, catalog) -> None:
+        assert catalog.link_entity("") == []
+
+    def test_link_entity_unknown_name_returns_empty(self, catalog) -> None:
+        # No entry in the SPARQL fixture → empty bindings → empty list.
+        assert catalog.link_entity("Someone Not In KB") == []
+
+    def test_link_entity_results_are_cached(self, tmp_path) -> None:
+        """A second link_entity call for the same name hits the in-memory
+        cache and does not re-issue the SPARQL query."""
+        from unittest.mock import patch, MagicMock
+        from graphrag_sdk.discovery.catalog import DBpediaCatalog
+
+        spy = MagicMock(
+            side_effect=_make_mock_urlopen(
+                sparql_types_for={"Einstein": ["Person", "Scientist"]}
             )
+        )
+        with patch(
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=spy
+        ):
+            cat = DBpediaCatalog(cache_path=tmp_path / "so.json")
+            cat.link_entity("Einstein")
+            cat.link_entity("Einstein")
+            cat.link_entity("Einstein")
+        def _call_url(call) -> str:
+            arg = call.args[0]
+            return arg.full_url if hasattr(arg, "full_url") else str(arg)
 
-    def test_known_types_returns_curated(self, schema_org_catalog) -> None:
-        assert schema_org_catalog.known_types() == {
-            "Person",
-            "Organization",
-            "Place",
-            "CreativeWork",
-            "Article",
-        }
+        sparql_calls = [c for c in spy.call_args_list if "sparql" in _call_url(c)]
+        assert len(sparql_calls) == 1
 
-    def test_lookup_returns_schema_org_provenance(self, schema_org_catalog) -> None:
-        person = schema_org_catalog.lookup("Person")
+    def test_lookup_returns_schema_org_provenance(self, catalog) -> None:
+        """Person comes from Schema.org's JSON-LD vocabulary."""
+        person = catalog.lookup("Person")
         assert person is not None
         assert person.label == "Person"
-        # The catalog records the canonical URI in the description as a
-        # provenance marker in the exact form
-        # ``"Schema.org: https://schema.org/<Type>"``.
         assert person.description is not None
         assert "Schema.org: https://schema.org/Person" in person.description
-        # ``birthDate`` is on Person directly.
         birth = next(a for a in person.properties if a.name == "birth_date")
         assert birth.type == "DATE"
-        assert birth.description is not None
         assert birth.description.startswith("Schema.org birthDate")
 
-    def test_lookup_returns_none_for_unknown(self, schema_org_catalog) -> None:
-        assert schema_org_catalog.lookup("Penguin") is None
+    def test_lookup_unknown_type_returns_none(self, catalog) -> None:
+        assert catalog.lookup("Penguin") is None
 
-    def test_relations_among_filters_to_input_set(self, schema_org_catalog) -> None:
-        relations = schema_org_catalog.relations_among({"Person", "Organization"})
-        for r in relations:
+    def test_relations_among_filters_to_input_set(self, catalog) -> None:
+        rels = catalog.relations_among({"Person", "Organization"})
+        for r in rels:
             for src, tgt in r.patterns:
                 assert src in {"Person", "Organization"}
                 assert tgt in {"Person", "Organization"}
-        # The fixture has worksFor (Person → Organization) → WORKS_FOR.
-        assert any(
-            ("Person", "Organization") in r.patterns for r in relations
-        )
+        assert any(("Person", "Organization") in r.patterns for r in rels)
 
-    def test_subclass_inherits_base_class_attributes(self, schema_org_catalog) -> None:
-        """``Article`` is a subClassOf ``CreativeWork`` in the fixture.
-        Walking ``rdfs:subClassOf`` should propagate CreativeWork's
-        ``datePublished`` attribute and ``author`` relation onto Article."""
-        article = schema_org_catalog.lookup("Article")
-        creative_work = schema_org_catalog.lookup("CreativeWork")
+    def test_subclass_inherits_base_class_attributes(self, catalog) -> None:
+        """Article subClassOf CreativeWork → Article inherits the attrs/relations."""
+        article = catalog.lookup("Article")
+        creative_work = catalog.lookup("CreativeWork")
         assert article is not None and creative_work is not None
         article_attrs = {a.name for a in article.properties}
         cw_attrs = {a.name for a in creative_work.properties}
         assert "date_published" in article_attrs
         assert cw_attrs <= article_attrs
+        rels = catalog.relations_among({"Article", "Person"})
+        assert any(r.label == "AUTHOR" for r in rels)
 
-        # The author relation should also inherit: Article → Person.
-        rels = schema_org_catalog.relations_among({"Article", "Person"})
-        rel_labels = {r.label for r in rels}
-        assert "AUTHOR" in rel_labels
-
-    def test_cache_is_used_on_second_construction(self, tmp_path) -> None:
-        """Once written, the cache file is read on a fresh construction
-        and the network is not hit again. The mocked urlopen would
-        raise on a second call, proving it wasn't called."""
+    def test_schema_org_cache_is_used_on_second_construction(self, tmp_path) -> None:
         from unittest.mock import patch, MagicMock
-        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+        from graphrag_sdk.discovery.catalog import DBpediaCatalog
 
-        cache_path = tmp_path / "cached.json"
-
-        # First instantiation: network returns the fixture, cache is written.
+        cache_path = tmp_path / "so.json"
         with patch(
             "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
-            new=_mock_urlopen_fixture,
+            new=_make_mock_urlopen(),
         ):
-            first = SchemaOrgCatalog(cache_path=cache_path)
-            first.known_types()
+            first = DBpediaCatalog(cache_path=cache_path)
+            first.lookup("Person")
         assert cache_path.exists()
-
-        # Second instantiation: any network call would raise. Cache hit.
-        sentinel = MagicMock(side_effect=AssertionError("network should not be hit"))
+        sentinel = MagicMock(side_effect=AssertionError("schema.org should not be hit"))
         with patch(
-            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
-            new=sentinel,
+            "graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=sentinel
         ):
-            second = SchemaOrgCatalog(cache_path=cache_path)
-            assert "Person" in second.known_types()
+            second = DBpediaCatalog(cache_path=cache_path)
+            assert second.lookup("Person") is not None
 
-    def test_network_failure_raises_when_cache_missing(self, tmp_path) -> None:
+    def test_schema_org_fetch_failure_raises_when_cache_missing(self, tmp_path) -> None:
         from unittest.mock import patch, MagicMock
         from graphrag_sdk.discovery.catalog import (
-            SchemaOrgCatalog,
-            SchemaOrgFetchError,
+            DBpediaCatalog,
+            DBpediaFetchError,
         )
 
         cache_path = tmp_path / "missing.json"
@@ -932,32 +1000,12 @@ class TestSchemaOrgCatalog:
             "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
             new=MagicMock(side_effect=OSError("connection refused")),
         ):
-            catalog = SchemaOrgCatalog(cache_path=cache_path)
-            with pytest.raises(SchemaOrgFetchError) as exc_info:
-                catalog.known_types()
-            # Error message should point at the URL and the fact that
-            # there is no offline fallback so the user knows what's
-            # going on.
+            cat = DBpediaCatalog(cache_path=cache_path)
+            with pytest.raises(DBpediaFetchError) as exc_info:
+                cat.lookup("Person")
             msg = str(exc_info.value).lower()
             assert "schema.org" in msg
             assert "no offline fallback" in msg
-
-    def test_ttl_expiry_triggers_refetch(self, tmp_path) -> None:
-        """When ``cache_ttl_days=0``, every construction re-fetches."""
-        from unittest.mock import patch, MagicMock
-        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
-
-        cache_path = tmp_path / "ttl.json"
-        urlopen_spy = MagicMock(side_effect=_mock_urlopen_fixture)
-        with patch(
-            "graphrag_sdk.discovery.catalog.urllib.request.urlopen",
-            new=urlopen_spy,
-        ):
-            first = SchemaOrgCatalog(cache_path=cache_path, cache_ttl_days=0)
-            first.known_types()
-            second = SchemaOrgCatalog(cache_path=cache_path, cache_ttl_days=0)
-            second.known_types()
-        assert urlopen_spy.call_count == 2
 
 
 class TestDiscoverGrounded:
@@ -965,12 +1013,20 @@ class TestDiscoverGrounded:
 
     @pytest.fixture
     def tiny_catalog(self):
-        """A toy in-process catalog: 3 types, 2 relations among them."""
+        """A toy in-process catalog with name→types and type→schema."""
         from graphrag_sdk.discovery.catalog import Catalog
 
         class _ToyCatalog(Catalog):
-            def known_types(self) -> set[str]:
-                return {"Person", "Organization", "Place"}
+            _NAME_TO_TYPES = {
+                "Alice": ["Person"],
+                "Bob": ["Person"],
+                "Acme": ["Organization"],
+                "AcmeCorp": ["Organization"],
+                "Paris": ["Place"],
+            }
+
+            def link_entity(self, name: str):
+                return self._NAME_TO_TYPES.get(name, [])
 
             def lookup(self, name: str):
                 if name == "Person":
@@ -1005,20 +1061,26 @@ class TestDiscoverGrounded:
         return _ToyCatalog()
 
     class _FakeExtractor:
-        """Returns scripted ExtractedEntities by type for each chunk."""
+        """Returns scripted mention NAMES per chunk.
 
-        def __init__(self, types_per_chunk: list[list[str]]) -> None:
-            self._scripts = list(types_per_chunk)
+        In the new grounded flow, NER returns names (not types). The
+        types come from the catalog's per-name lookup. Scripts here are
+        lists of names per chunk — e.g. ``[["Alice", "Acme"]]`` means
+        one chunk with two mentions.
+        """
+
+        def __init__(self, names_per_chunk: list[list[str]]) -> None:
+            self._scripts = list(names_per_chunk)
             self._calls = 0
 
         async def extract_entities(self, text, entity_types, source_chunk_id):
             from graphrag_sdk.core.models import ExtractedEntity
 
-            types = self._scripts[min(self._calls, len(self._scripts) - 1)]
+            names = self._scripts[min(self._calls, len(self._scripts) - 1)]
             self._calls += 1
             return [
-                ExtractedEntity(name=f"E{i}", type=t)
-                for i, t in enumerate(types)
+                ExtractedEntity(name=n, type=(entity_types[0] if entity_types else "person"))
+                for n in names
             ]
 
     @pytest.mark.asyncio
@@ -1031,7 +1093,7 @@ class TestDiscoverGrounded:
         src.write_text("Alice works at Acme")
         # Detect only Person + Organization — Place is in the catalog but
         # not in the corpus, so it must not appear in the result.
-        extractor = self._FakeExtractor([["Person", "Organization"]])
+        extractor = self._FakeExtractor([["Alice", "Acme"]])
         ontology = await discover_grounded(
             str(src),
             catalog=tiny_catalog,
@@ -1062,7 +1124,7 @@ class TestDiscoverGrounded:
         src.write_text("Acme Corp")
         existing = Ontology(entities=[Entity(label="Person")])
         # NER only sees Organization in the corpus.
-        extractor = self._FakeExtractor([["Organization"]])
+        extractor = self._FakeExtractor([["Acme"]])
         ontology = await discover_grounded(
             str(src),
             catalog=tiny_catalog,
@@ -1091,7 +1153,7 @@ class TestDiscoverGrounded:
         src = tmp_path / "doc.txt"
         src.write_text("Alice")
         existing = Ontology(entities=[Entity(label="Document")])
-        extractor = self._FakeExtractor([["Person"]])
+        extractor = self._FakeExtractor([["Alice"]])
         result = await discover_grounded(
             str(src),
             catalog=tiny_catalog,
@@ -1113,7 +1175,7 @@ class TestDiscoverGrounded:
         """Public API: from_sources(method='grounded') routes to grounded path."""
         src = tmp_path / "doc.txt"
         src.write_text("Alice works at Acme")
-        extractor = self._FakeExtractor([["Person", "Organization"]])
+        extractor = self._FakeExtractor([["Alice", "Acme"]])
         ontology = await Ontology.from_sources(
             str(src),
             method="grounded",
@@ -1176,8 +1238,8 @@ class TestGroundedTrim:
         from graphrag_sdk.discovery.catalog import Catalog
 
         class _RichCatalog(Catalog):
-            def known_types(self) -> set[str]:
-                return {"Person"}
+            def link_entity(self, name: str):
+                return ["Person"] if name == "Alice" else []
 
             def lookup(self, name: str):
                 if name == "Person":
@@ -1203,7 +1265,9 @@ class TestGroundedTrim:
         async def extract_entities(self, text, entity_types, source_chunk_id):
             from graphrag_sdk.core.models import ExtractedEntity
 
-            return [ExtractedEntity(name="Alice", type="Person")]
+            # NER returns a NAME — the catalog's link_entity maps it to
+            # a Person type downstream.
+            return [ExtractedEntity(name="Alice", type="person")]
 
     @pytest.mark.asyncio
     async def test_trim_keeps_only_llm_selected_properties(

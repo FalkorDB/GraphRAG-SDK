@@ -144,13 +144,13 @@ async def main() -> None:
         # per-type trim, filtering each type's catalog-supplied property
         # list down to what the corpus actually mentions.
         banner("1b. Ontology.from_sources(method='grounded') — Schema.org-driven")
-        from graphrag_sdk.discovery.catalog import SchemaOrgCatalog
+        from graphrag_sdk.discovery.catalog import DBpediaCatalog
 
         grounded_draft = await Ontology.from_sources(
             [str(doc_a), str(doc_b)],
             llm=llm,  # enables corpus-aware property trim
             method="grounded",
-            catalog=SchemaOrgCatalog(),
+            catalog=DBpediaCatalog(),
             sample_chunks_per_doc=2,
         )
         print_ontology(grounded_draft)

@@ -566,23 +566,46 @@ async def discover_ontology(
 
 # ── Grounded discovery (catalog-based, no LLM schema invention) ────
 
+# Anchor labels NER (default: GLiNER) uses to recognise *what counts as
+# an entity* in a chunk. These labels are deliberately broad and never
+# appear in the output ontology — they only help the local NER spot
+# proper nouns. The actual types in the result come from the catalog's
+# per-entity-name lookup against an authoritative source (DBpedia,
+# Wikidata, custom KB).
+_NER_ANCHOR_LABELS: list[str] = ["person", "organization", "location", "event"]
 
-async def _detect_types_in_chunk(
+
+async def _extract_mentions_from_chunk(
     extractor: EntityExtractor,
     chunk: TextChunk,
-    candidate_types: list[str],
-) -> set[str]:
-    """Return the set of catalog types detected in one chunk."""
+) -> list[str]:
+    """Return the entity-mention strings NER found in one chunk.
+
+    The NER's own type labels are discarded — they're broad anchors
+    used to find spans, not the final types. The actual types come from
+    the catalog lookup downstream.
+    """
     try:
-        entities = await extractor.extract_entities(chunk.text, candidate_types, chunk.uid)
+        entities = await extractor.extract_entities(chunk.text, _NER_ANCHOR_LABELS, chunk.uid)
     except Exception as exc:
         logger.warning(
             "grounded discovery: NER failed on chunk %s (skipping): %s",
             chunk.uid,
             exc,
         )
-        return set()
-    return {e.type for e in entities if e.type and e.type != "Unknown"}
+        return []
+    # Dedupe within a chunk so a name mentioned twice only gets looked
+    # up once at the catalog level.
+    seen: set[str] = set()
+    names: list[str] = []
+    for e in entities:
+        if not e.name:
+            continue
+        if e.name in seen:
+            continue
+        seen.add(e.name)
+        names.append(e.name)
+    return names
 
 
 # Number of chunks per detected type fed to the LLM trim pass. More chunks
@@ -702,28 +725,34 @@ async def discover_grounded(
 ) -> Ontology:
     """Implementation of :py:meth:`Ontology.from_sources` for ``method="grounded"``.
 
-    The grounded path adapts barakb/text-to-rdf's "find entities, look
-    up their schemas" technique to schema discovery:
+    Two-stage live lookup, modelled on barakb/text-to-rdf's entity-linker
+    pattern:
 
     1. Load + chunk + sample (same as the LLM path).
-    2. Run NER on each sampled chunk against the catalog's known types
-       — the NER is what tells us *which* types the corpus actually
-       contains, instead of asking the LLM to invent them.
-    3. Aggregate the detected types across the corpus.
-    4. Ask the catalog for each detected type's schema definition.
-    5. (Optional) If ``llm`` is provided, run a per-type LLM trim pass
+    2. Run NER on each sampled chunk with broad anchor labels to find
+       *entity mentions* (names) — not types. NER only tells us "this
+       span is a proper noun"; nothing else.
+    3. Collect unique mention names across the corpus, plus which
+       chunks each name appeared in.
+    4. For each unique name, call ``catalog.link_entity(name)`` — this
+       is the per-entity live lookup (e.g. DBpediaCatalog's SPARQL
+       query). It returns the type names the catalog believes the
+       entity is.
+    5. Aggregate detected types across all linked entities.
+    6. For each detected type, ``catalog.lookup(type)`` returns its
+       schema (e.g. DBpediaCatalog falls through to Schema.org's
+       definition for that type).
+    7. (Optional) If ``llm`` is provided, run a per-type LLM trim pass
        that filters each type's catalog-supplied property list down to
-       what's actually stated or implied in the chunks where that type
-       was detected. Tailors a generic vocabulary (e.g. Schema.org's
-       28-property Person) to a corpus-specific subset.
-    6. Ask the catalog for every relation whose source and target are
-       both in the detected set.
-    7. Merge with ``existing`` if provided.
+       what's stated or implied in the chunks where one of that type's
+       linked entities was mentioned.
+    8. ``catalog.relations_among(detected_types ∪ existing_labels)``
+       brings in relations among the detected types (and bridges to
+       any types the user already has in ``existing``).
+    9. Merge with ``existing`` if provided.
 
-    Zero LLM calls when ``llm`` is omitted. One call per detected type
-    when ``llm`` is provided — much cheaper than ``method="llm"``
-    because it operates on a fixed candidate list and decides
-    yes/no per property rather than inventing labels.
+    Zero LLM calls when ``llm`` is omitted. One LLM call per detected
+    type when ``llm`` is provided.
     """
     if sample_chunks_per_doc < 1:
         raise ValueError("sample_chunks_per_doc must be >= 1")
@@ -746,11 +775,9 @@ async def discover_grounded(
     used_chunker = chunker or SentenceTokenCapChunking()
     used_ctx = ctx or Context()
     sem = asyncio.Semaphore(concurrency)
-    candidate_types = list(catalog.known_types())
 
     used_ctx.log(
-        f"grounded discovery: scanning {len(sources_list)} source(s) for "
-        f"{len(candidate_types)} candidate type(s)"
+        f"grounded discovery: scanning {len(sources_list)} source(s)"
         + (" (LLM trim enabled)" if llm is not None else ""),
         level=logging.INFO,
     )
@@ -761,7 +788,7 @@ async def discover_grounded(
         return random.Random(f"{seed}:{src}")
 
     async def _process(src: str) -> dict[str, list[TextChunk]]:
-        """Return ``{type_name: [chunks_where_it_appeared]}`` for one source."""
+        """Return ``{mention_name: [chunks_where_it_appeared]}`` for one source."""
         used_loader = loader or _default_loader_for(src)
         document = await used_loader.load(src, used_ctx)
         text_chunks: TextChunks = await used_chunker.chunk_document(document, used_ctx)
@@ -772,29 +799,59 @@ async def discover_grounded(
         rng = _per_source_rng(src)
         sampled = rng.sample(pool, n) if n < len(pool) else list(pool)
 
-        async def _bounded(chunk: TextChunk) -> tuple[TextChunk, set[str]]:
+        async def _bounded(chunk: TextChunk) -> tuple[TextChunk, list[str]]:
             async with sem:
-                detected = await _detect_types_in_chunk(entity_extractor, chunk, candidate_types)
-                return chunk, detected
+                names = await _extract_mentions_from_chunk(entity_extractor, chunk)
+                return chunk, names
 
         per_chunk = await asyncio.gather(*[_bounded(c) for c in sampled])
-        chunks_per_type: dict[str, list[TextChunk]] = {}
-        for chunk, detected in per_chunk:
-            for t in detected:
-                chunks_per_type.setdefault(t, []).append(chunk)
-        return chunks_per_type
+        chunks_per_mention: dict[str, list[TextChunk]] = {}
+        for chunk, names in per_chunk:
+            for name in names:
+                chunks_per_mention.setdefault(name, []).append(chunk)
+        return chunks_per_mention
 
     per_source = await asyncio.gather(*[_process(s) for s in sources_list])
 
-    # Merge per-source maps into one ``type → [chunks across corpus]``.
-    chunks_by_type: dict[str, list[TextChunk]] = {}
+    # Merge per-source maps into one ``mention_name → [chunks across corpus]``.
+    chunks_by_mention: dict[str, list[TextChunk]] = {}
     for d in per_source:
-        for t, cs in d.items():
-            chunks_by_type.setdefault(t, []).extend(cs)
+        for name, cs in d.items():
+            chunks_by_mention.setdefault(name, []).extend(cs)
+
+    used_ctx.log(
+        f"grounded discovery: NER surfaced {len(chunks_by_mention)} unique mention(s); "
+        "linking against catalog",
+        level=logging.INFO,
+    )
+
+    # Per-mention live lookup against the catalog. ``catalog.link_entity``
+    # for ``DBpediaCatalog`` is a SPARQL query; for custom catalogs it
+    # could be anything. Bound by the shared semaphore so the user's
+    # ``concurrency=`` knob caps total in-flight outbound requests.
+    async def _link_one(name: str) -> tuple[str, list[str]]:
+        async with sem:
+            # catalog.link_entity is sync; run in a thread so it
+            # doesn't block the event loop on slow SPARQL responses.
+            types = await asyncio.to_thread(catalog.link_entity, name)
+            return name, types
+
+    linked = await asyncio.gather(*[_link_one(n) for n in chunks_by_mention])
+
+    # Build ``type_name → [chunks across corpus where this type was linked]``.
+    chunks_by_type: dict[str, list[TextChunk]] = {}
+    for name, types in linked:
+        for t in types:
+            chunks_by_type.setdefault(t, []).extend(chunks_by_mention[name])
+    # Deduplicate chunk lists per type (a mention may have appeared in
+    # the same chunk multiple times → linked entities pile up).
+    for t, cs in chunks_by_type.items():
+        chunks_by_type[t] = list({c.uid: c for c in cs}.values())
+
     detected_types = set(chunks_by_type.keys())
 
     used_ctx.log(
-        f"grounded discovery: NER detected {len(detected_types)} type(s) "
+        f"grounded discovery: catalog linked to {len(detected_types)} type(s) "
         f"({sorted(detected_types)})",
         level=logging.INFO,
     )
