@@ -74,11 +74,28 @@ Behavior:
 - Ask the catalog for every relation whose source and target are both in the detected set.
 - Merge with `existing` if supplied.
 
-Zero LLM calls. No hallucination, no drift — the schema is entirely catalog-derived; the corpus only chooses the subset. At the cost of being **limited to what the catalog knows** — domain-specific types that aren't in the catalog won't appear.
+Zero LLM calls when `llm` is not supplied. No hallucination, no drift — the schema is entirely catalog-derived; the corpus only chooses the subset. At the cost of being **limited to what the catalog knows** — domain-specific types that aren't in the catalog won't appear.
 
 The default NER backend is `GLiNERExtractor()` (no API calls, local model). Override with `entity_extractor=` to plug in `LLMExtractor` or any custom `EntityExtractor`.
 
 Returns: a new `Ontology`.
+
+##### Optional: per-type property trim with an LLM
+
+The catalog hands back every property Schema.org (or whatever catalog) declares for a type. For `Person` that means ~28 properties — including obscure ones like `duns`, `vatID`, `callSign`. To tailor the schema to your corpus, pass `llm`:
+
+```python
+draft = await Ontology.from_sources(
+    sources,
+    llm=llm,                          # triggers the per-type trim
+    method="grounded",
+    catalog=SchemaOrgCatalog(),
+)
+```
+
+With `llm` provided, after type detection the pipeline runs **one LLM call per detected type**: it shows the LLM the catalog's full property list plus up to 5 chunks where that type was detected, and asks "which of these properties are stated or implied in any chunk?" The result trims each entity to a corpus-specific subset.
+
+Cost: ~1 LLM call per *type*, not per chunk — much cheaper than `method="llm"`. Output is deterministic for label invention (still purely catalog) but stochastic for which properties survive (the LLM decides). On hard failure the per-type trim soft-fails to the catalog's full list — a flaky LLM never silently loses schema information.
 
 #### Catalogs
 

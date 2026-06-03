@@ -425,12 +425,19 @@ class Ontology(DataModel):
                 )
             from graphrag_sdk.discovery.pipeline import discover_grounded
 
+            # ``llm`` is optional in grounded mode — when supplied, it runs the
+            # per-type property-trim pass (filters each catalog type's
+            # generic property list down to what the corpus actually
+            # mentions). Without it, you get the catalog's full property
+            # list per detected type — fast and deterministic.
             return await discover_grounded(
                 sources,
                 catalog=catalog,
+                llm=llm,
                 entity_extractor=entity_extractor,
                 existing=existing,
                 sample_chunks_per_doc=sample_chunks_per_doc,
+                max_retries=max_retries,
                 concurrency=concurrency,
                 chunker=chunker,
                 loader=loader,

@@ -951,3 +951,179 @@ class TestDiscoverGrounded:
                 method="bogus",
                 sample_chunks_per_doc=1,
             )
+
+
+class TestGroundedTrim:
+    """Per-type LLM trim pass on grounded discovery — passing llm to
+    ``method="grounded"`` filters each catalog type's property list down
+    to what the corpus actually mentions."""
+
+    @pytest.fixture
+    def trim_catalog(self):
+        """Catalog whose Person carries many properties — the trim's job
+        is to shrink this list."""
+        from graphrag_sdk.discovery.catalog import Catalog
+
+        class _RichCatalog(Catalog):
+            def known_types(self) -> set[str]:
+                return {"Person"}
+
+            def lookup(self, name: str):
+                if name == "Person":
+                    return Entity(
+                        label="Person",
+                        properties=[
+                            Attribute(name="name", type="STRING"),
+                            Attribute(name="birth_date", type="DATE"),
+                            Attribute(name="job_title", type="STRING"),
+                            Attribute(name="email", type="STRING"),
+                            Attribute(name="duns", type="STRING"),
+                            Attribute(name="call_sign", type="STRING"),
+                        ],
+                    )
+                return None
+
+            def relations_among(self, names):
+                return []
+
+        return _RichCatalog()
+
+    class _FakeExtractor:
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            from graphrag_sdk.core.models import ExtractedEntity
+
+            return [ExtractedEntity(name="Alice", type="Person")]
+
+    @pytest.mark.asyncio
+    async def test_trim_keeps_only_llm_selected_properties(
+        self, tmp_path: Path, trim_catalog
+    ) -> None:
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice is a software engineer born in 1990")
+        # LLM keeps name + birth_date + job_title, drops the rest.
+        llm = RecordingMockLLM(
+            [json.dumps({"keep": ["name", "birth_date", "job_title"]})]
+        )
+        ontology = await discover_grounded(
+            str(src),
+            catalog=trim_catalog,
+            llm=llm,
+            entity_extractor=self._FakeExtractor(),
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice is a software engineer born in 1990"]),
+            seed=42,
+        )
+        person = next(e for e in ontology.entities if e.label == "Person")
+        kept = {a.name for a in person.properties}
+        assert kept == {"name", "birth_date", "job_title"}
+        assert "duns" not in kept
+        assert "call_sign" not in kept
+
+    @pytest.mark.asyncio
+    async def test_trim_always_keeps_name(
+        self, tmp_path: Path, trim_catalog
+    ) -> None:
+        """Even if the LLM forgets ``name``, the trim adds it back —
+        the SDK-managed identifier filter relies on it being declared."""
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice was born in 1990")
+        llm = RecordingMockLLM([json.dumps({"keep": ["birth_date"]})])
+        ontology = await discover_grounded(
+            str(src),
+            catalog=trim_catalog,
+            llm=llm,
+            entity_extractor=self._FakeExtractor(),
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice was born in 1990"]),
+            seed=42,
+        )
+        person = next(e for e in ontology.entities if e.label == "Person")
+        kept = {a.name for a in person.properties}
+        assert "name" in kept
+        assert "birth_date" in kept
+
+    @pytest.mark.asyncio
+    async def test_trim_soft_fails_to_full_list(
+        self, tmp_path: Path, trim_catalog
+    ) -> None:
+        """If the LLM call exhausts retries, the pipeline falls back to
+        the catalog's full property list — flaky LLM does not silently
+        lose schema information."""
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice")
+        # All responses bad — the wrapper exhausts retries and raises
+        # OntologyDiscoveryError, which discover_grounded catches.
+        llm = RecordingMockLLM(["garbage", "still garbage"])
+        ontology = await discover_grounded(
+            str(src),
+            catalog=trim_catalog,
+            llm=llm,
+            entity_extractor=self._FakeExtractor(),
+            sample_chunks_per_doc=1,
+            max_retries=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice"]),
+            seed=42,
+        )
+        person = next(e for e in ontology.entities if e.label == "Person")
+        # Full catalog list preserved.
+        assert {a.name for a in person.properties} == {
+            "name",
+            "birth_date",
+            "job_title",
+            "email",
+            "duns",
+            "call_sign",
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_trim_when_llm_not_provided(
+        self, tmp_path: Path, trim_catalog
+    ) -> None:
+        """Without llm=, the catalog's full property list is returned —
+        unchanged from the prior behavior."""
+        from graphrag_sdk.discovery.pipeline import discover_grounded
+
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice")
+        ontology = await discover_grounded(
+            str(src),
+            catalog=trim_catalog,
+            entity_extractor=self._FakeExtractor(),
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice"]),
+            seed=42,
+        )
+        person = next(e for e in ontology.entities if e.label == "Person")
+        assert len(person.properties) == 6
+
+    @pytest.mark.asyncio
+    async def test_from_sources_grounded_with_llm_runs_trim(
+        self, tmp_path: Path, trim_catalog
+    ) -> None:
+        """Public API: from_sources(method='grounded', llm=...) triggers trim."""
+        src = tmp_path / "doc.txt"
+        src.write_text("Alice")
+        llm = RecordingMockLLM([json.dumps({"keep": ["name", "email"]})])
+        ontology = await Ontology.from_sources(
+            str(src),
+            llm=llm,
+            method="grounded",
+            catalog=trim_catalog,
+            entity_extractor=self._FakeExtractor(),
+            sample_chunks_per_doc=1,
+            concurrency=1,
+            chunker=FixedChunker(["Alice"]),
+            seed=42,
+        )
+        person = next(e for e in ontology.entities if e.label == "Person")
+        assert {a.name for a in person.properties} == {"name", "email"}
