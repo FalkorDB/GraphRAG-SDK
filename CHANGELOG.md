@@ -7,7 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-06-01
+## [1.3.0] - 2026-06-04
+
+Ontology discovery (#271): bootstrap an ontology straight from a
+corpus instead of hand-writing one, and propose additive schema
+extensions against a live graph as new sources arrive. Two discovery
+modes ship — LLM-driven (the default) and **grounded**, which anchors
+discovered types to an external vocabulary catalog (Schema.org types,
+DBpedia entity linking).
+
+No breaking changes. All existing ingest paths are unaffected; the new
+API is purely additive, and the invariant from 1.2.0 still holds — a
+discovered attribute is only declared when the corpus supports it.
+
+### Added
+
+#### Corpus-driven ontology discovery (#271)
+
+- **`Ontology.from_sources(sources, llm=None, *, method="llm",
+  boundaries=None, existing=None, catalog=None, sample_chunks_per_doc=3,
+  max_retries=3, concurrency=4, seed=None, ...)`** — build an
+  `Ontology` from a document corpus. `method="llm"` (default) derives
+  entities, relations, and attributes from sampled chunks via the LLM;
+  `method="grounded"` resolves entity mentions against a `Catalog` and
+  pulls typed schema from the external vocabulary. `boundaries` scopes
+  the domain, `existing` seeds discovery from a prior ontology, and
+  `seed` makes sampling deterministic.
+
+- **`GraphRAG.suggest_schema_extensions(sources, *, boundaries=None,
+  sample_chunks_per_doc=3, max_retries=3, concurrency=4, seed=None,
+  ...)`** — scan new sources against the currently committed ontology
+  and return an additive `SchemaExtensionProposal` (new entities,
+  relations, patterns, attributes). Read-only: proposes, never mutates
+  — apply the pieces you want via the 1.2.0 evolution API.
+
+- **`SchemaExtensionProposal`** — additions-only result carrying
+  `new_entities`, `new_relations`, `new_patterns`,
+  `new_attributes`, and `sources_scanned`, plus an `is_empty` property
+  and a `summary()` helper.
+
+**Grounded discovery — vocabulary catalogs:**
+
+- **`Catalog`** — ABC for grounding discovery in an external
+  vocabulary: `link_entity(name)`, `lookup(type_name)`, and
+  `relations_among(type_names)`.
+
+- **`DBpediaCatalog(sparql_endpoint=None, schema_org_url=None,
+  cache_path=None, cache_ttl_days=30)`** — built-in catalog that
+  resolves entity mentions to types via the DBpedia SPARQL endpoint and
+  pulls type schema from Schema.org's JSON-LD vocabulary. Schema.org is
+  disk-cached (default `~/.cache/graphrag-sdk/schema_org.json`, 30-day
+  TTL); `DBpediaFetchError` is raised when a service is unreachable and
+  no usable cache exists. **Note:** grounded discovery makes live
+  network calls to DBpedia and Schema.org.
+
+**Lower-level pipeline (`graphrag_sdk.discovery`):**
+
+- **`discover_ontology(...)`**, **`discover_grounded(...)`**, and
+  **`suggest_extensions(...)`** — the functions backing
+  `from_sources(method="llm")`, `from_sources(method="grounded")`, and
+  `suggest_schema_extensions` respectively, exposed for callers that
+  want to drive the pipeline directly.
+- **`OntologyDiscoveryError`** — raised when an LLM extraction call
+  exhausts `max_retries`; carries `chunk_id`, `attempts`, and
+  `last_error`.
+
+- **`docs/ontology-discovery.md`** — end-to-end guide covering both
+  discovery modes and the extension-proposal workflow.
 
 Two large, related additions: a persistent ontology graph with
 schema-driven typed attributes (#256), and a mutating evolution API
