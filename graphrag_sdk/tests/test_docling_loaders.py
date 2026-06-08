@@ -156,6 +156,25 @@ class TestDoclingBaseLoader:
         with pytest.raises(LoaderError, match="File not found"):
             await loader.load("/non/existent/path.docx", ctx)
 
+    async def test_url_support(self, ctx):
+        """Verify that HTTP URLs bypass the local file existence check."""
+        loader = MockDoclingLoader()
+
+        mock_doc = MagicMock()
+        mock_doc.iterate_items.return_value = []
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value.document = mock_doc
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
+
+        # If URL support is broken, this will raise LoaderError("File not found")
+        result = await loader.load("https://example.com/doc.pdf", ctx)
+        
+        assert result.document_info.path == "https://example.com/doc.pdf"
+        assert result.document_info.metadata["loader"] == "docling"
+        # We don't verify size_bytes or suffix since URLs don't have local paths
+
     async def test_docling_conversion_failure(self, ctx, tmp_path):
         """Verify that exceptions during docling conversion are wrapped in LoaderError."""
         file = tmp_path / "test.docx"

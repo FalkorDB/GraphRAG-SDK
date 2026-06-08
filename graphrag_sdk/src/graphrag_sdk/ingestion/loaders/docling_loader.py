@@ -39,9 +39,11 @@ class DoclingLoader(LoaderStrategy):
         return await asyncio.to_thread(self._load_sync, source)
 
     def _load_sync(self, source: str) -> DocumentOutput:
-        path = Path(source)
-        if not path.exists():
-            raise LoaderError(f"File not found: {source}")
+        is_url = source.startswith(("http://", "https://"))
+        if not is_url:
+            path = Path(source)
+            if not path.exists():
+                raise LoaderError(f"File not found: {source}")
 
         try:
             from docling.datamodel.document import DocItemLabel
@@ -136,15 +138,16 @@ class DoclingLoader(LoaderStrategy):
 
         full_text = "\n\n".join(full_text_blocks)
 
+        metadata = {"loader": "docling"}
+        if not is_url:
+            metadata["size_bytes"] = path.stat().st_size
+            metadata["suffix"] = path.suffix
+
         return DocumentOutput(
             text=full_text,
             document_info=DocumentInfo(
-                path=str(path),
-                metadata={
-                    "size_bytes": path.stat().st_size,
-                    "loader": "docling",
-                    "suffix": path.suffix,
-                },
+                path=source,
+                metadata=metadata,
             ),
             elements=elements,
         )
