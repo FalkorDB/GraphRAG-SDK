@@ -1,12 +1,11 @@
 """Integration tests for the ingestion pipeline."""
+
 from __future__ import annotations
 
-import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, call
 
-from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     DocumentInfo,
     DocumentOutput,
@@ -14,15 +13,11 @@ from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
-    Ontology,
     ResolutionResult,
     TextChunk,
     TextChunks,
 )
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
-
-from .conftest import MockEmbedder
-
 
 # ── Fixtures ──────────────────────────────────────────────────
 
@@ -165,9 +160,7 @@ class TestPipeline10StepExecution:
         assert "mention_edges_created" in result.metadata
         assert "merged_entities" in result.metadata
 
-    async def test_relationships_count_includes_all_types(
-        self, pipeline, pipeline_components, ctx
-    ):
+    async def test_relationships_count_includes_all_types(self, pipeline, pipeline_components, ctx):
         """relationships_created should include entity rels + mention."""
         result = await pipeline.run("test.txt", ctx)
 
@@ -180,7 +173,7 @@ class TestPipeline10StepExecution:
 class TestPipelineWithTextInput:
     async def test_text_input_skips_loader(self, pipeline, pipeline_components, ctx):
         """Providing text= should skip the loader step."""
-        result = await pipeline.run(
+        await pipeline.run(
             "unused",
             ctx,
             text="Alice works at Acme Corp.",
@@ -230,10 +223,8 @@ class TestPipelineParallelSteps:
 
     async def test_both_parallel_steps_called(self, pipeline, pipeline_components, ctx):
         """Both parallel steps (mentions, chunks) should be called."""
-        result = await pipeline.run("test.txt", ctx)
+        await pipeline.run("test.txt", ctx)
 
         pipeline_components["vector_store"].index_chunks.assert_called_once()
         # Mentions generate upsert_relationships calls
         assert pipeline_components["graph_store"].upsert_relationships.call_count >= 2
-
-

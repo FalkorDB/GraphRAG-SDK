@@ -64,12 +64,30 @@ loader = MarkdownLoader()
 **Design Note: Markup Preservation**
 For complex elements like tables, lists, and code blocks, `MarkdownLoader` intentionally outputs the raw markdown source (including pipes `|`, list dashes `-`, and code fences) rather than stripping the syntax. While this introduces minor syntax "noise", it preserves critical structural cues (such as spatial column alignment and nested indentation) that the LLM requires during the Extraction phase to accurately parse relational data.
 
+### Built-in: DoclingLoader
+
+A universal loader utilizing the `docling` library to parse rich document formats (PDF, DOCX, XLSX, PPTX, HTML, CSV, Markdown, URLs). Requires `pip install graphrag-sdk[docling]`.
+
+```python
+from graphrag_sdk.ingestion.loaders.docling_loader import DoclingLoader
+
+# You can pass arbitrary docling DocumentConverter arguments
+loader = DoclingLoader(
+    allowed_formats=["docx", "pptx"],
+    format_options={...}
+)
+```
+
+**Design Note: Hierarchical Breadcrumbs**
+`DoclingLoader` extracts deep structural context by generating "breadcrumbs" (e.g., tracking that a paragraph is inside `H1 -> H2 -> List`). These breadcrumbs are attached to each extracted text chunk as metadata, ensuring that the semantic location of the text within the original document is preserved during chunking and extraction.
+
 ### Default Behavior
 
 If no loader is specified in `ingest()`:
 - `.pdf` files use `PdfLoader`
+- `.docx`, `.xlsx`, `.pptx`, `.html`, `.csv` files and URLs use `DoclingLoader` (if installed)
 - `.md` files use `MarkdownLoader`
--   Everything else uses `TextLoader`
+- Everything else uses `TextLoader`
 - If `text=` is passed directly, the loader is skipped
 
 ### Writing Your Own

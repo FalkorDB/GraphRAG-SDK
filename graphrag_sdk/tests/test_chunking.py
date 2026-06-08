@@ -1,9 +1,9 @@
 """Tests for ingestion/chunking_strategies/fixed_size.py."""
+
 from __future__ import annotations
 
 import pytest
 
-from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 
 

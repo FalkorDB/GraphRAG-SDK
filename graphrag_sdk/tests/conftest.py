@@ -1,4 +1,5 @@
 """Shared test fixtures for GraphRAG SDK v2 tests."""
+
 from __future__ import annotations
 
 import json
@@ -10,8 +11,6 @@ from uuid import uuid4
 
 import pytest
 
-_logger = logging.getLogger(__name__)
-
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
@@ -19,12 +18,13 @@ from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
-    Ontology,
     LLMResponse,
+    Ontology,
     Relation,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 
+_logger = logging.getLogger(__name__)
 
 # ── Mock Providers ──────────────────────────────────────────────
 
@@ -92,28 +92,38 @@ class MockLLMWithGraphExtraction(MockLLM):
     """Mock LLM that returns step-1 NER JSON then step-2 verify+rels JSON."""
 
     def __init__(self) -> None:
-        step1_response = json.dumps([
-            {"name": "Alice", "type": "Person", "description": "A software engineer"},
-            {"name": "Acme Corp", "type": "Organization", "description": "A tech company"},
-        ])
-        step2_response = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person",
-                 "description": "A software engineer who builds GraphRAG systems"},
-                {"name": "Acme Corp", "type": "Organization",
-                 "description": "A technology company specializing in AI products"},
-            ],
-            "relationships": [
-                {
-                    "source": "Alice",
-                    "target": "Acme Corp",
-                    "type": "WORKS_AT",
-                    "description": "Alice is employed as a software engineer at Acme Corp",
-                    "keywords": "employment, engineering, career",
-                    "weight": 0.9,
-                },
-            ],
-        })
+        step1_response = json.dumps(
+            [
+                {"name": "Alice", "type": "Person", "description": "A software engineer"},
+                {"name": "Acme Corp", "type": "Organization", "description": "A tech company"},
+            ]
+        )
+        step2_response = json.dumps(
+            {
+                "entities": [
+                    {
+                        "name": "Alice",
+                        "type": "Person",
+                        "description": "A software engineer who builds GraphRAG systems",
+                    },
+                    {
+                        "name": "Acme Corp",
+                        "type": "Organization",
+                        "description": "A technology company specializing in AI products",
+                    },
+                ],
+                "relationships": [
+                    {
+                        "source": "Alice",
+                        "target": "Acme Corp",
+                        "type": "WORKS_AT",
+                        "description": "Alice is employed as a software engineer at Acme Corp",
+                        "keywords": "employment, engineering, career",
+                        "weight": 0.9,
+                    },
+                ],
+            }
+        )
         super().__init__(responses=[step1_response, step2_response])
 
 
@@ -187,20 +197,31 @@ def sample_graph_data() -> GraphData:
 def sample_graph_data_with_duplicates() -> GraphData:
     return GraphData(
         nodes=[
-            GraphNode(id="alice-1", label="Person", properties={"name": "Alice", "role": "engineer"}),
+            GraphNode(
+                id="alice-1", label="Person", properties={"name": "Alice", "role": "engineer"}
+            ),
             GraphNode(id="alice-2", label="Person", properties={"name": "Alice", "age": 30}),
             GraphNode(id="bob", label="Person", properties={"name": "Bob"}),
             GraphNode(id="acme", label="Company", properties={"name": "Acme Corp"}),
         ],
         relationships=[
             GraphRelationship(
-                start_node_id="alice-1", end_node_id="acme", type="WORKS_AT", properties={},
+                start_node_id="alice-1",
+                end_node_id="acme",
+                type="WORKS_AT",
+                properties={},
             ),
             GraphRelationship(
-                start_node_id="alice-2", end_node_id="acme", type="WORKS_AT", properties={},
+                start_node_id="alice-2",
+                end_node_id="acme",
+                type="WORKS_AT",
+                properties={},
             ),
             GraphRelationship(
-                start_node_id="bob", end_node_id="acme", type="WORKS_AT", properties={},
+                start_node_id="bob",
+                end_node_id="acme",
+                type="WORKS_AT",
+                properties={},
             ),
         ],
     )
@@ -227,11 +248,16 @@ def mock_graph_store(mock_connection: MagicMock) -> MagicMock:
     store.get_connected_entities = AsyncMock(return_value=[])
     store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
     store.delete_all = AsyncMock()
-    store.get_statistics = AsyncMock(return_value={
-        "node_count": 0, "edge_count": 0, "entity_types": [],
-        "relationship_types": [], "graph_density": 0,
-        "mention_edge_count": 0,
-    })
+    store.get_statistics = AsyncMock(
+        return_value={
+            "node_count": 0,
+            "edge_count": 0,
+            "entity_types": [],
+            "relationship_types": [],
+            "graph_density": 0,
+            "mention_edge_count": 0,
+        }
+    )
     return store
 
 
@@ -281,9 +307,7 @@ def _scripted_extraction_llm(*per_doc_entities: list[tuple[str, str, str]]):
     for entities in per_doc_entities:
         step2 = json.dumps(
             {
-                "entities": [
-                    {"name": n, "type": t, "description": d} for (n, t, d) in entities
-                ],
+                "entities": [{"name": n, "type": t, "description": d} for (n, t, d) in entities],
                 "relationships": [],
             }
         )

@@ -1,22 +1,20 @@
 """Tests for ingestion/resolution_strategies/semantic_resolution.py."""
+
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
-    ResolutionResult,
 )
 from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
     SemanticResolution,
 )
 
 from .conftest import MockEmbedder, MockLLM
-
 
 # ── Fixtures ────────────────────────────────────────────────────
 
@@ -97,9 +95,7 @@ def graph_with_duplicates() -> GraphData:
 class TestSemanticResolutionCrossTypeSafety:
     """Entities with same name but different labels must NOT be merged."""
 
-    async def test_same_name_diff_label_kept_separate(
-        self, ctx, graph_with_same_name_diff_label
-    ):
+    async def test_same_name_diff_label_kept_separate(self, ctx, graph_with_same_name_diff_label):
         resolver = SemanticResolution()
         result = await resolver.resolve(graph_with_same_name_diff_label, ctx)
 
@@ -108,9 +104,7 @@ class TestSemanticResolutionCrossTypeSafety:
         labels = {n.label for n in result.nodes}
         assert labels == {"Person", "Location"}
 
-    async def test_relationship_preserved(
-        self, ctx, graph_with_same_name_diff_label
-    ):
+    async def test_relationship_preserved(self, ctx, graph_with_same_name_diff_label):
         resolver = SemanticResolution()
         result = await resolver.resolve(graph_with_same_name_diff_label, ctx)
 
@@ -123,9 +117,7 @@ class TestSemanticResolutionCrossTypeSafety:
 class TestSemanticResolutionSameTypeMerge:
     """Entities with same name AND same label should be merged."""
 
-    async def test_same_name_same_label_merged(
-        self, ctx, graph_with_duplicates
-    ):
+    async def test_same_name_same_label_merged(self, ctx, graph_with_duplicates):
         resolver = SemanticResolution()
         result = await resolver.resolve(graph_with_duplicates, ctx)
 
@@ -137,9 +129,7 @@ class TestSemanticResolutionSameTypeMerge:
         alice_ids = {n.id for n in result.nodes if n.label == "Person"}
         assert len(alice_ids) == 1
 
-    async def test_relationships_remapped_and_deduped(
-        self, ctx, graph_with_duplicates
-    ):
+    async def test_relationships_remapped_and_deduped(self, ctx, graph_with_duplicates):
         resolver = SemanticResolution()
         result = await resolver.resolve(graph_with_duplicates, ctx)
 
@@ -147,9 +137,7 @@ class TestSemanticResolutionSameTypeMerge:
         works_at = [r for r in result.relationships if r.type == "WORKS_AT"]
         assert len(works_at) == 1
 
-    async def test_descriptions_merged(
-        self, ctx, graph_with_duplicates
-    ):
+    async def test_descriptions_merged(self, ctx, graph_with_duplicates):
         resolver = SemanticResolution()
         result = await resolver.resolve(graph_with_duplicates, ctx)
 
@@ -246,9 +234,7 @@ class TestSemanticResolutionFuzzyMerge:
 class TestSemanticResolutionEdgeCases:
     async def test_empty_graph(self, ctx):
         resolver = SemanticResolution()
-        result = await resolver.resolve(
-            GraphData(nodes=[], relationships=[]), ctx
-        )
+        result = await resolver.resolve(GraphData(nodes=[], relationships=[]), ctx)
         assert len(result.nodes) == 0
         assert len(result.relationships) == 0
         assert result.merged_count == 0

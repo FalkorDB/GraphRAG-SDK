@@ -66,6 +66,7 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     _coerce_attribute_value,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.docling_loader import DoclingLoader
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
@@ -1728,6 +1729,10 @@ class GraphRAG:
             return PdfLoader()
         if lower.endswith(".md"):
             return MarkdownLoader()
+        if lower.startswith(("http://", "https://")) or lower.endswith(
+            (".docx", ".xlsx", ".pptx", ".html", ".xhtml", ".csv")
+        ):
+            return DoclingLoader()
         return TextLoader()
 
     # ── Incremental Updates ─────────────────────────────────────
