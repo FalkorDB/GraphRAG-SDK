@@ -227,10 +227,15 @@ class TestDoclingBaseLoader:
         file = tmp_path / "test.docx"
         file.write_text("dummy content")
 
+        mock_list = MagicMock(label=LabelEnum.LIST_ITEM, text="List item 1")
+        mock_table = MagicMock(label=LabelEnum.TABLE, text="Table content")
+        mock_table.export_to_markdown.return_value = "Table content"
+        mock_code = MagicMock(label=LabelEnum.CODE, text="print('hello')")
+
         mock_items = [
-            (MagicMock(label=LabelEnum.LIST_ITEM, text="List item 1"), 1),
-            (MagicMock(label=LabelEnum.TABLE, text="Table content"), 1),
-            (MagicMock(label=LabelEnum.CODE, text="print('hello')"), 1),
+            (mock_list, 1),
+            (mock_table, 1),
+            (mock_code, 1),
         ]
 
         mock_doc = MagicMock()
