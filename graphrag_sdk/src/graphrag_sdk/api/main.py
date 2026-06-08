@@ -1729,9 +1729,11 @@ class GraphRAG:
             return PdfLoader()
         if lower.endswith(".md"):
             return MarkdownLoader()
-        if lower.endswith(".txt"):
-            return TextLoader()
-        return DoclingLoader()
+        if lower.startswith(("http://", "https://")) or lower.endswith(
+            (".docx", ".xlsx", ".pptx", ".html", ".xhtml", ".csv")
+        ):
+            return DoclingLoader()
+        return TextLoader()
 
     # ── Incremental Updates ─────────────────────────────────────
     #

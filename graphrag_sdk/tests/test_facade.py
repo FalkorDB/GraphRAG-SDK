@@ -251,6 +251,27 @@ class TestGraphRAGIngest:
         graphrag._vector_store.backfill_entity_embeddings.assert_not_awaited()
         assert "entities_backfilled" not in result.metadata
 
+    def test_default_loader_for(self):
+        """Verify the correct default loader mapping is used."""
+        from graphrag_sdk.api.main import GraphRAG
+        from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+        from graphrag_sdk.ingestion.loaders.docling_loader import DoclingLoader
+        from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+
+        assert isinstance(GraphRAG._default_loader_for("test.pdf"), PdfLoader)
+        assert isinstance(GraphRAG._default_loader_for("test.md"), MarkdownLoader)
+        assert isinstance(GraphRAG._default_loader_for("test.docx"), DoclingLoader)
+        assert isinstance(GraphRAG._default_loader_for("test.xlsx"), DoclingLoader)
+        assert isinstance(GraphRAG._default_loader_for("test.csv"), DoclingLoader)
+        assert isinstance(GraphRAG._default_loader_for("https://example.com/"), DoclingLoader)
+        assert isinstance(GraphRAG._default_loader_for("http://example.com/"), DoclingLoader)
+        
+        # Fallback should be TextLoader, not DoclingLoader
+        assert isinstance(GraphRAG._default_loader_for("test.rst"), TextLoader)
+        assert isinstance(GraphRAG._default_loader_for("test.unknown"), TextLoader)
+        assert isinstance(GraphRAG._default_loader_for("test.txt"), TextLoader)
+
 
 class TestGraphRAGDeduplicateEntities:
     async def test_deduplicate_entities_merges_duplicates(self, mock_conn, embedder, llm):
