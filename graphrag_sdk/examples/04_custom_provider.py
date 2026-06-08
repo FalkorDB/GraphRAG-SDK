@@ -19,7 +19,6 @@ from typing import Any
 from graphrag_sdk import ConnectionConfig, Embedder, GraphRAG, LLMInterface
 from graphrag_sdk.core.models import LLMResponse
 
-
 # --- Custom LLM Provider ---
 
 

@@ -1,4 +1,5 @@
 """Tests for utils/graph_viz.py — graph visualization helpers."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -16,16 +17,20 @@ def visualizer(mock_connection):
 class TestGraphVisualizer:
     async def test_get_stats(self, visualizer, mock_connection):
         results = [
-            MagicMock(result_set=[[42]]),          # node count
-            MagicMock(result_set=[[15]]),           # rel count
-            MagicMock(result_set=[                  # labels
-                [["Person"], 20],
-                [["Company"], 22],
-            ]),
-            MagicMock(result_set=[                  # rel types
-                ["WORKS_AT", 10],
-                ["KNOWS", 5],
-            ]),
+            MagicMock(result_set=[[42]]),  # node count
+            MagicMock(result_set=[[15]]),  # rel count
+            MagicMock(
+                result_set=[  # labels
+                    [["Person"], 20],
+                    [["Company"], 22],
+                ]
+            ),
+            MagicMock(
+                result_set=[  # rel types
+                    ["WORKS_AT", 10],
+                    ["KNOWS", 5],
+                ]
+            ),
         ]
         mock_connection.query = AsyncMock(side_effect=results)
         stats = await visualizer.get_stats()
@@ -64,7 +69,7 @@ class TestGraphVisualizer:
         result_mock = MagicMock()
         result_mock.result_set = [["p1"]]
         mock_connection.query = AsyncMock(return_value=result_mock)
-        samples = await visualizer.sample_nodes(label="Person", limit=1)
+        await visualizer.sample_nodes(label="Person", limit=1)
         cypher = mock_connection.query.call_args[0][0]
         assert "Person" in cypher
 

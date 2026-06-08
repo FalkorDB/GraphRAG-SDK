@@ -1,4 +1,5 @@
 """Tests for core/connection.py — async-only FalkorDB connection."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -154,7 +155,7 @@ class TestFalkorDBConnection:
         mock_driver = MagicMock()
         mock_driver.select_graph = MagicMock(return_value=mock_graph)
 
-        with patch("graphrag_sdk.core.connection.FalkorDBConnection._ensure_client") as mock_init:
+        with patch("graphrag_sdk.core.connection.FalkorDBConnection._ensure_client"):
             conn._driver = mock_driver
             conn._graph = mock_graph
             assert conn.graph is mock_graph
@@ -162,11 +163,12 @@ class TestFalkorDBConnection:
 
 class TestFalkorDBConnectionTLS:
     def test_pool_omits_ssl_kwargs_when_ssl_disabled(self):
-        from redis.asyncio import BlockingConnectionPool
 
         conn = FalkorDBConnection(ConnectionConfig(host="h", port=1, ssl=False))
-        with patch("redis.asyncio.BlockingConnectionPool") as mock_pool, \
-             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+        with (
+            patch("redis.asyncio.BlockingConnectionPool") as mock_pool,
+            patch("falkordb.asyncio.FalkorDB") as mock_falkor,
+        ):
             mock_falkor.return_value.select_graph = MagicMock()
             conn._ensure_client()
             kwargs = mock_pool.call_args.kwargs
@@ -187,8 +189,10 @@ class TestFalkorDBConnectionTLS:
             ssl_check_hostname=True,
         )
         conn = FalkorDBConnection(cfg)
-        with patch("redis.asyncio.BlockingConnectionPool") as mock_pool, \
-             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+        with (
+            patch("redis.asyncio.BlockingConnectionPool") as mock_pool,
+            patch("falkordb.asyncio.FalkorDB") as mock_falkor,
+        ):
             mock_falkor.return_value.select_graph = MagicMock()
             conn._ensure_client()
             kwargs = mock_pool.call_args.kwargs

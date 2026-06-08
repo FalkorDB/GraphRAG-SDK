@@ -1,4 +1,5 @@
 """Tests for core/context.py — execution context with tenancy and latency budgeting."""
+
 from __future__ import annotations
 
 import time

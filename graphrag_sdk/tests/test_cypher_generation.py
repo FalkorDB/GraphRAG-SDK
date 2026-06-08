@@ -1,14 +1,14 @@
 """Tests for cypher_generation module."""
+
 from __future__ import annotations
 
 import pytest
 
 from graphrag_sdk.retrieval.strategies.cypher_generation import (
+    _sanitize_cypher,
     extract_cypher,
     validate_cypher,
-    _sanitize_cypher,
 )
-
 
 # ── extract_cypher ────────────────────────────────────────────────
 
@@ -53,8 +53,9 @@ class TestValidateCypher:
         for keyword in ["CREATE", "DELETE", "SET", "MERGE", "REMOVE"]:
             cypher = f"MATCH (n) {keyword} (m) RETURN n"
             errors = validate_cypher(cypher)
-            assert any("Write" in e or "read-only" in e.lower() for e in errors), \
+            assert any("Write" in e or "read-only" in e.lower() for e in errors), (
                 f"{keyword} should be rejected"
+            )
 
     def test_rejects_missing_return(self):
         errors = validate_cypher("MATCH (n:Person) WHERE n.name = 'Alice'")
@@ -65,8 +66,15 @@ class TestValidateCypher:
         assert any("Unknown label: Spaceship" in e for e in errors)
 
     def test_accepts_known_labels(self):
-        for label in ["Person", "Organization", "Technology", "Location",
-                       "__Entity__", "Chunk", "Document"]:
+        for label in [
+            "Person",
+            "Organization",
+            "Technology",
+            "Location",
+            "__Entity__",
+            "Chunk",
+            "Document",
+        ]:
             assert validate_cypher(f"MATCH (n:{label}) RETURN n.name") == []
 
     def test_rejects_call_procedures(self):
@@ -188,6 +196,7 @@ class TestExecuteCypherRetrieval:
     async def test_returns_empty_on_generation_failure(self):
         """When LLM returns garbage, should return empty results."""
         from unittest.mock import AsyncMock, MagicMock
+
         from graphrag_sdk.core.models import LLMResponse
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             execute_cypher_retrieval,
@@ -204,6 +213,7 @@ class TestExecuteCypherRetrieval:
     async def test_returns_empty_on_execution_error(self):
         """When Cypher execution fails, should return empty results."""
         from unittest.mock import AsyncMock, MagicMock
+
         from graphrag_sdk.core.models import LLMResponse
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             execute_cypher_retrieval,
@@ -211,9 +221,7 @@ class TestExecuteCypherRetrieval:
 
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(
-            return_value=LLMResponse(
-                content="```cypher\nMATCH (n:Person) RETURN n.name\n```"
-            )
+            return_value=LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```")
         )
         mock_graph = MagicMock()
         mock_graph.query_raw = AsyncMock(side_effect=Exception("connection error"))
@@ -225,6 +233,7 @@ class TestExecuteCypherRetrieval:
     async def test_parses_result_rows(self):
         """Successful execution should parse rows into facts and entities."""
         from unittest.mock import AsyncMock, MagicMock
+
         from graphrag_sdk.core.models import LLMResponse
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             execute_cypher_retrieval,
@@ -232,9 +241,7 @@ class TestExecuteCypherRetrieval:
 
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(
-            return_value=LLMResponse(
-                content="```cypher\nMATCH (n:Person) RETURN n.name\n```"
-            )
+            return_value=LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```")
         )
         result_mock = MagicMock()
         result_mock.result_set = [["Alice"], ["Bob"]]
@@ -257,6 +264,7 @@ class TestRenderSchemaBlock:
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             render_ontology_block,
         )
+
         block = render_ontology_block(Ontology())
         assert "- Person" in block
         assert "name (STRING)" in block
@@ -264,21 +272,20 @@ class TestRenderSchemaBlock:
 
     def test_schema_block_includes_declared_attributes(self):
         from graphrag_sdk.core.models import (
+            Attribute,
             Entity,
             Ontology,
-            Attribute,
             Relation,
         )
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             render_ontology_block,
         )
+
         s = Ontology(
             entities=[
                 Entity(
                     label="Person",
-                    properties=[
-                        Attribute(name="age", type="INTEGER", description="years")
-                    ],
+                    properties=[Attribute(name="age", type="INTEGER", description="years")],
                 ),
                 Entity(label="Company"),
             ],
@@ -299,13 +306,14 @@ class TestRenderSchemaBlock:
 class TestBuildSchemaPrompt:
     def test_includes_question_and_schema(self):
         from graphrag_sdk.core.models import (
+            Attribute,
             Entity,
             Ontology,
-            Attribute,
         )
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             build_ontology_prompt,
         )
+
         s = Ontology(
             entities=[
                 Entity(
@@ -323,16 +331,16 @@ class TestBuildSchemaPrompt:
 class TestValidateCypherWithSchema:
     def test_unknown_label_flagged_when_schema_provided(self):
         from graphrag_sdk.core.models import Entity, Ontology
+
         s = Ontology(entities=[Entity(label="Person")])
         errors = validate_cypher("MATCH (x:Bogus) RETURN x LIMIT 10", s)
         assert any("Unknown label: Bogus" in e for e in errors)
 
     def test_declared_label_accepted(self):
         from graphrag_sdk.core.models import Entity, Ontology
+
         s = Ontology(entities=[Entity(label="Customer")])
-        errors = validate_cypher(
-            "MATCH (c:Customer) RETURN c.name LIMIT 10", s
-        )
+        errors = validate_cypher("MATCH (c:Customer) RETURN c.name LIMIT 10", s)
         assert errors == []
 
     def test_no_schema_falls_back_to_historic_labels(self):

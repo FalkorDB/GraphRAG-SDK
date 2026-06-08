@@ -1,17 +1,17 @@
 """Tests for retrieval/strategies/ — base (Template Method) and local retrieval."""
+
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError, RetrieverError
-from graphrag_sdk.core.models import RawSearchResult, RetrieverResult, RetrieverResultItem
+from graphrag_sdk.core.models import RawSearchResult, RetrieverResult
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
-
 
 # ── Concrete test strategy ──────────────────────────────────────
 

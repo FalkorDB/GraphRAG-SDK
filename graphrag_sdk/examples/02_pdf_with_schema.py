@@ -121,7 +121,7 @@ async def main():
     print(f"\nRetrieved {len(answer.retriever_result.items)} context items:")
     for i, item in enumerate(answer.retriever_result.items[:5]):
         score = item.score if item.score is not None else 0.0
-        print(f"  [{i+1}] (score={score:.3f}) {item.content[:100]}...")
+        print(f"  [{i + 1}] (score={score:.3f}) {item.content[:100]}...")
 
     # Show graph stats
     stats = await rag.get_statistics()

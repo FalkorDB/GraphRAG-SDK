@@ -1,7 +1,6 @@
 """Tests for retrieval/reranking_strategies/base.py."""
-from __future__ import annotations
 
-from typing import Any
+from __future__ import annotations
 
 import pytest
 

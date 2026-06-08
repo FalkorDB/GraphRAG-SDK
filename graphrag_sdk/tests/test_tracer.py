@@ -1,4 +1,5 @@
 """Tests for telemetry/tracer.py — Span-based tracing."""
+
 from __future__ import annotations
 
 import time
@@ -61,7 +62,7 @@ class TestTracer:
 
     def test_span_context_manager(self):
         t = Tracer()
-        with t.span("operation") as s:
+        with t.span("operation"):
             time.sleep(0.01)
         assert len(t.completed_spans) == 1
         assert t.completed_spans[0].name == "operation"
@@ -69,8 +70,8 @@ class TestTracer:
 
     def test_nested_spans(self):
         t = Tracer()
-        with t.span("outer") as outer:
-            with t.span("inner") as inner:
+        with t.span("outer"):
+            with t.span("inner"):
                 time.sleep(0.005)
         # Only outer is a root span
         assert len(t.completed_spans) == 1

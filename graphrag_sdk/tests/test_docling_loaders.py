@@ -9,14 +9,19 @@ from graphrag_sdk.ingestion.loaders.docling_loader import DoclingLoader
 
 class MockDoclingLoader(DoclingLoader):
     """Mock loader for testing with custom extension_name."""
+
     pass
 
+
 class MockLabel:
-    def __init__(self, val): self.value = val
+    def __init__(self, val):
+        self.value = val
+
     def __eq__(self, other):
         if isinstance(other, type) and hasattr(other, "SECTION_HEADER"):
-            return False # Not a direct match
+            return False  # Not a direct match
         return isinstance(other, MockLabel) and self.value == other.value
+
 
 class LabelEnum:
     SECTION_HEADER = MockLabel("section_header")
@@ -27,6 +32,7 @@ class LabelEnum:
     LIST_ITEM = MockLabel("list_item")
     TABLE = MockLabel("table")
     CODE = MockLabel("code")
+
 
 class TestDoclingBaseLoader:
     """Tests for DoclingBaseLoader and its derived loaders."""
@@ -65,6 +71,7 @@ class TestDoclingBaseLoader:
 
         # Mocking the import to raise ImportError
         real_import = __import__
+
         def _import(name, *args, **kwargs):
             if name == "docling.document_converter":
                 raise ImportError("module not found")
@@ -101,9 +108,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -136,9 +143,9 @@ class TestDoclingBaseLoader:
         mock_doc.iterate_items.return_value = mock_items
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -164,13 +171,13 @@ class TestDoclingBaseLoader:
         mock_doc.iterate_items.return_value = []
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         # If URL support is broken, this will raise LoaderError("File not found")
         result = await loader.load("https://example.com/doc.pdf", ctx)
-        
+
         assert result.document_info.path == "https://example.com/doc.pdf"
         assert result.document_info.metadata["loader"] == "docling"
         # We don't verify size_bytes or suffix since URLs don't have local paths
@@ -182,9 +189,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.side_effect = Exception("Conversion failed")
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         with pytest.raises(LoaderError, match="Docling failed to process"):
@@ -205,9 +212,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -231,9 +238,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -258,9 +265,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -285,9 +292,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -313,9 +320,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -341,9 +348,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -372,9 +379,9 @@ class TestDoclingBaseLoader:
 
         mock_converter = MagicMock()
         mock_converter.convert.return_value.document = mock_doc
-        sys.modules[
-            "docling.document_converter"
-        ].DocumentConverter = lambda **kwargs: mock_converter
+        sys.modules["docling.document_converter"].DocumentConverter = lambda **kwargs: (
+            mock_converter
+        )
 
         loader = MockDoclingLoader()
         result = await loader.load(str(file), ctx)
@@ -385,3 +392,21 @@ class TestDoclingBaseLoader:
         assert elements[1].breadcrumbs == ["Title", "Section"]
         assert elements[2].breadcrumbs == ["Title", "Section", "Subsection"]
         assert elements[3].breadcrumbs == ["Title", "Section", "Subsection"]
+
+
+class TestDoclingIntegration:
+    """Integration tests that use the actual docling library if installed."""
+
+    async def test_real_docling_extraction(self, ctx, tmp_path):
+        """Verify DoclingLoader works against a real file using the actual library."""
+        pytest.importorskip("docling")
+
+        file = tmp_path / "test.md"
+        file.write_text("# Real Title\n\nReal paragraph.")
+
+        loader = DoclingLoader()
+        result = await loader.load(str(file), ctx)
+
+        assert len(result.elements) >= 2
+        assert any(e.type == "header" and "Real Title" in e.content for e in result.elements)
+        assert any(e.type == "paragraph" and "Real paragraph" in e.content for e in result.elements)

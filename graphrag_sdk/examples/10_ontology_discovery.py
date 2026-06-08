@@ -171,9 +171,7 @@ async def main() -> None:
         graph_name = f"discover_{uuid4().hex[:8]}"
         print(f"  Using ephemeral graph: {graph_name}")
         rag = GraphRAG(
-            connection=ConnectionConfig(
-                host="localhost", port=6379, graph_name=graph_name
-            ),
+            connection=ConnectionConfig(host="localhost", port=6379, graph_name=graph_name),
             llm=llm,
             embedder=LiteLLMEmbedder(model="text-embedding-3-large"),
             embedding_dimension=256,
@@ -216,9 +214,7 @@ async def main() -> None:
                     # Preserve the proposed description after the relation
                     # has been declared via its first pattern.
                     if relation.description:
-                        await rag.set_relation_description(
-                            relation.label, relation.description
-                        )
+                        await rag.set_relation_description(relation.label, relation.description)
                         print(
                             f"  + set_relation_description({relation.label}, "
                             f"...{relation.description[:30]!r})"

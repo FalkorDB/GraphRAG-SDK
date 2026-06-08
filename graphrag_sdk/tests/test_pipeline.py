@@ -1,8 +1,10 @@
 """Tests for ingestion/pipeline.py — the sequential orchestrator."""
+
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import IngestionError
@@ -19,12 +21,11 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
-from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-
 
 # ── Stub strategies ─────────────────────────────────────────────
 
@@ -45,10 +46,7 @@ class StubChunker(ChunkingStrategy):
         # Split by sentence
         sentences = [s.strip() for s in text.split(".") if s.strip()]
         return TextChunks(
-            chunks=[
-                TextChunk(text=s, index=i, uid=f"chunk-{i}")
-                for i, s in enumerate(sentences)
-            ]
+            chunks=[TextChunk(text=s, index=i, uid=f"chunk-{i}") for i, s in enumerate(sentences)]
         )
 
 
@@ -106,7 +104,9 @@ class TestIngestionPipeline:
         result = await pipeline.run("ignored.txt", ctx, text="Direct text input.")
         assert result.chunks_indexed >= 1
 
-    async def test_run_with_text_preserves_source_as_path(self, ctx, mock_graph_store, mock_vector_store):
+    async def test_run_with_text_preserves_source_as_path(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
         """When text= is passed without document_info, source is used as the path."""
         pipeline = self._make_pipeline(mock_graph_store, mock_vector_store)
         result = await pipeline.run("my_doc", ctx, text="Direct text input.")
@@ -129,7 +129,8 @@ class TestIngestionPipeline:
     async def test_run_creates_next_chunk_links(self, ctx, mock_graph_store, mock_vector_store):
         """Pipeline creates NEXT_CHUNK between sequential chunks."""
         pipeline = self._make_pipeline(
-            mock_graph_store, mock_vector_store,
+            mock_graph_store,
+            mock_vector_store,
             text="First. Second. Third.",
         )
         await pipeline.run("test.txt", ctx)
@@ -169,12 +170,16 @@ class TestIngestionPipeline:
                     ],
                     relationships=[
                         GraphRelationship(
-                            start_node_id="p1", end_node_id="x1",
-                            type="RELATES", properties={"rel_type": "KNOWS"},
+                            start_node_id="p1",
+                            end_node_id="x1",
+                            type="RELATES",
+                            properties={"rel_type": "KNOWS"},
                         ),
                         GraphRelationship(
-                            start_node_id="p1", end_node_id="a1",
-                            type="RELATES", properties={"rel_type": "WRONG"},
+                            start_node_id="p1",
+                            end_node_id="a1",
+                            type="RELATES",
+                            properties={"rel_type": "WRONG"},
                         ),
                     ],
                 )
@@ -196,6 +201,7 @@ class TestIngestionPipeline:
 
     async def test_pipeline_wraps_exception(self, ctx, mock_graph_store, mock_vector_store, caplog):
         """Non-IngestionError exceptions get wrapped."""
+
         class FailingLoader(LoaderStrategy):
             async def load(self, source, ctx):
                 raise RuntimeError("unexpected!")
@@ -353,9 +359,7 @@ class TestIngestionPipeline:
                 # combined remap is left un-flattened on purpose to
                 # reproduce the production code path.
                 return ResolutionResult(
-                    nodes=[
-                        GraphNode(id="c", label="Person", properties={"name": "Alice"})
-                    ],
+                    nodes=[GraphNode(id="c", label="Person", properties={"name": "Alice"})],
                     relationships=[],
                     merged_count=2,
                     remap={"a": "b", "b": "c"},
@@ -567,12 +571,16 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="p", end_node_id="c",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="p",
+                    end_node_id="c",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 ),
                 GraphRelationship(
-                    start_node_id="c", end_node_id="p",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="c",
+                    end_node_id="p",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 ),
             ],
         )
@@ -601,8 +609,10 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="a", end_node_id="b",
-                    type="RELATES", properties={"rel_type": "KNOWS"},
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": "KNOWS"},
                 ),
             ],
         )
@@ -635,8 +645,10 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="c", end_node_id="p",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="c",
+                    end_node_id="p",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 )
                 for _ in range(3)
             ],
@@ -678,8 +690,10 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="c", end_node_id="p",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="c",
+                    end_node_id="p",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 )
                 for _ in range(50)
             ],
@@ -688,8 +702,11 @@ class TestPruneMethod:
             pipeline._prune(data, ontology)
 
         msg = next(
-            (r.getMessage() for r in caplog.records
-             if r.levelno == logging.WARNING and "WORKS_AT" in r.getMessage()),
+            (
+                r.getMessage()
+                for r in caplog.records
+                if r.levelno == logging.WARNING and "WORKS_AT" in r.getMessage()
+            ),
             None,
         )
         assert msg is not None
