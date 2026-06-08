@@ -243,6 +243,32 @@ class TestDoclingBaseLoader:
         assert elements[1].type == "table"
         assert elements[2].type == "code"
 
+    async def test_table_prefers_export_to_markdown_over_text(self, ctx, tmp_path):
+        """Verify that tables prefer export_to_markdown even if text is present."""
+        file = tmp_path / "test.docx"
+        file.write_text("dummy content")
+
+        mock_table = MagicMock()
+        mock_table.label = LabelEnum.TABLE
+        mock_table.text = "Unformatted garbage"
+        mock_table.export_to_markdown.return_value = "| Formatted | Table |"
+
+        mock_doc = MagicMock()
+        mock_doc.iterate_items.return_value = [(mock_table, 1)]
+
+        mock_converter = MagicMock()
+        mock_converter.convert.return_value.document = mock_doc
+        sys.modules[
+            "docling.document_converter"
+        ].DocumentConverter = lambda **kwargs: mock_converter
+
+        loader = MockDoclingLoader()
+        result = await loader.load(str(file), ctx)
+
+        assert len(result.elements) == 1
+        assert result.elements[0].type == "table"
+        assert result.elements[0].content == "| Formatted | Table |"
+
     async def test_csv_header_row(self, ctx, tmp_path):
         """Verify CSV loader preserves header row in elements."""
         file = tmp_path / "test.csv"

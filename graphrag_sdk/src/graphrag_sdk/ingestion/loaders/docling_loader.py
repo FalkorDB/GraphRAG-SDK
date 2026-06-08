@@ -66,18 +66,30 @@ class DoclingLoader(LoaderStrategy):
 
         # Map docling hierarchy to GraphRAG DocumentElements
         for item, level in doc.iterate_items():
-            content = getattr(item, "text", "")
+            label = getattr(item, "label", None)
+
+            content = ""
+            # Tables often have poor or empty .text, so we prefer the markdown export
+            if label == DocItemLabel.TABLE and hasattr(item, "export_to_markdown"):
+                try:
+                    content = item.export_to_markdown()
+                except Exception as e:
+                    logger.debug("export_to_markdown failed for table: %s", e)
+
+            if not content:
+                content = getattr(item, "text", "")
+
+            # Fallback for other items without text
             if not content and hasattr(item, "export_to_markdown"):
                 try:
                     content = item.export_to_markdown()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Fallback export_to_markdown failed: %s", e)
 
             if not content:
                 continue
 
             full_text_blocks.append(content)
-            label = getattr(item, "label", None)
 
             if label in (DocItemLabel.TITLE, DocItemLabel.SECTION_HEADER):
                 # Update breadcrumbs
