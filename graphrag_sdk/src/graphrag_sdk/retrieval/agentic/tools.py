@@ -77,8 +77,14 @@ def is_read_only_cypher(cypher: str) -> bool:
 # ── Default tool builders ────────────────────────────────────────
 
 
-def make_search_tool(strategy: Any, *, max_chars: int = 1500) -> Tool:
-    """Vector/multi-path search over the graph, returning context snippets."""
+def make_search_tool(strategy: Any, *, max_chars: int | None = None) -> Tool:
+    """Vector/multi-path search over the graph, returning context snippets.
+
+    The underlying strategy already bounds its own output (e.g. MultiPath caps
+    passages via ``chunk_top_k`` plus entity/relationship limits), so by default
+    no character truncation is applied and the agent sees the full result.
+    Pass ``max_chars`` only to force an additional hard cap.
+    """
 
     async def handler(tool_input: dict[str, Any], ctx: Context) -> str:
         query = str(tool_input.get("query", "")).strip()
@@ -87,7 +93,7 @@ def make_search_tool(strategy: Any, *, max_chars: int = 1500) -> Tool:
         result = await strategy.search(query, ctx)
         snippets = [item.content for item in result.items]
         joined = "\n---\n".join(snippets) if snippets else "No results."
-        return joined[:max_chars]
+        return joined if max_chars is None else joined[:max_chars]
 
     return Tool(
         name="search",
