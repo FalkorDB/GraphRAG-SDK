@@ -783,6 +783,53 @@ class SearchType(str, Enum):
     HYBRID = "hybrid"
 
 
+# ── Agentic / Graph-Walk / Skill Types (Phase 3) ─────────────────
+
+
+class AgentStep(DataModel):
+    """A single Thought→Action→Observation step in the agentic loop."""
+
+    index: int
+    thought: str = ""
+    action: str = ""
+    action_input: dict[str, Any] = Field(default_factory=dict)
+    observation: str = ""
+
+
+class AgentTrace(DataModel):
+    """Full record of an agentic retrieval run."""
+
+    steps: list[AgentStep] = Field(default_factory=list)
+    stop_reason: str = ""
+    answer: str = ""
+
+    @property
+    def num_steps(self) -> int:
+        return len(self.steps)
+
+
+class ScoredPath(DataModel):
+    """A scored path through the knowledge graph (graph-walk output)."""
+
+    nodes: list[str] = Field(default_factory=list)
+    score: float = 0.0
+    edges: list[str] = Field(default_factory=list)
+
+    @property
+    def length(self) -> int:
+        """Number of hops (edges) in the path."""
+        return max(0, len(self.nodes) - 1)
+
+
+class SkillResult(DataModel):
+    """Structured output of a high-level reasoning skill."""
+
+    skill: str
+    summary: str = ""
+    data: dict[str, Any] = Field(default_factory=dict)
+    sources: list[str] = Field(default_factory=list)
+
+
 # ── Deprecation aliases ──────────────────────────────────────────
 #
 # These older names were used prior to the v1.2.x ontology vocabulary rename
