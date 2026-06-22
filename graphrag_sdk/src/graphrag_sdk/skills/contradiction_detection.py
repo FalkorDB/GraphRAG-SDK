@@ -26,6 +26,8 @@ class ContradictionDetectionSkill(Skill):
         if not entity:
             raise ValueError("contradiction_detection requires 'entity'")
         limit = int(params.get("limit", 50))
+        if limit < 1:
+            raise ValueError("contradiction_detection 'limit' must be >= 1")
 
         rows = await self._rows(
             "MATCH (e:__Entity__ {id: $id})-[r]-(m:__Entity__) "

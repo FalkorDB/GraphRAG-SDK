@@ -377,6 +377,10 @@ class GraphStore:
         procedure is unavailable (e.g. older FalkorDB) so callers can fall
         back to an unweighted walk.
         """
+        if not entity_label.isidentifier():
+            raise ValueError(f"Invalid entity_label for pagerank: {entity_label!r}")
+        if relationship_type is not None and not relationship_type.isidentifier():
+            raise ValueError(f"Invalid relationship_type for pagerank: {relationship_type!r}")
         rel = f"'{relationship_type}'" if relationship_type else "NULL"
         query = (
             f"CALL algo.pageRank('{entity_label}', {rel}) "

@@ -51,12 +51,18 @@ class ImpactAnalysisSkill(Skill):
         for path in paths:
             for hop, node in enumerate(path.nodes[1:], start=1):
                 existing = impacted.get(node)
-                if existing is None or path.score > existing["score"]:
+                if existing is None:
                     impacted[node] = {
                         "distance": hop,
                         "score": path.score,
                         "via": path.nodes,
                     }
+                    continue
+                if hop < existing["distance"]:
+                    existing["distance"] = hop
+                    existing["via"] = path.nodes
+                if path.score > existing["score"]:
+                    existing["score"] = path.score
         ranked = sorted(
             ({"entity": k, **v} for k, v in impacted.items()),
             key=lambda d: (d["distance"], -d["score"]),

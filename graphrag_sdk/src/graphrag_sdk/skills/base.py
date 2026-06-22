@@ -39,7 +39,7 @@ class Skill(ABC):
     @abstractmethod
     async def run(self, ctx: Context | None = None, **params: Any) -> SkillResult:
         """Execute the skill and return a structured :class:`SkillResult`."""
-        ...
+        raise NotImplementedError("Subclasses must implement 'run'.")
 
     # ── Shared helpers ────────────────────────────────────────────
 

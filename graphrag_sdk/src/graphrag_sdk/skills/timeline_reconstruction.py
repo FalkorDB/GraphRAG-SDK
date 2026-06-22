@@ -8,6 +8,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import SkillResult
 from graphrag_sdk.skills.base import Skill
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 _DATE_KEYS = ("date", "year", "time", "timestamp", "when", "created", "start", "end")
 _YEAR_RE = re.compile(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?")
@@ -31,7 +32,10 @@ class TimelineReconstructionSkill(Skill):
         limit = int(params.get("limit", 100))
 
         if label:
-            cypher = f"MATCH (e:{label}) RETURN e.id AS id, properties(e) AS props LIMIT {limit}"
+            safe_label = sanitize_cypher_label(label)
+            cypher = (
+                f"MATCH (e:`{safe_label}`) RETURN e.id AS id, properties(e) AS props LIMIT {limit}"
+            )
         else:
             cypher = f"MATCH (e:__Entity__) RETURN e.id AS id, properties(e) AS props LIMIT {limit}"
         rows = await self._rows(cypher)
