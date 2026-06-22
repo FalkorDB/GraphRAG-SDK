@@ -33,12 +33,12 @@ from graphrag_sdk.retrieval.strategies.entity_discovery import (
     is_enumeration_query,
     search_relates_edges,
 )
-from graphrag_sdk.retrieval.strategies.relationship_expansion import (
-    expand_relationships,
-)
 from graphrag_sdk.retrieval.strategies.path_router import (
     RETRIEVAL_PATHS,
     all_paths,
+)
+from graphrag_sdk.retrieval.strategies.relationship_expansion import (
+    expand_relationships,
 )
 from graphrag_sdk.retrieval.strategies.result_assembly import (
     assemble_raw_result,
@@ -336,7 +336,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
         # 6. Chunk retrieval (4 paths)
         if "chunks" in plan:
-            candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
+            candidate_chunks, _chunk_sources, chunk_embeddings = await retrieve_chunks(
                 self._vector,
                 self._graph,
                 query,
@@ -347,7 +347,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 ctx=ctx,
             )
         else:
-            candidate_chunks, chunk_sources, chunk_embeddings = {}, {}, {}
+            candidate_chunks, _chunk_sources, chunk_embeddings = {}, {}, {}
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
             f"({len(chunk_embeddings)} with stored embeddings)"

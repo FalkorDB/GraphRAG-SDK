@@ -64,7 +64,11 @@ class HeuristicPathRouter:
         q = (query or "").lower()
         plan: set[str] = {"relates", "chunks"}
         # Relationship / connection questions → traversal.
-        if re.search(r"\b(connect|related|relationship|between|link|neighbor|path|how (?:are|is|do))\b", q):
+        rel_pattern = (
+            r"\b(connect|related|relationship|between|link|neighbor"
+            r"|path|how (?:are|is|do))\b"
+        )
+        if re.search(rel_pattern, q):
             plan |= {"expansion", "entity_cypher"}
         # Quoted or capitalized proper nouns in the original query → name match.
         if '"' in query or "'" in query or re.search(r"\b[A-Z][a-z]+\b", query or ""):
