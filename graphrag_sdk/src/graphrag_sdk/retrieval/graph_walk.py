@@ -192,13 +192,10 @@ class DynamicGraphWalk:
             meet = await self._expand_frontier(fwd_frontier, fwd, bwd)
             if meet is not None:
                 return self._stitch(meet, fwd, bwd)
-            fwd_frontier = [n for n in fwd if fwd[n][0] is not None or n == start]
-            fwd_frontier = list(self._latest_layer(fwd, fwd_frontier))
 
             meet = await self._expand_frontier(bwd_frontier, bwd, fwd)
             if meet is not None:
                 return self._stitch(meet, fwd, bwd)
-            bwd_frontier = list(self._latest_layer(bwd, bwd_frontier))
 
         return None
 
@@ -218,13 +215,6 @@ class DynamicGraphWalk:
                     return nbr
         frontier[:] = next_layer
         return None
-
-    @staticmethod
-    def _latest_layer(
-        side: dict[str, tuple[str | None, str, float]],
-        frontier: list[str],
-    ) -> list[str]:
-        return frontier
 
     def _stitch(
         self,

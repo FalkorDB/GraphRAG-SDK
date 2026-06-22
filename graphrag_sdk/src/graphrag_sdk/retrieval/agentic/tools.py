@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -17,18 +18,13 @@ logger = logging.getLogger(__name__)
 
 ToolHandler = Callable[[dict[str, Any], Context], Awaitable[str]]
 
-# Cypher write/DDL keywords rejected by the read-only cypher tool.
-_WRITE_KEYWORDS = (
-    "create",
-    "merge",
-    "delete",
-    "set",
-    "remove",
-    "drop",
-    "detach",
-    "call dbms",
-    "call db.",
-    "load csv",
+# Cypher write/DDL keywords rejected by the read-only cypher tool. Matched on
+# word boundaries so substrings of legitimate identifiers (e.g. "recall",
+# "asset") are not falsely flagged. ``call`` blocks every stored-procedure path
+# (algo.*, db.*, dbms.*, apoc.*) since procedures can mutate the graph.
+_WRITE_KEYWORD_RE = re.compile(
+    r"\b(create|merge|delete|set|remove|drop|detach|call|load\s+csv)\b",
+    re.IGNORECASE,
 )
 
 
@@ -78,8 +74,7 @@ class ToolRegistry:
 
 def is_read_only_cypher(cypher: str) -> bool:
     """Reject Cypher that mutates the graph (agent tools are read-only)."""
-    lowered = cypher.lower()
-    return not any(kw in lowered for kw in _WRITE_KEYWORDS)
+    return _WRITE_KEYWORD_RE.search(cypher) is None
 
 
 # ── Default tool builders ────────────────────────────────────────
