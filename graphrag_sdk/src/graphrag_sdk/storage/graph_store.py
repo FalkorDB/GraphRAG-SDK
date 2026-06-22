@@ -331,6 +331,69 @@ class GraphStore:
         """
         return await self._conn.query(cypher, params)
 
+    # ── Graph Walk (Phase 3.3) ────────────────────────────────────
+
+    async def weighted_neighbors(
+        self,
+        node_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[tuple[str, float, str]]:
+        """Return weighted neighbors of an entity for dynamic graph walks.
+
+        Each tuple is ``(neighbor_id, edge_weight, edge_label)``. Edge
+        weight falls back to ``1.0`` when the relationship has no stored
+        ``weight`` property.
+        """
+        query = (
+            "MATCH (n:__Entity__ {id: $node_id})-[r]-(m:__Entity__) "
+            "RETURN m.id AS id, type(r) AS label, "
+            "coalesce(r.weight, 1.0) AS weight "
+            f"LIMIT {int(limit)}"
+        )
+        try:
+            result = await self._conn.query(query, {"node_id": node_id})
+            neighbors: list[tuple[str, float, str]] = []
+            for row in result.result_set:
+                nbr_id = row[0]
+                label = row[1] if len(row) > 1 else ""
+                weight = float(row[2]) if len(row) > 2 and row[2] is not None else 1.0
+                if nbr_id is not None:
+                    neighbors.append((nbr_id, weight, label or ""))
+            return neighbors
+        except Exception as exc:
+            logger.warning(f"weighted_neighbors failed for {node_id}: {exc}")
+            return []
+
+    async def pagerank(
+        self,
+        *,
+        entity_label: str = "__Entity__",
+        relationship_type: str | None = None,
+    ) -> dict[str, float]:
+        """Compute PageRank importance per entity via FalkorDB's algo procedure.
+
+        Returns a ``{entity_id: score}`` map. Returns an empty map when the
+        procedure is unavailable (e.g. older FalkorDB) so callers can fall
+        back to an unweighted walk.
+        """
+        rel = f"'{relationship_type}'" if relationship_type else "NULL"
+        query = (
+            f"CALL algo.pageRank('{entity_label}', {rel}) "
+            "YIELD node, score RETURN node.id AS id, score AS score"
+        )
+        try:
+            result = await self._conn.query(query)
+            scores: dict[str, float] = {}
+            for row in result.result_set:
+                if row[0] is not None:
+                    scores[row[0]] = float(row[1]) if row[1] is not None else 0.0
+            return scores
+        except Exception as exc:
+            logger.warning(f"pagerank unavailable: {exc}")
+            return {}
+
+
     # ── Statistics ────────────────────────────────────────────────
 
     async def get_statistics(self) -> dict[str, Any]:
