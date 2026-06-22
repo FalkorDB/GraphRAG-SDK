@@ -107,7 +107,9 @@ class DynamicGraphWalk:
                             nodes=list(nodes),
                             edges=list(edges),
                             score=score_path(
-                                nodes, self._weights, e_weights,
+                                nodes,
+                                self._weights,
+                                e_weights,
                                 length_penalty=self._length_penalty,
                             ),
                         )
@@ -140,7 +142,9 @@ class DynamicGraphWalk:
                                 nodes=list(nodes),
                                 edges=list(edges),
                                 score=score_path(
-                                    nodes, self._weights, e_weights,
+                                    nodes,
+                                    self._weights,
+                                    e_weights,
                                     length_penalty=self._length_penalty,
                                 ),
                             )
@@ -264,9 +268,7 @@ class DynamicGraphWalk:
         return ScoredPath(
             nodes=nodes,
             edges=edges,
-            score=score_path(
-                nodes, self._weights, weights, length_penalty=self._length_penalty
-            ),
+            score=score_path(nodes, self._weights, weights, length_penalty=self._length_penalty),
         )
 
 

@@ -23,8 +23,7 @@ def _require_mcp() -> Any:
         return mcp
     except ImportError as exc:  # pragma: no cover - exercised only without extra
         raise ImportError(
-            "The MCP server requires the `mcp` package. "
-            "Install with: pip install graphrag-sdk[mcp]"
+            "The MCP server requires the `mcp` package. Install with: pip install graphrag-sdk[mcp]"
         ) from exc
 
 
@@ -107,9 +106,10 @@ class GraphRAGMCPServer:
         sse = SseServerTransport("/messages/")
 
         async def handle_sse(request: Any) -> None:
-            async with sse.connect_sse(
-                request.scope, request.receive, request._send
-            ) as (read, write):
+            async with sse.connect_sse(request.scope, request.receive, request._send) as (
+                read,
+                write,
+            ):
                 await server.run(read, write, init_options)
 
         app = Starlette(

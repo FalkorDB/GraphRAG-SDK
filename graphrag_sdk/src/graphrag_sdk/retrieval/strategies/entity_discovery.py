@@ -184,7 +184,7 @@ async def discover_entities(
             logger.debug("Entity CONTAINS search failed: %s", exc)
 
     # Path b: Fulltext search on entity index
-    for kw in (all_keywords[:6] if use_fulltext else []):
+    for kw in all_keywords[:6] if use_fulltext else []:
         try:
             if ctx is not None:
                 ctx.ensure_budget("entity fulltext search")

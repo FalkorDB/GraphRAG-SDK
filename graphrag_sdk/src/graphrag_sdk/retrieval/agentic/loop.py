@@ -127,9 +127,7 @@ class AgenticRetrieval(RetrievalStrategy):
             parsed = parse_react_step(text)
 
             if "final_answer" in parsed:
-                trace.steps.append(
-                    AgentStep(index=step_idx, thought=parsed.get("thought", ""))
-                )
+                trace.steps.append(AgentStep(index=step_idx, thought=parsed.get("thought", "")))
                 trace.answer = parsed["final_answer"]
                 stop_reason = "final_answer"
                 ctx.log(f"Agentic loop produced final answer at step {step_idx}")

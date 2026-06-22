@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 
 # The five gateable retrieval paths of MultiPathRetrieval.
 RETRIEVAL_PATHS: tuple[str, ...] = (
-    "relates",          # RELATES edge vector search (facts + seed entities)
-    "entity_cypher",    # entity discovery via Cypher exact/CONTAINS name match
+    "relates",  # RELATES edge vector search (facts + seed entities)
+    "entity_cypher",  # entity discovery via Cypher exact/CONTAINS name match
     "entity_fulltext",  # entity discovery via fulltext index
-    "expansion",        # 1-hop/2-hop relationship expansion
-    "chunks",           # chunk retrieval (fulltext + vector + MENTIONED_IN + 2-hop)
+    "expansion",  # 1-hop/2-hop relationship expansion
+    "chunks",  # chunk retrieval (fulltext + vector + MENTIONED_IN + 2-hop)
 )
 _PATH_SET: frozenset[str] = frozenset(RETRIEVAL_PATHS)
 

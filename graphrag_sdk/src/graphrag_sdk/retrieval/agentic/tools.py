@@ -19,8 +19,16 @@ ToolHandler = Callable[[dict[str, Any], Context], Awaitable[str]]
 
 # Cypher write/DDL keywords rejected by the read-only cypher tool.
 _WRITE_KEYWORDS = (
-    "create", "merge", "delete", "set", "remove", "drop",
-    "detach", "call dbms", "call db.", "load csv",
+    "create",
+    "merge",
+    "delete",
+    "set",
+    "remove",
+    "drop",
+    "detach",
+    "call dbms",
+    "call db.",
+    "load csv",
 )
 
 
@@ -97,7 +105,7 @@ def make_search_tool(strategy: Any, *, max_chars: int | None = None) -> Tool:
 
     return Tool(
         name="search",
-        description="Semantic search of the knowledge graph. Input: {\"query\": str}.",
+        description='Semantic search of the knowledge graph. Input: {"query": str}.',
         handler=handler,
     )
 
@@ -139,8 +147,7 @@ def make_cypher_tool(graph_store: Any, *, max_rows: int = 25) -> Tool:
     return Tool(
         name="cypher",
         description=(
-            "Run a read-only Cypher query (MATCH ... RETURN ...). "
-            "Input: {\"cypher\": str}."
+            'Run a read-only Cypher query (MATCH ... RETURN ...). Input: {"cypher": str}.'
         ),
         handler=handler,
     )
@@ -190,7 +197,7 @@ def make_traverse_tool(
         name="traverse",
         description=(
             "Walk the graph from a start entity, optionally toward a goal. "
-            "Input: {\"start\": str, \"goal\"?: str}."
+            'Input: {"start": str, "goal"?: str}.'
         ),
         handler=handler,
     )

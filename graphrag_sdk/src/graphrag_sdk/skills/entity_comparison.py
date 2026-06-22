@@ -14,8 +14,7 @@ class EntityComparisonSkill(Skill):
 
     name = "entity_comparison"
     description = (
-        "Compare two entities: their attributes, shared neighbors, and "
-        "what makes each distinct."
+        "Compare two entities: their attributes, shared neighbors, and what makes each distinct."
     )
 
     async def run(self, ctx: Context | None = None, **params: Any) -> SkillResult:

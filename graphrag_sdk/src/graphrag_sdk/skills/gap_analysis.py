@@ -28,8 +28,7 @@ class GapAnalysisSkill(Skill):
         limit = int(params.get("limit", 50))
 
         isolated_rows = await self._rows(
-            "MATCH (e:__Entity__) WHERE NOT (e)-[]-(:__Entity__) "
-            f"RETURN e.id AS id LIMIT {limit}"
+            f"MATCH (e:__Entity__) WHERE NOT (e)-[]-(:__Entity__) RETURN e.id AS id LIMIT {limit}"
         )
         isolated = [r[0] for r in isolated_rows if r and r[0] is not None]
 

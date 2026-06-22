@@ -19,10 +19,7 @@ class ContradictionDetectionSkill(Skill):
     """
 
     name = "contradiction_detection"
-    description = (
-        "Find contradictory or mutually inconsistent facts about an entity "
-        "in the graph."
-    )
+    description = "Find contradictory or mutually inconsistent facts about an entity in the graph."
 
     async def run(self, ctx: Context | None = None, **params: Any) -> SkillResult:
         entity = params.get("entity")
@@ -48,9 +45,7 @@ class ContradictionDetectionSkill(Skill):
         if self._llm is not None and facts:
             prompt = (
                 f"Here are facts about entity '{entity}':\n"
-                + "\n".join(
-                    f"- {f['relation']} {f['other']}: {f['description']}" for f in facts
-                )
+                + "\n".join(f"- {f['relation']} {f['other']}: {f['description']}" for f in facts)
                 + "\n\nIdentify any pairs of facts that contradict each other. "
                 'Respond as JSON: {"contradictions": [{"a": "...", "b": "...", '
                 '"reason": "..."}], "summary": "..."}'

@@ -30,9 +30,7 @@ def build_skill(name: str, graph_store: object, llm: object | None = None) -> Sk
     try:
         skill_cls = SKILL_REGISTRY[name]
     except KeyError:
-        raise KeyError(
-            f"Unknown skill '{name}'. Available: {sorted(SKILL_REGISTRY)}"
-        ) from None
+        raise KeyError(f"Unknown skill '{name}'. Available: {sorted(SKILL_REGISTRY)}") from None
     return skill_cls(graph_store, llm)
 
 

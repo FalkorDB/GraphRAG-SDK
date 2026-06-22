@@ -31,15 +31,9 @@ class TimelineReconstructionSkill(Skill):
         limit = int(params.get("limit", 100))
 
         if label:
-            cypher = (
-                f"MATCH (e:{label}) RETURN e.id AS id, properties(e) AS props "
-                f"LIMIT {limit}"
-            )
+            cypher = f"MATCH (e:{label}) RETURN e.id AS id, properties(e) AS props LIMIT {limit}"
         else:
-            cypher = (
-                "MATCH (e:__Entity__) RETURN e.id AS id, properties(e) AS props "
-                f"LIMIT {limit}"
-            )
+            cypher = f"MATCH (e:__Entity__) RETURN e.id AS id, properties(e) AS props LIMIT {limit}"
         rows = await self._rows(cypher)
 
         events: list[dict[str, Any]] = []
@@ -50,9 +44,7 @@ class TimelineReconstructionSkill(Skill):
             props = dict(row[1] or {}) if len(row) > 1 else {}
             sort_key = _extract_date(props)
             if sort_key is not None:
-                events.append(
-                    {"entity": entity_id, "date": sort_key[1], "sort": sort_key[0]}
-                )
+                events.append({"entity": entity_id, "date": sort_key[1], "sort": sort_key[0]})
 
         events.sort(key=lambda e: e["sort"])
         timeline = [{"entity": e["entity"], "date": e["date"]} for e in events]

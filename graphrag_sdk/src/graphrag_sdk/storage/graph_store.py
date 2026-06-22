@@ -393,7 +393,6 @@ class GraphStore:
             logger.warning(f"pagerank unavailable: {exc}")
             return {}
 
-
     # ── Statistics ────────────────────────────────────────────────
 
     async def get_statistics(self) -> dict[str, Any]:

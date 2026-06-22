@@ -36,13 +36,16 @@ def _build_rag() -> object:
 def main() -> None:
     parser = argparse.ArgumentParser(description="GraphRAG SDK MCP server")
     parser.add_argument(
-        "--transport", choices=["stdio", "sse"], default="stdio",
+        "--transport",
+        choices=["stdio", "sse"],
+        default="stdio",
         help="Transport to serve over (default: stdio).",
     )
     parser.add_argument("--host", default="127.0.0.1", help="SSE bind host.")
     parser.add_argument("--port", type=int, default=8080, help="SSE bind port.")
     parser.add_argument(
-        "--log-level", default="INFO",
+        "--log-level",
+        default="INFO",
         help="Logging level (DEBUG, INFO, WARNING, ...).",
     )
     args = parser.parse_args()
