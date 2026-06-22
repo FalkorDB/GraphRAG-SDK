@@ -36,6 +36,10 @@ from graphrag_sdk.retrieval.strategies.entity_discovery import (
 from graphrag_sdk.retrieval.strategies.relationship_expansion import (
     expand_relationships,
 )
+from graphrag_sdk.retrieval.strategies.path_router import (
+    RETRIEVAL_PATHS,
+    all_paths,
+)
 from graphrag_sdk.retrieval.strategies.result_assembly import (
     assemble_raw_result,
     cosine_sim,
@@ -176,6 +180,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
+        router: Any | None = None,  # Optional path router (agentic path selection)
         ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
         schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
@@ -206,6 +211,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._rel_top_k = rel_top_k
         self._keyword_limit = keyword_limit
         self._enable_cypher = enable_cypher
+        self._router = router
         self._ontology = ontology
 
     # -- Template Method hook --
@@ -229,22 +235,48 @@ class MultiPathRetrieval(RetrievalStrategy):
             timeout=ctx.provider_timeout_seconds("MultiPath question embedding"),
         )
 
+        # 2b. Plan which retrieval paths to run. Without a router this is
+        # "all paths" (unchanged behavior). With a router, an LLM/heuristic
+        # prunes to the paths the question actually needs; on any failure or
+        # empty plan we fall back to all paths so recall is never lost.
+        plan: set[str] = all_paths()
+        if self._router is not None:
+            try:
+                planned = await self._router.plan(query, ctx)
+                plan = set(planned) & set(RETRIEVAL_PATHS) or all_paths()
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Path router failed (%s); running all paths", exc)
+                plan = all_paths()
+            ctx.log(f"MultiPath plan: {sorted(plan)}")
+
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
+        run_relates = "relates" in plan
+        fact_strings_scored: list[tuple[str, float]] = []
+        rel_entities: dict[str, dict] = {}
+        cypher_facts: list = []
+        cypher_entities: dict[str, dict] = {}
         if self._enable_cypher:
-            results = await asyncio.gather(
-                search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx),
+            coros = [
                 execute_cypher_retrieval(
                     self._graph, self._llm, query, ontology=self._ontology, ctx=ctx
-                ),
-                return_exceptions=True,
-            )
-            fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))
-            cypher_facts, cypher_entities = _unpack_gather_result(results[1], ([], {}))
-        else:
+                )
+            ]
+            if run_relates:
+                coros.insert(
+                    0, search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx)
+                )
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            if run_relates:
+                fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))
+                cypher_facts, cypher_entities = _unpack_gather_result(results[1], ([], {}))
+            else:
+                cypher_facts, cypher_entities = _unpack_gather_result(results[0], ([], {}))
+        elif run_relates:
             fact_strings_scored, rel_entities = await search_relates_edges(
                 self._vector, query_vector, self._rel_top_k, ctx=ctx
             )
-            cypher_facts, cypher_entities = [], {}
 
         # Filter RELATES vector facts by relevance score
         fact_strings = filter_facts_by_relevance(fact_strings_scored)
@@ -256,9 +288,20 @@ class MultiPathRetrieval(RetrievalStrategy):
             + (f", {len(cypher_facts)} cypher results" if cypher_facts else "")
         )
         # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
-        found_entities, entity_sources = await discover_entities(
-            self._graph, self._vector, llm_kw, all_keywords, ctx=ctx
-        )
+        use_entity_cypher = "entity_cypher" in plan
+        use_entity_fulltext = "entity_fulltext" in plan
+        if use_entity_cypher or use_entity_fulltext:
+            found_entities, entity_sources = await discover_entities(
+                self._graph,
+                self._vector,
+                llm_kw,
+                all_keywords,
+                ctx=ctx,
+                use_cypher=use_entity_cypher,
+                use_fulltext=use_entity_fulltext,
+            )
+        else:
+            found_entities, entity_sources = {}, {}
         for eid, einfo in rel_entities.items():
             if eid not in found_entities:
                 found_entities[eid] = einfo
@@ -284,21 +327,27 @@ class MultiPathRetrieval(RetrievalStrategy):
                 )
         # 5. Relationship expansion
         entity_list = list(found_entities.items())[: self._max_entities]
-        relationship_strings = await expand_relationships(
-            self._graph, entity_list, self._max_relationships, ctx=ctx
-        )
+        if "expansion" in plan:
+            relationship_strings = await expand_relationships(
+                self._graph, entity_list, self._max_relationships, ctx=ctx
+            )
+        else:
+            relationship_strings = []
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
         # 6. Chunk retrieval (4 paths)
-        candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
-            self._vector,
-            self._graph,
-            query,
-            query_vector,
-            llm_kw,
-            simple_kw,
-            entity_list,
-            ctx=ctx,
-        )
+        if "chunks" in plan:
+            candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
+                self._vector,
+                self._graph,
+                query,
+                query_vector,
+                llm_kw,
+                simple_kw,
+                entity_list,
+                ctx=ctx,
+            )
+        else:
+            candidate_chunks, chunk_sources, chunk_embeddings = {}, {}, {}
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
             f"({len(chunk_embeddings)} with stored embeddings)"
