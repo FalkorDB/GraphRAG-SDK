@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.retrieval.strategies import multi_path as mp_module
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
@@ -18,7 +17,6 @@ from graphrag_sdk.retrieval.strategies.path_router import (
 )
 
 from .conftest import MockEmbedder, MockLLM
-
 
 # -- parse_paths / all_paths --
 

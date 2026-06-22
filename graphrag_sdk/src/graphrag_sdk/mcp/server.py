@@ -69,7 +69,11 @@ class GraphRAGMCPServer:
             tool = toolset.by_name(name)
             if tool is None:
                 return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
-            text = await tool.handler(arguments or {})
+            try:
+                text = await tool.handler(arguments or {})
+            except Exception as exc:  # noqa: BLE001 - surface as tool-level error
+                logger.warning("MCP tool %s failed: %s", name, exc)
+                return [types.TextContent(type="text", text=f"Error running tool '{name}': {exc}")]
             return [types.TextContent(type="text", text=text)]
 
         return server
