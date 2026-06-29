@@ -237,7 +237,8 @@ def assemble_raw_result(
         records.append(
             {
                 "section": "passages",
-                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages[:max_passages]),
+                "content": "## Source Document Passages\n"
+                + "\n---\n".join(source_passages[:max_passages]),
             }
         )
 
