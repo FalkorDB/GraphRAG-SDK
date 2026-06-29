@@ -52,7 +52,13 @@ def main() -> None:
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
 
-    from graphrag_sdk.mcp.server import GraphRAGMCPServer
+    try:
+        from graphrag_sdk.mcp.server import GraphRAGMCPServer
+    except ImportError as exc:
+        raise SystemExit(
+            "The MCP server requires extra dependencies. "
+            "Install them with: pip install 'graphrag-sdk[mcp]'"
+        ) from exc
 
     rag = _build_rag()
     server = GraphRAGMCPServer(rag)
@@ -64,7 +70,13 @@ def main() -> None:
             else:
                 await server.run("stdio")
 
-    asyncio.run(_serve())
+    try:
+        asyncio.run(_serve())
+    except ImportError as exc:
+        raise SystemExit(
+            "The MCP server requires extra dependencies. "
+            "Install them with: pip install 'graphrag-sdk[mcp]'"
+        ) from exc
 
 
 if __name__ == "__main__":

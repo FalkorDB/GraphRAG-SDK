@@ -116,7 +116,7 @@ def make_search_tool(strategy: Any, *, max_chars: int | None = None) -> Tool:
     return Tool(
         name="search",
         description=(
-            "Semantic search of the knowledge graph. Required: {\"query\": str}. "
+            'Semantic search of the knowledge graph. Required: {"query": str}. '
             "Optional ints to widen/narrow retrieval: chunk_top_k, max_entities, "
             "max_relationships, rel_top_k, and output caps max_entities_out, "
             "max_relationships_out, max_facts_out, max_passages_out."
