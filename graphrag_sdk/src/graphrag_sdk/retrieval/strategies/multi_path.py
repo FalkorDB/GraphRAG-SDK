@@ -222,6 +222,28 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx: Context,
         **kwargs: Any,
     ) -> RawSearchResult:
+        # 0. Resolve per-call overrides. Defaults preserve normal-flow
+        # behavior; the agentic flow may pass kwargs to widen selection.
+        def _pos_int(key: str, default: int) -> int:
+            val = kwargs.get(key, default)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                return default
+            return val if val > 0 else default
+
+        chunk_top_k = _pos_int("chunk_top_k", self._chunk_top_k)
+        max_entities = _pos_int("max_entities", self._max_entities)
+        max_relationships = _pos_int("max_relationships", self._max_relationships)
+        rel_top_k = _pos_int("rel_top_k", self._rel_top_k)
+
+        # Final-context display caps (agent-tunable; default to prior values).
+        max_cypher_out = _pos_int("max_cypher_out", 20)
+        max_entities_out = _pos_int("max_entities_out", 25)
+        max_relationships_out = _pos_int("max_relationships_out", 20)
+        max_facts_out = _pos_int("max_facts_out", 15)
+        max_passages_out = _pos_int("max_passages_out", 15)
+
         # 1. Extract keywords
         ctx.ensure_budget("MultiPath keyword extraction")
         simple_kw, llm_kw = await self._extract_keywords(query, ctx)
@@ -265,7 +287,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             ]
             if run_relates:
                 coros.insert(
-                    0, search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx)
+                    0, search_relates_edges(self._vector, query_vector, rel_top_k, ctx=ctx)
                 )
             results = await asyncio.gather(*coros, return_exceptions=True)
             if run_relates:
@@ -275,7 +297,7 @@ class MultiPathRetrieval(RetrievalStrategy):
                 cypher_facts, cypher_entities = _unpack_gather_result(results[0], ([], {}))
         elif run_relates:
             fact_strings_scored, rel_entities = await search_relates_edges(
-                self._vector, query_vector, self._rel_top_k, ctx=ctx
+                self._vector, query_vector, rel_top_k, ctx=ctx
             )
 
         # Filter RELATES vector facts by relevance score
@@ -326,10 +348,10 @@ class MultiPathRetrieval(RetrievalStrategy):
                     f"({len(found_entities)} total)"
                 )
         # 5. Relationship expansion
-        entity_list = list(found_entities.items())[: self._max_entities]
+        entity_list = list(found_entities.items())[:max_entities]
         if "expansion" in plan:
             relationship_strings = await expand_relationships(
-                self._graph, entity_list, self._max_relationships, ctx=ctx
+                self._graph, entity_list, max_relationships, ctx=ctx
             )
         else:
             relationship_strings = []
@@ -363,7 +385,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             self._embedder,
             query_vector,
             candidate_chunks,
-            self._chunk_top_k,
+            chunk_top_k,
             stored_embeddings=chunk_embeddings,
             ctx=ctx,
         )
@@ -389,6 +411,11 @@ class MultiPathRetrieval(RetrievalStrategy):
             source_passages,
             q_type_hint,
             cypher_results=cypher_facts if cypher_facts else None,
+            max_cypher=max_cypher_out,
+            max_entities=max_entities_out,
+            max_relationships=max_relationships_out,
+            max_facts=max_facts_out,
+            max_passages=max_passages_out,
         )
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:

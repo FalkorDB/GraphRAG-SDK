@@ -159,11 +159,20 @@ def assemble_raw_result(
     source_passages: list[str],
     q_type_hint: str = "",
     cypher_results: list[str] | None = None,
+    *,
+    max_cypher: int = 20,
+    max_entities: int = 25,
+    max_relationships: int = 20,
+    max_facts: int = 15,
+    max_passages: int = 15,
 ) -> RawSearchResult:
     """Build structured RawSearchResult with section records.
 
     ``cypher_results`` are placed in their own section and are NOT
     subject to cosine reranking — they go directly to the final LLM.
+
+    The ``max_*`` caps bound how much of each section reaches the LLM;
+    callers (e.g. the agentic flow) may raise them per query.
     """
     records: list[dict[str, Any]] = []
 
@@ -182,7 +191,7 @@ def assemble_raw_result(
             {
                 "section": "cypher_results",
                 "content": "## Graph Query Results\n"
-                + "\n".join(f"- {r}" for r in cypher_results[:20]),
+                + "\n".join(f"- {r}" for r in cypher_results[:max_cypher]),
             }
         )
 
@@ -199,7 +208,7 @@ def assemble_raw_result(
         records.append(
             {
                 "section": "entities",
-                "content": "## Key Entities\n" + "\n".join(entity_lines[:25]),
+                "content": "## Key Entities\n" + "\n".join(entity_lines[:max_entities]),
             }
         )
 
@@ -209,7 +218,7 @@ def assemble_raw_result(
             {
                 "section": "relationships",
                 "content": "## Entity Relationships\n"
-                + "\n".join(f"- {r}" for r in relationship_strings[:20]),
+                + "\n".join(f"- {r}" for r in relationship_strings[:max_relationships]),
             }
         )
 
@@ -219,7 +228,7 @@ def assemble_raw_result(
             {
                 "section": "facts",
                 "content": "## Knowledge Graph Facts\n"
-                + "\n".join(f"- {f}" for f in fact_strings[:15]),
+                + "\n".join(f"- {f}" for f in fact_strings[:max_facts]),
             }
         )
 
@@ -228,7 +237,7 @@ def assemble_raw_result(
         records.append(
             {
                 "section": "passages",
-                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages[:15]),
+                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages[:max_passages]),
             }
         )
 
