@@ -93,14 +93,34 @@ def make_search_tool(strategy: Any, *, max_chars: int | None = None) -> Tool:
         query = str(tool_input.get("query", "")).strip()
         if not query:
             return "Error: 'query' is required."
-        result = await strategy.search(query, ctx)
+        overrides = {
+            k: tool_input[k]
+            for k in (
+                "chunk_top_k",
+                "max_entities",
+                "max_relationships",
+                "rel_top_k",
+                "max_cypher_out",
+                "max_entities_out",
+                "max_relationships_out",
+                "max_facts_out",
+                "max_passages_out",
+            )
+            if k in tool_input
+        }
+        result = await strategy.search(query, ctx, **overrides)
         snippets = [item.content for item in result.items]
         joined = "\n---\n".join(snippets) if snippets else "No results."
         return joined if max_chars is None else joined[:max_chars]
 
     return Tool(
         name="search",
-        description='Semantic search of the knowledge graph. Input: {"query": str}.',
+        description=(
+            "Semantic search of the knowledge graph. Required: {\"query\": str}. "
+            "Optional ints to widen/narrow retrieval: chunk_top_k, max_entities, "
+            "max_relationships, rel_top_k, and output caps max_entities_out, "
+            "max_relationships_out, max_facts_out, max_passages_out."
+        ),
         handler=handler,
     )
 
@@ -133,8 +153,14 @@ def make_cypher_tool(graph_store: Any, *, max_rows: int = 25) -> Tool:
             return "Error: 'cypher' is required."
         if not is_read_only_cypher(cypher):
             return "Error: only read-only Cypher (MATCH/RETURN) is permitted."
+        try:
+            rows_cap = int(tool_input.get("max_rows", max_rows))
+        except (TypeError, ValueError):
+            rows_cap = max_rows
+        if rows_cap < 1:
+            rows_cap = max_rows
         result = await graph_store.query_raw(cypher)
-        rows = list(getattr(result, "result_set", []) or [])[:max_rows]
+        rows = list(getattr(result, "result_set", []) or [])[:rows_cap]
         if not rows:
             return "No rows."
         return "\n".join(str(_format_cypher_value(r)) for r in rows)
@@ -142,7 +168,8 @@ def make_cypher_tool(graph_store: Any, *, max_rows: int = 25) -> Tool:
     return Tool(
         name="cypher",
         description=(
-            'Run a read-only Cypher query (MATCH ... RETURN ...). Input: {"cypher": str}.'
+            "Run a read-only Cypher query (MATCH ... RETURN ...). "
+            'Input: {"cypher": str, "max_rows"?: int}.'
         ),
         handler=handler,
     )
@@ -164,6 +191,16 @@ def make_traverse_tool(
             return "Error: 'start' entity id is required."
         goal = tool_input.get("goal")
 
+        def _pos_int(key: str, default: int) -> int:
+            try:
+                val = int(tool_input.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return val if val > 0 else default
+
+        bw = _pos_int("beam_width", beam_width)
+        depth = _pos_int("max_depth", max_depth)
+
         try:
             weights = await graph_store.pagerank()
         except Exception:
@@ -175,8 +212,8 @@ def make_traverse_tool(
         walk = DynamicGraphWalk(
             neighbor_fn,
             node_weights=weights,
-            beam_width=beam_width,
-            max_depth=max_depth,
+            beam_width=bw,
+            max_depth=depth,
         )
         if goal:
             path = await walk.bidirectional_search(start, str(goal), ctx=ctx)
@@ -192,7 +229,7 @@ def make_traverse_tool(
         name="traverse",
         description=(
             "Walk the graph from a start entity, optionally toward a goal. "
-            'Input: {"start": str, "goal"?: str}.'
+            'Input: {"start": str, "goal"?: str, "beam_width"?: int, "max_depth"?: int}.'
         ),
         handler=handler,
     )

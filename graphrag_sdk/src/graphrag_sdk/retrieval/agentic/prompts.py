@@ -49,6 +49,12 @@ Rules:
 - Emit only ONE Action per step and then stop, waiting for the Observation.
 - Action Input MUST be valid JSON on a single line.
 - Prefer the fewest steps necessary. Do not invent tool names.
+- For "count", "how many", "list all", or any exhaustive enumeration, use the
+  `cypher` tool to retrieve the COMPLETE set (e.g. MATCH (p:Person) RETURN
+  p.name) rather than `search`, which only returns the top-k most relevant
+  items and cannot count reliably. Raise `max_rows` to cover everything.
+- When `search` misses breadth, retry it with larger limits (e.g.
+  max_entities / chunk_top_k / max_passages_out) before concluding.
 """
 
 
