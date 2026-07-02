@@ -274,7 +274,7 @@ def parse_plan(text: str) -> IngestionPlan | None:
                     if isinstance(v, dict):
                         params[k] = v
         except (ValueError, TypeError):
-            pass
+            logger.debug("Planner output was not valid JSON; falling back to key:value parsing")
 
     # Fall back to / augment with key:value scraping.
     if not {"chunker", "extractor", "resolver"} & fields.keys():
