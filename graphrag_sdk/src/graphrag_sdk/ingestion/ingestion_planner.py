@@ -164,6 +164,41 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
     return out
 
 
+_GUIDE = (
+    "chunker — how the document is split:\n"
+    "  - sentence: sentence-aware, token-capped. Safe default for prose.\n"
+    "  - fixed: fixed-size character windows. Use for uniform/unstructured text.\n"
+    "  - structural: respect document structure (headings/lists/sections).\n"
+    "    Use for Markdown / HTML / clearly structured documents.\n"
+    "  - contextual: sentence chunks + an LLM-written context prefix per chunk.\n"
+    "    Best recall on dense/technical docs, but costs extra LLM calls.\n"
+    "extractor — how entities are found inside each chunk:\n"
+    "  - gliner: fast local NER model. Cheap default.\n"
+    "  - llm: LLM-based NER. Better on niche/ambiguous entities, costs more.\n"
+    "resolver — how duplicate entities are merged:\n"
+    "  - exact: merge by exact normalized name. Cheap default.\n"
+    "  - description_merge: also combine/summarize descriptions of merged nodes.\n"
+    "  - semantic: merge by embedding similarity (catches paraphrased names).\n"
+    "  - llm_verified: semantic candidates, then LLM confirms each merge.\n"
+    "\n"
+    "You MAY also tune parameters inside each chosen strategy (omit to keep the\n"
+    "safe default; out-of-range values are clamped):\n"
+    "  - sentence/structural/contextual: max_tokens (64-2048, def 512),\n"
+    "    overlap_sentences (0-10, def 2). Smaller chunks for dense facts;\n"
+    "    larger for narrative.\n"
+    "  - fixed: chunk_size (100-8000, def 1000), chunk_overlap (0-2000, def 100).\n"
+    "  - gliner/llm extractor: threshold (0.1-0.95, def 0.75). Lower = more\n"
+    "    recall/noise; higher = more precision.\n"
+    "  - description_merge: force_summary_threshold (1-50, def 3),\n"
+    "    max_summary_tokens (50-2000, def 500).\n"
+    "  - semantic: similarity_threshold (0.5-0.999, def 0.95),\n"
+    "    ann_top_k (5-200, def 50).\n"
+    "  - llm_verified: hard_threshold (0.5-0.999, def 0.95),\n"
+    "    soft_threshold (0.3-0.98, def 0.80, must stay below hard),\n"
+    "    ann_top_k (5-200, def 50), max_llm_pairs (10-5000, def 500).\n"
+)
+
+
 @dataclass(frozen=True)
 class IngestionPlan:
     """A validated decision about which ingestion strategies to use.
@@ -264,6 +299,107 @@ def parse_plan(text: str) -> IngestionPlan | None:
         extractor_params=params.get("extractor_params", {}),
         resolver_params=params.get("resolver_params", {}),
     )
+
+
+def _sample(text: str | None, source: str | None, limit: int = 1500) -> str:
+    """Build the document signal the planner reasons over.
+
+    Prefers a leading slice of the actual content; in file mode (no text yet)
+    falls back to the file name/extension so structural cues (``.md`` etc.)
+    are still available.
+    """
+    if text:
+        head = text[:limit]
+        suffix = " …[truncated]" if len(text) > limit else ""
+        return f"(source: {source or 'text'})\n{head}{suffix}"
+    return f"(file: {source or 'unknown'} — content not yet loaded)"
+
+
+class HeuristicIngestionPlanner:
+    """Zero-cost planner: picks strategies from cheap document features.
+
+    Useful when you want adaptive ingestion without an extra LLM call. Keeps to
+    the cheap, local options (never selects ``contextual``/``llm``/``semantic``
+    that would add cost) — it only upgrades the chunker when the document looks
+    structured.
+    """
+
+    async def plan(
+        self,
+        text: str | None,
+        *,
+        source: str | None = None,
+        ctx: Context | None = None,
+    ) -> IngestionPlan:
+        chunker = DEFAULT_CHUNKER
+        src = (source or "").lower()
+        looks_structured = src.endswith((".md", ".markdown", ".html", ".htm"))
+        if not looks_structured and text:
+            # Markdown-ish headings or list bullets in the body.
+            if re.search(r"(?m)^\s{0,3}#{1,6}\s|\n\s*[-*]\s+\S", text):
+                looks_structured = True
+        if looks_structured:
+            chunker = "structural"
+        return IngestionPlan(
+            chunker=chunker,
+            extractor=DEFAULT_EXTRACTOR,
+            resolver=DEFAULT_RESOLVER,
+            reason="heuristic",
+        )
+
+
+class LLMIngestionPlanner:
+    """LLM-backed planner: one small call selects the ingestion strategies.
+
+    Args:
+        llm: provider exposing ``ainvoke(prompt, timeout=...)`` and returning
+            an object with a ``.content`` string (same interface the retrieval
+            PathRouter uses).
+    """
+
+    def __init__(self, llm: Any) -> None:
+        self._llm = llm
+
+    async def plan(
+        self,
+        text: str | None,
+        *,
+        source: str | None = None,
+        ctx: Context | None = None,
+    ) -> IngestionPlan:
+        ctx = ctx or Context()
+        prompt = (
+            "You are an ingestion planner for a knowledge-graph RAG system. "
+            "Given a sample of a document, choose the best ingestion strategies "
+            "for building a graph from it. Prefer the cheap default unless the "
+            "document clearly benefits from a richer option.\n\n"
+            f"Options:\n{_GUIDE}\n"
+            "Respond with ONLY a JSON object of the form "
+            '{"chunker": "...", "extractor": "...", "resolver": "...", '
+            '"reason": "...", "chunker_params": {}, "extractor_params": {}, '
+            '"resolver_params": {}} and nothing else. Include a *_params object '
+            "only for parameters you want to change from the default.\n\n"
+            f"Document sample:\n{_sample(text, source)}\n\nJSON:"
+        )
+        try:
+            ctx.ensure_budget("ingestion planner LLM call")
+            response = await self._llm.ainvoke(
+                prompt,
+                timeout=ctx.provider_timeout_seconds("ingestion planner LLM call"),
+            )
+            plan = parse_plan(getattr(response, "content", "") or "")
+            if plan is not None:
+                ctx.log(
+                    f"IngestionPlanner: chunker={plan.chunker} "
+                    f"extractor={plan.extractor} resolver={plan.resolver}"
+                )
+                return plan
+            logger.debug("IngestionPlanner: empty/unparseable plan, using defaults")
+        except LatencyBudgetExceededError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("IngestionPlanner LLM call failed (%s); using defaults", exc)
+        return default_plan()
 
 
 def build_chunker(
