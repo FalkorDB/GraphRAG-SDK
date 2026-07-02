@@ -87,6 +87,8 @@ class TestIngestionPlan:
 
 
 # -- parse_plan --
+
+
 class TestParsePlan:
     def test_parses_json(self):
         plan = parse_plan(
@@ -121,6 +123,194 @@ class TestParsePlan:
 
 
 # -- HeuristicIngestionPlanner --
+
+
+class TestHeuristicPlanner:
+    async def test_markdown_source_picks_structural(self):
+        plan = await HeuristicIngestionPlanner().plan("anything", source="notes.md")
+        assert plan.chunker == "structural"
+
+    async def test_markdown_body_picks_structural(self):
+        plan = await HeuristicIngestionPlanner().plan(
+            "# Heading\n\n- bullet one\n- bullet two", source="x.txt"
+        )
+        assert plan.chunker == "structural"
+
+    async def test_plain_prose_picks_sentence(self):
+        plan = await HeuristicIngestionPlanner().plan(
+            "Just a paragraph of ordinary prose with no structure at all.",
+            source="x.txt",
+        )
+        assert plan.chunker == "sentence"
+
+    async def test_never_upgrades_cost_options(self):
+        plan = await HeuristicIngestionPlanner().plan("# H", source="x.md")
+        assert plan.extractor == "gliner"
+        assert plan.resolver == "exact"
+
+
+# -- LLMIngestionPlanner --
+
+
+class TestLLMPlanner:
+    async def test_returns_parsed_plan(self):
+        llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"semantic"}'])
+        plan = await LLMIngestionPlanner(llm).plan("some text", source="x.txt")
+        assert plan == IngestionPlan("fixed", "llm", "semantic")
+
+    async def test_empty_response_falls_back_to_default(self):
+        plan = await LLMIngestionPlanner(MockLLM(responses=[""])).plan("t")
+        assert plan == default_plan()
+
+    async def test_unparseable_response_falls_back_to_default(self):
+        plan = await LLMIngestionPlanner(MockLLM(responses=["I think markdown"])).plan("t")
+        assert plan == default_plan()
+
+    async def test_llm_error_falls_back_to_default(self):
+        class BoomLLM:
+            async def ainvoke(self, *a, **k):
+                raise RuntimeError("boom")
+
+        plan = await LLMIngestionPlanner(BoomLLM()).plan("t")
+        assert plan == default_plan()
+
+    async def test_budget_error_propagates(self):
+        class BudgetLLM:
+            async def ainvoke(self, *a, **k):
+                raise LatencyBudgetExceededError("over budget")
+
+        with pytest.raises(LatencyBudgetExceededError):
+            await LLMIngestionPlanner(BudgetLLM()).plan("t")
+
+
+# -- builders --
+
+
+class TestBuilders:
+    def test_build_chunker_variants(self):
+        llm = MockLLM()
+        assert isinstance(build_chunker("sentence"), SentenceTokenCapChunking)
+        assert isinstance(build_chunker("fixed"), FixedSizeChunking)
+        assert isinstance(build_chunker("structural"), StructuralChunking)
+        assert isinstance(build_chunker("contextual", llm=llm), ContextualChunking)
+
+    def test_contextual_chunker_requires_llm(self):
+        with pytest.raises(ValueError):
+            build_chunker("contextual")
+
+    def test_build_extractor_backends(self):
+        llm = MockLLM()
+        gliner = build_extractor("gliner", llm=llm)
+        llm_ext = build_extractor("llm", llm=llm)
+        assert isinstance(gliner, GraphExtraction)
+        assert isinstance(gliner.entity_extractor, GLiNERExtractor)
+        assert isinstance(llm_ext.entity_extractor, LLMExtractor)
+
+    def test_build_resolver_variants(self):
+        llm = MockLLM()
+        emb = MockEmbedder()
+        assert isinstance(build_resolver("exact"), ExactMatchResolution)
+        assert isinstance(build_resolver("description_merge", llm=llm), DescriptionMergeResolution)
+        assert isinstance(build_resolver("semantic", llm=llm, embedder=emb), SemanticResolution)
+        assert isinstance(
+            build_resolver("llm_verified", llm=llm, embedder=emb), LLMVerifiedResolution
+        )
+
+    def test_build_ingestion_strategies_triple(self):
+        chunker, extractor, resolver = build_ingestion_strategies(
+            IngestionPlan("structural", "llm", "semantic"),
+            llm=MockLLM(),
+            embedder=MockEmbedder(),
+            entity_types=["Person"],
+        )
+        assert isinstance(chunker, StructuralChunking)
+        assert isinstance(extractor, GraphExtraction)
+        assert isinstance(resolver, SemanticResolution)
+
+
+# -- GraphRAG._plan_ingestion_strategies merge logic --
+#
+# The method only touches self.llm / self.embedder / self.ontology, so a light
+# stub stands in for a full GraphRAG instance.
+
+
+def _fake_rag(llm, *, entities=None):
+    return SimpleNamespace(
+        llm=llm,
+        embedder=MockEmbedder(),
+        ontology=SimpleNamespace(entities=entities or []),
+    )
+
+
+class TestPlanIngestionStrategiesMerge:
+    async def test_fills_all_when_none_passed(self):
+        llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"exact"}'])
+        rag = _fake_rag(llm)
+        chunker, extractor, resolver = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="hello",
+            source="x.txt",
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=None,
+            ctx=None,
+        )
+        assert isinstance(chunker, FixedSizeChunking)
+        assert isinstance(extractor, GraphExtraction)
+        assert isinstance(resolver, ExactMatchResolution)
+
+    async def test_explicit_override_wins(self):
+        llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"semantic"}'])
+        rag = _fake_rag(llm)
+        explicit_chunker = SentenceTokenCapChunking()
+        chunker, extractor, resolver = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="hello",
+            source="x.txt",
+            chunker=explicit_chunker,
+            extractor=None,
+            resolver=None,
+            planner=None,
+            ctx=None,
+        )
+        # Caller's chunker is preserved; only the unset slots come from the plan.
+        assert chunker is explicit_chunker
+        assert isinstance(resolver, SemanticResolution)
+
+    async def test_custom_heuristic_planner_used(self):
+        rag = _fake_rag(MockLLM())
+        chunker, _, _ = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="# Title\n- a\n- b",
+            source="notes.md",
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=HeuristicIngestionPlanner(),
+            ctx=None,
+        )
+        assert isinstance(chunker, StructuralChunking)
+
+    async def test_planner_failure_leaves_slots_none(self):
+        class BoomPlanner:
+            async def plan(self, *a, **k):
+                raise RuntimeError("boom")
+
+        rag = _fake_rag(MockLLM())
+        result = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="hello",
+            source="x.txt",
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=BoomPlanner(),
+            ctx=None,
+        )
+        assert result == (None, None, None)
+
+
 class TestTunableParams:
     def test_clamp_within_range(self):
         out = clamp_params("chunker", "sentence", {"max_tokens": 256, "overlap_sentences": 3})
