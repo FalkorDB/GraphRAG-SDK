@@ -1581,6 +1581,7 @@ class GraphRAG:
             chunker, extractor, resolver = await self._plan_ingestion_strategies(
                 text=text,
                 source=source,
+                loader=loader,
                 chunker=chunker,
                 extractor=extractor,
                 resolver=resolver,
@@ -1774,6 +1775,7 @@ class GraphRAG:
         *,
         text: str | None,
         source: str | None,
+        loader: LoaderStrategy | None = None,
         chunker: ChunkingStrategy | None,
         extractor: ExtractionStrategy | None,
         resolver: ResolutionStrategy | None,
@@ -1787,26 +1789,45 @@ class GraphRAG:
         """Run the ingestion planner and fill in unspecified strategies.
 
         Returns the (chunker, extractor, resolver) triple to use. Any slot the
-        caller passed explicitly is returned unchanged. Planner failures degrade
-        to leaving the slot as ``None`` (the pipeline then applies its own
-        defaults), so this never raises on a bad/slow planner.
+        caller passed explicitly is returned unchanged. A missing/invalid plan
+        or any planner/build failure degrades to leaving the slot as ``None``
+        (the pipeline then applies its own defaults), so this never raises on a
+        bad/slow planner.
         """
+        # In file mode the raw text isn't loaded yet, so give the planner a real
+        # content sample (best-effort) rather than only the file path — many
+        # documents' extensions carry no structural signal. A load failure just
+        # falls through to path-only planning.
+        sample_text = text
+        if sample_text is None and source is not None and loader is not None:
+            try:
+                loaded = await loader.load(source, ctx or Context())
+                sample_text = loaded.text
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Planner content-sample load failed (%s); planning from path", exc)
+
         active = planner or LLMIngestionPlanner(self.llm)
         try:
-            plan = await active.plan(text, source=source, ctx=ctx)
+            plan = await active.plan(sample_text, source=source, ctx=ctx)
+            if plan is None:
+                raise ValueError("planner returned no plan")
+            entity_types = (
+                [e.label for e in self.ontology.entities] if self.ontology.entities else None
+            )
+            built_chunker, built_extractor, built_resolver = build_ingestion_strategies(
+                plan,
+                llm=self.llm,
+                embedder=self.embedder,
+                entity_types=entity_types,
+            )
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.debug("Ingestion planner failed (%s); using defaults", exc)
             return chunker, extractor, resolver
 
-        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
-        built_chunker, built_extractor, built_resolver = build_ingestion_strategies(
-            plan,
-            llm=self.llm,
-            embedder=self.embedder,
-            entity_types=entity_types,
-        )
         return (
             chunker if chunker is not None else built_chunker,
             extractor if extractor is not None else built_extractor,
@@ -3169,6 +3190,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: Any | None = None,
         ctx: Context | None = None,
     ) -> IngestionResult: ...
 
@@ -3181,6 +3204,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: Any | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> list[IngestionResult | Exception]: ...
@@ -3195,6 +3220,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: Any | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> IngestionResult | list[IngestionResult | Exception]:
@@ -3211,6 +3238,8 @@ class GraphRAG:
                 chunker=chunker,
                 extractor=extractor,
                 resolver=resolver,
+                auto=auto,
+                planner=planner,
                 max_concurrency=max_concurrency,
                 ctx=ctx,
             )

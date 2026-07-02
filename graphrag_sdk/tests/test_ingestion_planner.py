@@ -310,8 +310,51 @@ class TestPlanIngestionStrategiesMerge:
         )
         assert result == (None, None, None)
 
+    async def test_none_plan_falls_back_to_defaults(self):
+        class NonePlanner:
+            async def plan(self, *a, **k):
+                return None
 
-class TestTunableParams:
+        rag = _fake_rag(MockLLM())
+        result = await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text="hello",
+            source="x.txt",
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=NonePlanner(),
+            ctx=None,
+        )
+        assert result == (None, None, None)
+
+    async def test_file_mode_loads_content_sample_for_planner(self):
+        seen: dict[str, str | None] = {}
+
+        class RecordingPlanner:
+            async def plan(self, text, *, source=None, ctx=None):
+                seen["text"] = text
+                return IngestionPlan(chunker="fixed", extractor="gliner", resolver="exact")
+
+        class FakeLoader:
+            async def load(self, source, ctx):
+                return SimpleNamespace(text="LOADED CONTENT SAMPLE")
+
+        rag = _fake_rag(MockLLM())
+        await GraphRAG._plan_ingestion_strategies(
+            rag,
+            text=None,
+            source="x.pdf",
+            loader=FakeLoader(),
+            chunker=None,
+            extractor=None,
+            resolver=None,
+            planner=RecordingPlanner(),
+            ctx=None,
+        )
+        # File mode: the planner sees loaded content, not just the path.
+        assert seen["text"] == "LOADED CONTENT SAMPLE"
+
     def test_clamp_within_range(self):
         out = clamp_params("chunker", "sentence", {"max_tokens": 256, "overlap_sentences": 3})
         assert out == {"max_tokens": 256, "overlap_sentences": 3}
