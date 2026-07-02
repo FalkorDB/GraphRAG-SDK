@@ -95,6 +95,12 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
 )
+from graphrag_sdk.ingestion.ingestion_planner import (
+    HeuristicIngestionPlanner,
+    IngestionPlan,
+    LLMIngestionPlanner,
+    build_ingestion_strategies,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
@@ -198,6 +204,10 @@ __all__ = [
     "ExactMatchResolution",
     "LLMVerifiedResolution",
     "SemanticResolution",
+    "HeuristicIngestionPlanner",
+    "IngestionPlan",
+    "LLMIngestionPlanner",
+    "build_ingestion_strategies",
     # Retrieval
     "CosineReranker",
     "MultiPathRetrieval",
