@@ -264,3 +264,79 @@ def parse_plan(text: str) -> IngestionPlan | None:
         extractor_params=params.get("extractor_params", {}),
         resolver_params=params.get("resolver_params", {}),
     )
+
+
+def build_chunker(
+    name: str,
+    *,
+    llm: Any | None = None,
+    params: dict[str, Any] | None = None,
+) -> SentenceTokenCapChunking | FixedSizeChunking | StructuralChunking | ContextualChunking:
+    """Instantiate the chunker named by an :class:`IngestionPlan`."""
+    kw = clamp_params("chunker", name, params)
+    if name == "fixed":
+        return FixedSizeChunking(**kw)
+    if name == "structural":
+        return StructuralChunking(**kw)
+    if name == "contextual":
+        if llm is None:
+            raise ValueError("contextual chunker requires an llm")
+        return ContextualChunking(llm=llm, **kw)
+    return SentenceTokenCapChunking(**kw)
+
+
+def build_extractor(
+    name: str,
+    *,
+    llm: Any,
+    entity_types: list[str] | None = None,
+    params: dict[str, Any] | None = None,
+) -> ExtractionStrategy:
+    """Instantiate a GraphExtraction with the named entity-extraction backend."""
+    kw = clamp_params("extractor", name, params)
+    entity_extractor = LLMExtractor(llm=llm, **kw) if name == "llm" else GLiNERExtractor(**kw)
+    return GraphExtraction(
+        llm=llm,
+        entity_extractor=entity_extractor,
+        entity_types=entity_types,
+    )
+
+
+def build_resolver(
+    name: str,
+    *,
+    llm: Any | None = None,
+    embedder: Any | None = None,
+    params: dict[str, Any] | None = None,
+) -> ResolutionStrategy:
+    """Instantiate the resolver named by an :class:`IngestionPlan`."""
+    kw = clamp_params("resolver", name, params)
+    if name == "description_merge":
+        return DescriptionMergeResolution(llm=llm, **kw)
+    if name == "semantic":
+        return SemanticResolution(llm=llm, embedder=embedder, **kw)
+    if name == "llm_verified":
+        return LLMVerifiedResolution(llm=llm, embedder=embedder, **kw)
+    return ExactMatchResolution()
+
+
+def build_ingestion_strategies(
+    plan: IngestionPlan,
+    *,
+    llm: Any,
+    embedder: Any | None = None,
+    entity_types: list[str] | None = None,
+) -> tuple[Any, ExtractionStrategy, ResolutionStrategy]:
+    """Build concrete ``(chunker, extractor, resolver)`` from a plan.
+
+    The planner only ever decides *which* strategy; this factory turns those
+    ids into instances wired with the caller's ``llm``/``embedder``. Kept
+    separate from the planner so the decision stays pure and testable.
+    """
+    return (
+        build_chunker(plan.chunker, llm=llm, params=plan.chunker_params),
+        build_extractor(
+            plan.extractor, llm=llm, entity_types=entity_types, params=plan.extractor_params
+        ),
+        build_resolver(plan.resolver, llm=llm, embedder=embedder, params=plan.resolver_params),
+    )
