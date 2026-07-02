@@ -1800,11 +1800,7 @@ class GraphRAG:
             logger.debug("Ingestion planner failed (%s); using defaults", exc)
             return chunker, extractor, resolver
 
-        entity_types = (
-            [e.label for e in self.ontology.entities]
-            if self.ontology.entities
-            else None
-        )
+        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
         built_chunker, built_extractor, built_resolver = build_ingestion_strategies(
             plan,
             llm=self.llm,
