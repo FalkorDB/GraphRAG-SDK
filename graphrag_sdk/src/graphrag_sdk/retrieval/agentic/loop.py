@@ -25,9 +25,23 @@ from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 logger = logging.getLogger(__name__)
 
 _ACTION_RE = re.compile(r"Action\s*:\s*(.+)", re.IGNORECASE)
-_ACTION_INPUT_RE = re.compile(r"Action\s*Input\s*:\s*(\{.*\})", re.IGNORECASE | re.DOTALL)
+_ACTION_INPUT_RE = re.compile(r"Action\s*Input\s*:\s*(\{)", re.IGNORECASE)
 _THOUGHT_RE = re.compile(r"Thought\s*:\s*(.+)", re.IGNORECASE)
 _FINAL_RE = re.compile(r"Final\s*Answer\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
+
+
+def _parse_action_input(text: str, start: int) -> dict[str, Any]:
+    """Decode the JSON object starting at ``start`` (an opening brace).
+
+    Uses ``raw_decode`` so parsing stops at the object's matching close brace —
+    trailing prose or a hallucinated ``Observation:`` line can't corrupt the
+    arguments the way a greedy first-``{``-to-last-``}`` capture did.
+    """
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(text, start)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def parse_react_step(text: str) -> dict[str, Any]:
@@ -52,12 +66,7 @@ def parse_react_step(text: str) -> dict[str, Any]:
 
     action_input: dict[str, Any] = {}
     if input_m:
-        try:
-            parsed = json.loads(input_m.group(1).strip())
-            if isinstance(parsed, dict):
-                action_input = parsed
-        except (ValueError, TypeError):
-            action_input = {}
+        action_input = _parse_action_input(text, input_m.start(1))
 
     return {
         "thought": thought_m.group(1).splitlines()[0].strip() if thought_m else "",
