@@ -51,18 +51,20 @@ class ImpactAnalysisSkill(Skill):
         for path in paths:
             for hop, node in enumerate(path.nodes[1:], start=1):
                 existing = impacted.get(node)
-                if existing is None:
+                # Keep distance/score/via as one coherent record from the best
+                # path: shortest hop first, then highest score at equal hops.
+                # Updating score independently produced mismatched pairs (a
+                # score belonging to a different path than `via`).
+                if (
+                    existing is None
+                    or hop < existing["distance"]
+                    or (hop == existing["distance"] and path.score > existing["score"])
+                ):
                     impacted[node] = {
                         "distance": hop,
                         "score": path.score,
                         "via": path.nodes,
                     }
-                    continue
-                if hop < existing["distance"]:
-                    existing["distance"] = hop
-                    existing["via"] = path.nodes
-                if path.score > existing["score"]:
-                    existing["score"] = path.score
         ranked = sorted(
             ({"entity": k, **v} for k, v in impacted.items()),
             key=lambda d: (d["distance"], -d["score"]),
