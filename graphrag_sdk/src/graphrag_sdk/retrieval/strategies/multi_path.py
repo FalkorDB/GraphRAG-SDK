@@ -232,17 +232,28 @@ class MultiPathRetrieval(RetrievalStrategy):
                 return default
             return val if val > 0 else default
 
+        def _nonneg_int(key: str, default: int) -> int:
+            # Output caps allow 0 ("omit this section entirely" — see
+            # result_assembly.assemble_raw_result); only negatives/garbage
+            # fall back to the default.
+            val = kwargs.get(key, default)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                return default
+            return val if val >= 0 else default
+
         chunk_top_k = _pos_int("chunk_top_k", self._chunk_top_k)
         max_entities = _pos_int("max_entities", self._max_entities)
         max_relationships = _pos_int("max_relationships", self._max_relationships)
         rel_top_k = _pos_int("rel_top_k", self._rel_top_k)
 
         # Final-context display caps (agent-tunable; default to prior values).
-        max_cypher_out = _pos_int("max_cypher_out", 20)
-        max_entities_out = _pos_int("max_entities_out", 25)
-        max_relationships_out = _pos_int("max_relationships_out", 20)
-        max_facts_out = _pos_int("max_facts_out", 15)
-        max_passages_out = _pos_int("max_passages_out", 15)
+        max_cypher_out = _nonneg_int("max_cypher_out", 20)
+        max_entities_out = _nonneg_int("max_entities_out", 25)
+        max_relationships_out = _nonneg_int("max_relationships_out", 20)
+        max_facts_out = _nonneg_int("max_facts_out", 15)
+        max_passages_out = _nonneg_int("max_passages_out", 15)
 
         # 1. Extract keywords
         ctx.ensure_budget("MultiPath keyword extraction")
