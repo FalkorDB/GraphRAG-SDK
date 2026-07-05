@@ -93,12 +93,18 @@ class DynamicGraphWalk:
         # Each beam entry: (path_nodes, path_edge_labels, path_edge_weights).
         beam: list[tuple[list[str], list[str], list[float]]] = [([start], [], [])]
         completed: list[ScoredPath] = []
+        # Paths whose tail cannot be extended (leaf / all neighbors already on
+        # the path). Kept so short terminal branches — e.g. a direct leaf
+        # neighbor of ``start`` — still appear in goal-less results instead of
+        # silently vanishing while deeper branches survive.
+        terminal: list[ScoredPath] = []
         visited: set[str] = {start}
 
         for depth in range(self._max_depth):
             if ctx is not None:
                 ctx.ensure_budget(f"graph walk depth {depth}")
             candidates: list[tuple[list[str], list[str], list[float]]] = []
+            dead_ends: list[tuple[list[str], list[str], list[float]]] = []
             for nodes, edges, e_weights in beam:
                 tail = nodes[-1]
                 if goal is not None and tail == goal:
@@ -115,14 +121,31 @@ class DynamicGraphWalk:
                         )
                     )
                     continue
+                extended = False
                 for nbr, weight, label in await self._neighbor_fn(tail):
                     if nbr in nodes:
                         continue  # no cycles within a single path
                     candidates.append((nodes + [nbr], edges + [label], e_weights + [weight]))
                     visited.add(nbr)
+                    extended = True
+                if not extended and len(nodes) > 1:
+                    dead_ends.append((nodes, edges, e_weights))
 
             if not candidates:
+                # Entire beam is unextendable; it already represents these
+                # paths in the final results, so don't double-count dead ends.
                 break
+
+            terminal.extend(
+                ScoredPath(
+                    nodes=list(nodes),
+                    edges=list(edges),
+                    score=score_path(
+                        nodes, self._weights, e_weights, length_penalty=self._length_penalty
+                    ),
+                )
+                for nodes, edges, e_weights in dead_ends
+            )
 
             # Keep the top-k candidates by current path score.
             candidates.sort(
@@ -152,16 +175,20 @@ class DynamicGraphWalk:
                 if completed:
                     break
 
-        results = completed or [
-            ScoredPath(
-                nodes=nodes,
-                edges=edges,
-                score=score_path(
-                    nodes, self._weights, e_weights, length_penalty=self._length_penalty
-                ),
-            )
-            for nodes, edges, e_weights in beam
-        ]
+        results = (
+            completed
+            or [
+                ScoredPath(
+                    nodes=nodes,
+                    edges=edges,
+                    score=score_path(
+                        nodes, self._weights, e_weights, length_penalty=self._length_penalty
+                    ),
+                )
+                for nodes, edges, e_weights in beam
+            ]
+            + terminal
+        )
         results.sort(key=lambda p: p.score, reverse=True)
         return results[: self._beam_width]
 
