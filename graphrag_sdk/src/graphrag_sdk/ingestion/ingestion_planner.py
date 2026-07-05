@@ -135,7 +135,8 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
 
     - fixed chunker: ``chunk_overlap`` is forced below ``chunk_size``.
     - llm_verified resolver: ``hard_threshold`` must stay above
-      ``soft_threshold``; if the pair inverts, both are dropped to defaults.
+      ``soft_threshold``; if the pair inverts (a lone key is checked against
+      the other's default), both are dropped to defaults.
     """
     spec = PARAM_SPECS.get(component, {}).get(strategy, {})
     if not spec or not isinstance(raw, dict):
@@ -157,8 +158,13 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
         size = out.get("chunk_size", 1000)
         if out["chunk_overlap"] >= size:
             out["chunk_overlap"] = max(0, int(size) - 1)
-    if strategy == "llm_verified" and "hard_threshold" in out and "soft_threshold" in out:
-        if out["hard_threshold"] <= out["soft_threshold"]:
+    if strategy == "llm_verified" and ("hard_threshold" in out or "soft_threshold" in out):
+        # A lone key is compared against the other's constructor default, so a
+        # planner-picked hard_threshold=0.6 (vs default soft 0.80) can't make
+        # the constructor raise and discard the whole plan.
+        hard = out.get("hard_threshold", spec["hard_threshold"][3])
+        soft = out.get("soft_threshold", spec["soft_threshold"][3])
+        if hard <= soft:
             out.pop("hard_threshold", None)
             out.pop("soft_threshold", None)
     return out

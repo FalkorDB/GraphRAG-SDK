@@ -381,6 +381,20 @@ class TestPlanIngestionStrategiesMerge:
         )
         assert "hard_threshold" not in out and "soft_threshold" not in out
 
+    def test_llm_verified_lone_hard_below_default_soft_dropped(self):
+        # hard=0.6 vs constructor default soft=0.80 would make the resolver raise.
+        out = clamp_params("resolver", "llm_verified", {"hard_threshold": 0.6})
+        assert "hard_threshold" not in out
+
+    def test_llm_verified_lone_soft_above_default_hard_dropped(self):
+        # soft=0.97 vs constructor default hard=0.95 would make the resolver raise.
+        out = clamp_params("resolver", "llm_verified", {"soft_threshold": 0.97})
+        assert "soft_threshold" not in out
+
+    def test_llm_verified_lone_valid_threshold_kept(self):
+        out = clamp_params("resolver", "llm_verified", {"hard_threshold": 0.9})
+        assert out == {"hard_threshold": 0.9}
+
     def test_plan_clamps_params(self):
         plan = IngestionPlan(chunker="sentence", chunker_params={"max_tokens": 100000})
         assert plan.chunker_params == {"max_tokens": 2048}
