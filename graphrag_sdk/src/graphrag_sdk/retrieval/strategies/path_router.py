@@ -72,7 +72,12 @@ class HeuristicPathRouter:
         if re.search(rel_pattern, q):
             plan |= {"expansion", "entity_cypher"}
         # Quoted or capitalized proper nouns in the original query → name match.
-        if '"' in query or "'" in query or re.search(r"\b[A-Z][a-z]+\b", query or ""):
+        # Ignore the sentence-cased leading word ("What", "Who", "How"...) —
+        # only a capitalized token *after* the first word signals a real name,
+        # otherwise the entity paths fire on virtually every question and the
+        # router never prunes.
+        rest = query.split(maxsplit=1)[1] if len(query.split(maxsplit=1)) > 1 else ""
+        if '"' in query or "'" in query or re.search(r"\b[A-Z][a-z]+\b", rest):
             plan |= {"entity_cypher", "entity_fulltext"}
         return plan & _PATH_SET or all_paths()
 
