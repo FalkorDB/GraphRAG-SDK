@@ -282,6 +282,15 @@ class MultiPathRetrieval(RetrievalStrategy):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Path router failed (%s); running all paths", exc)
                 plan = all_paths()
+            # Expansion traverses from discovered entities, so a plan that
+            # selects it without any seed-producing path would always return
+            # zero relationships. Guarantee a seed source.
+            if "expansion" in plan and not plan & {
+                "entity_cypher",
+                "entity_fulltext",
+                "relates",
+            }:
+                plan.add("entity_cypher")
             ctx.log(f"MultiPath plan: {sorted(plan)}")
 
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)

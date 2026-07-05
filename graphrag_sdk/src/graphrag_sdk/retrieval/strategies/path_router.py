@@ -32,6 +32,7 @@ _PATH_GUIDE = (
     "- entity_cypher: the question names a specific entity / proper noun exactly.\n"
     "- entity_fulltext: fuzzy or partial entity names, typos, multi-word names.\n"
     "- expansion: 'how are X and Y connected', relationships, neighbors, paths.\n"
+    "  (needs entity seeds — pick it together with an entity path or relates)\n"
     "- chunks: needs supporting passages / quotes / detailed source text."
 )
 
