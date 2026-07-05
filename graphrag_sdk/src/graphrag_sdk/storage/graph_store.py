@@ -347,7 +347,7 @@ class GraphStore:
         """
         query = (
             "MATCH (n:__Entity__ {id: $node_id})-[r]-(m:__Entity__) "
-            "RETURN m.id AS id, type(r) AS label, "
+            "RETURN m.id AS id, coalesce(r.rel_type, type(r)) AS label, "
             "coalesce(r.weight, 1.0) AS weight "
             f"LIMIT {int(limit)}"
         )

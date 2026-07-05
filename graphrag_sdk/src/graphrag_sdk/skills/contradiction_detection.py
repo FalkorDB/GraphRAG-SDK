@@ -31,7 +31,7 @@ class ContradictionDetectionSkill(Skill):
 
         rows = await self._rows(
             "MATCH (e:__Entity__ {id: $id})-[r]-(m:__Entity__) "
-            "RETURN type(r) AS rel, m.id AS other, "
+            "RETURN coalesce(r.rel_type, type(r)) AS rel, m.id AS other, "
             "coalesce(r.description, '') AS desc "
             f"LIMIT {limit}",
             {"id": entity},
