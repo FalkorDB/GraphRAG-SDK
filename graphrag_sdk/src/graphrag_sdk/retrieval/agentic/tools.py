@@ -27,6 +27,11 @@ _WRITE_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# String literals ('..'/".." with backslash escapes) and backtick-quoted
+# identifiers. Stripped before the keyword scan so data values like
+# 'call center' or names such as `delete_log` can't trip the write gate.
+_CYPHER_QUOTED_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`[^`]*`")
+
 
 @dataclass
 class Tool:
@@ -73,8 +78,15 @@ class ToolRegistry:
 
 
 def is_read_only_cypher(cypher: str) -> bool:
-    """Reject Cypher that mutates the graph (agent tools are read-only)."""
-    return _WRITE_KEYWORD_RE.search(cypher) is None
+    """Reject Cypher that mutates the graph (agent tools are read-only).
+
+    Quoted strings and backtick identifiers are stripped first, so write
+    keywords appearing only inside data values (``n.name = 'call center'``,
+    ``CONTAINS "delete"``) don't cause false rejections. An unterminated
+    quote leaves its remainder scanned conservatively (fail-safe).
+    """
+    scannable = _CYPHER_QUOTED_RE.sub(" ", cypher)
+    return _WRITE_KEYWORD_RE.search(scannable) is None
 
 
 # ── Default tool builders ────────────────────────────────────────
