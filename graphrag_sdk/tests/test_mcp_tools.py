@@ -1,4 +1,5 @@
 """Tests for mcp/tools.py — GraphRAGToolset (Phase 3.2)."""
+
 from __future__ import annotations
 
 import json
@@ -35,7 +36,7 @@ class FakeRAG:
         self._graph_store = FakeGraphStore()
         self.llm = None
 
-    async def ingest(self, text: str, document_id: str | None = None):
+    async def ingest(self, source=None, *, text: str, document_id: str | None = None):
         class R:
             nodes_created = 3
             relationships_created = 2
@@ -106,15 +107,11 @@ class TestHandlers:
         assert json.loads(out)["answer"] == "the answer"
 
     async def test_cypher_query_read_only_passes(self, toolset: GraphRAGToolset):
-        out = await toolset.by_name("cypher_query").handler(
-            {"cypher": "MATCH (n) RETURN n"}
-        )
+        out = await toolset.by_name("cypher_query").handler({"cypher": "MATCH (n) RETURN n"})
         assert "rows" in json.loads(out)
 
     async def test_cypher_query_rejects_writes(self, toolset: GraphRAGToolset):
-        out = await toolset.by_name("cypher_query").handler(
-            {"cypher": "MATCH (n) DELETE n"}
-        )
+        out = await toolset.by_name("cypher_query").handler({"cypher": "MATCH (n) DELETE n"})
         assert "read-only" in out
 
     async def test_graph_walk(self, toolset: GraphRAGToolset):
@@ -126,7 +123,5 @@ class TestHandlers:
         assert json.loads(out)["node_count"] == 5
 
     async def test_run_skill(self, toolset: GraphRAGToolset):
-        out = await toolset.by_name("run_skill").handler(
-            {"skill": "gap_analysis", "params": {}}
-        )
+        out = await toolset.by_name("run_skill").handler({"skill": "gap_analysis", "params": {}})
         assert json.loads(out)["skill"] == "gap_analysis"

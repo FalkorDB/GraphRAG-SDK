@@ -64,7 +64,7 @@ class GraphRAGToolset:
         rag = self.rag
 
         async def ingest(args: dict[str, Any]) -> str:
-            result = await rag.ingest(args["text"], document_id=args.get("document_id"))
+            result = await rag.ingest(text=args["text"], document_id=args.get("document_id"))
             return _dump(
                 {
                     "nodes_created": getattr(result, "nodes_created", None),
