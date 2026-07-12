@@ -419,6 +419,34 @@ class MultiPathRetrieval(RetrievalStrategy):
             ctx=ctx,
         )
 
+        # Structured provenance for graphrag_sdk.tools — additive only; does
+        # not alter section content. Captured before [Source:] tagging so
+        # chunk texts still match candidate_chunks values exactly.
+        text_to_cid: dict[str, str] = {}
+        for cid, text in candidate_chunks.items():
+            text_to_cid.setdefault(text, cid)
+        kept_cids = [text_to_cid[p] for p in source_passages if p in text_to_cid]
+        provenance: dict[str, Any] = {
+            "entities": [
+                {
+                    "id": eid,
+                    "name": einfo.get("name", ""),
+                    "description": einfo.get("description", ""),
+                }
+                for eid, einfo in entity_list
+            ],
+            "chunks": [
+                {
+                    "id": cid,
+                    "text": candidate_chunks[cid],
+                    "document_path": chunk_doc_map.get(cid, ""),
+                }
+                for cid in kept_cids
+            ],
+            "facts": list(fact_strings),
+            "relationships": list(relationship_strings),
+        }
+
         # Tag with source docs
         text_to_doc: dict[str, str] = {
             candidate_chunks[cid]: doc_name
@@ -433,7 +461,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         # 9. Detect question type + assemble
         ctx.ensure_budget("MultiPath result assembly")
         q_type_hint = detect_question_type(query)
-        return assemble_raw_result(
+        raw = assemble_raw_result(
             entity_list,
             relationship_strings,
             fact_strings,
@@ -447,6 +475,8 @@ class MultiPathRetrieval(RetrievalStrategy):
             max_facts=max_facts_out,
             max_passages=max_passages_out,
         )
+        raw.metadata["provenance"] = provenance
+        return raw
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
         """Produce RetrieverResultItems as markdown sections."""
@@ -500,7 +530,7 @@ class MultiPathRetrieval(RetrievalStrategy):
 
     async def _search_relates_edges(
         self, query_vector: list[float]
-    ) -> tuple[list[tuple[str, float]], dict[str, dict]]:
+    ) -> tuple[list[tuple[str, float]], dict[str, dict[str, str]]]:
         """Backward-compat wrapper — delegates to module function."""
         return await search_relates_edges(
             self._vector,
