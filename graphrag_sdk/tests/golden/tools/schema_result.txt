@@ -1,0 +1,6 @@
+Nodes: 7 | Edges: 9
+Entity labels (2):
+- Person: 2 — A human (props: seniority)
+- Organization: 1
+Relation types (1):
+- WORKS_AT: 1 [Person->Organization]
