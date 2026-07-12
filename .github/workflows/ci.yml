@@ -90,3 +90,4 @@ jobs:
           python -m pytest -v
           -m integration
           tests/test_integration.py
+          tests/test_tools_integration.py
