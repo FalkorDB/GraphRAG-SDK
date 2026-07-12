@@ -23,6 +23,7 @@ from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
     GraphRAGError,
     LatencyBudgetExceededError,
+    ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
@@ -126,6 +127,9 @@ from graphrag_sdk.storage.ontology_store import (
 )
 from graphrag_sdk.storage.vector_store import VectorStore
 
+# ── Agent Toolkit ───────────────────────────────────────────────
+from graphrag_sdk.tools import GraphRAGToolkit, ToolSpec
+
 __all__ = [
     # Version
     "__version__",
@@ -209,6 +213,10 @@ __all__ = [
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    # Agent toolkit
+    "GraphRAGToolkit",
+    "ReadOnlyViolation",
+    "ToolSpec",
 ]
 
 
