@@ -1,0 +1,6 @@
+Query: Who works at Acme?
+Entities (2):
+- Alice [Person]: Engineer at Acme
+- Acme Corp [Organization]: A tech company
+Relations (1):
+  …(1 more)

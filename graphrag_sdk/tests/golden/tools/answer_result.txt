@@ -1,0 +1,7 @@
+Alice works at Acme Corp.
+She is an engineer.
+Citations (1):
+- [docs/a.md#c1] Alice works at Acme Corp.
+Entities (2):
+- Alice
+- Acme Corp

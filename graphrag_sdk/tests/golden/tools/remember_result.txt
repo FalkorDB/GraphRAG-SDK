@@ -1,0 +1,2 @@
+Stored document 'text-abc123' (1 chunks, 2 nodes, 1 relations).
+Pending finalize — call graph_flush (or GraphRAG.finalize()).

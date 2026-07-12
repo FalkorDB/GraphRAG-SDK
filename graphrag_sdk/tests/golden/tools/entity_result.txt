@@ -1,0 +1,9 @@
+Entity: Alice [Person]
+Description: Engineer
+Properties: seniority=senior
+Neighbors (1):
+- Alice -[WORKS_AT]-> Acme Corp
+Documents (1):
+- doc-a
+Nearby (1):
+- Alice Smith
