@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Agentic GraphRAG: a framework-neutral agent toolkit
+(`graphrag_sdk.tools`) so any agent framework — pydantic-ai, LangGraph,
+CrewAI, MCP — can expose a knowledge graph as tools. Purely additive;
+no breaking changes.
+
+### Added
+
+#### Agentic GraphRAG toolkit (`graphrag_sdk.tools`)
+
+- **`GraphRAGToolkit`** — framework-neutral async agent surface over
+  `GraphRAG`: `search()`, `answer()`, `schema()`, `entity()`, guarded
+  `cypher_read()`, `remember()`, `flush()`; knobs `finalize_policy=`
+  (`"manual"`/`"on_write"`/`"never"`), `read_only=`, `include=`; generic
+  `call(name, arguments)` dispatch for adapters; `for_tenant(...)` for
+  tenant-scoped graphs with owned-connection lifecycle (`async with`).
+- **`GraphRAGToolkit.tool_specs()`** — machine-readable tool definitions
+  (name, LLM-ready description, JSON-Schema input, output hint); the
+  single source of truth for agent-framework adapters and MCP servers.
+- **Typed tool results** — pydantic models (`SearchResult`,
+  `AnswerResult`, `SchemaResult`, `CypherResult`, `EntityResult`,
+  `RememberResult`) with deterministic, budget-bounded
+  `to_llm_text(max_chars=...)` rendering: truncation only at item
+  boundaries with an explicit `…(N more)` marker, control characters
+  stripped. Answers carry `document_id`/`chunk_id` citations.
+- **`ReadOnlyViolation`** — raised by the fail-closed Cypher guard
+  (write keywords, non-allowlisted procedures, multi-statement; lexer-
+  based string/comment handling, NFKC-normalized scan) and by write
+  tools on `read_only=True` toolkits.
+- **`MultiPathRetrieval` provenance** — retrieval results now expose
+  `metadata["provenance"]` (entity ids, kept chunk ids/texts/document
+  paths in rerank order, fact and relationship strings); section
+  content is byte-unchanged.
+- New docs page `docs/agentic.md`; example
+  `examples/11_agent_toolkit.py`; `jsonschema` added to the dev extra.
+
+### Fixed
+
+- **`graphrag_sdk.__version__`** — was stale at `"1.2.0"`; now matches
+  the packaged version and is guarded by a pyproject drift test (the
+  value is stamped into graphs as `__GraphRAGConfig__.sdk_version`).
+
 ## [1.3.0] - 2026-06-04
 
 Ontology discovery (#271): bootstrap an ontology straight from a

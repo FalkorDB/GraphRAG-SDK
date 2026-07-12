@@ -1,0 +1,12 @@
+Query: Who works at Acme?
+Entities (2):
+- Alice [Person]: Engineer at Acme
+- Acme Corp [Organization]: A tech company
+Relations (1):
+- Alice -[WORKS_AT]-> Acme Corp: Alice is employed at Acme Corp
+Facts (1):
+- Alice —[WORKS_AT]→ Acme Corp: employment
+Chunks (1):
+- [docs/a.md#c1] Alice works at Acme Corp.
+Documents (1):
+- doc-a (docs/a.md)

@@ -124,6 +124,26 @@ class SchemaValidationError(GraphRAGError):
     pass
 
 
+# ── Read-Only Surface Errors ─────────────────────────────────────
+
+
+class ReadOnlyViolation(GraphRAGError):
+    """Raised when a write is attempted through a read-only surface.
+
+    Used by :mod:`graphrag_sdk.tools` both for guarded ``cypher_read``
+    queries containing write clauses and for ``remember``/``flush``
+    calls on a toolkit constructed with ``read_only=True``.
+
+    Attributes:
+        offending_token: The specific rejected token (e.g. ``"MERGE"``,
+            ``"CALL apoc.load.json"``), or None for non-query violations.
+    """
+
+    def __init__(self, message: str, *, offending_token: str | None = None) -> None:
+        super().__init__(message)
+        self.offending_token = offending_token
+
+
 # ── Configuration Errors ─────────────────────────────────────────
 
 

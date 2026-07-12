@@ -1,0 +1,5 @@
+Columns: name, n
+Rows: 2 (truncated)
+Rows (2):
+- ["Alice", 3]
+- ["Bob", 1]

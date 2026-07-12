@@ -839,3 +839,85 @@ class TestSiblingExpansionIntegration:
 
         sibling_queries = [q for q in queries_seen if "hub" in q.lower() and "sibling" in q.lower()]
         assert len(sibling_queries) == 0
+
+
+# -- Provenance metadata (graphrag_sdk.tools contract) --
+
+
+def _rows(rows):
+    result = MagicMock()
+    result.result_set = rows
+    return result
+
+
+class TestProvenanceMetadata:
+    """metadata['provenance'] carries typed ids; section items stay byte-stable."""
+
+    @pytest.fixture
+    def prov_strategy(self, mp_vector_store, mp_embedder):
+        graph_store = MagicMock()
+
+        async def route_query(cypher, params=None):
+            if "toLower(e.name) = toLower(kw)" in cypher:  # exact entity match
+                return _rows([["e1", "Alice", "Engineer"]])
+            if "CONTAINS toLower(kw)" in cypher:  # CONTAINS discovery path
+                return _rows([])
+            if "MENTIONED_IN" in cypher and "vec.cosineDistance" in cypher:
+                return _rows([["e1", "c1", "Alice works at Acme."]])
+            if "r.rel_type" in cypher and "RELATES" in cypher:  # 1-hop relationships
+                return _rows([["Alice", "WORKS_AT", "Acme Corp", "employment"]])
+            if "PART_OF" in cypher:  # chunk -> document path
+                return _rows([["c1", "docs/a.md"]])
+            return _rows([])
+
+        graph_store.query_raw = AsyncMock(side_effect=route_query)
+        mp_vector_store.search_chunks = AsyncMock(
+            return_value=[{"id": "c1", "text": "Alice works at Acme."}]
+        )
+        return MultiPathRetrieval(
+            graph_store=graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=MockLLM(responses=["Alice"]),
+        )
+
+    async def test_provenance_present_and_typed(self, prov_strategy):
+        result = await prov_strategy.search("Who is Alice?")
+        prov = result.metadata["provenance"]
+        assert {"id": "e1", "name": "Alice", "description": "Engineer"} in prov["entities"]
+        assert {
+            "id": "c1",
+            "text": "Alice works at Acme.",
+            "document_path": "docs/a.md",
+        } in prov["chunks"]
+        assert isinstance(prov["facts"], list)
+        assert prov["relationships"] == ["Alice —[WORKS_AT]→ Acme Corp: employment"]
+
+    async def test_sections_byte_stable(self, prov_strategy):
+        """Pins the exact pre-patch section rendering for this fixed input.
+
+        These assertions must pass both BEFORE and AFTER the provenance
+        patch — they are the guarantee that the patch is non-behavioral.
+        """
+        result = await prov_strategy.search("Who is Alice?")
+        by_section = {i.metadata["section"]: i.content for i in result.items}
+        assert by_section["entities"] == "## Key Entities\n- Alice: Engineer"
+        assert by_section["relationships"] == (
+            "## Entity Relationships\n- Alice —[WORKS_AT]→ Acme Corp: employment"
+        )
+        assert by_section["passages"] == (
+            "## Source Document Passages\n[Source: docs/a.md]\nAlice works at Acme."
+        )
+        assert result.metadata["strategy"] == "multi_path"
+
+    async def test_empty_graph_provenance(self, mp_graph_store, mp_vector_store, mp_embedder):
+        s = MultiPathRetrieval(
+            graph_store=mp_graph_store,
+            vector_store=mp_vector_store,
+            embedder=mp_embedder,
+            llm=MockLLM(responses=["Nobody"]),
+        )
+        result = await s.search("Anything at all")
+        prov = result.metadata["provenance"]
+        assert prov["entities"] == [] and prov["chunks"] == []
+        assert prov["facts"] == [] and prov["relationships"] == []

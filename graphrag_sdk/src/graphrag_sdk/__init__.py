@@ -11,7 +11,7 @@
 #   Adaptability — Optimization-ready core, strategies are swappable.
 #   Velocity — Production-grade throughput.
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 # ── API Surface (Facade) ────────────────────────────────────────
 from graphrag_sdk.api.main import GraphRAG
@@ -23,6 +23,7 @@ from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
     GraphRAGError,
     LatencyBudgetExceededError,
+    ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
     ApplyChangesResult,
@@ -126,6 +127,9 @@ from graphrag_sdk.storage.ontology_store import (
 )
 from graphrag_sdk.storage.vector_store import VectorStore
 
+# ── Agent Toolkit ───────────────────────────────────────────────
+from graphrag_sdk.tools import GraphRAGToolkit, ToolSpec
+
 __all__ = [
     # Version
     "__version__",
@@ -209,6 +213,10 @@ __all__ = [
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    # Agent toolkit
+    "GraphRAGToolkit",
+    "ReadOnlyViolation",
+    "ToolSpec",
 ]
 
 
