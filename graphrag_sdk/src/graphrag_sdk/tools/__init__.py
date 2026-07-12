@@ -22,6 +22,7 @@ from graphrag_sdk.tools.models import (
     SearchResult,
     ToolResult,
 )
+from graphrag_sdk.tools.specs import ToolSpec
 
 __all__ = [
     "AnswerResult",
@@ -39,4 +40,5 @@ __all__ = [
     "SchemaResult",
     "SearchResult",
     "ToolResult",
+    "ToolSpec",
 ]
