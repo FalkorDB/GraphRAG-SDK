@@ -49,6 +49,7 @@ nav:
   - Ingestion: ingestion.md
   - Extraction: extraction.md
   - Retrieval: retrieval.md
+  - Agentic GraphRAG: agentic.md
   - Storage: storage.md
   - Graph Schema: graph-schema.md
   - Ontology Evolution: ontology-evolution.md

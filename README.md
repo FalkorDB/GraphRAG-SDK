@@ -192,7 +192,24 @@ guards the default.
 | Retrieval | Relationship expansion | DB |
 | Retrieval | Cosine reranking | Local |
 
-> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
+> 💡 Every answer is traceable to its source chunks via `MENTIONED_IN` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
+
+---
+
+## Use with Agents
+
+`graphrag_sdk.tools` turns any `GraphRAG` into a set of agent tools — typed results with `document_id`/`chunk_id` citations, a guarded read-only Cypher escape hatch, and machine-readable `tool_specs()` that adapters (pydantic-ai, LangGraph, MCP) generate their tool definitions from:
+
+```python
+from graphrag_sdk.tools import GraphRAGToolkit
+
+toolkit = GraphRAGToolkit(rag)                        # wrap any GraphRAG
+result = await toolkit.search("Who works at Acme?")   # typed, citation-ready
+print(result.to_llm_text())                           # prompt-ready rendering
+specs = toolkit.tool_specs()                          # JSON-Schema tool definitions
+```
+
+See the [Agentic GraphRAG guide](docs/agentic.md) and [`examples/11_agent_toolkit.py`](graphrag_sdk/examples/11_agent_toolkit.py).
 
 ---
 
@@ -208,6 +225,7 @@ guards the default.
 | 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
 | 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
 | 7 | [Incremental Updates](graphrag_sdk/examples/07_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |
+| 11 | [Agent Toolkit](graphrag_sdk/examples/11_agent_toolkit.py) | Expose your graph as agent tools with citations and guarded Cypher |
 
 ---
 
@@ -233,7 +251,7 @@ guards the default.
 - 🎉 2026-04: Version 1.0 is released with a new set of benchmarks based on a year's worth of research and customer PoCs
   - 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`
 - 2026-Q2: Production observability; expand ingestion support — tables, structured data
-- 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
+- 2026-Q3: Introduce Agentic GraphRAG (✅ `graphrag_sdk.tools` agent toolkit); complete PDF ingestion
 - 2026-Q4: Smarter retrieval — dynamic traversal, temporal graph
 
 ---
