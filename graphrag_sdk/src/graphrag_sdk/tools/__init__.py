@@ -23,8 +23,11 @@ from graphrag_sdk.tools.models import (
     ToolResult,
 )
 from graphrag_sdk.tools.specs import ToolSpec
+from graphrag_sdk.tools.toolkit import FinalizePolicy, GraphRAGToolkit
 
 __all__ = [
+    "FinalizePolicy",
+    "GraphRAGToolkit",
     "AnswerResult",
     "ChunkRef",
     "Citation",

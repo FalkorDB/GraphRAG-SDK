@@ -25,6 +25,7 @@ from graphrag_sdk.core.exceptions import (
     GraphRAGError,
     LatencyBudgetExceededError,
     ToolCallingNotSupportedError,
+    ReadOnlyViolation,
 )
 from graphrag_sdk.core.models import (
     AgentStep,
@@ -178,6 +179,9 @@ from graphrag_sdk.storage.ontology_store import (
 from graphrag_sdk.storage.system_store import DedupRunActiveError
 from graphrag_sdk.storage.vector_store import VectorStore
 
+# ── Agent Toolkit ───────────────────────────────────────────────
+from graphrag_sdk.tools import GraphRAGToolkit, ToolSpec
+
 __all__ = [
     "DEFAULT_RELATION_TYPES",
     # Version
@@ -306,6 +310,10 @@ __all__ = [
     "RecordBatch",
     "RecordLoaderStrategy",
     "Link",
+    # Agent toolkit
+    "GraphRAGToolkit",
+    "ReadOnlyViolation",
+    "ToolSpec",
 ]
 
 
