@@ -198,7 +198,8 @@ _GUIDE = (
     "  - description_merge: force_summary_threshold (1-50, def 3),\n"
     "    max_summary_tokens (50-2000, def 500).\n"
     "  - semantic: similarity_threshold (0.5-0.999, def 0.95),\n"
-    "    ann_top_k (5-200, def 50).\n"
+    "    ann_top_k (5-200, def 50), force_summary_threshold (1-50, def 3),\n"
+    "    max_summary_tokens (50-2000, def 500).\n"
     "  - llm_verified: hard_threshold (0.5-0.999, def 0.95),\n"
     "    soft_threshold (0.3-0.98, def 0.80, must stay below hard),\n"
     "    ann_top_k (5-200, def 50), max_llm_pairs (10-5000, def 500).\n"
@@ -433,6 +434,10 @@ def build_chunker(
     params: dict[str, Any] | None = None,
 ) -> SentenceTokenCapChunking | FixedSizeChunking | StructuralChunking | ContextualChunking:
     """Instantiate the chunker named by an :class:`IngestionPlan`."""
+    # Re-clamping here is intentional/idempotent, not redundant: `params` may
+    # come straight from a caller-built IngestionPlan (already clamped in
+    # __post_init__) or from a hand-assembled dict passed directly to this
+    # builder function, which has not gone through that path.
     kw = clamp_params("chunker", name, params)
     if name == "fixed":
         return FixedSizeChunking(**kw)

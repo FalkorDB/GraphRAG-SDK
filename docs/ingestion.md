@@ -275,6 +275,7 @@ The planner may also tune parameters inside the chosen strategy (e.g. `max_token
 - **Explicit wins** — any `chunker` / `extractor` / `resolver` you pass is kept as-is; the planner only fills the ones left unset.
 - **Never silently broken** — an empty/invalid plan or any planner error falls back to the default strategies (`sentence` / `gliner` / `exact`), reproducing today's behavior.
 - **Opt-in** — `auto=False` is the default; nothing changes unless you enable it.
+- **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still just one of the known-safe strategy ids with clamped parameters (see `PARAM_SPECS`) — it can never select an arbitrary/unsafe strategy or an out-of-range parameter value.
 
 Two planners ship in the SDK:
 
