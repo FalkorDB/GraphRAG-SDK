@@ -18,7 +18,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
@@ -319,6 +319,24 @@ def _sample(text: str | None, source: str | None, limit: int = 1500) -> str:
         suffix = " …[truncated]" if len(text) > limit else ""
         return f"(source: {source or 'text'})\n{head}{suffix}"
     return f"(file: {source or 'unknown'} — content not yet loaded)"
+
+
+@runtime_checkable
+class IngestionPlanner(Protocol):
+    """The shape a custom ``planner=`` argument must implement.
+
+    ``HeuristicIngestionPlanner`` and ``LLMIngestionPlanner`` both satisfy
+    this protocol; documents the contract for anyone plugging in their own
+    planner without forcing a common base class.
+    """
+
+    async def plan(
+        self,
+        text: str | None,
+        *,
+        source: str | None = None,
+        ctx: Context | None = None,
+    ) -> IngestionPlan | None: ...
 
 
 class HeuristicIngestionPlanner:

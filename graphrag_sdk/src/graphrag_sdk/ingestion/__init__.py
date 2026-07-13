@@ -7,6 +7,7 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphE
 from graphrag_sdk.ingestion.ingestion_planner import (
     HeuristicIngestionPlanner,
     IngestionPlan,
+    IngestionPlanner,
     LLMIngestionPlanner,
     build_ingestion_strategies,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "HeuristicIngestionPlanner",
     "IngestionPlan",
     "IngestionPipeline",
+    "IngestionPlanner",
     "LLMIngestionPlanner",
     "LoaderStrategy",
     "ResolutionStrategy",

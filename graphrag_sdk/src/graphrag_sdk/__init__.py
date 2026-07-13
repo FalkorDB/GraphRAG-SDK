@@ -98,6 +98,7 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
 from graphrag_sdk.ingestion.ingestion_planner import (
     HeuristicIngestionPlanner,
     IngestionPlan,
+    IngestionPlanner,
     LLMIngestionPlanner,
     build_ingestion_strategies,
 )
@@ -206,6 +207,7 @@ __all__ = [
     "SemanticResolution",
     "HeuristicIngestionPlanner",
     "IngestionPlan",
+    "IngestionPlanner",
     "LLMIngestionPlanner",
     "build_ingestion_strategies",
     # Retrieval
