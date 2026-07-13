@@ -8,9 +8,9 @@
 # plan is empty/invalid or the planner errors, so ingestion behavior is never
 # silently broken.
 #
-# This mirrors retrieval's PathRouter (graphrag_sdk/retrieval/strategies/
-# path_router.py): same "heuristic or one small LLM call, always safe-fallback"
-# shape, applied to the ingestion side of the pipeline.
+# This is analogous to retrieval-side routing: a small planner (heuristic or
+# LLM) chooses ingestion strategies per document, with safe defaults on
+# failure — applied here to the ingestion side of the pipeline.
 
 from __future__ import annotations
 
@@ -377,8 +377,8 @@ class LLMIngestionPlanner:
 
     Args:
         llm: provider exposing ``ainvoke(prompt, timeout=...)`` and returning
-            an object with a ``.content`` string (same interface the retrieval
-            PathRouter uses).
+            an object with a ``.content`` string (the common LLM interface
+            used across the SDK).
     """
 
     def __init__(self, llm: Any) -> None:

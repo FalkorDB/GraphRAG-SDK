@@ -246,7 +246,7 @@ stats = await rag.finalize()
 
 ## Agentic Strategy Selection (`auto=True`)
 
-By default `ingest()` uses fixed strategies (see [Configuration Quick Reference](#configuration-quick-reference)). Pass `auto=True` to let a **planner** inspect a sample of each document and pick the chunker, entity-extraction backend, and resolver *per document* — the ingestion-side analogue of retrieval's path router.
+By default `ingest()` uses fixed strategies (see [Configuration Quick Reference](#configuration-quick-reference)). Pass `auto=True` to let a **planner** inspect a sample of each document and pick the chunker, entity-extraction backend, and resolver *per document* — the ingestion-side analogue of retrieval-side routing.
 
 ```python
 # LLM planner (default): one small call decides the strategies per document
