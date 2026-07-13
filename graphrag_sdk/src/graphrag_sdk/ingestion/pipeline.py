@@ -124,18 +124,25 @@ class IngestionPipeline:
         *,
         text: str | None = None,
         document_info: DocumentInfo | None = None,
+        preloaded_document: DocumentOutput | None = None,
     ) -> IngestionResult:
         """Execute the full ingestion pipeline.
 
-        Either ``source`` or ``text`` must be provided:
-        - If ``source`` is given, the loader reads from it.
+        Either ``source``, ``text``, or ``preloaded_document`` must be provided:
+        - If ``source`` is given (and neither of the below), the loader reads from it.
         - If ``text`` is given directly, the loader step is skipped.
+        - If ``preloaded_document`` is given, it is used as-is and the loader
+          step is skipped — for a caller that already loaded ``source`` for
+          another purpose (e.g. sampling a document for the ingestion planner)
+          and wants to avoid loading it a second time.
 
         Args:
             source: Path/URL to load (passed to loader).
             ctx: Execution context (created automatically if None).
             text: Optional raw text (skips loader if provided).
             document_info: Optional pre-built document metadata.
+            preloaded_document: Optional already-loaded ``DocumentOutput``
+                (text + elements + metadata). Takes precedence over ``text``.
 
         Returns:
             IngestionResult with statistics about the pipeline run.
@@ -147,7 +154,21 @@ class IngestionPipeline:
 
         try:
             # Step 1: Load
-            if text is not None:
+            if preloaded_document is not None:
+                document = preloaded_document
+                ctx.log("Using preloaded document (loader skipped)")
+                # Same document_info merge as the loader path below, so a
+                # caller-supplied uid/path/metadata still wins.
+                if document_info is not None:
+                    document.document_info = DocumentInfo(
+                        uid=document_info.uid or document.document_info.uid,
+                        path=document_info.path or document.document_info.path,
+                        metadata={
+                            **document.document_info.metadata,
+                            **document_info.metadata,
+                        },
+                    )
+            elif text is not None:
                 document = DocumentOutput(
                     text=text,
                     document_info=document_info or DocumentInfo(path=source),

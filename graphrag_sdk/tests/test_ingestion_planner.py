@@ -246,33 +246,39 @@ class TestPlanIngestionStrategiesMerge:
     async def test_fills_all_when_none_passed(self):
         llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"exact"}'])
         rag = _fake_rag(llm)
-        chunker, extractor, resolver = await GraphRAG._plan_ingestion_strategies(
-            rag,
-            text="hello",
-            source="x.txt",
-            chunker=None,
-            extractor=None,
-            resolver=None,
-            planner=None,
-            ctx=None,
+        chunker, extractor, resolver, preloaded_document = (
+            await GraphRAG._plan_ingestion_strategies(
+                rag,
+                text="hello",
+                source="x.txt",
+                chunker=None,
+                extractor=None,
+                resolver=None,
+                planner=None,
+                ctx=None,
+            )
         )
         assert isinstance(chunker, FixedSizeChunking)
         assert isinstance(extractor, GraphExtraction)
         assert isinstance(resolver, ExactMatchResolution)
+        # text mode: no file was loaded, so there's nothing to preload for reuse.
+        assert preloaded_document is None
 
     async def test_explicit_override_wins(self):
         llm = MockLLM(responses=['{"chunker":"fixed","extractor":"llm","resolver":"semantic"}'])
         rag = _fake_rag(llm)
         explicit_chunker = SentenceTokenCapChunking()
-        chunker, extractor, resolver = await GraphRAG._plan_ingestion_strategies(
-            rag,
-            text="hello",
-            source="x.txt",
-            chunker=explicit_chunker,
-            extractor=None,
-            resolver=None,
-            planner=None,
-            ctx=None,
+        chunker, extractor, resolver, _preloaded_document = (
+            await GraphRAG._plan_ingestion_strategies(
+                rag,
+                text="hello",
+                source="x.txt",
+                chunker=explicit_chunker,
+                extractor=None,
+                resolver=None,
+                planner=None,
+                ctx=None,
+            )
         )
         # Caller's chunker is preserved; only the unset slots come from the plan.
         assert chunker is explicit_chunker
@@ -280,7 +286,7 @@ class TestPlanIngestionStrategiesMerge:
 
     async def test_custom_heuristic_planner_used(self):
         rag = _fake_rag(MockLLM())
-        chunker, _, _ = await GraphRAG._plan_ingestion_strategies(
+        chunker, _, _, _ = await GraphRAG._plan_ingestion_strategies(
             rag,
             text="# Title\n- a\n- b",
             source="notes.md",
@@ -308,7 +314,7 @@ class TestPlanIngestionStrategiesMerge:
             planner=BoomPlanner(),
             ctx=None,
         )
-        assert result == (None, None, None)
+        assert result == (None, None, None, None)
 
     async def test_none_plan_falls_back_to_defaults(self):
         class NonePlanner:
@@ -326,7 +332,7 @@ class TestPlanIngestionStrategiesMerge:
             planner=NonePlanner(),
             ctx=None,
         )
-        assert result == (None, None, None)
+        assert result == (None, None, None, None)
 
     async def test_file_mode_loads_content_sample_for_planner(self):
         seen: dict[str, str | None] = {}
@@ -341,19 +347,25 @@ class TestPlanIngestionStrategiesMerge:
                 return SimpleNamespace(text="LOADED CONTENT SAMPLE")
 
         rag = _fake_rag(MockLLM())
-        await GraphRAG._plan_ingestion_strategies(
-            rag,
-            text=None,
-            source="x.pdf",
-            loader=FakeLoader(),
-            chunker=None,
-            extractor=None,
-            resolver=None,
-            planner=RecordingPlanner(),
-            ctx=None,
+        _chunker, _extractor, _resolver, preloaded_document = (
+            await GraphRAG._plan_ingestion_strategies(
+                rag,
+                text=None,
+                source="x.pdf",
+                loader=FakeLoader(),
+                chunker=None,
+                extractor=None,
+                resolver=None,
+                planner=RecordingPlanner(),
+                ctx=None,
+            )
         )
         # File mode: the planner sees loaded content, not just the path.
         assert seen["text"] == "LOADED CONTENT SAMPLE"
+        # The full loaded document is returned too, so the caller (ingest())
+        # can reuse it instead of loading the source a second time.
+        assert preloaded_document is not None
+        assert preloaded_document.text == "LOADED CONTENT SAMPLE"
 
     def test_clamp_within_range(self):
         out = clamp_params("chunker", "sentence", {"max_tokens": 256, "overlap_sentences": 3})

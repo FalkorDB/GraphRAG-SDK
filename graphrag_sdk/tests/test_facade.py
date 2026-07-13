@@ -251,6 +251,49 @@ class TestGraphRAGIngest:
         graphrag._vector_store.backfill_entity_embeddings.assert_not_awaited()
         assert "entities_backfilled" not in result.metadata
 
+    async def test_ingest_auto_true_plans_and_loads_source_once(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        """End-to-end wiring test for ``ingest(auto=True)`` on a real file.
+
+        Closes the review gap noted on PR #275: earlier tests only drove
+        ``_plan_ingestion_strategies`` in isolation via a stub; nothing
+        exercised the real ``ingest()`` path where the planner runs after
+        loader resolution + ontology init. This also guards the double-load
+        fix: the planner's content sample must be reused by the pipeline,
+        so the loader's ``load()`` should be invoked exactly once.
+        """
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+        from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
+        md_file = tmp_path / "doc.md"
+        md_file.write_text("# Title\n\nSome content for the agentic ingestion test.\n")
+
+        load_calls = {"count": 0}
+        original_load = MarkdownLoader.load
+
+        async def counting_load(self_loader, source, ctx):
+            load_calls["count"] += 1
+            return await original_load(self_loader, source, ctx)
+
+        monkeypatch.setattr(MarkdownLoader, "load", counting_load)
+
+        class FixedPlanner:
+            """Stub planner asserting it saw the real loaded content, not
+            just the file path, then picks known-safe strategies."""
+
+            async def plan(self, text, *, source=None, ctx=None):
+                assert text is not None
+                assert "agentic ingestion test" in text
+                return IngestionPlan(chunker="structural", extractor="llm", resolver="exact")
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+
+        result = await g.ingest(str(md_file), auto=True, planner=FixedPlanner())
+
+        assert isinstance(result, IngestionResult)
+        assert load_calls["count"] == 1
+
 
 class TestGraphRAGDeduplicateEntities:
     async def test_deduplicate_entities_merges_duplicates(self, mock_conn, embedder, llm):
