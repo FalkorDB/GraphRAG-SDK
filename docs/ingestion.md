@@ -244,6 +244,50 @@ stats = await rag.finalize()
 
 ---
 
+## Agentic Strategy Selection (`auto=True`)
+
+By default `ingest()` uses fixed strategies (see [Configuration Quick Reference](#configuration-quick-reference)). Pass `auto=True` to let a **planner** inspect a sample of each document and pick the chunker, entity-extraction backend, and resolver *per document* — the ingestion-side analogue of retrieval-side routing.
+
+```python
+# LLM planner (default): one small call decides the strategies per document
+await rag.ingest(source="handbook.md", auto=True)
+
+# Zero-cost heuristic planner instead of an LLM call
+from graphrag_sdk import HeuristicIngestionPlanner
+await rag.ingest(source="handbook.md", auto=True, planner=HeuristicIngestionPlanner())
+
+# Explicit strategies always win — the planner only fills the rest
+await rag.ingest(source="handbook.md", auto=True, resolver=ExactMatchResolution())
+```
+
+**What the planner may pick:**
+
+| Component | Options |
+|-----------|---------|
+| Chunker | `sentence` (default), `fixed`, `structural`, `contextual` |
+| Extractor backend | `gliner` (default), `llm` |
+| Resolver | `exact` (default), `description_merge`, `semantic`, `llm_verified` |
+
+The planner may also tune parameters inside the chosen strategy (e.g. `max_tokens`, `threshold`); all values are coerced and clamped to safe ranges, so the model can never produce an unsafe config.
+
+**Safety guarantees:**
+
+- **Explicit wins** — any `chunker` / `extractor` / `resolver` you pass is kept as-is; the planner only fills the ones left unset.
+- **Never silently broken** — an empty/invalid plan or any planner error falls back to the default strategies (`sentence` / `gliner` / `exact`), reproducing today's behavior.
+- **Opt-in** — `auto=False` is the default; nothing changes unless you enable it.
+- **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still just one of the known-safe strategy ids with clamped parameters (see `PARAM_SPECS`) — it can never select an arbitrary/unsafe strategy or an out-of-range parameter value.
+
+Two planners ship in the SDK:
+
+| Planner | Cost | How it decides |
+|---------|------|----------------|
+| `LLMIngestionPlanner` (default when `auto=True`) | One small LLM call per document | Guided prompt over a document sample |
+| `HeuristicIngestionPlanner` | Zero (no LLM call) | Cheap document features (structure cues, length) |
+
+**Code:** [`ingestion_planner.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/ingestion_planner.py) · wired into `GraphRAG.ingest()` in [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py).
+
+---
+
 ## Configuration Quick Reference
 
 ### Chunking
@@ -286,6 +330,7 @@ stats = await rag.finalize()
 |------|-----------------|
 | [`pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | The 9-step pipeline orchestrator |
 | [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py) | `GraphRAG.ingest()` and `finalize()` — user-facing API |
+| [`ingestion_planner.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/ingestion_planner.py) | Agentic strategy selection (`auto=True`) — LLM/heuristic planners |
 | [`loaders/text_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/text_loader.py) | TextLoader implementation |
 | [`loaders/pdf_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/pdf_loader.py) | PdfLoader implementation |
 | [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
