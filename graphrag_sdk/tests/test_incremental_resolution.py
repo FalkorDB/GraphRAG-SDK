@@ -1,4 +1,5 @@
 """Tests for IncrementalResolution — resolve a batch against the existing graph."""
+
 from __future__ import annotations
 
 import json
@@ -38,15 +39,22 @@ def _ctx():
 
 
 # Existing graph nodes (candidates the retriever can return).
-GAL_SH = GraphNode(id="gal_sh__person", label="Person",
-                   properties={"name": "Gal Sh", "description": "Engineer at FalkorDB."})
-GAL_BR = GraphNode(id="gal_br__person", label="Person",
-                   properties={"name": "Gal Br", "description": "Designer at another firm."})
+GAL_SH = GraphNode(
+    id="gal_sh__person",
+    label="Person",
+    properties={"name": "Gal Sh", "description": "Engineer at FalkorDB."},
+)
+GAL_BR = GraphNode(
+    id="gal_br__person",
+    label="Person",
+    properties={"name": "Gal Br", "description": "Designer at another firm."},
+)
 
 
 def make_retriever(returns):
     async def retriever(name, description, k):
         return returns
+
     return retriever
 
 
@@ -55,23 +63,49 @@ class TestIncrementalResolution:
         """gal / gal.sh / Gal Shubeli → merge INTO existing Gal Sh;
         Gal Kurland → new; Gal Br (candidate) → rejected."""
         batch = [
-            GraphNode(id="gal__person", label="Person",
-                      properties={"name": "gal", "description": "works at FalkorDB"}),
-            GraphNode(id="gal.sh__person", label="Person",
-                      properties={"name": "gal.sh", "description": "FalkorDB engineer"}),
-            GraphNode(id="gal_shubeli__person", label="Person",
-                      properties={"name": "Gal Shubeli", "description": "engineer at FalkorDB"}),
-            GraphNode(id="gal_kurland__person", label="Person",
-                      properties={"name": "Gal Kurland", "description": "researcher elsewhere"}),
+            GraphNode(
+                id="gal__person",
+                label="Person",
+                properties={"name": "gal", "description": "works at FalkorDB"},
+            ),
+            GraphNode(
+                id="gal.sh__person",
+                label="Person",
+                properties={"name": "gal.sh", "description": "FalkorDB engineer"},
+            ),
+            GraphNode(
+                id="gal_shubeli__person",
+                label="Person",
+                properties={"name": "Gal Shubeli", "description": "engineer at FalkorDB"},
+            ),
+            GraphNode(
+                id="gal_kurland__person",
+                label="Person",
+                properties={"name": "Gal Kurland", "description": "researcher elsewhere"},
+            ),
         ]
         # LLM sees refs 1..4 = new (gal, gal.sh, Gal Shubeli, Gal Kurland),
         # refs 5,6 = graph (Gal Sh, Gal Br).
-        decision = json.dumps({"groups": [
-            {"members": [1, 2, 3, 5], "target": 5,
-             "canonical": "Gal Shubeli", "type": "Person", "description": "Engineer at FalkorDB."},
-            {"members": [4], "target": "new",
-             "canonical": "Gal Kurland", "type": "Person", "description": "A researcher."},
-        ]})
+        decision = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 2, 3, 5],
+                        "target": 5,
+                        "canonical": "Gal Shubeli",
+                        "type": "Person",
+                        "description": "Engineer at FalkorDB.",
+                    },
+                    {
+                        "members": [4],
+                        "target": "new",
+                        "canonical": "Gal Kurland",
+                        "type": "Person",
+                        "description": "A researcher.",
+                    },
+                ]
+            }
+        )
         resolver = IncrementalResolution(
             llm=MockLLM(responses=[decision]),
             embedder=WordEmbedder(),
@@ -94,8 +128,13 @@ class TestIncrementalResolution:
 
     async def test_no_candidates_means_new_entity_no_llm(self):
         """A survivor with no graph candidates is created as new — LLM untouched."""
-        batch = [GraphNode(id="novel__person", label="Person",
-                           properties={"name": "Nadia Q", "description": "brand new person"})]
+        batch = [
+            GraphNode(
+                id="novel__person",
+                label="Person",
+                properties={"name": "Nadia Q", "description": "brand new person"},
+            )
+        ]
 
         class BoomLLM(MockLLM):
             def invoke(self, *a, **k):
@@ -113,10 +152,16 @@ class TestIncrementalResolution:
     async def test_free_merge_collapses_same_name_before_llm(self):
         """Same-name/different-type homograph merges for free in stage 1."""
         batch = [
-            GraphNode(id="graphrag__concept", label="Concept",
-                      properties={"name": "GraphRAG", "description": "graph based RAG technique"}),
-            GraphNode(id="graphrag__technology", label="Technology",
-                      properties={"name": "GraphRAG", "description": "graph based RAG technique"}),
+            GraphNode(
+                id="graphrag__concept",
+                label="Concept",
+                properties={"name": "GraphRAG", "description": "graph based RAG technique"},
+            ),
+            GraphNode(
+                id="graphrag__technology",
+                label="Technology",
+                properties={"name": "GraphRAG", "description": "graph based RAG technique"},
+            ),
         ]
         resolver = IncrementalResolution(
             llm=MockLLM(responses=[""]),
@@ -130,10 +175,16 @@ class TestIncrementalResolution:
     async def test_immutable_conflict_flags_review(self):
         """Merging nodes that disagree on an immutable prop flags _needs_review."""
         batch = [
-            GraphNode(id="acme_a__org", label="Org",
-                      properties={"name": "Acme", "description": "a company", "founded": "2001"}),
-            GraphNode(id="acme_b__org", label="Org",
-                      properties={"name": "Acme", "description": "a company", "founded": "1998"}),
+            GraphNode(
+                id="acme_a__org",
+                label="Org",
+                properties={"name": "Acme", "description": "a company", "founded": "2001"},
+            ),
+            GraphNode(
+                id="acme_b__org",
+                label="Org",
+                properties={"name": "Acme", "description": "a company", "founded": "1998"},
+            ),
         ]
         resolver = IncrementalResolution(
             llm=MockLLM(responses=[""]),
@@ -149,11 +200,16 @@ class TestIncrementalResolution:
     async def test_genuine_homograph_stays_separate(self):
         """Same name, different type, divergent descriptions → NOT free-merged."""
         batch = [
-            GraphNode(id="paris__location", label="Location",
-                      properties={"name": "Paris", "description": "capital city france europe"}),
-            GraphNode(id="paris__person", label="Person",
-                      properties={"name": "Paris",
-                                  "description": "american media personality celebrity"}),
+            GraphNode(
+                id="paris__location",
+                label="Location",
+                properties={"name": "Paris", "description": "capital city france europe"},
+            ),
+            GraphNode(
+                id="paris__person",
+                label="Person",
+                properties={"name": "Paris", "description": "american media personality celebrity"},
+            ),
         ]
         resolver = IncrementalResolution(
             llm=MockLLM(responses=[""]),
@@ -165,8 +221,9 @@ class TestIncrementalResolution:
 
     async def test_malformed_llm_response_leaves_pile_untouched(self):
         """An unparseable partition → fail-safe: no merges applied."""
-        batch = [GraphNode(id="xylo__t", label="T",
-                           properties={"name": "Xylo", "description": "d"})]
+        batch = [
+            GraphNode(id="xylo__t", label="T", properties={"name": "Xylo", "description": "d"})
+        ]
         resolver = IncrementalResolution(
             llm=MockLLM(responses=["not valid json"]),  # consulted (has a candidate)
             embedder=WordEmbedder(),

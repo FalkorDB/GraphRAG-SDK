@@ -109,10 +109,10 @@ _LINK_PROMPT = (
 class _PileItem:
     """One entry the LLM sees, tagged so its verdict can be mapped back."""
 
-    ref: int                    # 1-based label used in the prompt
+    ref: int  # 1-based label used in the prompt
     node: GraphNode
-    survivor_idx: int | None    # index into ``survivors`` when freshly extracted
-    graph_id: str | None        # live graph id when already in the graph
+    survivor_idx: int | None  # index into ``survivors`` when freshly extracted
+    graph_id: str | None  # live graph id when already in the graph
 
     @property
     def origin(self) -> str:
@@ -123,8 +123,8 @@ class _PileItem:
 class _LinkDecision:
     """One parsed group from the LLM's partition of a pile."""
 
-    members: list[int]          # refs the model judged to be the same entity
-    target: int | str           # a graph item's ref, or "new"
+    members: list[int]  # refs the model judged to be the same entity
+    target: int | str  # a graph item's ref, or "new"
     canonical: str | None
     type: str | None
     description: str | None
@@ -199,8 +199,7 @@ class IncrementalResolution(ResolutionStrategy):
         surviving_nodes = [n for n in survivors if n.id not in absorbed]
         relationships = remap_relationships(graph_data.relationships, remap)
         ctx.log(
-            f"IncrementalResolution: {len(surviving_nodes)} entities "
-            f"({merged} merged or linked)"
+            f"IncrementalResolution: {len(surviving_nodes)} entities ({merged} merged or linked)"
         )
         return ResolutionResult(
             nodes=surviving_nodes,
@@ -254,9 +253,7 @@ class IncrementalResolution(ResolutionStrategy):
 
     # ── step 2 & 3: candidate retrieval and piling ─────────────────────────
 
-    async def _fetch_candidates(
-        self, survivors: list[GraphNode]
-    ) -> list[list[GraphNode]]:
+    async def _fetch_candidates(self, survivors: list[GraphNode]) -> list[list[GraphNode]]:
         """For each survivor, the existing graph entities that look like it."""
         if self.candidate_retriever is None:
             return [[] for _ in survivors]
@@ -338,8 +335,9 @@ class IncrementalResolution(ResolutionStrategy):
                 if cand.id in seen:
                     continue
                 seen.add(cand.id)
-                items.append(_PileItem(ref=len(items) + 1, node=cand,
-                                       survivor_idx=None, graph_id=cand.id))
+                items.append(
+                    _PileItem(ref=len(items) + 1, node=cand, survivor_idx=None, graph_id=cand.id)
+                )
                 if len(items) >= self.pile_cap:
                     break
         return items
@@ -489,13 +487,15 @@ def _parse_decisions(content: str) -> list[_LinkDecision] | None:
             continue
         members = [int(r) for r in group["members"] if isinstance(r, (int, float))]
         if members:
-            decisions.append(_LinkDecision(
-                members=members,
-                target=group.get("target", "new"),
-                canonical=group.get("canonical"),
-                type=group.get("type"),
-                description=group.get("description"),
-            ))
+            decisions.append(
+                _LinkDecision(
+                    members=members,
+                    target=group.get("target", "new"),
+                    canonical=group.get("canonical"),
+                    type=group.get("type"),
+                    description=group.get("description"),
+                )
+            )
     return decisions or None
 
 
