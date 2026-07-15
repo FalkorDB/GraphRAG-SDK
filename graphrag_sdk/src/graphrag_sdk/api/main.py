@@ -72,6 +72,9 @@ from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+from graphrag_sdk.ingestion.resolution_strategies.incremental_resolution import (
+    IncrementalResolution,
+)
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
@@ -1545,7 +1548,7 @@ class GraphRAG:
             loader=loader or TextLoader(),
             chunker=chunker or SentenceTokenCapChunking(),
             extractor=extractor or self._default_extractor(),
-            resolver=resolver or ExactMatchResolution(),
+            resolver=resolver or self._default_resolver(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             ontology=self._global_ontology,
@@ -1717,6 +1720,58 @@ class GraphRAG:
             llm=self.llm,
             entity_types=entity_types,
         )
+
+    def _default_resolver(self) -> ResolutionStrategy:
+        """The default entity-resolution strategy.
+
+        When both an LLM and an embedder are configured, use graph-aware
+        :class:`IncrementalResolution`: it resolves each document's entities
+        against the entities already in the graph, so a mention can be linked
+        onto an entity extracted from an earlier document. Without an LLM or
+        embedder it falls back to the LLM-free :class:`ExactMatchResolution`,
+        so lightweight setups keep working with no added cost.
+        """
+        if self.llm is None or self.embedder is None:
+            return ExactMatchResolution()
+        return IncrementalResolution(
+            llm=self.llm,
+            embedder=self.embedder,
+            candidate_retriever=self._graph_candidate_retriever(),
+        )
+
+    def _graph_candidate_retriever(self):
+        """Build a candidate retriever that finds existing graph entities which
+        share a name with an incoming entity, so cross-document duplicates
+        (e.g. the same term extracted under different types) can be linked.
+
+        Note: this issues one name-equality lookup per resolved entity. On very
+        large graphs a range index on ``__Entity__(name)`` keeps it cheap.
+        """
+        store = self._graph_store
+
+        async def retrieve(name: str, description: str, k: int) -> list[GraphNode]:
+            lname = str(name).strip().lower()
+            if not lname:
+                return []
+            result = await store.query_raw(
+                "MATCH (n:__Entity__) WHERE toLower(n.name) = $lname "
+                "RETURN n.id, labels(n), n.name, n.description LIMIT $k",
+                {"lname": lname, "k": k},
+            )
+            rows = result.result_set if result and result.result_set else []
+            candidates: list[GraphNode] = []
+            for node_id, labels, node_name, node_desc in rows:
+                label = next((lbl for lbl in (labels or []) if lbl != "__Entity__"), "Unknown")
+                candidates.append(
+                    GraphNode(
+                        id=node_id,
+                        label=label,
+                        properties={"name": node_name or node_id, "description": node_desc or ""},
+                    )
+                )
+            return candidates
+
+        return retrieve
 
     @staticmethod
     def _default_loader_for(source: str) -> LoaderStrategy:
@@ -2113,7 +2168,7 @@ class GraphRAG:
             loader=loader or TextLoader(),  # unused (text is provided below)
             chunker=chunker or SentenceTokenCapChunking(),
             extractor=extractor or self._default_extractor(),
-            resolver=resolver or ExactMatchResolution(),
+            resolver=resolver or self._default_resolver(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             ontology=self._global_ontology,

@@ -9,7 +9,7 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `MarkdownLoader` |
 | 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking`, `StructuralChunking` |
 | 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
-| 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
+| 4 | Resolution | `ResolutionStrategy` | `IncrementalResolution` (default), `ExactMatchResolution`, `DescriptionMergeResolution`, `SemanticResolution`, `LLMVerifiedResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
 
@@ -398,6 +398,36 @@ class ResolutionStrategy(ABC):
 
 Returns `ResolutionResult` with deduplicated `nodes`, remapped `relationships`, and `merged_count`.
 
+### Built-in: IncrementalResolution (default)
+
+Graph-aware resolution: each document's entities are resolved **against the entities already in the graph**, so a mention can be linked onto an entity extracted from an earlier document — the cross-document case batch resolvers can't see. It is the default when the `GraphRAG` facade has both an LLM and an embedder; otherwise the facade falls back to `ExactMatchResolution`.
+
+A funnel — cheap, certain work first; the LLM only where cheap signals can't decide:
+
+1. **collapse** — merge a batch's own same-name duplicates by description similarity (no LLM). Fixes same-name / different-type duplicates like "GraphRAG" the `Concept` vs the `Technology`.
+2. **retrieve** — for each survivor, fetch look-alike existing graph entities.
+3. **pile** — group survivors that share a candidate.
+4. **link** — one LLM call per pile decides which items are the same entity and which existing node (if any) is the merge target. Genuine look-alikes stay apart (`FALKORDB_USERNAME` ≠ `FALKORDB_PASSWORD`).
+
+Facts are never invented — the LLM writes only free text (canonical name/description); provenance is unioned and immutable-property conflicts are flagged (`_needs_review`).
+
+```python
+from graphrag_sdk.ingestion.resolution_strategies.incremental_resolution import IncrementalResolution
+
+resolver = IncrementalResolution(
+    llm=llm,                       # decides links + writes merged descriptions
+    embedder=embedder,             # scores description similarity
+    candidate_retriever=retriever, # async (name, description, k) -> [GraphNode]; the
+                                   # facade wires one backed by the graph store
+    top_k=3,                       # candidates fetched per entity
+    pile_cap=12,                   # max items sent to the LLM per call
+    same_name_threshold=0.80,      # description cosine to auto-merge same-name entities
+    immutable_props=(),            # properties that flag a conflict instead of merging
+)
+```
+
+**When to use:** Default for multi-document knowledge graphs where the same entity recurs across documents. **Note:** it adds LLM + embedding calls during ingestion; for LLM-free or cost-sensitive ingestion use `ExactMatchResolution`.
+
 ### Built-in: ExactMatchResolution
 
 Deduplicates by exact property match (default: `id`). Fast, no LLM calls.
@@ -410,7 +440,7 @@ resolver = ExactMatchResolution(
 )
 ```
 
-**When to use:** Default. Fast and deterministic. Works well when extraction produces consistent entity IDs.
+**When to use:** LLM-free ingestion. Fast and deterministic; used automatically as the default fallback when no LLM/embedder is configured.
 
 ### Built-in: DescriptionMergeResolution
 
