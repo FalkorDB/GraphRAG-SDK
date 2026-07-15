@@ -254,13 +254,29 @@ class IncrementalResolution(ResolutionStrategy):
     # ── step 2 & 3: candidate retrieval and piling ─────────────────────────
 
     async def _fetch_candidates(self, survivors: list[GraphNode]) -> list[list[GraphNode]]:
-        """For each survivor, the existing graph entities that look like it."""
+        """For each survivor, the existing graph entities that look like it.
+
+        A retriever failure for one survivor degrades to "no candidates" (that
+        entity is treated as new) rather than aborting the whole document —
+        keeping with the strategy's fail-toward-splitting stance.
+        """
         if self.candidate_retriever is None:
             return [[] for _ in survivors]
-        return [
-            list(await self.candidate_retriever(_name_of(s), _description_of(s), self.top_k))
-            for s in survivors
-        ]
+        found: list[list[GraphNode]] = []
+        for survivor in survivors:
+            try:
+                candidates = await self.candidate_retriever(
+                    _name_of(survivor), _description_of(survivor), self.top_k
+                )
+                found.append(list(candidates))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "IncrementalResolution: candidate retrieval failed for %r: %s",
+                    _name_of(survivor),
+                    exc,
+                )
+                found.append([])
+        return found
 
     @staticmethod
     def _partition_into_piles(candidates: list[list[GraphNode]]) -> list[list[int]]:
@@ -292,7 +308,6 @@ class IncrementalResolution(ResolutionStrategy):
             return 0  # fail-safe: unparseable verdict → leave the pile untouched
 
         by_ref = {item.ref: item for item in items}
-        graph_id_by_ref = {item.ref: item.graph_id for item in items if item.graph_id}
         merged = 0
         for group in decisions:
             members = [by_ref[r] for r in group.members if r in by_ref]
@@ -301,8 +316,15 @@ class IncrementalResolution(ResolutionStrategy):
                 continue  # a group of only existing nodes — nothing new to place
 
             carrier = survivors[survivor_members[0]]
-            target_id = graph_id_by_ref.get(group.target) if isinstance(group.target, int) else None
-            final_id = target_id or carrier.id
+            target = by_ref.get(group.target) if isinstance(group.target, int) else None
+            if target is not None and target.graph_id is not None:
+                # Link into an existing node: keep its id AND its label. Graph
+                # writes are label-scoped (``MERGE (n:<label> {id})``), so a
+                # different label would create a second same-id node instead of
+                # updating the existing one.
+                final_id, final_label = target.graph_id, target.node.label
+            else:
+                final_id, final_label = carrier.id, group.type or carrier.label
 
             for idx in survivor_members[1:]:
                 self._absorb(carrier, survivors[idx])
@@ -312,7 +334,7 @@ class IncrementalResolution(ResolutionStrategy):
                 remap[carrier.id] = final_id  # link this batch entity onto a graph node
                 merged += 1
 
-            _apply_canonical(carrier, final_id, group)
+            _apply_canonical(carrier, final_id, final_label, group)
         return merged
 
     def _build_pile(
@@ -400,13 +422,16 @@ class IncrementalResolution(ResolutionStrategy):
 # ── module-level helpers ───────────────────────────────────────────────────
 
 
-def _apply_canonical(node: GraphNode, final_id: str, decision: _LinkDecision) -> None:
-    """Retarget ``node`` to ``final_id`` and apply the LLM's canonical fields."""
+def _apply_canonical(
+    node: GraphNode, final_id: str, final_label: str, decision: _LinkDecision
+) -> None:
+    """Retarget ``node`` to ``(final_id, final_label)`` and apply the LLM's
+    canonical name and description. The label is resolved by the caller so that
+    linking into an existing graph node preserves that node's label."""
     node.id = final_id
+    node.label = final_label
     if decision.canonical:
         node.properties["name"] = decision.canonical
-    if decision.type:
-        node.label = decision.type
     if decision.description:
         node.properties["description"] = decision.description
 
@@ -485,18 +510,37 @@ def _parse_decisions(content: str) -> list[_LinkDecision] | None:
     for group in groups:
         if not isinstance(group, dict) or not isinstance(group.get("members"), list):
             continue
-        members = [int(r) for r in group["members"] if isinstance(r, (int, float))]
+        members = [r for r in map(_as_ref, group["members"]) if r is not None]
         if members:
+            target = _as_ref(group.get("target"))
             decisions.append(
                 _LinkDecision(
                     members=members,
-                    target=group.get("target", "new"),
+                    target=target if target is not None else "new",
                     canonical=group.get("canonical"),
                     type=group.get("type"),
                     description=group.get("description"),
                 )
             )
     return decisions or None
+
+
+def _as_ref(value: object) -> int | None:
+    """Coerce an int-like value (``5``, ``5.0``, ``"5"``) to an int ref.
+
+    LLMs are inconsistent about number formatting, so a group's members and its
+    ``target`` may arrive as strings or floats. Anything not cleanly integer —
+    including ``"new"``, booleans and fractional floats — returns ``None``.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value)
+    return None
 
 
 def _flatten(remap: dict[str, str]) -> None:

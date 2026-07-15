@@ -233,6 +233,89 @@ class TestIncrementalResolution:
         assert len(res.nodes) == 1
         assert res.nodes[0].id == "xylo__t"
 
+    async def test_linking_into_existing_node_preserves_its_label(self):
+        """Graph writes are label-scoped, so linking into an existing node must
+        keep that node's label even when the LLM returns a conflicting type —
+        otherwise the store would create a second same-id node."""
+        batch = [
+            GraphNode(
+                id="gal_var__person",
+                label="Person",
+                properties={"name": "gal.sh", "description": "FalkorDB engineer"},
+            ),
+        ]
+        # ref 1 = new (gal.sh), ref 2 = graph (Gal Sh / Person); LLM says "Robot".
+        decision = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 2],
+                        "target": 2,
+                        "canonical": "Gal Shubeli",
+                        "type": "Robot",
+                        "description": "Engineer.",
+                    },
+                ]
+            }
+        )
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[decision]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([GAL_SH]),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        merged = next(n for n in res.nodes if n.id == "gal_sh__person")
+        assert merged.label == "Person", "existing node's label must be preserved on link"
+
+    async def test_string_or_float_target_still_links(self):
+        """LLM refs emitted as strings/floats still resolve and link correctly."""
+        batch = [
+            GraphNode(
+                id="gal_var__person",
+                label="Person",
+                properties={"name": "gal", "description": "engineer"},
+            ),
+        ]
+        decision = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": ["1", 2.0],
+                        "target": "2",  # str + float, as some LLMs emit
+                        "canonical": "Gal Sh",
+                        "type": "Person",
+                        "description": "d",
+                    },
+                ]
+            }
+        )
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[decision]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([GAL_SH]),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        assert res.remap.get("gal_var__person") == "gal_sh__person"
+
+    async def test_retriever_failure_degrades_to_new_entity(self):
+        """A retriever that raises must not abort resolution — the entity is
+        simply treated as new (fail toward splitting)."""
+
+        async def boom(name, description, k):
+            raise RuntimeError("graph store unavailable")
+
+        batch = [
+            GraphNode(id="solo__t", label="T", properties={"name": "Solo", "description": "d"}),
+        ]
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[""]),
+            embedder=WordEmbedder(),
+            candidate_retriever=boom,
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        assert len(res.nodes) == 1
+        assert res.nodes[0].id == "solo__t"
+
     def test_normalize_name_folds_case_and_separators(self):
         assert normalize_name("GraphRAG-SDK") == "graphrag sdk"
         assert normalize_name("graphrag_sdk") == "graphrag sdk"
