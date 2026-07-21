@@ -8,7 +8,7 @@ Complete reference for all public classes and methods exported by `graphrag_sdk`
 - [Connection](#connection)
 - [Providers](#providers)
 - [Data Models](#data-models)
-- [Schema](#schema)
+- [Ontology](#ontology)
 - [Ingestion Strategies](#ingestion-strategies)
 - [Ingestion Pipeline](#ingestion-pipeline)
 - [Retrieval Strategies](#retrieval-strategies)
@@ -34,7 +34,7 @@ GraphRAG(
     connection: FalkorDBConnection | ConnectionConfig,
     llm: LLMInterface,
     embedder: Embedder,
-    schema: GraphSchema | None = None,
+    ontology: Ontology | None = None,
     retrieval_strategy: RetrievalStrategy | None = None,
 )
 ```
@@ -44,10 +44,10 @@ GraphRAG(
 | `connection` | `FalkorDBConnection \| ConnectionConfig` | required | Database connection or config to create one |
 | `llm` | `LLMInterface` | required | LLM provider |
 | `embedder` | `Embedder` | required | Embedding provider |
-| `schema` | `GraphSchema \| None` | `None` | Schema constraints for extraction (empty = unconstrained) |
+| `schema` | `Ontology \| None` | `None` | Schema constraints for extraction (empty = unconstrained) |
 | `retrieval_strategy` | `RetrievalStrategy \| None` | `None` | Default retrieval strategy (uses `MultiPathRetrieval` if None) |
 
-**Public attributes:** `llm`, `embedder`, `schema`, `graph_store`, `vector_store`
+**Public attributes:** `llm`, `embedder`, `ontology`, `graph_store`, `vector_store`
 
 ### ingest()
 
@@ -519,46 +519,46 @@ Deterministic entity ID from normalized name and optional type. When `entity_typ
 
 ---
 
-## Schema
+## Ontology
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation
 ```
 
-### EntityType
+### Entity
 
 ```python
-class EntityType(DataModel):
+class Entity(DataModel):
     label: str                            # e.g. "Person"
     description: str | None = None        # Helps LLM understand what to extract
-    properties: list[PropertyType] = []   # Optional property definitions
+    properties: list[Attribute] = []   # Optional property definitions
 ```
 
-### RelationType
+### Relation
 
 ```python
-class RelationType(DataModel):
+class Relation(DataModel):
     label: str                            # e.g. "WORKS_AT"
     description: str | None = None
     patterns: list[tuple[str, str]] = []  # Allowed (source_label, target_label) pairs
 ```
 
-### PropertyType
+### Attribute
 
 ```python
-class PropertyType(DataModel):
+class Attribute(DataModel):
     name: str
     type: str = "STRING"                  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
     required: bool = False
 ```
 
-### GraphSchema
+### Ontology
 
 ```python
-class GraphSchema(DataModel):
-    entities: list[EntityType] = []
-    relations: list[RelationType] = []
+class Ontology(DataModel):
+    entities: list[Entity] = []
+    relations: list[Relation] = []
 ```
 
 ---
@@ -590,7 +590,7 @@ class ChunkingStrategy(ABC):
 ```python
 class ExtractionStrategy(ABC):
     @abstractmethod
-    async def extract(self, chunks: TextChunks, schema: GraphSchema, ctx: Context) -> GraphData: ...
+    async def extract(self, chunks: TextChunks, ontology: Ontology, ctx: Context) -> GraphData: ...
 ```
 
 **Built-in:**
@@ -629,7 +629,7 @@ IngestionPipeline(
     resolver: ResolutionStrategy,
     graph_store: GraphStore,
     vector_store: VectorStore,
-    schema: GraphSchema | None = None,
+    ontology: Ontology | None = None,
     embedder: Embedder | None = None,
 )
 ```
