@@ -550,7 +550,6 @@ class Attribute(DataModel):
     name: str
     type: str = "STRING"                  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
-    required: bool = False
 ```
 
 ### Ontology
