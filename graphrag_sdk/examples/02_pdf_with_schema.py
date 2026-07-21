@@ -18,48 +18,48 @@ import sys
 
 from graphrag_sdk import (
     ConnectionConfig,
-    EntityType,
+    Entity,
     GraphRAG,
-    GraphSchema,
     LiteLLM,
     LiteLLMEmbedder,
-    RelationType,
+    Ontology,
+    Relation,
 )
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 
 
-def create_schema() -> GraphSchema:
+def create_ontology() -> Ontology:
     """Define what entities and relationships the LLM should extract."""
-    return GraphSchema(
+    return Ontology(
         entities=[
-            EntityType(label="Person", description="A human being or character"),
-            EntityType(label="Organization", description="A company, institution, or group"),
-            EntityType(label="Place", description="A geographic location or setting"),
-            EntityType(label="Event", description="A significant occurrence or happening"),
-            EntityType(label="Concept", description="An abstract idea or theme"),
+            Entity(label="Person", description="A human being or character"),
+            Entity(label="Organization", description="A company, institution, or group"),
+            Entity(label="Place", description="A geographic location or setting"),
+            Entity(label="Event", description="A significant occurrence or happening"),
+            Entity(label="Concept", description="An abstract idea or theme"),
         ],
         relations=[
-            RelationType(
+            Relation(
                 label="WORKS_AT",
                 description="Is employed by an organization",
                 patterns=[("Person", "Organization")],
             ),
-            RelationType(
+            Relation(
                 label="LOCATED_IN",
                 description="Is physically located in a place",
                 patterns=[("Person", "Place"), ("Organization", "Place")],
             ),
-            RelationType(
+            Relation(
                 label="RELATED_TO",
                 description="Has a general relationship with",
                 patterns=[("Person", "Person")],
             ),
-            RelationType(
+            Relation(
                 label="PART_OF",
                 description="Is a member or component of",
                 patterns=[("Person", "Organization")],
             ),
-            RelationType(
+            Relation(
                 label="PARTICIPATED_IN",
                 description="Took part in an event",
                 patterns=[("Person", "Event")],
@@ -94,7 +94,7 @@ async def main():
         connection=ConnectionConfig(host="localhost", graph_name="pdf_demo"),
         llm=llm,
         embedder=embedder,
-        schema=create_schema(),
+        ontology=create_ontology(),
     )
 
     # Ingest PDF with larger chunks for better context
