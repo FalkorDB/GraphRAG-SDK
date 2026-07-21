@@ -148,7 +148,7 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 - Relationships whose endpoints were pruned are also removed
 - **Special cases:** `"Unknown"` entities (low-confidence NER) and `"RELATES"` edges (the unified relationship type) always pass through
 
-**Open schema mode:** If you define no entity or relationship types (empty `GraphSchema()`), this step is skipped entirely — everything passes through.
+**Open schema mode:** If you define no entity or relationship types (empty `Ontology()`), this step is skipped entirely — everything passes through.
 
 **Code:** `IngestionPipeline._prune()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
 

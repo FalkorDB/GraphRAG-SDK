@@ -209,20 +209,20 @@ This is the **Zero-Loss Data** principle: every piece of source material is trac
 
 ## Defining Your Own Schema
 
-A `GraphSchema` tells the extraction pipeline which entity and relationship types to look for, and the pruning step uses it to filter non-conforming data.
+An `Ontology` tells the extraction pipeline which entity and relationship types to look for, and the pruning step uses it to filter non-conforming data.
 
 ### Basic Schema
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Employment relationship"),
+        Relation(label="WORKS_AT", description="Employment relationship"),
     ],
 )
 ```
@@ -230,18 +230,18 @@ schema = GraphSchema(
 ### Schema with Patterns
 
 Patterns define which source-target pairs are valid for each relationship type.
-They are specified directly on `RelationType`:
+They are specified directly on `Relation`:
 
 ```python
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person"),
-        EntityType(label="Organization"),
-        EntityType(label="Location"),
+        Entity(label="Person"),
+        Entity(label="Organization"),
+        Entity(label="Location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", patterns=[("Person", "Organization")]),
-        RelationType(label="LOCATED_IN", patterns=[("Organization", "Location")]),
+        Relation(label="WORKS_AT", patterns=[("Person", "Organization")]),
+        Relation(label="LOCATED_IN", patterns=[("Organization", "Location")]),
     ],
 )
 ```
@@ -250,7 +250,7 @@ A relationship with an empty `patterns` list is allowed between any entity types
 
 ### Open Schema Mode
 
-If you create an empty schema (`GraphSchema()`), the pipeline operates in **open schema mode**:
+If you create an empty schema (`Ontology()`), the pipeline operates in **open schema mode**:
 - The LLM extracts any entities and relationships it finds
 - The pruning step is skipped entirely
 - The 11 default entity types are used for NER
@@ -298,7 +298,7 @@ result = await rag.graph_store.query_raw(
 
 | File | What it contains |
 |------|-----------------|
-| [`core/models.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/models.py) | GraphSchema, EntityType, RelationType, PropertyType |
+| [`core/models.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/models.py) | Ontology, Entity, Relation, Attribute |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Node/relationship upserts, label hints, statistics |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Index creation, vector search, fulltext search |
 | [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py) | Lexical graph construction, pruning logic |
