@@ -434,6 +434,10 @@ class TestIncrementalResolution:
         # NOT all evicted by the survivor count.
         assert res.remap.get("e0__person") == "hub__person"
         assert res.remap.get("e3__person") == "hub__person"
+        # Two chunks both retargeted a carrier to hub — the output must not contain
+        # the same id twice (else the store would MERGE it twice and clobber data).
+        ids = [n.id for n in res.nodes]
+        assert len(ids) == len(set(ids)), "resolved nodes must have unique ids"
 
     async def test_ragged_embedder_does_not_crash(self):
         """A malformed embedder returning ragged vectors degrades to no-merge

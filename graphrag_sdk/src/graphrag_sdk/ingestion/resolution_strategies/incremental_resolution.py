@@ -202,7 +202,22 @@ class IncrementalResolution(ResolutionStrategy):
 
         _flatten(remap)
         absorbed = set(remap)
-        surviving_nodes = [n for n in survivors if n.id not in absorbed]
+        # Collapse carriers that were independently linked onto the same graph
+        # node — across pile chunks or across two LLM groups sharing a target —
+        # so the output never contains two nodes with one id (which would make
+        # the store MERGE the same (label, id) twice and clobber the earlier
+        # node's provenance/conflicts). The first keeper wins; the rest fold in.
+        keeper_by_id: dict[str, GraphNode] = {}
+        surviving_nodes: list[GraphNode] = []
+        for node in survivors:
+            if node.id in absorbed:
+                continue
+            keeper = keeper_by_id.get(node.id)
+            if keeper is None:
+                keeper_by_id[node.id] = node
+                surviving_nodes.append(node)
+            else:
+                self._absorb(keeper, node)
         relationships = remap_relationships(graph_data.relationships, remap)
         ctx.log(
             f"IncrementalResolution: {len(surviving_nodes)} entities ({merged} merged or linked)"
