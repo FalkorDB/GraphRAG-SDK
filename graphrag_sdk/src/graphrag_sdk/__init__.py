@@ -104,6 +104,9 @@ from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
     ExactMatchResolution,
 )
+from graphrag_sdk.ingestion.resolution_strategies.incremental_resolution import (
+    IncrementalResolution,
+)
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
@@ -196,6 +199,7 @@ __all__ = [
     "ResolutionStrategy",
     "DescriptionMergeResolution",
     "ExactMatchResolution",
+    "IncrementalResolution",
     "LLMVerifiedResolution",
     "SemanticResolution",
     # Retrieval

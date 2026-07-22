@@ -586,3 +586,37 @@ class TestGraphStoreDocumentLifecycle:
         n = await graph_store.delete_orphan_entities(ids)
         assert n == 6
         assert mock_connection.query.await_count == 3
+
+
+class TestNameKeyIndex:
+    async def test_ensure_returns_true_on_create(self, graph_store, mock_connection):
+        assert await graph_store.ensure_name_key_index() is True
+
+    async def test_ensure_returns_true_when_already_indexed(self, graph_store, mock_connection):
+        mock_connection.query = AsyncMock(side_effect=Exception("Index already indexed"))
+        assert await graph_store.ensure_name_key_index() is True
+
+    async def test_ensure_returns_false_on_unexpected_error(self, graph_store, mock_connection):
+        """A real failure (not 'already exists') must be reported so the caller
+        knows the index is not in place, instead of a silent success."""
+        mock_connection.query = AsyncMock(side_effect=Exception("permission denied"))
+        assert await graph_store.ensure_name_key_index() is False
+
+    async def test_backfill_name_keys_computes_and_sets_legacy_keys(
+        self, graph_store, mock_connection
+    ):
+        """Legacy entities with no name_key get one, computed in Python from
+        their name, so an upgraded graph stays matchable."""
+        first = MagicMock(result_set=[["llama__x", "LlamaIndex"], ["gr__y", "GraphRAG-SDK"]])
+        empty = MagicMock(result_set=[])
+        # match(null) → rows, UNWIND SET, match(null) → empty → stop.
+        mock_connection.query = AsyncMock(side_effect=[first, MagicMock(result_set=[]), empty])
+
+        updated = await graph_store.backfill_name_keys()
+        assert updated == 2
+        set_params = mock_connection.query.await_args_list[1][0][1]
+        keys = {p["id"]: p["key"] for p in set_params["pairs"]}
+        assert keys == {"llama__x": "llamaindex", "gr__y": "graphragsdk"}
+
+    async def test_backfill_no_legacy_nodes_is_noop(self, graph_store, mock_connection):
+        assert await graph_store.backfill_name_keys() == 0

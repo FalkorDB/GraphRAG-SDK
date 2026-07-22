@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`IncrementalResolution` — graph-aware entity resolution, now the default (#277, #278).**
+  Resolves each document's entities against the entities already in the graph, so a
+  mention can be linked onto an entity extracted from an earlier document. Fixes the
+  same-name / different-type homograph gap (e.g. "GraphRAG" extracted as both a
+  `Concept` and a `Technology`) by merging on description similarity, and links variant
+  names onto existing entities via a single LLM call per ambiguous group while keeping
+  genuine look-alikes apart. The `GraphRAG` facade uses it by default when an LLM and
+  embedder are configured; otherwise it falls back to the LLM-free
+  `ExactMatchResolution`. Note: the default now adds LLM + embedding calls during
+  ingestion — pass `resolver=ExactMatchResolution()` for LLM-free ingestion.
+
 ## [1.3.0] - 2026-06-04
 
 Ontology discovery (#271): bootstrap an ontology straight from a

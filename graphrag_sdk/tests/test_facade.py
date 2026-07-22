@@ -115,6 +115,31 @@ class TestGraphRAGInit:
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, retrieval_strategy=strategy, embedding_dimension=8)
         assert g._retrieval_strategy is strategy
 
+    def test_default_resolver_is_incremental_with_llm_and_embedder(
+        self, mock_conn, embedder, llm
+    ):
+        """Lock in the default-resolver selection so a regression can't
+        silently change ingestion cost/behavior (Copilot re-review)."""
+        from graphrag_sdk.ingestion.resolution_strategies.incremental_resolution import (
+            IncrementalResolution,
+        )
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        assert isinstance(g._default_resolver(), IncrementalResolution)
+
+    def test_default_resolver_falls_back_to_exact_match_without_embedder(
+        self, mock_conn, embedder, llm
+    ):
+        """No embedder → the LLM-free ExactMatchResolution, so lightweight
+        setups keep working with no added embedding cost."""
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g.embedder = None  # simulate an embedder-free setup for the selection check
+        assert isinstance(g._default_resolver(), ExactMatchResolution)
+
     async def test_async_context_manager_returns_self_and_closes(self, mock_conn, embedder, llm):
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
 

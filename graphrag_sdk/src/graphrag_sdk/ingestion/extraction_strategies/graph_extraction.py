@@ -24,6 +24,7 @@ from graphrag_sdk.core.models import (
     Relation,
     TextChunks,
 )
+from graphrag_sdk.core.prompts import ENTITY_DESCRIPTION_RULE
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefResolver
@@ -64,9 +65,7 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "(e.g. sh, cd, dt, ls, rm, cp, mv)\n"
     "  - A generic short token (1-2 characters) that is not a widely-recognised "
     "named entity or acronym (AI, US, UK, Go are fine; dt, bg, fn are not)\n"
-    "- For each verified entity provide a concise 1-2 sentence description "
-    "capturing key attributes and roles from the text. This description is "
-    "embedded for semantic search.\n\n"
+    "- For each verified entity provide a description. " + ENTITY_DESCRIPTION_RULE + "\n\n"
     "### Relationships\n"
     "- Extract ALL factual connections stated or implied in the text.\n"
     "- source and target must be entity names from the verified entity list.\n"

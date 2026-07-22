@@ -155,14 +155,21 @@ For a detailed explanation of the extraction process, see [extraction.md](extrac
 
 **What it does:** Merges entities that refer to the same real-world thing. When the LLM extracts "Alice" from chunk 1 and "Alice" from chunk 5, this step recognizes they're the same entity and merges them.
 
-**Default: ExactMatchResolution**
+**Default: IncrementalResolution** *(when an LLM and embedder are configured)*
+- Resolves each document's entities **against the entities already in the graph**, so a mention can be linked onto an entity extracted from an earlier document — the cross-document case batch resolvers can't see
+- Merges same-name / different-type duplicates for free by description similarity (e.g. "GraphRAG" extracted once as a `Concept` and once as a `Technology`), which closes a common homograph gap
+- Uses one LLM call per ambiguous group to link candidate names onto existing entities while keeping genuine look-alikes apart (e.g. `FALKORDB_USERNAME` ≠ `FALKORDB_PASSWORD`). The default candidate lookup is name-based (case/separator-folded, and catches many tokenization variants); for guaranteed variant/semantic linking use a custom `candidate_retriever` — see [strategies.md](strategies.md)
+- Facts are never invented — the LLM writes only free text (canonical name/description); provenance is unioned and immutable-property conflicts are flagged for review
+- **Adds LLM + embedding calls during ingestion.** When no LLM or embedder is available, the default automatically falls back to `ExactMatchResolution` (below), so lightweight setups keep working with no added cost
+
+**ExactMatchResolution** *(LLM-free fallback)*
 - Groups entities by ID
 - Keeps the first occurrence as the survivor
 - Merges properties from duplicates into the survivor
 - Remaps all relationship endpoints to the survivor
 - Deduplicates relationships by `(start_id, type, end_id)`
 
-**Alternative: DescriptionMergeResolution**
+**DescriptionMergeResolution**
 - Groups by `(normalized name, label)` — same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris")
 - Merges descriptions (concatenation or LLM summarization)
 - Used in the benchmark-winning pipeline
@@ -266,8 +273,10 @@ stats = await rag.finalize()
 
 | Strategy | When to use |
 |----------|-------------|
-| `ExactMatchResolution` (default) | Fast, deterministic. Good when extraction is consistent |
+| `IncrementalResolution` (default, with LLM + embedder) | Graph-aware. Links entities across documents and fixes same-name/different-type duplicates. Adds LLM/embedding cost per ingest |
+| `ExactMatchResolution` (default fallback, LLM-free) | Fast, deterministic. Used automatically when no LLM/embedder is configured |
 | `DescriptionMergeResolution` | Multi-document ingestion. Used in the benchmark pipeline |
+| `SemanticResolution` / `LLMVerifiedResolution` | Embedding/LLM-verified deduplication within a batch |
 
 ---
 
@@ -290,6 +299,7 @@ stats = await rag.finalize()
 | [`loaders/pdf_loader.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/loaders/pdf_loader.py) | PdfLoader implementation |
 | [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
 | [`extraction_strategies/graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
+| [`resolution_strategies/incremental_resolution.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/incremental_resolution.py) | IncrementalResolution (default, graph-aware) |
 | [`resolution_strategies/exact_match.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |
 | [`resolution_strategies/description_merge.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/description_merge.py) | DescriptionMergeResolution |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Batched node/relationship writes |
