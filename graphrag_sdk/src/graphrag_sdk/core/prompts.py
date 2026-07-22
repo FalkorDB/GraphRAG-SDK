@@ -10,9 +10,11 @@ notably how an entity *description* is written — cannot drift apart.
 # emit descriptions of the same shape and length. Because the rule bounds the
 # text, callers can feed descriptions to the LLM in full — no ad-hoc truncation,
 # which is what caused rich descriptions to erode across repeated merges.
+# Wording kept close to the long-standing extraction instruction so that making
+# it a shared constant does not change extraction behaviour (a reworded version
+# shifted real-LLM output and destabilised integration tests).
 ENTITY_DESCRIPTION_RULE = (
-    "Describe the entity in a self-contained way — what it is and its key "
-    "facts and roles — understandable without the source text (it is embedded "
-    "for semantic search). Be concise and factual: at most 2-3 sentences, no "
-    "filler, no restating the name."
+    "A concise 1-2 sentence description capturing the entity's key attributes "
+    "and roles. It is embedded for semantic search, so it must be self-contained "
+    "and understandable without the original text."
 )
