@@ -5,14 +5,30 @@ from __future__ import annotations
 import json
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.models import GraphData, GraphNode
+from graphrag_sdk.core.models import GraphData, GraphNode, LLMResponse
 from graphrag_sdk.core.providers import Embedder
+from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.ingestion.resolution_strategies.incremental_resolution import (
     IncrementalResolution,
     normalize_name,
 )
 
 from .conftest import MockLLM
+
+
+class CapturingLLM(MockLLM):
+    """Records the prompts sent to ``abatch_invoke`` for assertions."""
+
+    def __init__(self, response: str) -> None:
+        super().__init__(responses=[response])
+        self.prompts: list[str] = []
+
+    async def abatch_invoke(self, prompts, **kw):
+        self.prompts.extend(prompts)
+        return [
+            LLMBatchItem(index=i, response=LLMResponse(content=self._responses[0]))
+            for i in range(len(prompts))
+        ]
 
 
 class WordEmbedder(Embedder):
@@ -468,6 +484,44 @@ class TestIncrementalResolution:
         )
         res = await resolver.resolve(GraphData(nodes=batch), _ctx())  # must not raise
         assert len(res.nodes) == 2
+
+    async def test_full_description_sent_to_llm_not_truncated(self):
+        """The merge prompt must send the FULL description, not a 180-char snippet
+        (Naseem #3) — else repeated merges erode rich descriptions."""
+        long_desc = "FalkorDB is a graph database. " + "detail " * 60  # > 180 chars
+        batch = [
+            GraphNode(
+                id="acme__t", label="T", properties={"name": "Acme", "description": long_desc}
+            ),
+        ]
+        candidate = GraphNode(
+            id="acme_hub__t",
+            label="T",
+            properties={"name": "Acme", "description": "short existing"},
+        )
+        decision = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 2],
+                        "target": 2,
+                        "canonical": "Acme",
+                        "type": "T",
+                        "description": "merged",
+                    },
+                ]
+            }
+        )
+        llm = CapturingLLM(decision)
+        resolver = IncrementalResolution(
+            llm=llm,
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([candidate]),
+        )
+        await resolver.resolve(GraphData(nodes=batch), _ctx())
+        assert llm.prompts, "the LLM should have been asked to link the pile"
+        assert len(long_desc) > 180
+        assert long_desc in llm.prompts[0], "full description must be sent, not truncated"
 
     def test_normalize_name_folds_case_and_separators(self):
         assert normalize_name("GraphRAG-SDK") == "graphrag sdk"

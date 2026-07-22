@@ -55,6 +55,7 @@ import numpy as np
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, ResolutionResult
+from graphrag_sdk.core.prompts import ENTITY_DESCRIPTION_RULE
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.resolution_strategies.base import (
     ResolutionStrategy,
@@ -98,10 +99,13 @@ _LINK_PROMPT = (
     "target to that item's ref.\n"
     "- If a group has only 'new' items, it is a new entity: target = \"new\".\n"
     "- A 'graph' item that matches nothing is left out of every group.\n\n"
+    "Each group is ONE entity and gets its OWN 'description' (never shared "
+    "across groups). Write that entity's description by merging the descriptions "
+    "of the items IN THAT GROUP, following this rule: " + ENTITY_DESCRIPTION_RULE + "\n\n"
     "Respond with JSON only:\n"
     '{{"groups": [{{"members": [refs...], "target": <ref or "new">, '
     '"canonical": "<name>", "type": "<type>", '
-    '"description": "<merged description, max {max_tokens} tokens>"}}]}}'
+    '"description": "<merged description per the rule above, at most {max_tokens} tokens>"}}]}}'
 )
 
 
@@ -394,10 +398,17 @@ class IncrementalResolution(ResolutionStrategy):
         return items
 
     async def _ask(self, items: list[_PileItem]) -> list[_LinkDecision] | None:
-        """Send one partition request and parse it; ``None`` on any failure."""
+        """Send one partition request and parse it; ``None`` on any failure.
+
+        Descriptions are sent in FULL, not truncated: extraction and this step
+        both write them under ``ENTITY_DESCRIPTION_RULE``, so they are already
+        bounded. Truncating the input here is what eroded rich descriptions
+        across repeated merges — the model would rewrite from a snippet and the
+        result would overwrite the stored full text.
+        """
         lines = "\n".join(
             f"[{it.ref}] origin={it.origin} name={_name_of(it.node)!r} "
-            f"type={it.node.label} desc={_description_of(it.node)[:180]!r}"
+            f"type={it.node.label} desc={_description_of(it.node)!r}"
             for it in items
         )
         prompt = _LINK_PROMPT.format(items=lines, max_tokens=self.max_summary_tokens)
