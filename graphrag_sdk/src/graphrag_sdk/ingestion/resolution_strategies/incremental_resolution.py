@@ -187,7 +187,13 @@ class IncrementalResolution(ResolutionStrategy):
         survivors, remap, merged = await self._collapse_within_batch(nodes)
 
         # 2. Fetch look-alike existing entities for each survivor (free).
-        candidates = await self._fetch_candidates(survivors)
+        # Without an LLM stage 4 never runs, so candidate retrieval would be
+        # pure overhead (and could surface graph-store latency/failures);
+        # resolution then reduces to the within-batch collapse from step 1.
+        if self.llm is None:
+            candidates = [[] for _ in survivors]
+        else:
+            candidates = await self._fetch_candidates(survivors)
 
         # 3. Group survivors that share a candidate into piles (free).
         # 4. Ask the LLM to link each pile against the graph (LLM).
@@ -354,7 +360,9 @@ class IncrementalResolution(ResolutionStrategy):
         merged = 0
         consumed: set[int] = set()  # refs already placed by an earlier group
         for group in decisions:
-            member_refs = [r for r in group.members if r in by_ref]
+            # Dedupe refs within the group first: a repeated ref would place the
+            # same survivor twice and make the code absorb a node into itself.
+            member_refs = [r for r in dict.fromkeys(group.members) if r in by_ref]
             # Enforce a disjoint partition: a sloppy-but-parseable LLM response
             # can reuse a ref across groups, which would double-absorb a node and
             # let the last-wins remap merge unrelated entities. Drop any group
@@ -480,7 +488,7 @@ class IncrementalResolution(ResolutionStrategy):
             # np.array is inside the guard: a ragged/malformed embedder result
             # would otherwise raise here and crash the whole document.
             matrix = np.array([v or [0.0] for v in raw], dtype=np.float32)
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             logger.warning("IncrementalResolution: embedding failed: %s", exc)
             return None
         if matrix.ndim != 2 or matrix.shape[1] <= 1:
@@ -590,9 +598,9 @@ def _parse_decisions(content: str) -> list[_LinkDecision] | None:
                 _LinkDecision(
                     members=members,
                     target=target if target is not None else "new",
-                    canonical=group.get("canonical"),
-                    type=group.get("type"),
-                    description=group.get("description"),
+                    canonical=_as_text(group.get("canonical")),
+                    type=_as_text(group.get("type")),
+                    description=_as_text(group.get("description")),
                 )
             )
     return decisions or None
@@ -613,6 +621,24 @@ def _as_ref(value: object) -> int | None:
         return int(value) if value.is_integer() else None
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value)
+    return None
+
+
+def _as_text(value: object) -> str | None:
+    """Coerce an LLM-supplied name/type/description to a clean string.
+
+    The model can emit ``null``, numbers or nested objects for these fields;
+    letting those through would set ``name``/``description`` to non-string types
+    that then propagate into storage and later resolution. Scalars (str, int,
+    float, bool) are stringified; anything structural (dict, list, ``None``)
+    is dropped so the carrier keeps its own value.
+    """
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
     return None
 
 

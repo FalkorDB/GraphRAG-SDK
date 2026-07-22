@@ -1775,8 +1775,11 @@ class GraphRAG:
             if not key:
                 return []
             if not index_ready["done"]:
-                await store.ensure_name_key_index()
-                index_ready["done"] = True
+                # Backfill legacy entities (ingested before name_key existed) so
+                # they remain matchable, then only treat the index as ready if it
+                # actually created — otherwise retry the setup on the next call.
+                await store.backfill_name_keys()
+                index_ready["done"] = await store.ensure_name_key_index()
             result = await store.query_raw(
                 "MATCH (n:__Entity__) WHERE n.name_key = $key "
                 "RETURN n.id, labels(n), n.name, n.description LIMIT $k",

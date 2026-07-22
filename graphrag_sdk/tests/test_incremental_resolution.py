@@ -608,6 +608,62 @@ class TestIncrementalResolution:
         assert len(same_type.nodes) == 1, "same-type should merge at 0.85"
         assert len(cross_type.nodes) == 2, "cross-type needs 0.90, so 0.85 stays split"
 
+    async def test_repeated_ref_within_group_does_not_drop_entity(self):
+        """A ref repeated inside one LLM group must not self-absorb the node
+        (Copilot re-review). Without de-duping members, the survivor remaps onto
+        itself and is then dropped as 'absorbed' — the entity vanishes."""
+        batch = [
+            GraphNode(id="acme__org", label="Org", properties={"name": "Acme", "description": "d"}),
+        ]
+        # ref 1 = Acme (new), ref 2 = Gal Sh (graph candidate, gives it a pile).
+        # The group lists ref 1 twice and keeps it new (target new).
+        decision = json.dumps(
+            {"groups": [{"members": [1, 1], "target": "new", "canonical": "Acme", "type": "Org"}]}
+        )
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[decision]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([GAL_SH]),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        assert {n.id for n in res.nodes} == {"acme__org"}, "the entity must survive"
+        assert res.remap.get("acme__org") is None, "no self-referential remap"
+
+    async def test_non_string_llm_fields_are_coerced_or_dropped(self):
+        """Non-string canonical/type/description from the LLM must not land in
+        node properties as dicts/None (Copilot re-review)."""
+        batch = [
+            GraphNode(
+                id="gal__person",
+                label="Person",
+                properties={"name": "gal", "description": "FalkorDB engineer"},
+            ),
+        ]
+        # ref 1 = gal (new), ref 2 = Gal Sh (graph candidate). Link into ref 2 but
+        # the LLM emits a dict canonical, null description and a list type.
+        decision = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 2],
+                        "target": 2,
+                        "canonical": {"unexpected": "object"},
+                        "type": ["Person"],
+                        "description": None,
+                    }
+                ]
+            }
+        )
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[decision]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([GAL_SH]),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        node = next(n for n in res.nodes if n.id == "gal_sh__person")
+        assert isinstance(node.properties["name"], str)
+        assert isinstance(node.properties.get("description", ""), str)
+
     def test_normalize_name_folds_case_and_separators(self):
         assert normalize_name("GraphRAG-SDK") == "graphrag sdk"
         assert normalize_name("graphrag_sdk") == "graphrag sdk"

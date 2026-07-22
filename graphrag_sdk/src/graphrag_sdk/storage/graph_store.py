@@ -331,17 +331,65 @@ class GraphStore:
         """
         return await self._conn.query(cypher, params)
 
-    async def ensure_name_key_index(self) -> None:
+    async def ensure_name_key_index(self) -> bool:
         """Create the range index on ``__Entity__(name_key)`` if absent.
 
-        Idempotent — a re-create raises and is swallowed. This is what lets
-        name-based candidate retrieval use an indexed equality lookup instead
-        of scanning every entity per query.
+        Idempotent: an "already indexed" error means the index is in place and
+        is treated as success. Any *other* failure (permissions, syntax, a
+        transient connection drop) is logged and reported as ``False`` so the
+        caller can tell the index is not actually ready rather than assuming it
+        is. This is what lets name-based candidate retrieval use an indexed
+        equality lookup instead of scanning every entity per query.
+
+        Returns:
+            ``True`` if the index exists (created now or already present),
+            ``False`` if creation failed for an unexpected reason.
         """
         try:
             await self._conn.query("CREATE INDEX FOR (n:__Entity__) ON (n.name_key)")
-        except Exception:
-            pass  # already exists
+            return True
+        except Exception as exc:
+            if "already" in str(exc).lower():
+                return True  # already indexed — the desired end state
+            logger.warning("Could not create name_key index: %s", exc)
+            return False
+
+    async def backfill_name_keys(self, batch_size: int = 1000) -> int:
+        """Populate ``name_key`` on entities that predate the property.
+
+        Entities ingested before ``name_key`` existed have no such property, so
+        the indexed ``WHERE n.name_key = $key`` lookup can never match them —
+        exactly the cross-document links :class:`IncrementalResolution` needs on
+        an upgraded graph. This one-time pass reads those nodes and computes the
+        key in Python (the fold is a regex the store already owns and Cypher
+        cannot express cleanly), so legacy entities become matchable.
+
+        Returns:
+            The number of entities updated.
+        """
+        updated = 0
+        while True:
+            result = await self._conn.query(
+                "MATCH (n:__Entity__) WHERE n.name_key IS NULL AND n.name IS NOT NULL "
+                "RETURN n.id, n.name LIMIT $limit",
+                {"limit": batch_size},
+            )
+            rows = result.result_set if result and result.result_set else []
+            if not rows:
+                break
+            pairs = [
+                {"id": node_id, "key": name_key(str(node_name))} for node_id, node_name in rows
+            ]
+            await self._conn.query(
+                "UNWIND $pairs AS p MATCH (n:__Entity__ {id: p.id}) SET n.name_key = p.key",
+                {"pairs": pairs},
+            )
+            updated += len(pairs)
+            if len(rows) < batch_size:
+                break
+        if updated:
+            logger.info("Backfilled name_key on %d legacy entities", updated)
+        return updated
 
     # ── Statistics ────────────────────────────────────────────────
 
