@@ -189,10 +189,16 @@ class IncrementalResolution(ResolutionStrategy):
 
         # 3. Group survivors that share a candidate into piles (free).
         # 4. Ask the LLM to link each pile against the graph (LLM).
+        # A pile with more survivors than the prompt budget is split into
+        # chunks — otherwise the survivors alone would breach ``pile_cap`` and
+        # evict every candidate, so the LLM could never link. Reserve room for
+        # each chunk's candidates.
+        survivor_budget = max(1, self.pile_cap - self.top_k)
         for pile in self._partition_into_piles(candidates):
             if self.llm is None or not any(candidates[i] for i in pile):
                 continue  # nothing to link → these survivors are new; keep as-is
-            merged += await self._link_pile(pile, survivors, candidates, remap)
+            for chunk in _chunked(pile, survivor_budget):
+                merged += await self._link_pile(chunk, survivors, candidates, remap)
 
         _flatten(remap)
         absorbed = set(remap)
@@ -240,11 +246,19 @@ class IncrementalResolution(ResolutionStrategy):
     async def _same_name_merges(
         self, group: list[GraphNode]
     ) -> list[tuple[GraphNode, list[GraphNode]]]:
-        """Yield ``(survivor, losers)`` pairs for one same-name group."""
-        units = await self._embed(_descriptions(group))
+        """Yield ``(survivor, losers)`` pairs for one same-name group.
+
+        A cross-type merge requires *real* descriptions on every member: without
+        them description similarity degrades to name-vs-name (always cosine 1.0),
+        which would merge genuine homographs (Paris the city vs the person) on
+        name identity alone — against the fail-toward-splitting stance. When any
+        description is missing, only exact same-type duplicates are folded.
+        """
+        descriptions = [str(n.properties.get("description") or "") for n in group]
+        units = await self._embed(descriptions) if all(descriptions) else None
         if units is not None and _min_pairwise_cosine(units) >= self.same_name_threshold:
             return [(group[0], group[1:])]  # coherent → one entity (type wobble)
-        # Incoherent (or no embedder): only fold exact same-type duplicates.
+        # No evidence to cross types: only fold exact same-type duplicates.
         return [
             (same_type[0], same_type[1:])
             for same_type in _group_by(group, key=lambda n: n.label)
@@ -381,7 +395,15 @@ class IncrementalResolution(ResolutionStrategy):
 
     def _absorb(self, survivor: GraphNode, loser: GraphNode) -> None:
         """Fold ``loser`` into ``survivor``: union provenance, keep the
-        survivor's values, and flag any immutable-property disagreement."""
+        survivor's values, and flag any immutable-property disagreement.
+
+        Conflicts are recorded as ``"<field>: <a> vs <b>"`` strings, not dicts:
+        the graph store persists lists of primitives but silently drops lists of
+        dicts, so a structured record would never reach the graph. Both the
+        loser's prior conflicts and its ``_needs_review`` flag are carried over,
+        so a node flagged in an earlier stage keeps that flag when it is later
+        absorbed.
+        """
         sources = _unique(
             survivor.properties.get(_SOURCE_IDS) or [],
             loser.properties.get(_SOURCE_IDS) or [],
@@ -389,15 +411,17 @@ class IncrementalResolution(ResolutionStrategy):
         if sources:
             survivor.properties[_SOURCE_IDS] = sources
 
-        conflicts = list(survivor.properties.get(_CONFLICTS, []))
+        conflicts = list(survivor.properties.get(_CONFLICTS, [])) + list(
+            loser.properties.get(_CONFLICTS, [])
+        )
         for key, value in loser.properties.items():
             if key in (_SOURCE_IDS, _CONFLICTS, _NEEDS_REVIEW):
                 continue
             if key not in survivor.properties:
                 survivor.properties[key] = value
             elif key in self.immutable_props and survivor.properties[key] != value:
-                conflicts.append({"field": key, "values": [survivor.properties[key], value]})
-        if conflicts:
+                conflicts.append(f"{key}: {survivor.properties[key]} vs {value}")
+        if conflicts or loser.properties.get(_NEEDS_REVIEW):
             survivor.properties[_CONFLICTS] = conflicts
             survivor.properties[_NEEDS_REVIEW] = True
 
@@ -408,11 +432,13 @@ class IncrementalResolution(ResolutionStrategy):
             return None
         try:
             raw = await self.embedder.aembed_documents(texts)
+            # np.array is inside the guard: a ragged/malformed embedder result
+            # would otherwise raise here and crash the whole document.
+            matrix = np.array([v or [0.0] for v in raw], dtype=np.float32)
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("IncrementalResolution: embedding failed: %s", exc)
             return None
-        matrix = np.array([v or [0.0] for v in raw], dtype=np.float32)
-        if matrix.shape[1] <= 1:
+        if matrix.ndim != 2 or matrix.shape[1] <= 1:
             return None
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
@@ -487,8 +513,10 @@ def _description_of(node: GraphNode) -> str:
     return str(node.properties.get("description") or node.properties.get("name") or "")
 
 
-def _descriptions(nodes: Iterable[GraphNode]) -> list[str]:
-    return [_description_of(n) for n in nodes]
+def _chunked(items: list[int], size: int) -> Iterable[list[int]]:
+    """Split ``items`` into consecutive chunks of at most ``size``."""
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 def _parse_decisions(content: str) -> list[_LinkDecision] | None:

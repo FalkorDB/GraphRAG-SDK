@@ -417,14 +417,15 @@ from graphrag_sdk.ingestion.resolution_strategies.incremental_resolution import 
 resolver = IncrementalResolution(
     llm=llm,                       # decides links + writes merged descriptions
     embedder=embedder,             # scores description similarity
-    candidate_retriever=retriever, # async (name, description, k) -> [GraphNode]; the
-                                   # facade wires one backed by the graph store
+    candidate_retriever=retriever, # async (name, description, k) -> [GraphNode]
     top_k=3,                       # candidates fetched per entity
     pile_cap=12,                   # max items sent to the LLM per call
     same_name_threshold=0.80,      # description cosine to auto-merge same-name entities
     immutable_props=(),            # properties that flag a conflict instead of merging
 )
 ```
+
+**Candidate retrieval.** The strategy links whatever the `candidate_retriever` surfaces. When used as the `GraphRAG` default, the facade wires a **name-based** retriever: it matches existing entities whose name is equal after folding case and separators (`GraphRAG-SDK` == `graphrag_sdk` == `GraphRAG SDK`), and also tries the separator-removed form, so it catches cross-document homographs (`GraphRAG` the Concept vs the Technology) and many tokenization variants (`llama_index` finds a stored `LlamaIndex`). It is *not* semantic — entity embeddings only exist after `finalize()`, so a vector search finds nothing mid-ingest — and because it matches an exact set of surface forms rather than fuzzily, it is best-effort (it won't catch arbitrary spellings or every direction). For guaranteed variant/semantic linking, pass a custom `candidate_retriever` (e.g. backed by your own index) or run a reconciliation pass after `finalize()` where entity embeddings are available.
 
 **When to use:** Default for multi-document knowledge graphs where the same entity recurs across documents. **Note:** it adds LLM + embedding calls during ingestion; for LLM-free or cost-sensitive ingestion use `ExactMatchResolution`.
 

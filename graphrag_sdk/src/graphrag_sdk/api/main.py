@@ -1740,23 +1740,45 @@ class GraphRAG:
         )
 
     def _graph_candidate_retriever(self):
-        """Build a candidate retriever that finds existing graph entities which
-        share a name with an incoming entity, so cross-document duplicates
-        (e.g. the same term extracted under different types) can be linked.
+        """Build a name-based candidate retriever for ``IncrementalResolution``.
 
-        Note: this issues one name-equality lookup per resolved entity. On very
-        large graphs a range index on ``__Entity__(name)`` keeps it cheap.
+        Matches an incoming entity against existing graph entities whose name is
+        equal after folding case and separators (``-``, ``_``, spaces) — e.g.
+        ``GraphRAG-SDK`` == ``graphrag_sdk`` == ``GraphRAG SDK``. This links the
+        cross-document duplicates the strategy targets, most importantly the same
+        term extracted under different types (``GraphRAG`` the Concept vs the
+        Technology).
+
+        Matching also tries the separator-removed form, so many tokenization
+        variants are caught too (``llama_index`` finds a stored ``LlamaIndex``).
+        It is intentionally name-based, not semantic: entity embeddings are only
+        built during ``finalize()``, so a vector search would find nothing
+        mid-ingest. Because matching is by an exact set of surface forms rather
+        than fuzzy, it is best-effort — it won't catch arbitrary spellings or
+        every direction (a ``LlamaIndex`` mention won't find a stored
+        ``llama_index``). For guaranteed variant/semantic linking, supply a
+        custom ``candidate_retriever`` or run a reconciliation pass after
+        ``finalize()``. One equality lookup is issued per resolved entity; on
+        very large graphs a range index on ``__Entity__(name)`` keeps it cheap.
         """
         store = self._graph_store
 
         async def retrieve(name: str, description: str, k: int) -> list[GraphNode]:
-            lname = str(name).strip().lower()
-            if not lname:
+            base = str(name).strip().lower()
+            if not base:
                 return []
+            # Fold separators to catch surface variants without a scan: an
+            # equality IN-list over the handful of spellings this entity's name
+            # could take (hyphen/underscore/space and their removal).
+            folded = re.sub(r"[\s\-_]+", " ", base).strip()
+            variants = list({base, folded, folded.replace(" ", "")})
             result = await store.query_raw(
-                "MATCH (n:__Entity__) WHERE toLower(n.name) = $lname "
+                "MATCH (n:__Entity__) "
+                "WHERE toLower(n.name) IN $variants "
+                "OR replace(replace(replace(toLower(n.name), '-', ' '), '_', ' '), '  ', ' ') "
+                "= $folded "
                 "RETURN n.id, labels(n), n.name, n.description LIMIT $k",
-                {"lname": lname, "k": k},
+                {"variants": variants, "folded": folded, "k": k},
             )
             rows = result.result_set if result and result.result_set else []
             candidates: list[GraphNode] = []

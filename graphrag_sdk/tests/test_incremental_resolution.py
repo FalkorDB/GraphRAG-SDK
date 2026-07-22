@@ -195,7 +195,10 @@ class TestIncrementalResolution:
         res = await resolver.resolve(GraphData(nodes=batch), _ctx())
         assert len(res.nodes) == 1
         assert res.nodes[0].properties.get("_needs_review") is True
-        assert res.nodes[0].properties.get("_merge_conflicts")
+        conflicts = res.nodes[0].properties.get("_merge_conflicts")
+        # Recorded as strings so the graph store (which drops lists of dicts) persists them.
+        assert conflicts and all(isinstance(c, str) for c in conflicts)
+        assert any("founded" in c for c in conflicts)
 
     async def test_genuine_homograph_stays_separate(self):
         """Same name, different type, divergent descriptions → NOT free-merged."""
@@ -315,6 +318,152 @@ class TestIncrementalResolution:
         res = await resolver.resolve(GraphData(nodes=batch), _ctx())
         assert len(res.nodes) == 1
         assert res.nodes[0].id == "solo__t"
+
+    async def test_conflict_flag_survives_later_absorption(self):
+        """A node flagged in stage 1 keeps its review flag if it is absorbed as a
+        loser during stage-4 linking (Naseem #10 / CodeRabbit #7)."""
+        batch = [
+            GraphNode(
+                id="bee__t", label="T", properties={"name": "Bee", "description": "unrelated"}
+            ),
+            GraphNode(
+                id="node_a__t",
+                label="T",
+                properties={"name": "Node", "description": "d", "founded": "2001"},
+            ),
+            GraphNode(
+                id="node_b__t",
+                label="T",
+                properties={"name": "Node", "description": "d", "founded": "1998"},
+            ),
+        ]
+        # Stage 1 merges the two "Node" rows (flagging the founded conflict); stage 4
+        # groups the survivor "Node" with "Bee" (Bee first → carrier), absorbing the
+        # flagged node. The flag must propagate to Bee.
+        decision = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 2],
+                        "target": "new",
+                        "canonical": "Merged",
+                        "type": "T",
+                        "description": "d",
+                    },
+                ]
+            }
+        )
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[decision]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([GAL_SH]),  # both share a candidate → one pile
+            immutable_props=("founded",),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        carrier = next(n for n in res.nodes if n.id == "bee__t")
+        assert carrier.properties.get("_needs_review") is True
+        assert any("founded" in c for c in carrier.properties.get("_merge_conflicts", []))
+
+    async def test_no_description_homograph_not_merged(self):
+        """Same name, different type, NO descriptions → not auto-merged (Naseem #12).
+        Description would fall back to the name (cosine 1.0); that isn't evidence."""
+        batch = [
+            GraphNode(id="paris__location", label="Location", properties={"name": "Paris"}),
+            GraphNode(id="paris__person", label="Person", properties={"name": "Paris"}),
+        ]
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[""]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([]),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        assert len(res.nodes) == 2, "no-evidence homographs must stay separate"
+
+    async def test_large_pile_still_links_candidates(self):
+        """A survivor pile larger than pile_cap is chunked, so candidates still
+        reach the LLM and linking works (Naseem #9 / CodeRabbit #6)."""
+        hub = GraphNode(
+            id="hub__person", label="Person", properties={"name": "Hub", "description": "shared"}
+        )
+        batch = [
+            GraphNode(
+                id=f"e{i}__person",
+                label="Person",
+                properties={"name": f"Name{i}", "description": f"desc {i}"},
+            )
+            for i in range(5)
+        ]
+        # pile_cap=4, top_k=1 → survivor budget 3 → chunks [0,1,2] and [3,4].
+        # chunk 1: refs 1-3 survivors, ref 4 = Hub → link ref1 into ref4.
+        # chunk 2: refs 1-2 survivors, ref 3 = Hub → link ref1 into ref3.
+        r1 = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 4],
+                        "target": 4,
+                        "canonical": "Hub",
+                        "type": "Person",
+                        "description": "d",
+                    }
+                ]
+            }
+        )
+        r2 = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 3],
+                        "target": 3,
+                        "canonical": "Hub",
+                        "type": "Person",
+                        "description": "d",
+                    }
+                ]
+            }
+        )
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[r1, r2]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([hub]),
+            top_k=1,
+            pile_cap=4,
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        # A survivor from each chunk linked into the existing hub — candidates were
+        # NOT all evicted by the survivor count.
+        assert res.remap.get("e0__person") == "hub__person"
+        assert res.remap.get("e3__person") == "hub__person"
+
+    async def test_ragged_embedder_does_not_crash(self):
+        """A malformed embedder returning ragged vectors degrades to no-merge
+        rather than crashing the document (CodeRabbit #8)."""
+
+        class RaggedEmbedder(Embedder):
+            @property
+            def model_name(self):
+                return "ragged"
+
+            def embed_query(self, text, **kw):
+                return [1.0] * (len(str(text)) % 3 + 1)  # inconsistent lengths
+
+        batch = [
+            GraphNode(
+                id="p__location",
+                label="Location",
+                properties={"name": "Paris", "description": "abc"},
+            ),
+            GraphNode(
+                id="p__person", label="Person", properties={"name": "Paris", "description": "abcd"}
+            ),
+        ]
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[""]),
+            embedder=RaggedEmbedder(),
+            candidate_retriever=make_retriever([]),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())  # must not raise
+        assert len(res.nodes) == 2
 
     def test_normalize_name_folds_case_and_separators(self):
         assert normalize_name("GraphRAG-SDK") == "graphrag sdk"
