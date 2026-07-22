@@ -14,6 +14,7 @@ from typing import Any
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import DocumentRecord, GraphNode, GraphRelationship
+from graphrag_sdk.core.text import name_key
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
@@ -96,13 +97,13 @@ class GraphStore:
             # Process in batches
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):
                 batch = cleaned_group[start : start + self._BATCH_SIZE]
-                batch_data = [
-                    {
-                        "id": cid,
-                        "properties": self._clean_properties(n.properties),
-                    }
-                    for n, cid in batch
-                ]
+                batch_data = []
+                for n, cid in batch:
+                    props = self._clean_properties(n.properties)
+                    if is_entity:
+                        # Indexed lookup key for name-based candidate retrieval.
+                        props["name_key"] = name_key(str(n.properties.get("name", cid)))
+                    batch_data.append({"id": cid, "properties": props})
                 query = (
                     f"UNWIND $batch AS item "
                     f"MERGE (n:`{safe_label}` {{id: item.id}}) "
@@ -122,12 +123,11 @@ class GraphStore:
                     for node, cid in batch:
                         safe_node_label = sanitize_cypher_label(node.label)
                         q = f"MERGE (n:`{safe_node_label}` {{id: $id}}) SET n += $properties"
+                        props = self._clean_properties(node.properties)
                         if is_entity:
                             q += " SET n:__Entity__"
-                        params = {
-                            "id": cid,
-                            "properties": self._clean_properties(node.properties),
-                        }
+                            props["name_key"] = name_key(str(node.properties.get("name", cid)))
+                        params = {"id": cid, "properties": props}
                         try:
                             await self._conn.query(q, params)
                             count += 1
@@ -330,6 +330,18 @@ class GraphStore:
         for standard operations.
         """
         return await self._conn.query(cypher, params)
+
+    async def ensure_name_key_index(self) -> None:
+        """Create the range index on ``__Entity__(name_key)`` if absent.
+
+        Idempotent — a re-create raises and is swallowed. This is what lets
+        name-based candidate retrieval use an indexed equality lookup instead
+        of scanning every entity per query.
+        """
+        try:
+            await self._conn.query("CREATE INDEX FOR (n:__Entity__) ON (n.name_key)")
+        except Exception:
+            pass  # already exists
 
     # ── Statistics ────────────────────────────────────────────────
 

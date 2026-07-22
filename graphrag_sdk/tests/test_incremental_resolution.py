@@ -50,6 +50,20 @@ class WordEmbedder(Embedder):
         return vec or [0.0] * 64
 
 
+class ScriptedEmbedder(Embedder):
+    """Returns a fixed vector per exact text, for precise cosine control."""
+
+    def __init__(self, table: dict[str, list[float]]) -> None:
+        self._table = table
+
+    @property
+    def model_name(self) -> str:
+        return "scripted"
+
+    def embed_query(self, text: str, **kw):
+        return self._table.get(str(text), [1.0, 0.0])
+
+
 def _ctx():
     return Context(tenant_id="t", latency_budget_ms=5000.0)
 
@@ -522,6 +536,77 @@ class TestIncrementalResolution:
         assert llm.prompts, "the LLM should have been asked to link the pile"
         assert len(long_desc) > 180
         assert long_desc in llm.prompts[0], "full description must be sent, not truncated"
+
+    async def test_overlapping_llm_groups_are_dropped(self):
+        """A ref reused across LLM groups must not double-merge unrelated entities
+        (Naseem #2) — the second, overlapping group is dropped."""
+        batch = [
+            GraphNode(id="a__t", label="T", properties={"name": "Aye", "description": "d1"}),
+            GraphNode(id="b__t", label="T", properties={"name": "Bee", "description": "d2"}),
+        ]
+        # refs 1=Aye, 2=Bee (new), 3=Gal Sh (graph candidate). Group 2 reuses ref 1.
+        decision = json.dumps(
+            {
+                "groups": [
+                    {
+                        "members": [1, 2],
+                        "target": "new",
+                        "canonical": "AyeBee",
+                        "type": "T",
+                        "description": "d",
+                    },
+                    {
+                        "members": [1, 3],
+                        "target": 3,
+                        "canonical": "X",
+                        "type": "T",
+                        "description": "d",
+                    },
+                ]
+            }
+        )
+        resolver = IncrementalResolution(
+            llm=MockLLM(responses=[decision]),
+            embedder=WordEmbedder(),
+            candidate_retriever=make_retriever([GAL_SH]),
+        )
+        res = await resolver.resolve(GraphData(nodes=batch), _ctx())
+        # Group 1 applied (Bee → Aye); overlapping group 2 dropped, so nothing
+        # links onto the graph candidate.
+        assert res.remap.get("b__t") == "a__t"
+        assert "gal_sh__person" not in res.remap.values()
+        assert "gal_sh__person" not in {n.id for n in res.nodes}
+
+    async def test_cross_type_merge_needs_higher_bar(self):
+        """Same-name cross-type auto-merge requires cross_type_threshold, while
+        same-type merges at the lower same_name_threshold (Naseem #5)."""
+        # Two descriptions at cosine 0.85 — above same_name (0.80), below cross (0.90).
+        table = {"desc-A": [1.0, 0.0], "desc-B": [0.85, 0.5268]}
+
+        async def resolve_pair(label_b):
+            batch = [
+                GraphNode(
+                    id="paris__location",
+                    label="Location",
+                    properties={"name": "Paris", "description": "desc-A"},
+                ),
+                GraphNode(
+                    id="paris__other",
+                    label=label_b,
+                    properties={"name": "Paris", "description": "desc-B"},
+                ),
+            ]
+            resolver = IncrementalResolution(
+                llm=MockLLM(responses=[""]),
+                embedder=ScriptedEmbedder(table),
+                candidate_retriever=make_retriever([]),
+            )
+            return await resolver.resolve(GraphData(nodes=batch), _ctx())
+
+        same_type = await resolve_pair("Location")  # 0.85 ≥ 0.80 → merge
+        cross_type = await resolve_pair("Person")  # 0.85 < 0.90 → stay separate
+        assert len(same_type.nodes) == 1, "same-type should merge at 0.85"
+        assert len(cross_type.nodes) == 2, "cross-type needs 0.90, so 0.85 stays split"
 
     def test_normalize_name_folds_case_and_separators(self):
         assert normalize_name("GraphRAG-SDK") == "graphrag sdk"

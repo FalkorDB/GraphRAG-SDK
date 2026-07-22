@@ -40,6 +40,7 @@ from graphrag_sdk.core.models import (
     UpdateResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.core.text import name_key
 from graphrag_sdk.discovery import SchemaExtensionProposal, suggest_extensions
 from graphrag_sdk.ingestion.backfill import (
     BackfillExecutor,
@@ -1732,7 +1733,13 @@ class GraphRAG:
         so lightweight setups keep working with no added cost.
         """
         if self.llm is None or self.embedder is None:
+            logger.info("Resolver: ExactMatchResolution (no LLM/embedder — LLM-free)")
             return ExactMatchResolution()
+        logger.info(
+            "Resolver: IncrementalResolution (graph-aware default; adds LLM + "
+            "embedding + graph-query cost per ingest — pass resolver="
+            "ExactMatchResolution() to opt out)"
+        )
         return IncrementalResolution(
             llm=self.llm,
             embedder=self.embedder,
@@ -1742,43 +1749,38 @@ class GraphRAG:
     def _graph_candidate_retriever(self):
         """Build a name-based candidate retriever for ``IncrementalResolution``.
 
-        Matches an incoming entity against existing graph entities whose name is
-        equal after folding case and separators (``-``, ``_``, spaces) — e.g.
-        ``GraphRAG-SDK`` == ``graphrag_sdk`` == ``GraphRAG SDK``. This links the
-        cross-document duplicates the strategy targets, most importantly the same
-        term extracted under different types (``GraphRAG`` the Concept vs the
-        Technology).
+        Matches an incoming entity against existing graph entities that share a
+        ``name_key`` — the name folded to lowercase with all separators removed
+        (see :func:`graphrag_sdk.core.text.name_key`). This links the
+        cross-document duplicates the strategy targets: the same term extracted
+        under different types (``GraphRAG`` the Concept vs the Technology), and
+        surface/tokenization variants (``GraphRAG-SDK`` / ``graphrag_sdk`` /
+        ``GraphRAG SDK``, and ``llama_index`` ↔ ``LlamaIndex``) — symmetrically,
+        since both sides reduce to the same key.
 
-        Matching also tries the separator-removed form, so many tokenization
-        variants are caught too (``llama_index`` finds a stored ``LlamaIndex``).
-        It is intentionally name-based, not semantic: entity embeddings are only
-        built during ``finalize()``, so a vector search would find nothing
-        mid-ingest. Because matching is by an exact set of surface forms rather
-        than fuzzy, it is best-effort — it won't catch arbitrary spellings or
-        every direction (a ``LlamaIndex`` mention won't find a stored
-        ``llama_index``). For guaranteed variant/semantic linking, supply a
-        custom ``candidate_retriever`` or run a reconciliation pass after
-        ``finalize()``. One equality lookup is issued per resolved entity; on
-        very large graphs a range index on ``__Entity__(name)`` keeps it cheap.
+        The lookup is an **indexed equality** on ``name_key`` (a range index the
+        store ensures exists), so it does not scan every entity — unlike a
+        ``toLower(name)`` predicate, where the function on the property defeats
+        any index. It is intentionally name-based, not semantic: entity
+        embeddings are only built during ``finalize()``, so a vector search
+        would find nothing mid-ingest. For fuzzy/semantic linking beyond shared
+        keys, supply a custom ``candidate_retriever`` or run a reconciliation
+        pass after ``finalize()``.
         """
         store = self._graph_store
+        index_ready = {"done": False}
 
         async def retrieve(name: str, description: str, k: int) -> list[GraphNode]:
-            base = str(name).strip().lower()
-            if not base:
+            key = name_key(name)
+            if not key:
                 return []
-            # Fold separators to catch surface variants without a scan: an
-            # equality IN-list over the handful of spellings this entity's name
-            # could take (hyphen/underscore/space and their removal).
-            folded = re.sub(r"[\s\-_]+", " ", base).strip()
-            variants = list({base, folded, folded.replace(" ", "")})
+            if not index_ready["done"]:
+                await store.ensure_name_key_index()
+                index_ready["done"] = True
             result = await store.query_raw(
-                "MATCH (n:__Entity__) "
-                "WHERE toLower(n.name) IN $variants "
-                "OR replace(replace(replace(toLower(n.name), '-', ' '), '_', ' '), '  ', ' ') "
-                "= $folded "
+                "MATCH (n:__Entity__) WHERE n.name_key = $key "
                 "RETURN n.id, labels(n), n.name, n.description LIMIT $k",
-                {"variants": variants, "folded": folded, "k": k},
+                {"key": key, "k": k},
             )
             rows = result.result_set if result and result.result_set else []
             candidates: list[GraphNode] = []

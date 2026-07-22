@@ -44,9 +44,9 @@ store's name/vector search.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -57,6 +57,7 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, ResolutionResult
 from graphrag_sdk.core.prompts import ENTITY_DESCRIPTION_RULE
 from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.core.text import normalize_name
 from graphrag_sdk.ingestion.resolution_strategies.base import (
     ResolutionStrategy,
     remap_relationships,
@@ -64,21 +65,12 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
 
 logger = logging.getLogger(__name__)
 
-_SEPARATORS = re.compile(r"[\s\-_]+")
-
 # Internal property keys the resolver writes; never treated as extracted facts.
 _SOURCE_IDS = "source_chunk_ids"
 _CONFLICTS = "_merge_conflicts"
 _NEEDS_REVIEW = "_needs_review"
 
-
-def normalize_name(name: str) -> str:
-    """Fold case and separators so surface variants share one key.
-
-    ``"GraphRAG-SDK"``, ``"graphrag_sdk"`` and ``"GraphRAG SDK"`` all normalize
-    to ``"graphrag sdk"``.
-    """
-    return _SEPARATORS.sub(" ", str(name).strip().lower()).strip()
+__all__ = ["IncrementalResolution", "normalize_name"]
 
 
 # Returns the existing graph entities that look like ``(name, description)``.
@@ -149,9 +141,13 @@ class IncrementalResolution(ResolutionStrategy):
         pile_cap: Upper bound on items (survivors + candidates) sent to the LLM
             in a single call, so a crowded name cannot blow up a prompt.
         same_name_threshold: Minimum pairwise description cosine at which
-            same-name entities auto-merge for free. Same name is already strong
-            evidence, so this bar is deliberately low; genuine homographs
-            (Paris the city vs the person) fall below it and stay separate.
+            same-name, same-type entities auto-merge for free. Same name is
+            already strong evidence, so this bar is deliberately low.
+        cross_type_threshold: The (higher) bar a same-name group spanning
+            different types must clear to free-merge. Crossing types is the only
+            unrecoverable free path, so it demands stronger evidence; genuine
+            homographs (Paris the city vs the person) fall below it and stay
+            separate for the LLM to judge.
         max_summary_tokens: Budget hint for LLM-written merged descriptions.
         immutable_props: Properties that must not change on merge. A conflict
             flags the survivor for review instead of silently picking a value —
@@ -167,6 +163,7 @@ class IncrementalResolution(ResolutionStrategy):
         top_k: int = 3,
         pile_cap: int = 12,
         same_name_threshold: float = 0.80,
+        cross_type_threshold: float = 0.90,
         max_summary_tokens: int = 300,
         immutable_props: Sequence[str] = (),
     ) -> None:
@@ -176,6 +173,7 @@ class IncrementalResolution(ResolutionStrategy):
         self.top_k = top_k
         self.pile_cap = pile_cap
         self.same_name_threshold = same_name_threshold
+        self.cross_type_threshold = cross_type_threshold
         self.max_summary_tokens = max_summary_tokens
         self.immutable_props = frozenset(immutable_props)
 
@@ -272,12 +270,19 @@ class IncrementalResolution(ResolutionStrategy):
         which would merge genuine homographs (Paris the city vs the person) on
         name identity alone — against the fail-toward-splitting stance. When any
         description is missing, only exact same-type duplicates are folded.
+
+        Merging *across types* is the only unrecoverable free path, so it needs
+        stronger evidence: a single-type group merges at ``same_name_threshold``,
+        but a group spanning types must clear the higher ``cross_type_threshold``.
         """
         descriptions = [str(n.properties.get("description") or "") for n in group]
         units = await self._embed(descriptions) if all(descriptions) else None
-        if units is not None and _min_pairwise_cosine(units) >= self.same_name_threshold:
-            return [(group[0], group[1:])]  # coherent → one entity (type wobble)
-        # No evidence to cross types: only fold exact same-type duplicates.
+        if units is not None:
+            single_type = len({n.label for n in group}) == 1
+            bar = self.same_name_threshold if single_type else self.cross_type_threshold
+            if _min_pairwise_cosine(units) >= bar:
+                return [(group[0], group[1:])]  # coherent → one entity (type wobble)
+        # Not enough evidence to cross types: only fold exact same-type duplicates.
         return [
             (same_type[0], same_type[1:])
             for same_type in _group_by(group, key=lambda n: n.label)
@@ -289,26 +294,31 @@ class IncrementalResolution(ResolutionStrategy):
     async def _fetch_candidates(self, survivors: list[GraphNode]) -> list[list[GraphNode]]:
         """For each survivor, the existing graph entities that look like it.
 
-        A retriever failure for one survivor degrades to "no candidates" (that
-        entity is treated as new) rather than aborting the whole document —
-        keeping with the strategy's fail-toward-splitting stance.
+        Lookups run concurrently (``gather`` preserves order, which the piling
+        step relies on). A retriever failure for one survivor degrades to "no
+        candidates" — that entity is treated as new rather than aborting the
+        whole document, keeping the fail-toward-splitting stance.
         """
         if self.candidate_retriever is None:
             return [[] for _ in survivors]
+        results = await asyncio.gather(
+            *(
+                self.candidate_retriever(_name_of(s), _description_of(s), self.top_k)
+                for s in survivors
+            ),
+            return_exceptions=True,
+        )
         found: list[list[GraphNode]] = []
-        for survivor in survivors:
-            try:
-                candidates = await self.candidate_retriever(
-                    _name_of(survivor), _description_of(survivor), self.top_k
-                )
-                found.append(list(candidates))
-            except Exception as exc:  # pragma: no cover - defensive
+        for survivor, result in zip(survivors, results, strict=True):
+            if isinstance(result, Exception):
                 logger.warning(
                     "IncrementalResolution: candidate retrieval failed for %r: %s",
                     _name_of(survivor),
-                    exc,
+                    result,
                 )
                 found.append([])
+            else:
+                found.append(list(result))
         return found
 
     @staticmethod
@@ -342,8 +352,17 @@ class IncrementalResolution(ResolutionStrategy):
 
         by_ref = {item.ref: item for item in items}
         merged = 0
+        consumed: set[int] = set()  # refs already placed by an earlier group
         for group in decisions:
-            members = [by_ref[r] for r in group.members if r in by_ref]
+            member_refs = [r for r in group.members if r in by_ref]
+            # Enforce a disjoint partition: a sloppy-but-parseable LLM response
+            # can reuse a ref across groups, which would double-absorb a node and
+            # let the last-wins remap merge unrelated entities. Drop any group
+            # that reuses a ref — fail toward splitting.
+            if any(r in consumed for r in member_refs):
+                continue
+            consumed.update(member_refs)
+            members = [by_ref[r] for r in member_refs]
             survivor_members = [m.survivor_idx for m in members if m.survivor_idx is not None]
             if not survivor_members:
                 continue  # a group of only existing nodes — nothing new to place
