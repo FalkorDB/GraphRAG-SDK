@@ -13,7 +13,13 @@ from typing import Any
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
-from graphrag_sdk.core.models import DocumentRecord, GraphNode, GraphRelationship
+from graphrag_sdk.core.models import (
+    ChunkEntityRow,
+    ChunkRelationshipRow,
+    DocumentRecord,
+    GraphNode,
+    GraphRelationship,
+)
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 logger = logging.getLogger(__name__)
@@ -679,6 +685,129 @@ class GraphStore:
             {"id": document_id},
         )
         return [row[0] for row in result.result_set] if result.result_set else []
+
+    async def get_document_chunk_texts(self, document_id: str) -> list[tuple[str, str]]:
+        """Snapshot ``(chunk_id, text)`` for every chunk of a document.
+
+        Used by ``CachedChunkExtraction`` to hash existing chunk texts
+        before an update's cutover deletes them. Rows with a missing id
+        or non-string text (tampered/partial graphs) are skipped rather
+        than propagated — the caller treats absent rows as cache misses,
+        which degrades to full extraction, never to data loss.
+
+        Like the other pre-update snapshots, this returns the full set in
+        one round trip with no LIMIT — documents with millions of chunks
+        are out of scope for incremental update.
+        """
+        result = await self._conn.query(
+            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) "
+            "RETURN c.id AS cid, c.text AS text",
+            {"id": document_id},
+        )
+        out: list[tuple[str, str]] = []
+        for row in result.result_set or []:
+            cid, text = row[0], row[1]
+            if cid and isinstance(text, str):
+                out.append((cid, text))
+        return out
+
+    async def get_entities_mentioned_in_chunks(
+        self, chunk_ids: list[str]
+    ) -> list[ChunkEntityRow]:
+        """Read every entity with a ``MENTIONED_IN`` edge to any of
+        ``chunk_ids``, one row per (chunk, entity) pair.
+
+        Feeds ``CachedChunkExtraction``: for unchanged chunks, the graph
+        itself is the extraction cache, and these rows are what was
+        previously extracted. ``label`` is the first non-``__Entity__``
+        label (matching how ``upsert_nodes`` writes concrete label +
+        ``__Entity__`` marker). ``None`` when no concrete label exists —
+        deliberately NO fallback to ``e.type``: a MERGE on a label the
+        node doesn't carry would mint a duplicate node with the same id,
+        so the consumer must skip the node write instead
+        (``CachedChunkExtraction`` keeps the mention, which is enough to
+        survive orphan cleanup).
+
+        Batched by ``_BATCH_SIZE`` to keep parameter sizes bounded.
+        """
+        rows: list[ChunkEntityRow] = []
+        for start in range(0, len(chunk_ids), self._BATCH_SIZE):
+            batch = chunk_ids[start : start + self._BATCH_SIZE]
+            result = await self._conn.query(
+                "UNWIND $cids AS cid "
+                "MATCH (e:__Entity__)-[:MENTIONED_IN]->(c:Chunk {id: cid}) "
+                "RETURN cid, e.id, labels(e), e.name, e.type, e.description, "
+                "e.source_chunk_ids",
+                {"cids": batch},
+            )
+            for row in result.result_set or []:
+                cid, eid, labels, name, etype, description, source_chunk_ids = row
+                if not cid or not eid:
+                    continue
+                label = next((lb for lb in (labels or []) if lb != "__Entity__"), None)
+                rows.append(
+                    ChunkEntityRow(
+                        chunk_id=cid,
+                        entity_id=eid,
+                        label=label,
+                        name=name if isinstance(name, str) else None,
+                        type=etype if isinstance(etype, str) else None,
+                        description=description if isinstance(description, str) else None,
+                        source_chunk_ids=[
+                            s for s in (source_chunk_ids or []) if isinstance(s, str)
+                        ],
+                    )
+                )
+        return rows
+
+    async def get_relationships_for_chunks(
+        self, chunk_ids: list[str]
+    ) -> list[ChunkRelationshipRow]:
+        """Read every ``RELATES`` edge whose ``source_chunk_ids``
+        provenance includes any of ``chunk_ids``, one row per
+        (chunk, edge) pair.
+
+        Counterpart of ``get_entities_mentioned_in_chunks`` for edges;
+        feeds ``CachedChunkExtraction``'s rebuild of relationship facts
+        for unchanged chunks. Batched by ``_BATCH_SIZE``.
+
+        Query shape: ``source_chunk_ids`` is a plain list property, so no
+        index can serve the membership test — but the edge scan runs ONCE
+        per batch (``any(c IN r.source_chunk_ids WHERE c IN $cids)``), not
+        once per chunk id. The chunk-id intersection is computed client-side
+        from the returned provenance list.
+        """
+        rows: list[ChunkRelationshipRow] = []
+        for start in range(0, len(chunk_ids), self._BATCH_SIZE):
+            batch = chunk_ids[start : start + self._BATCH_SIZE]
+            batch_set = set(batch)
+            result = await self._conn.query(
+                "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
+                "WHERE any(c IN r.source_chunk_ids WHERE c IN $cids) "
+                "RETURN a.id, b.id, r.rel_type, r.description, r.fact, "
+                "r.src_name, r.tgt_name, r.source_chunk_ids",
+                {"cids": batch},
+            )
+            for row in result.result_set or []:
+                start_id, end_id, rel_type, description, fact, src_name, tgt_name, srcs = row
+                if not start_id or not end_id:
+                    continue
+                for cid in srcs or []:
+                    if cid not in batch_set:
+                        continue
+                    rows.append(
+                        ChunkRelationshipRow(
+                            chunk_id=cid,
+                            start_entity_id=start_id,
+                            end_entity_id=end_id,
+                            rel_type=rel_type if isinstance(rel_type, str) else None,
+                            description=description if isinstance(description, str) else None,
+                            fact=fact if isinstance(fact, str) else None,
+                            src_name=src_name if isinstance(src_name, str) else None,
+                            tgt_name=tgt_name if isinstance(tgt_name, str) else None,
+                        )
+                    )
+        return rows
 
     async def set_pending_cleanup_state(
         self,
