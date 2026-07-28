@@ -700,8 +700,7 @@ class GraphStore:
         are out of scope for incremental update.
         """
         result = await self._conn.query(
-            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) "
-            "RETURN c.id AS cid, c.text AS text",
+            "MATCH (:Document {id: $id})-[:PART_OF]->(c:Chunk) RETURN c.id AS cid, c.text AS text",
             {"id": document_id},
         )
         out: list[tuple[str, str]] = []
@@ -711,9 +710,7 @@ class GraphStore:
                 out.append((cid, text))
         return out
 
-    async def get_entities_mentioned_in_chunks(
-        self, chunk_ids: list[str]
-    ) -> list[ChunkEntityRow]:
+    async def get_entities_mentioned_in_chunks(self, chunk_ids: list[str]) -> list[ChunkEntityRow]:
         """Read every entity with a ``MENTIONED_IN`` edge to any of
         ``chunk_ids``, one row per (chunk, entity) pair.
 
