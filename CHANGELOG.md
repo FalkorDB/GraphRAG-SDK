@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Chunk-level extraction cache for `update()` (`cache_unchanged_chunks`)
+
+- **`GraphRAG.update(..., cache_unchanged_chunks=True)`** — opt-in
+  chunk-level extraction cache. New chunks whose text is byte-identical
+  to an existing chunk of the same document skip LLM extraction
+  entirely: their entities, relationships, and mentions are rebuilt
+  from the live graph and remapped onto the new chunk uids. Only
+  genuinely new/changed chunks are sent to the extractor. Editing one
+  paragraph of a 50-chunk document now costs ~1 extraction instead
+  of 50. Cache effectiveness is reported in
+  `UpdateResult.metadata["cache_stats"]`
+  (`cached_chunks` / `extracted_chunks`). Also available on
+  `update_sync()`, `apply_changes()` (applies to the `modified` list),
+  and `apply_changes_sync()`. Default `False` — existing behavior is
+  unchanged.
+- **`CachedChunkExtraction(inner, graph_store, document_id)`** — the
+  underlying decorator `ExtractionStrategy`, exported at top level for
+  advanced pipelines. Fail-open by construction: any cache lookup or
+  rebuild failure falls back to full extraction (worst case is paying
+  for skippable LLM calls, never data loss). Caveats: the graph is the
+  cache, so manually deleted entities are not resurrected from
+  unchanged chunks, and ontology/prompt/model changes do not
+  re-extract unchanged chunks — pass `cache_unchanged_chunks=False`
+  (the default) to force a full rebuild.
+- **`GraphStore.get_document_chunk_texts()`**,
+  **`get_entities_mentioned_in_chunks()`**,
+  **`get_relationships_for_chunks()`** — new schema-owning read
+  accessors backing the cache (with `ChunkEntityRow` /
+  `ChunkRelationshipRow` typed rows in `core.models`).
+
 ## [1.3.0] - 2026-06-04
 
 Ontology discovery (#271): bootstrap an ontology straight from a

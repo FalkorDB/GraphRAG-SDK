@@ -83,6 +83,9 @@ from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import (
+    CachedChunkExtraction,
+)
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
     CorefResolver,
     FastCorefResolver,
@@ -185,6 +188,7 @@ __all__ = [
     "FixedSizeChunking",
     "SentenceTokenCapChunking",
     "ExtractionStrategy",
+    "CachedChunkExtraction",
     "GraphExtraction",
     "EntityExtractor",
     "GLiNERExtractor",
