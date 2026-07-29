@@ -594,6 +594,40 @@ class TestGraphStoreCacheAccessors:
             ("c2", "a", "b"),
         }
 
+    async def test_scalar_where_list_expected_treated_as_empty(
+        self, graph_store, mock_connection
+    ):
+        """Tampered graphs may hold a scalar where a list is expected —
+        it must not iterate as characters into bogus labels/provenance."""
+        from unittest.mock import MagicMock
+
+        mock_connection.query = AsyncMock(
+            return_value=MagicMock(
+                result_set=[["c1", "e1", "Person", "Alice", "Person", None, "abc"]]
+            )
+        )
+        rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
+        assert len(rows) == 1
+        assert rows[0].label is None  # scalar labels → no concrete label
+        assert rows[0].source_chunk_ids == []  # "abc" must not become ['a','b','c']
+
+    async def test_relationship_scalar_provenance_skipped(
+        self, graph_store, mock_connection
+    ):
+        from unittest.mock import MagicMock
+
+        mock_connection.query = AsyncMock(
+            return_value=MagicMock(
+                result_set=[
+                    ["a", "b", "KNOWS", None, None, None, None, "c1"],  # scalar → skipped
+                    ["a", "b", "KNOWS", None, None, None, None, ["c1"]],
+                ]
+            )
+        )
+        rows = await graph_store.get_relationships_for_chunks(["c1"])
+        assert len(rows) == 1
+        assert rows[0].chunk_id == "c1"
+
     async def test_empty_chunk_ids_no_query(self, graph_store, mock_connection):
         assert await graph_store.get_entities_mentioned_in_chunks([]) == []
         assert await graph_store.get_relationships_for_chunks([]) == []

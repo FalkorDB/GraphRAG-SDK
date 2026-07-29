@@ -741,7 +741,14 @@ class GraphStore:
                 cid, eid, labels, name, etype, description, source_chunk_ids = row
                 if not cid or not eid:
                     continue
-                label = next((lb for lb in (labels or []) if lb != "__Entity__"), None)
+                # Tampered/partial graphs may hold a scalar where a list is
+                # expected — iterating a string would yield characters as
+                # bogus labels/provenance, so non-lists are treated as empty.
+                if not isinstance(labels, list):
+                    labels = []
+                if not isinstance(source_chunk_ids, list):
+                    source_chunk_ids = []
+                label = next((lb for lb in labels if lb != "__Entity__"), None)
                 rows.append(
                     ChunkEntityRow(
                         chunk_id=cid,
@@ -750,9 +757,7 @@ class GraphStore:
                         name=name if isinstance(name, str) else None,
                         type=etype if isinstance(etype, str) else None,
                         description=description if isinstance(description, str) else None,
-                        source_chunk_ids=[
-                            s for s in (source_chunk_ids or []) if isinstance(s, str)
-                        ],
+                        source_chunk_ids=[s for s in source_chunk_ids if isinstance(s, str)],
                     )
                 )
         return rows
@@ -789,7 +794,11 @@ class GraphStore:
                 start_id, end_id, rel_type, description, fact, src_name, tgt_name, srcs = row
                 if not start_id or not end_id:
                     continue
-                for cid in srcs or []:
+                # Same scalar-vs-list guard as the entity accessor: a
+                # tampered string provenance must not iterate as characters.
+                if not isinstance(srcs, list):
+                    continue
+                for cid in srcs:
                     if cid not in batch_set:
                         continue
                     rows.append(
