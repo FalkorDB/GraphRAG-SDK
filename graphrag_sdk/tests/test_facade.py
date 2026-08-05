@@ -27,7 +27,7 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
-from .conftest import MockLLM
+from .conftest import MockEmbedder, MockLLM
 
 # ── Fixtures ────────────────────────────────────────────────────
 
@@ -1172,6 +1172,159 @@ class TestGraphRAGConfigNode:
 
         result = await g.retrieve("test?")
         assert isinstance(result, RetrieverResult)
+
+
+class TestBareModelName:
+    """Provider-prefix normalisation used by the config guard."""
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("azure/text-embedding-3-large", "text-embedding-3-large"),
+            ("openai/text-embedding-3-large", "text-embedding-3-large"),
+            ("AZURE/text-embedding-3-large", "text-embedding-3-large"),
+            ("vertex_ai/textembedding-gecko", "textembedding-gecko"),
+            ("text-embedding-3-large", "text-embedding-3-large"),
+        ],
+    )
+    def test_known_prefixes_are_stripped(self, name, expected):
+        from graphrag_sdk.api.main import _bare_model_name
+
+        assert _bare_model_name(name) == expected
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # Not a provider — the first segment is part of the model id and
+            # dropping it would collapse two distinct models onto one name.
+            "my-org/custom-embedder",
+            # A bare name that merely contains a slashless provider word.
+            "azure-lookalike-model",
+            # Trailing slash leaves nothing to keep.
+            "azure/",
+            "",
+        ],
+    )
+    def test_unknown_or_degenerate_names_unchanged(self, name):
+        from graphrag_sdk.api.main import _bare_model_name
+
+        assert _bare_model_name(name) == name
+
+    def test_only_first_segment_stripped(self):
+        """Multi-segment ids keep the part that identifies the model."""
+        from graphrag_sdk.api.main import _bare_model_name
+
+        assert (
+            _bare_model_name("openrouter/anthropic/claude-3")
+            == "anthropic/claude-3"
+        )
+
+    def test_falls_back_when_litellm_missing(self, monkeypatch):
+        """litellm is an optional extra; the guard must still work without it."""
+        import builtins
+
+        from graphrag_sdk.api.main import (
+            _bare_model_name,
+            _litellm_provider_prefixes,
+        )
+
+        _litellm_provider_prefixes.cache_clear()
+        real_import = builtins.__import__
+
+        def _no_litellm(name, *args, **kwargs):
+            if name == "litellm":
+                raise ImportError("litellm not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_litellm)
+        try:
+            assert _bare_model_name("azure/text-embedding-3-large") == "text-embedding-3-large"
+        finally:
+            _litellm_provider_prefixes.cache_clear()
+
+
+class TestConfigProviderPrefix:
+    """The stored model name may carry a litellm routing prefix that the
+    live embedder doesn't (or vice versa) when a graph is moved between
+    providers. Same model, same vectors — must not raise."""
+
+    @staticmethod
+    def _embedder_named(name: str, dimension: int = 8):
+        class _Named(MockEmbedder):
+            @property
+            def model_name(self) -> str:
+                return name
+
+        return _Named(dimension=dimension)
+
+    async def _retrieve_with(self, mock_conn, embedder, stored_model):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        config_result = MagicMock()
+        config_result.result_set = [[stored_model, 8]]
+        g._graph_store.query_raw = AsyncMock(return_value=config_result)
+        mock_strategy = MagicMock(spec=RetrievalStrategy)
+        mock_strategy.search = AsyncMock(return_value=RetrieverResult(items=[]))
+        g._retrieval_strategy = mock_strategy
+        return await g.retrieve("test?")
+
+    async def test_stored_prefixed_current_bare_passes(self, mock_conn):
+        """Graph built through Azure, now reached directly."""
+        result = await self._retrieve_with(
+            mock_conn, self._embedder_named("mock-embedder"), "azure/mock-embedder"
+        )
+        assert isinstance(result, RetrieverResult)
+
+    async def test_stored_bare_current_prefixed_passes(self, mock_conn):
+        """The prod case: graph stored the bare name, config moved to Azure."""
+        result = await self._retrieve_with(
+            mock_conn, self._embedder_named("azure/mock-embedder"), "mock-embedder"
+        )
+        assert isinstance(result, RetrieverResult)
+
+    async def test_differing_providers_same_model_passes(self, mock_conn):
+        result = await self._retrieve_with(
+            mock_conn,
+            self._embedder_named("openai/mock-embedder"),
+            "azure/mock-embedder",
+        )
+        assert isinstance(result, RetrieverResult)
+
+    async def test_genuine_model_change_still_raises(self, mock_conn):
+        """The guard must keep catching a real swap — a prefix must not be
+        able to mask two different models."""
+        with pytest.raises(ConfigError, match="Embedding model mismatch"):
+            await self._retrieve_with(
+                mock_conn,
+                self._embedder_named("azure/text-embedding-ada-002"),
+                "azure/text-embedding-3-large",
+            )
+
+    async def test_unknown_prefix_still_raises(self, mock_conn):
+        """A non-provider first segment is part of the model identity, so
+        two such names remain distinct."""
+        with pytest.raises(ConfigError, match="Embedding model mismatch"):
+            await self._retrieve_with(
+                mock_conn,
+                self._embedder_named("team-a/mock-embedder"),
+                "team-b/mock-embedder",
+            )
+
+    async def test_dimension_mismatch_still_raises_under_prefix(self, mock_conn):
+        """Prefix normalisation must not weaken the dimension check."""
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(
+            connection=mock_conn,
+            llm=llm,
+            embedder=self._embedder_named("azure/mock-embedder"),
+            embedding_dimension=8,
+        )
+        config_result = MagicMock()
+        config_result.result_set = [["mock-embedder", 1536]]
+        g._graph_store.query_raw = AsyncMock(return_value=config_result)
+
+        with pytest.raises(ConfigError, match="Embedding dimension mismatch"):
+            await g.retrieve("test?")
 
 
 class TestGraphRAGEmbedderProbe:
