@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+from functools import lru_cache
 from typing import Any, Literal, overload
 from uuid import uuid4
 
@@ -145,6 +146,73 @@ _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
 def _neutralize_context_close_tag(text: str) -> str:
     """Disarm any literal ``</context>`` that appears inside untrusted text."""
     return _CONTEXT_CLOSE_RE.sub("</ context>", text)
+
+
+# Fallback provider prefixes for :py:func:`_bare_model_name`, used when
+# litellm isn't installed (it is an optional extra). Covers the providers
+# that actually serve embedding models; the full list is pulled from
+# litellm at runtime when available.
+_FALLBACK_LITELLM_PROVIDERS = frozenset(
+    {
+        "azure",
+        "azure_ai",
+        "bedrock",
+        "cohere",
+        "databricks",
+        "deepinfra",
+        "gemini",
+        "huggingface",
+        "mistral",
+        "nvidia_nim",
+        "ollama",
+        "openai",
+        "openrouter",
+        "together_ai",
+        "vertex_ai",
+        "voyage",
+        "watsonx",
+        "xinference",
+    }
+)
+
+
+@lru_cache(maxsize=1)
+def _litellm_provider_prefixes() -> frozenset[str]:
+    """Known litellm routing prefixes, lowercased.
+
+    Prefers litellm's own ``provider_list`` so the set stays correct as
+    litellm adds providers; falls back to a static set when litellm isn't
+    installed. Cached — the list is static for the process lifetime.
+    """
+    try:
+        import litellm
+
+        providers = {str(getattr(p, "value", p)).lower() for p in litellm.provider_list}
+        if providers:
+            return frozenset(providers | _FALLBACK_LITELLM_PROVIDERS)
+    except Exception:  # pragma: no cover - depends on optional extra
+        logger.debug("litellm provider_list unavailable", exc_info=True)
+    return _FALLBACK_LITELLM_PROVIDERS
+
+
+def _bare_model_name(name: str) -> str:
+    """Strip litellm's provider routing prefix from a model identifier.
+
+    ``"azure/text-embedding-3-large"`` and ``"text-embedding-3-large"`` name
+    the *same* model reached through different endpoints — the prefix tells
+    litellm where to send the request, it is not part of the model identity.
+    Comparing the raw strings therefore reports a mismatch for a graph that
+    merely changed provider, even though the vectors are unchanged.
+
+    Only the first segment is removed, and only when it is a recognised
+    provider, so multi-segment identifiers such as
+    ``"openrouter/anthropic/claude-3"`` keep the part that distinguishes the
+    model. Names without a known prefix are returned unchanged.
+    """
+    head, sep, tail = name.partition("/")
+    if sep and tail and head.lower() in _litellm_provider_prefixes():
+        return tail
+    return name
 
 
 def _strip_and_load_json(text: str) -> Any:
@@ -2878,7 +2946,9 @@ class GraphRAG:
                 stored_dim = result.result_set[0][1]
                 current_model = self.embedder.model_name
 
-                if stored_model and stored_model != current_model:
+                if stored_model and _bare_model_name(stored_model) != _bare_model_name(
+                    current_model
+                ):
                     raise ConfigError(
                         f"Embedding model mismatch: graph was built with "
                         f"'{stored_model}' but current embedder is "
