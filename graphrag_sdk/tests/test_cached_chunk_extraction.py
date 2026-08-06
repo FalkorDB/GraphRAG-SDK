@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import DatabaseError, LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     ChunkEntityRow,
     ChunkRelationshipRow,
@@ -903,3 +904,72 @@ class TestSelfMappingGuard:
         assert [n.id for n in result.nodes] == ["acme__organization"]
         # Provenance for the cached chunk is remapped onto the new uid.
         assert result.nodes[0].properties["source_chunk_ids"] == ["new-2"]
+
+
+class TestInfrastructureErrorsPropagate:
+    """Fail-open covers a cache that can't answer, not a graph that isn't there.
+
+    Extraction only needs the LLM, so on an unreachable graph it succeeds and
+    bills in full, then the write phase hits the same dead connection and
+    fails anyway. The error is better raised before that spend.
+    """
+
+    async def test_lookup_database_error_propagates(self, ontology, ctx):
+        store = FakeGraphStore()
+
+        async def _boom(document_id):
+            raise DatabaseError("connection refused")
+
+        store.get_document_chunk_texts = _boom
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        with pytest.raises(DatabaseError):
+            await strategy.extract(TextChunks(chunks=[_chunk("a")]), ontology, ctx)
+        assert inner.calls == [], "extraction must not run once the graph is unreachable"
+
+    async def test_lookup_budget_error_propagates(self, ontology, ctx):
+        store = FakeGraphStore()
+
+        async def _boom(document_id):
+            raise LatencyBudgetExceededError("out of time")
+
+        store.get_document_chunk_texts = _boom
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        with pytest.raises(LatencyBudgetExceededError):
+            await strategy.extract(TextChunks(chunks=[_chunk("a")]), ontology, ctx)
+        assert inner.calls == []
+
+    async def test_rebuild_database_error_propagates(self, ontology, ctx):
+        """Same rule at the second fallback, which runs after a cache hit."""
+        store = FakeGraphStore(chunk_texts=[("old-1", "a")])
+
+        async def _boom(chunk_ids):
+            raise DatabaseError("connection reset")
+
+        store.get_entities_mentioned_in_chunks = _boom
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        with pytest.raises(DatabaseError):
+            await strategy.extract(
+                TextChunks(chunks=[_chunk("a", uid="new-1")]), ontology, ctx
+            )
+        assert inner.calls == []
+
+    async def test_other_errors_still_fail_open(self, ontology, ctx):
+        """A cache that merely misbehaves must not block the update."""
+        store = FakeGraphStore()
+
+        async def _boom(document_id):
+            raise ValueError("malformed row")
+
+        store.get_document_chunk_texts = _boom
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        await strategy.extract(TextChunks(chunks=[_chunk("a")]), ontology, ctx)
+        assert len(inner.calls) == 1, "fail-open path must still extract"
+        assert strategy.cached_chunk_count == 0
