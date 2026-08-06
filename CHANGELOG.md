@@ -26,9 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged.
 - **`CachedChunkExtraction(inner, graph_store, document_id)`** — the
   underlying decorator `ExtractionStrategy`, exported at top level for
-  advanced pipelines. Fail-open by construction: any cache lookup or
-  rebuild failure falls back to full extraction (worst case is paying
-  for skippable LLM calls, never data loss). Caveats: the graph is the
+  advanced pipelines. Fail-open: a cache lookup or rebuild failure
+  falls back to full extraction (worst case is paying for skippable
+  LLM calls, never data loss). An unreachable graph (`DatabaseError`)
+  and an exhausted latency budget are the exceptions and propagate —
+  extraction only needs the LLM, so it would bill in full and then
+  fail at the write phase regardless. Caveats: the graph is the
   cache, so manually deleted entities are not resurrected from
   unchanged chunks, and ontology/prompt/model changes do not
   re-extract unchanged chunks — pass `cache_unchanged_chunks=False`
@@ -38,6 +41,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **`get_relationships_for_chunks()`** — new schema-owning read
   accessors backing the cache (with `ChunkEntityRow` /
   `ChunkRelationshipRow` typed rows in `core.models`).
+
+### Changed
+
+- **`FalkorDBConnection.query()` now raises `DatabaseError` for every
+  driver-level failure** — unreachable server, open circuit breaker,
+  exhausted retries, or a permanent error. Previously the raw
+  `redis.exceptions.*` exception escaped, which callers could only
+  catch as a generic `Exception`; telling an infrastructure failure
+  apart from an application error is what lets the chunk cache stop
+  instead of paying for an LLM run it could not store. The originating
+  exception is preserved as `__cause__` and its text is kept in the
+  message, so message-based handling (such as tolerating "index
+  already exists") is unaffected. Catch `DatabaseError` instead of
+  `redis.exceptions.ConnectionError` if you were relying on the
+  driver's own types.
+- **`FalkorDBConnection.ping()` returns `False` when the server is
+  unreachable** instead of raising. Reporting "not alive" is the point
+  of the call.
 
 ## [1.3.0] - 2026-06-04
 
