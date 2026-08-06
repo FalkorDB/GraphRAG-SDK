@@ -150,37 +150,41 @@ def _neutralize_context_close_tag(text: str) -> str:
 def _same_embedding_model(stored: str, current: str) -> bool:
     """Whether two model identifiers name the same embedding model.
 
-    ``"azure/text-embedding-3-large"`` and ``"text-embedding-3-large"`` are the
-    *same* model reached through different endpoints — the leading segment is a
-    routing prefix telling the client where to send the request, it is not part
-    of the model identity. A plain string comparison would reject a graph whose
-    provider changed, even though the stored vectors are unchanged.
+    A leading segment can mean two different things, and the string alone
+    doesn't say which:
 
-    One leading route segment is therefore optional on either side: the names
-    match if they are equal with or without it, which covers a prefix appearing,
-    disappearing, or changing (``"azure/…"`` -> ``"openai/…"``). Comparison is
-    case-insensitive and ignores surrounding whitespace.
+    - a *route* — ``"azure/text-embedding-3-large"`` is the same model as
+      ``"text-embedding-3-large"``, just reached through a different endpoint;
+    - an *owner* — ``"BAAI/bge-m3"`` and ``"ollama/bge-m3"`` are a fp32 release
+      and a quantized build, same dimensions but different vectors.
 
-    Only a whole ``/``-delimited segment can be ignored, never a substring: a
-    looser check would accept ``"text-embedding-3-large"`` against
-    ``"text-embedding-3-large-v2"`` — different models with different vectors —
-    and silently pass the mismatch this guard exists to catch.
+    A bare name is the tell: it carries no route, so a segment present on only
+    one side is one. That case is ignored. When both sides carry a segment they
+    name owners and are compared in full, which keeps the pairs above distinct.
 
-    A routing prefix is indistinguishable from a vendor namespace, so
-    ``"my-org/custom-embedder"`` and ``"custom-embedder"`` also compare equal.
+    This matters because the dimension check can't separate them — every
+    realistic collision here has identical dimensions — and the resulting
+    failure is silent: retrieval still returns results, ranked against vectors
+    from another model.
+
+    Comparison is case-insensitive and ignores surrounding whitespace. Only a
+    whole ``/`` segment is ever ignored, never a substring, so
+    ``"text-embedding-3-large"`` and ``"text-embedding-3-large-v2"`` stay
+    distinct.
     """
-
-    def _variants(name: str) -> set[str]:
-        name = name.strip().lower()
-        if not name:
-            return set()
-        forms = {name}
-        _, sep, tail = name.partition("/")
-        if sep and tail:
-            forms.add(tail)
-        return forms
-
-    return bool(_variants(stored) & _variants(current))
+    a = stored.strip().lower()
+    b = current.strip().lower()
+    if not a or not b:
+        return a == b
+    if a == b:
+        return True
+    _, a_sep, a_tail = a.partition("/")
+    _, b_sep, b_tail = b.partition("/")
+    if a_sep and a_tail and not b_sep:
+        return a_tail == b
+    if b_sep and b_tail and not a_sep:
+        return b_tail == a
+    return False
 
 
 def _strip_and_load_json(text: str) -> Any:
