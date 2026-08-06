@@ -27,8 +27,11 @@ Safe by construction:
   then strips the old chunk ids.
 - Mentions are re-emitted against the new chunk uid, so the ``update()``
   orphan cleanup keeps every entity that unchanged chunks still support.
-- Every cache failure falls back to real extraction (fail-open): the worst
-  case is paying for LLM calls that could have been skipped, never data loss.
+- A cache failure falls back to real extraction (fail-open): the worst case is
+  paying for LLM calls that could have been skipped, never data loss. The
+  exception is an unreachable graph (``DatabaseError``) or an exhausted
+  latency budget, which propagate — extraction only needs the LLM, so it
+  would bill in full and then fail at the write phase regardless.
 
 Semantics to be aware of (documented on ``GraphRAG.update()``):
 
@@ -48,6 +51,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.exceptions import DatabaseError, LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
     EntityMention,
     GraphData,
@@ -279,6 +283,12 @@ class CachedChunkExtraction(ExtractionStrategy):
             old_by_hash, all_old_ids = await self._old_chunks_by_hash(
                 {c.uid for c in chunks.chunks}
             )
+        except (DatabaseError, LatencyBudgetExceededError):
+            # Fail-open covers a cache that can't answer, not a graph that
+            # isn't there. Extracting every chunk needs only the LLM, so it
+            # would succeed and bill in full before the write phase hit the
+            # same dead connection and failed anyway.
+            raise
         except Exception as exc:
             logger.warning("Chunk cache lookup failed, extracting everything: %s", exc)
             old_by_hash, all_old_ids = {}, set()
@@ -308,6 +318,10 @@ class CachedChunkExtraction(ExtractionStrategy):
                         [(old_id, chunk.uid) for chunk, old_id in cached], all_old_ids
                     )
                 )
+            except (DatabaseError, LatencyBudgetExceededError):
+                # Same reasoning as the lookup above: an unreachable graph
+                # can't be recovered from by doing more LLM work.
+                raise
             except Exception as exc:
                 # Cache miss must never lose data — fall back to real extraction.
                 logger.warning(

@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
+from graphrag_sdk.core.exceptions import DatabaseError
+
 logger = logging.getLogger(__name__)
 
 
@@ -123,9 +125,21 @@ class FalkorDBConnection:
             pool_kwargs["ssl_keyfile"] = self.config.ssl_keyfile
             pool_kwargs["ssl_check_hostname"] = self.config.ssl_check_hostname
 
-        self._pool = BlockingConnectionPool(**pool_kwargs)
-        self._driver = FalkorDB(connection_pool=self._pool)
-        self._graph = self._driver.select_graph(self.config.graph_name)
+        self._pool = self._pool or BlockingConnectionPool(**pool_kwargs)
+        try:
+            self._driver = FalkorDB(connection_pool=self._pool)
+            self._graph = self._driver.select_graph(self.config.graph_name)
+        except Exception as exc:
+            # The driver probes the server during construction, so an
+            # unreachable database surfaces here rather than at query time.
+            # The pool is kept: it connects lazily and is reusable, and
+            # only close() can release it. Dropping it here would strand
+            # a pool per failed attempt with no way to aclose() it.
+            self._driver = None
+            self._graph = None
+            raise DatabaseError(
+                f"Could not connect to FalkorDB at {self.config.host}:{self.config.port}: {exc}"
+            ) from exc
 
         logger.info(
             "Connected to FalkorDB (async) at %s:%s (tls=%s)",
@@ -158,12 +172,18 @@ class FalkorDBConnection:
 
         Returns:
             ``QueryResult`` from the async FalkorDB driver.
+
+        Raises:
+            DatabaseError: The query could not be completed — the connection is
+                unhealthy, retries were exhausted, or the failure is permanent.
+                Driver-level exceptions are wrapped so callers can distinguish
+                infrastructure failures from application errors.
         """
         self._ensure_client()
         assert self._graph is not None  # for type-checkers
 
         if not await self._breaker.allow_request():
-            raise ConnectionError(
+            raise DatabaseError(
                 "Circuit breaker is open — FalkorDB connection is unhealthy. "
                 "Requests will resume after recovery timeout."
             )
@@ -186,7 +206,7 @@ class FalkorDBConnection:
                         exc,
                     )
                     logger.debug("Non-transient FalkorDB query failure details", exc_info=True)
-                    raise
+                    raise DatabaseError(f"FalkorDB query failed: {exc}") from exc
                 await self._breaker.record_failure()
                 logger.warning(
                     "Query attempt %d/%d failed: %s",
@@ -210,8 +230,10 @@ class FalkorDBConnection:
                 "FalkorDB query failure details",
                 exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
             )
-            raise last_exc
-        raise RuntimeError("FalkorDB query failed without an exception")
+            raise DatabaseError(
+                f"FalkorDB query failed after {self.config.retry_count} attempts: {last_exc}"
+            ) from last_exc
+        raise DatabaseError("FalkorDB query failed without an exception")
 
     # Substrings that indicate a non-transient (permanent) error —
     # retrying will never succeed.
@@ -229,9 +251,14 @@ class FalkorDBConnection:
     # ── Health & Admin ────────────────────────────────────────────
 
     async def ping(self) -> bool:
-        """Send a Redis PING to verify the connection is alive."""
-        self._ensure_client()
+        """Send a Redis PING to verify the connection is alive.
+
+        Returns ``False`` rather than raising when the server cannot be
+        reached — reporting "not alive" is the point of the call.
+        """
         try:
+            self._ensure_client()
+
             from redis.asyncio import Redis
 
             redis: Redis = Redis(connection_pool=self._pool)
