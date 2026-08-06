@@ -54,3 +54,5 @@ nav:
   - Ontology Evolution: ontology-evolution.md
   - Benchmark: benchmark.md
   - API Reference: api-reference.md
+  - Design Proposals:
+      - Structured Data Ingestion: design/structured-ingestion.md

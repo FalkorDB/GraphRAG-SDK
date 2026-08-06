@@ -4,6 +4,11 @@ When you call `rag.ingest("document.txt")`, the SDK transforms your raw text int
 
 This document explains what each step does, why it exists, and how to tune it.
 
+!!! info "Structured sources (CSV, JSON, tables, existing graphs)"
+    This page describes the **unstructured** path — prose in, LLM extraction, graph out.
+    Structured inputs skip LLM extraction entirely and are covered by a separate proposal:
+    [Design: Structured Data Ingestion](design/structured-ingestion.md).
+
 ---
 
 ## The Big Picture
