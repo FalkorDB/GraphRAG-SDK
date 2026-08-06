@@ -1175,33 +1175,30 @@ class TestGraphRAGConfigNode:
 
 
 class TestSameEmbeddingModel:
-    """Provider-route tolerance used by the config guard.
+    """Model-name comparison used by the config guard.
 
-    A stored name may carry a routing prefix the live embedder doesn't (or
-    vice versa) when a graph moves between providers. Same model, same
-    vectors — must still compare equal.
+    A leading segment is a route when the other side has none, and an owner
+    when both sides have one. Routes are ignorable; owners are identity.
     """
 
     @pytest.mark.parametrize(
         "stored,current",
         [
+            # A segment on one side only: the bare side names no route, so
+            # the segment is one. This is the case that reaches production —
+            # a caller records the bare name and later builds a routed one.
             ("azure/text-embedding-3-large", "text-embedding-3-large"),
             ("text-embedding-3-large", "azure/text-embedding-3-large"),
             ("openai/text-embedding-3-large", "text-embedding-3-large"),
             ("AZURE/text-embedding-3-large", "text-embedding-3-large"),
             ("vertex_ai/textembedding-gecko", "textembedding-gecko"),
+            ("my-org/custom-embedder", "custom-embedder"),
             # Identical on both sides, with and without a route.
             ("text-embedding-3-large", "text-embedding-3-large"),
             ("azure/text-embedding-3-large", "azure/text-embedding-3-large"),
             # Case and surrounding whitespace are not part of the identity.
             ("Text-Embedding-3-Large", "text-embedding-3-large"),
             ("  azure/text-embedding-3-large  ", "text-embedding-3-large"),
-            # Multi-segment routes collapse to the trailing model id.
-            ("openrouter/anthropic/claude-3", "anthropic/claude-3"),
-            # Any vendor namespace, not just the well-known providers.
-            ("my-org/custom-embedder", "custom-embedder"),
-            # Route changed on a graph that was already prefixed.
-            ("azure/text-embedding-3-large", "openai/text-embedding-3-large"),
         ],
     )
     def test_route_prefix_is_ignored(self, stored, current):
@@ -1215,9 +1212,20 @@ class TestSameEmbeddingModel:
             # Genuinely different models.
             ("text-embedding-3-large", "text-embedding-3-small"),
             ("azure/text-embedding-3-large", "azure/text-embedding-3-small"),
-            # Suffix-of-a-word, NOT a route segment. A bare `in` check would
-            # accept these and silently pass a real mismatch — the vectors
-            # differ, which is exactly what the guard exists to catch.
+            # Two owners. These are the pairs the dimension check cannot see:
+            # a finetune under another org, and a quantized build, both keep
+            # the base model's dimensions while producing different vectors.
+            ("sentence-transformers/all-MiniLM-L6-v2", "myorg/all-MiniLM-L6-v2"),
+            ("BAAI/bge-m3", "ollama/bge-m3"),
+            ("intfloat/e5-large-v2", "rando/e5-large-v2"),
+            ("openai/text-embedding-3-large", "mistralai/text-embedding-3-large"),
+            # Cost of the above: a route that changes while both sides stay
+            # qualified is read as an owner change and rejected. Rare next to
+            # the collisions it buys, and it fails loudly rather than silently.
+            ("azure/text-embedding-3-large", "openai/text-embedding-3-large"),
+            ("openrouter/anthropic/claude-3", "anthropic/claude-3"),
+            # Suffix-of-a-word, NOT a route segment. A bare substring check
+            # would accept these and silently pass a real mismatch.
             ("text-embedding-3-large", "text-embedding-3-large-v2"),
             ("text-embedding-3-large-v2", "text-embedding-3-large"),
             ("embedding-3-large", "text-embedding-3-large"),
@@ -1273,13 +1281,15 @@ class TestConfigProviderPrefix:
         )
         assert isinstance(result, RetrieverResult)
 
-    async def test_differing_providers_same_model_passes(self, mock_conn):
-        result = await self._retrieve_with(
-            mock_conn,
-            self._embedder_named("openai/mock-embedder"),
-            "azure/mock-embedder",
-        )
-        assert isinstance(result, RetrieverResult)
+    async def test_differing_providers_both_qualified_raises(self, mock_conn):
+        """With a segment on both sides there is nothing to mark either as a
+        route, so they are read as two owners and rejected."""
+        with pytest.raises(ConfigError, match="Embedding model mismatch"):
+            await self._retrieve_with(
+                mock_conn,
+                self._embedder_named("openai/mock-embedder"),
+                "azure/mock-embedder",
+            )
 
     async def test_genuine_model_change_still_raises(self, mock_conn):
         """The guard must keep catching a real swap — a prefix must not be
@@ -1291,18 +1301,21 @@ class TestConfigProviderPrefix:
                 "azure/text-embedding-3-large",
             )
 
-    async def test_same_model_under_different_vendors_passes(self, mock_conn):
-        """A routing prefix is indistinguishable from a vendor namespace,
-        so ``team-a/mock-embedder`` and ``team-b/mock-embedder`` name the
-        same model and must not raise. The dimension check below still
-        guards the case that actually corrupts retrieval.
+    async def test_unknown_prefix_still_raises(self, mock_conn):
+        """Two owner-qualified names are two different models.
+
+        The dimension check cannot stand in for this one: a finetune or a
+        quantized build keeps the base model's dimensions, so it passes while
+        producing incompatible vectors. Retrieval then fails soft — results
+        come back, ranked against another model's embeddings — which can sit
+        in a graph indefinitely.
         """
-        result = await self._retrieve_with(
-            mock_conn,
-            self._embedder_named("team-a/mock-embedder"),
-            "team-b/mock-embedder",
-        )
-        assert isinstance(result, RetrieverResult)
+        with pytest.raises(ConfigError, match="Embedding model mismatch"):
+            await self._retrieve_with(
+                mock_conn,
+                self._embedder_named("team-a/mock-embedder"),
+                "team-b/mock-embedder",
+            )
 
     async def test_dimension_mismatch_still_raises_under_prefix(self, mock_conn):
         """Prefix normalisation must not weaken the dimension check."""
