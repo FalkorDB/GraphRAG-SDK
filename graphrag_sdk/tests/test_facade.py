@@ -1174,78 +1174,69 @@ class TestGraphRAGConfigNode:
         assert isinstance(result, RetrieverResult)
 
 
-class TestBareModelName:
-    """Provider-prefix normalisation used by the config guard."""
+class TestSameEmbeddingModel:
+    """Provider-route tolerance used by the config guard.
+
+    A stored name may carry a routing prefix the live embedder doesn't (or
+    vice versa) when a graph moves between providers. Same model, same
+    vectors — must still compare equal.
+    """
 
     @pytest.mark.parametrize(
-        "name,expected",
+        "stored,current",
         [
             ("azure/text-embedding-3-large", "text-embedding-3-large"),
+            ("text-embedding-3-large", "azure/text-embedding-3-large"),
             ("openai/text-embedding-3-large", "text-embedding-3-large"),
             ("AZURE/text-embedding-3-large", "text-embedding-3-large"),
             ("vertex_ai/textembedding-gecko", "textembedding-gecko"),
+            # Identical on both sides, with and without a route.
             ("text-embedding-3-large", "text-embedding-3-large"),
+            ("azure/text-embedding-3-large", "azure/text-embedding-3-large"),
+            # Case and surrounding whitespace are not part of the identity.
+            ("Text-Embedding-3-Large", "text-embedding-3-large"),
+            ("  azure/text-embedding-3-large  ", "text-embedding-3-large"),
+            # Multi-segment routes collapse to the trailing model id.
+            ("openrouter/anthropic/claude-3", "anthropic/claude-3"),
+            # Any vendor namespace, not just the well-known providers.
+            ("my-org/custom-embedder", "custom-embedder"),
+            # Route changed on a graph that was already prefixed.
+            ("azure/text-embedding-3-large", "openai/text-embedding-3-large"),
         ],
     )
-    def test_known_prefixes_are_stripped(self, name, expected):
-        from graphrag_sdk.api.main import _bare_model_name
+    def test_route_prefix_is_ignored(self, stored, current):
+        from graphrag_sdk.api.main import _same_embedding_model
 
-        assert _bare_model_name(name) == expected
+        assert _same_embedding_model(stored, current) is True
 
     @pytest.mark.parametrize(
-        "name",
+        "stored,current",
         [
-            # Not a provider — the first segment is part of the model id and
-            # dropping it would collapse two distinct models onto one name.
-            "my-org/custom-embedder",
-            # A bare name that merely contains a slashless provider word.
-            "azure-lookalike-model",
-            # Trailing slash leaves nothing to keep.
-            "azure/",
-            "",
+            # Genuinely different models.
+            ("text-embedding-3-large", "text-embedding-3-small"),
+            ("azure/text-embedding-3-large", "azure/text-embedding-3-small"),
+            # Suffix-of-a-word, NOT a route segment. A bare `in` check would
+            # accept these and silently pass a real mismatch — the vectors
+            # differ, which is exactly what the guard exists to catch.
+            ("text-embedding-3-large", "text-embedding-3-large-v2"),
+            ("text-embedding-3-large-v2", "text-embedding-3-large"),
+            ("embedding-3-large", "text-embedding-3-large"),
+            # The route segment itself must be whole.
+            ("azure/text-embedding-3-large", "3-large"),
+            # One side empty is not a match.
+            ("text-embedding-3-large", ""),
+            ("", "text-embedding-3-large"),
         ],
     )
-    def test_unknown_or_degenerate_names_unchanged(self, name):
-        from graphrag_sdk.api.main import _bare_model_name
+    def test_different_models_do_not_match(self, stored, current):
+        from graphrag_sdk.api.main import _same_embedding_model
 
-        assert _bare_model_name(name) == name
-
-    def test_only_first_segment_stripped(self):
-        """Multi-segment ids keep the part that identifies the model."""
-        from graphrag_sdk.api.main import _bare_model_name
-
-        assert (
-            _bare_model_name("openrouter/anthropic/claude-3")
-            == "anthropic/claude-3"
-        )
-
-    def test_falls_back_when_litellm_missing(self, monkeypatch):
-        """litellm is an optional extra; the guard must still work without it."""
-        import builtins
-
-        from graphrag_sdk.api.main import (
-            _bare_model_name,
-            _litellm_provider_prefixes,
-        )
-
-        _litellm_provider_prefixes.cache_clear()
-        real_import = builtins.__import__
-
-        def _no_litellm(name, *args, **kwargs):
-            if name == "litellm":
-                raise ImportError("litellm not installed")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", _no_litellm)
-        try:
-            assert _bare_model_name("azure/text-embedding-3-large") == "text-embedding-3-large"
-        finally:
-            _litellm_provider_prefixes.cache_clear()
+        assert _same_embedding_model(stored, current) is False
 
 
 class TestConfigProviderPrefix:
-    """The stored model name may carry a litellm routing prefix that the
-    live embedder doesn't (or vice versa) when a graph is moved between
+    """The stored model name may carry a routing prefix that the live
+    embedder doesn't (or vice versa) when a graph is moved between
     providers. Same model, same vectors — must not raise."""
 
     @staticmethod
@@ -1300,15 +1291,18 @@ class TestConfigProviderPrefix:
                 "azure/text-embedding-3-large",
             )
 
-    async def test_unknown_prefix_still_raises(self, mock_conn):
-        """A non-provider first segment is part of the model identity, so
-        two such names remain distinct."""
-        with pytest.raises(ConfigError, match="Embedding model mismatch"):
-            await self._retrieve_with(
-                mock_conn,
-                self._embedder_named("team-a/mock-embedder"),
-                "team-b/mock-embedder",
-            )
+    async def test_same_model_under_different_vendors_passes(self, mock_conn):
+        """A routing prefix is indistinguishable from a vendor namespace,
+        so ``team-a/mock-embedder`` and ``team-b/mock-embedder`` name the
+        same model and must not raise. The dimension check below still
+        guards the case that actually corrupts retrieval.
+        """
+        result = await self._retrieve_with(
+            mock_conn,
+            self._embedder_named("team-a/mock-embedder"),
+            "team-b/mock-embedder",
+        )
+        assert isinstance(result, RetrieverResult)
 
     async def test_dimension_mismatch_still_raises_under_prefix(self, mock_conn):
         """Prefix normalisation must not weaken the dimension check."""
