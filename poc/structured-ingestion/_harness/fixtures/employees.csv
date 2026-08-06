@@ -1,0 +1,4 @@
+employee_id,full_name,age,job_title,org_id,start_date
+E-1,Alice Smith,34,Engineer,ORG-42,2019-04-01
+E-2,Bob Jones,45,CFO,ORG-42,2015-11-15
+E-3,Carol White,29,Engineer,ORG-7,2021-06-30

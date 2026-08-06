@@ -1,0 +1,44 @@
+{
+  "catalog": {
+    "version": 3
+  },
+  "products": [
+    {
+      "sku": "SKU-1",
+      "name": "Anvil",
+      "price": 99.5,
+      "sold_by": {
+        "org_id": "ORG-42",
+        "org_name": "Acme Corp"
+      },
+      "tags": [
+        "hardware",
+        "heavy"
+      ]
+    },
+    {
+      "sku": "SKU-2",
+      "name": "Rocket Skates",
+      "price": 249.0,
+      "sold_by": {
+        "org_id": "ORG-42",
+        "org_name": "Acme Corp"
+      },
+      "tags": [
+        "hardware"
+      ]
+    },
+    {
+      "sku": "SKU-9",
+      "name": "Consulting Hour",
+      "price": 180.0,
+      "sold_by": {
+        "org_id": "ORG-7",
+        "org_name": "Globex"
+      },
+      "tags": [
+        "services"
+      ]
+    }
+  ]
+}

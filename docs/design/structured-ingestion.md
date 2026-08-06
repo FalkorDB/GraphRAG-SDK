@@ -1,6 +1,9 @@
 # Design: Structured Data Ingestion
 
-**Status:** Proposed · **Tracking:** [FalkorDB/research#82][i82] (POC) · design from [research#65][i65] · supersedes [GraphRAG-SDK#74][i74]
+**Status:** Proposed, spike-validated · **Tracking:** [FalkorDB/research#82][i82] (POC) · design from [research#65][i65] · supersedes [GraphRAG-SDK#74][i74]
+
+The proposals in §3 were tested by five throwaway spikes against a live FalkorDB before this
+document settled — see [§10](#10-spike-results). Four of them corrected something here.
 
 [i82]: https://github.com/FalkorDB/research/issues/82
 [i65]: https://github.com/FalkorDB/research/issues/65
@@ -117,10 +120,27 @@ class RecordLoaderStrategy(ABC):
     async def load_records(self, source: str, ctx: Context) -> RecordBatch: ...
 
 class RecordBatch(DataModel):
-    records: Iterable[dict[str, Any]]   # streamed, never fully materialised
+    open_records: Callable[[], Iterator[dict[str, Any]]]  # a stream *factory* — see below
     document_info: DocumentInfo
     inferred_types: dict[str, str]      # column -> STRING/INTEGER/... hint from the reader
+    record_count: int | None = None     # when the loader knows it cheaply; None when streaming
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return self.open_records()
 ```
+
+!!! warning "A factory, not an iterable — [spike s1][s1] corrected this"
+    The obvious signature `records: Iterable[dict[str, Any]]` **does not work**. Pydantic v2 keeps
+    it lazy (good: 200k rows cost ~0 MB vs 71.6 MB materialised) but replaces it with a *one-shot*
+    `ValidatorIterator`. #6 iterates records twice — step 3 builds record chunks, step 4 maps
+    records to `GraphData` — and the measured result is `step 3 saw 10 records, step 4 saw 0`, with
+    **no error raised**: a silent zero-row ingest. The annotation also erases list-ness, so `len()`
+    raises even when the caller passed a list, leaving no cheap count for progress reporting.
+    A factory is re-iterable by construction and verified `model_dump()`-safe.
+
+    Loaders therefore hand over a *re-openable* source (reopen the file, re-run the cursor). Where a
+    source genuinely cannot be read twice, the loader spools once and closes over the buffer — which
+    makes the memory cost explicit at the loader instead of silently corrupting the write.
 
 **Why.** Without it we get one bespoke code path per format — the exact problem #82 is filed
 against. With it, a new format is a ~50-line loader and *nothing else changes*. It also dissolves
@@ -152,21 +172,32 @@ Progressive disclosure — the 80% case is one line:
 await rag.ingest("orgs.csv", mapping=Table(node="Organization", key="org_name"))
 ```
 
-The general case is a denormalized row producing several nodes and the edges between them:
+The general case is a denormalized row producing several nodes and the edges between them. Each
+`NodeMapping` carries an **alias** — a handle unique *within the record* — and edges address
+aliases, never labels:
 
 ```python
 mapping = RecordMapping(
     nodes=[
-        NodeMapping(label="Person", key="employee_id", name="full_name",
+        NodeMapping(alias="employee", label="Person", key="employee_id", name="full_name",
                     properties={"age": "age", "title": "job_title"}),
-        NodeMapping(label="Organization", key="org_id", name="org_name"),
+        NodeMapping(alias="employer", label="Organization", key="org_id", reference=True),
     ],
     edges=[
-        EdgeMapping(type="WORKS_AT", source="Person", target="Organization",
+        EdgeMapping(type="WORKS_AT", source="employee", target="employer",
                     properties={"since": "start_date"}),
     ],
 )
 ```
+
+!!! warning "Edges address aliases, not labels — [spike s2][s2] corrected this"
+    The obvious `EdgeMapping(source="Person", target="Organization")` cannot express a record
+    containing **two nodes of the same label**. Run against `transactions.csv` — a buyer and a
+    seller, both `Organization` — label addressing produced a **self-loop** (`ORG-7 -> ORG-7`
+    instead of `ORG-7 -> ORG-42`), silently. Buyer/seller, manager/report, parent/subsidiary and
+    origin/destination are the standard shape of transactional data, not an edge case.
+
+    `alias` defaults to the label, so the single-node 80% case above never mentions it.
 
 **Why it doubles as an ontology fragment.** A mapping already declares labels, typed properties
 and relation patterns — that is literally the content of `Ontology`. So we do not invent a second
@@ -180,6 +211,18 @@ may not have an ontology"*:
 | Ontology exists, mapping **contradicts** it (type mismatch on an existing attribute) | reject **before any write**, naming the offending `Label.attribute` |
 | **No ontology** | the mapping **bootstraps** it — the graph becomes self-describing and text-to-Cypher immediately knows the typed columns |
 | No ontology *and* no mapping | out of POC scope; later an inference layer proposes a *draft mapping* (see #11) |
+
+**Two guards `to_ontology()` must apply** (both found by [spike s2][s2]):
+
+1. **Reject SDK-reserved attribute names.** A mapping declaring `properties={"description": ...,
+   "id": ...}` generates an ontology that shadows values the SDK writes on every node.
+   `to_ontology()` rejects `_RESERVED_ATTRIBUTE_NAMES - _SDK_MANAGED_ATTRIBUTE_NAMES`
+   (`core/models.py`), naming the offending `Label.attribute` — the same "reject before any write"
+   rule already applied to contradictions.
+2. **Emit stubs for reference-only labels.** `Ontology._warn_on_undeclared_pattern_labels` fires
+   when a relation pattern names a label not in `entities` — which is exactly what a foreign-key
+   reference produces. Left alone, every structured ingest logs warnings that train users to ignore
+   real ones.
 
 **Three ways an edge arises**, all in the same DSL:
 
@@ -204,15 +247,36 @@ properties, or need to be retrieved on its own?"
 
 This is the crux, and the thing that makes heterogeneous sources compose.
 
-**What.** Add `identity` to the ontology entity type, defaulting to `name`:
+**What.** Add `identity` to the ontology entity type. **For structured sources it defaults to the
+record key**, not to `name`:
 
 ```python
-Entity(label="Organization", identity=["name"])   # default
-Entity(label="Product",      identity=["sku"])    # a real cross-system business key
+Entity(label="Organization", identity=["org_id"])  # structured default: the record key
+Entity(label="Product",      identity=["sku"])     # a real cross-system business key
 ```
 
 Node id becomes `compute_entity_id(<joined identity values>, label)` — **the same function the
 unstructured path already uses.**
+
+!!! danger "`identity=["name"]` as the default is wrong — [spike s3][s3] inverted this"
+    The first draft of this design defaulted identity to `name`, reasoning that a PDF mention of
+    `Acme Corp` and a CSV row `org_name="Acme Corp"` would then compute the same id and merge for
+    free. Measured on the #82 acceptance corpus, that loses:
+
+    | Policy | Acme nodes | #82 traversal |
+    | --- | --- | --- |
+    | name-first (`identity=["name"]`) | 2 | **0 people reachable** |
+    | key-only | 2 | **0 people reachable** |
+    | key + `alias_ids` (#4) | **1** | **2 people reachable** |
+
+    The reason is that `employees.csv` is a normalised table: it references its organisation by
+    `org_id=ORG-42` and has **no `org_name` column**. Under name-first identity the mapping cannot
+    compute the identity of the entity it is pointing at, so the rule in #2 — "every mapping must
+    supply the type's identity attributes" — is *unsatisfiable for any foreign key*, which is the
+    most common structured shape there is.
+
+    The failure is silent: a stub node accumulates all the `WORKS_AT` edges while the real Acme
+    node holds the prose, and the two never meet.
 
 **Why.** Separate two things that are usually conflated:
 
@@ -222,17 +286,27 @@ unstructured path already uses.**
 
 With identity declared on the *type*:
 
-- a PDF mention of `Acme Corp` and a CSV row with `org_name="Acme Corp"` compute the **same id**
-  and `MERGE` onto the **same node** — connected and traversable at write time, with no merge
-  pass, no similarity threshold, and no LLM;
-- differently-shaped CSVs converge because every mapping must supply the type's identity
-  attributes — the *sources* differ, the *identity contract* does not;
+- foreign-key references land on the right node **regardless of ingest order** — measured: both
+  ingest orders converge to an identical graph for every policy tested;
+- differently-shaped CSVs converge because every mapping supplies the type's identity attributes —
+  the *sources* differ, the *identity contract* does not;
 - if identity were per-mapping, five sources would mean five identity opinions and a disconnected
   graph.
 
+Bridging key-identified structured nodes back to name-identified unstructured mentions is #4 —
+which is consequently **on the critical path, not an optional extra**.
+
+!!! note "Free to prototype"
+    `Entity(label="Product", identity=["sku"])` already works today: `DataModel.Config.extra =
+    "allow"` carries the field and it survives `model_dump()`, so it persists to `ontology.json`.
+    Two consequences — `identity` can be prototyped with zero `src` changes, and promoting it to a
+    declared field later will not break ontologies persisted in the meantime. It must still become
+    a declared field (defaulting to `["name"]` for unstructured-only types) so it is validated
+    rather than being a silent typo sink.
+
 ---
 
-### #4 — `AliasMatchResolution`: the deterministic bridge for business-key identity
+### #4 — `AliasMatchResolution`: the deterministic bridge, on the critical path
 
 **What.** Structured writes store normalized alias handles on the node, built with
 `compute_entity_id` so they are directly comparable to unstructured ids:
@@ -244,14 +318,27 @@ alias_ids: ["acme_corp__organization", "acme__organization"]   # indexed LIST
 A new `ResolutionStrategy` merges an incoming node onto an existing node when its id appears in
 that node's `alias_ids`.
 
-**Why.** Unstructured extraction can only ever produce a **name** — it can never know an SKU. So
-an entity type whose identity is *not* `name` would leave the PDF entity and the CSV row
-disconnected. This bridges them, and it is:
+**Why.** Unstructured extraction can only ever produce a **name** — it can never know an `org_id`
+or an SKU. Since #3 identifies structured entities by their record key, *every* entity type that
+appears in both a document and a table needs this bridge. [Spike s3][s3] measured it as the only
+configuration that yields one Acme node and a working `prose-chunk -> Org -> WORKS_AT -> Person`
+traversal. It is:
 
-- **deterministic and index-backed** — no LLM, no embeddings;
+- **deterministic and index-backed** — no LLM, no embeddings; the spike's implementation is four
+  Cypher statements per merged pair;
 - **direction-agnostic** — works whether the CSV or the PDF was ingested first;
 - **reusable** — because it implements the existing `ResolutionStrategy` ABC, it also works in
   the unstructured pipeline and inside `finalize()`.
+
+!!! warning "Order does not matter, but *presence* does — [spike s3][s3]"
+    The bridge is built from whichever source declares both the key and the name (the dimension
+    table — `orgs.csv` here). With prose + `employees.csv` and **no** `orgs.csv`, the result
+    degrades to 2 Acme nodes and 0 reachable people, because nothing ever carried `ORG-42` and
+    `"Acme Corp"` in the same record.
+
+    This is an acceptable requirement, but it must be *visible*: when a mapping references a label
+    that no ingested source has declared, `IngestionResult` reports the count of unbridged stubs
+    rather than leaving the user with a quietly disconnected graph.
 
 Fuzzy merging (`SemanticResolution`, `LLMVerifiedResolution`, `deduplicate_entities()`) stays
 available and unchanged, but is no longer on the critical path. **Make the common join exact;
@@ -271,22 +358,39 @@ keep the fuzzy one optional.**
   today's `uuid4()`;
 - `MENTIONED_IN` edges from the record's entities to that chunk.
 
-> **The chunk uid must be derived from the *run's* `DocumentInfo.uid`, never from the canonical
-> document id.** During `update()` those differ: the pipeline runs against
-> `pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"`, and `rollforward_cutover()`
-> step 1 calls `delete_document_chunks_and_node(real_id)` *before* promoting the pending. If
-> record chunks were keyed on the canonical id, the pending run would `MERGE` onto the **same
-> chunk nodes as the live document**, and the cutover would delete the chunks it is about to
-> promote — silent data loss. Keying on the effective (pending) uid keeps the two chunk sets
-> disjoint, exactly as the `uuid4()` behaviour does today.
+!!! danger "Chunk uids must key on the *effective* document uid — confirmed by [spike s4][s4]"
+    **The chunk uid must be derived from the *run's* `DocumentInfo.uid`, never from the canonical
+    document id.** During `update()` those differ: the pipeline runs against
+    `pending_id = f"{resolved_id}__pending__{uuid4().hex[:8]}"`, and `rollforward_cutover()`
+    step 1 calls `delete_document_chunks_and_node(real_id)` *before* promoting the pending.
+
+    This was predicted by reading the code and then **measured against a real FalkorDB through the
+    real `GraphStore`**:
+
+    | chunk uid keyed on | chunks before `update()` | chunk nodes shared with pending | **after cutover** |
+    | --- | --- | --- | --- |
+    | canonical document id | 3 | 3 | **0** |
+    | effective (pending) uid | 3 | 0 | **3** |
+
+    With canonical keying the pending run `MERGE`s onto the live document's chunk nodes, the cutover
+    deletes them, and an **empty document is promoted with no exception raised**. The precondition
+    guard in `rollforward_cutover` does not help — the pending `Document` node exists; only its
+    chunks have been destroyed.
+
+    Today's `uuid4()` uids are accidentally immune, which is exactly why making them deterministic
+    is the dangerous part of this proposal. Keying on the effective uid keeps the two chunk sets
+    disjoint while remaining deterministic *within* a run — which is all that re-ingest idempotency
+    requires.
 
 **Why this is the highest-leverage decision in the list.** It looks small and it buys four things
 we would otherwise have to build:
 
 - **`update()` and `delete_document()` work unchanged.** Their cleanup is defined purely over
-  `Document` / `Chunk` / `MENTIONED_IN` — verified: `delete_orphan_entities` matches
-  `WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk)`, and `get_document_entity_candidates` walks
-  `(:__Entity__)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(:Document)`. Structured data inherits
+  `Document` / `Chunk` / `MENTIONED_IN`. [Spike s4][s4] ran the real primitives against record
+  chunks: `get_document_entity_candidates()` found all 5 record-chunk entities,
+  `delete_stale_relationships()` GC'd exactly the deleted row's fact via `source_chunk_ids`, and
+  `delete_orphan_entities()` removed exactly the vanished row's `Person` **and** the organisation
+  that lost its last mention — leaving the other two people untouched. Structured data inherits
   correct incremental updates for free, including the concurrency invariant that mentions are
   written before `run()` returns.
 - **Chunk retrieval finds rows.** A CSV of product descriptions is genuinely useful text; a
@@ -323,8 +427,8 @@ shared base — **not** copied.
 | --- | --- | --- |
 | 1 | Load records | streamed, bounded batches |
 | 2 | Reconcile ontology | `mapping.to_ontology()` → validate / merge / bootstrap / reject |
-| 3 | Lexical graph ♻ | `Document` + record `Chunk`s, deterministic uids, content hash |
-| 4 | Map records → `GraphData` | pure function, **no LLM** |
+| 3 | Lexical graph ♻ | `Document` + record `Chunk`s, deterministic uids, content hash, `link_sequential=False` |
+| 4 | Map records → `GraphData` | pure function, **no LLM** — a second, independent pass over the records |
 | 5 | Coerce + validate types | ontology `Attribute.type` is the source of truth |
 | 6 | Prune against ontology ♻ | reuse `IngestionPipeline._prune` verbatim |
 | 7 | Resolve | `ExactMatchResolution` + `AliasMatchResolution` (#4) |
@@ -334,6 +438,33 @@ shared base — **not** copied.
 **Why share rather than copy.** Step 9's ordering is load-bearing for concurrent-update
 correctness and already carries a boxed warning comment in `ingestion/pipeline.py`. Copying it
 is precisely how that invariant gets silently broken later.
+
+!!! warning "Share a base class — do **not** subclass `IngestionPipeline` — [spike s5][s5]"
+    The three ♻ steps are reusable **verbatim**: `_build_lexical_graph` already consumes
+    `TextChunks`, which is exactly what #5 turns records into, and `_prune` / `_write_mentions`
+    depend only on `graph_store`. Both factorings were run end-to-end and produced identical graphs.
+
+    But `IngestionPipeline.__init__` requires `loader, chunker, extractor, resolver, graph_store,
+    vector_store`. A structured pipeline has a *record* loader, **no chunker** (records are already
+    chunks) and **no LLM extractor** (mapping is deterministic — the entire point of this design).
+    Subclassing means passing `None` for two of them and hoping nothing ever touches them; it works
+    today only by accident of which methods are called, and turns any future change to
+    `IngestionPipeline.run()` into a latent `AttributeError` on the structured path.
+
+    **Extract the three methods into a `LexicalGraphWriter` base that depends only on
+    `graph_store`**, inherited by both pipelines. `IngestionPipeline`'s public surface is unchanged,
+    and step 9's ordering still lives in exactly one place.
+
+!!! warning "`NEXT_CHUNK` must be suppressed for records — [spike s5][s5]"
+    `_build_lexical_graph` unconditionally chains `prev_chunk -[NEXT_CHUNK]-> chunk`. Reused for
+    records that asserts a sequential relationship **between unrelated table rows** — N-1 edges per
+    source, so 1M meaningless edges for a 1M-row CSV — while `retrieval/strategies/cypher_generation.py`
+    actively tells the LLM that `NEXT_CHUNK` "connects Chunk to next sequential Chunk". Row order in
+    a CSV is usually incidental, so these edges are not merely useless; they encode a false claim.
+
+    Fix: `_build_lexical_graph(..., link_sequential: bool = True)` and pass `False` for record
+    chunks. This is the **only** signature change the whole seam needs — the default preserves
+    today's behaviour exactly.
 
 **Why `RELATES` + `rel_type` rather than a native `:WORKS_AT` edge.** Every retrieval path assumes
 `RELATES`. A second edge convention would be a permanent tax on every retrieval strategy.
@@ -446,21 +577,23 @@ orgs.csv          org_id, org_name, hq_country
 ```python
 await rag.ingest("acme_report.pdf")                      # prose chunks + table rows, one Document
 
+# The dimension table declares Organization: key AND name, so it emits the alias bridge.
 await rag.ingest("orgs.csv", mapping=RecordMapping(nodes=[
-    NodeMapping(label="Organization", key="org_id", name="org_name",
+    NodeMapping(alias="org", label="Organization", key="org_id", name="org_name",
                 properties={"hq_country": "hq_country"}),
 ]))
 
 await rag.ingest("employees.csv", mapping=RecordMapping(
     nodes=[
-        NodeMapping(label="Person", key="employee_id", name="full_name",
+        NodeMapping(alias="employee", label="Person", key="employee_id", name="full_name",
                     properties={"age": "age", "title": "job_title"}),
-        NodeMapping(label="Organization", key="org_id", reference=True),   # FK, not re-declared
+        # FK: employees.csv has org_id and no org_name — a stub, not a re-declaration.
+        NodeMapping(alias="employer", label="Organization", key="org_id", reference=True),
     ],
-    edges=[EdgeMapping(type="WORKS_AT", source="Person", target="Organization")],
+    edges=[EdgeMapping(type="WORKS_AT", source="employee", target="employer")],
 ))
 
-await rag.finalize()
+await rag.finalize()   # AliasMatchResolution merges the prose Acme into the keyed Acme
 await rag.completion(
     "Which engineers work at the company whose report mentions a Q3 revenue miss?"
 )
@@ -469,20 +602,24 @@ await rag.completion(
 The traversal that answers it:
 
 ```
-Chunk("Q3 revenue miss…")  <-[MENTIONED_IN]-  Organization(acme_corp__organization)
-                                                        |
+Chunk("Q3 revenue miss…")  <-[MENTIONED_IN]-  Organization(org-42__organization)
+                                                        |  {name: "Acme Corp",
+                                                        |   alias_ids: ["acme_corp__organization"]}
                                                         |  RELATES {rel_type: "WORKS_AT"}
                                                         |
-                                              Person(alice_smith__person) {title: "Engineer"}
+                                              Person(e-1__person) {title: "Engineer"}
                                                         |
                                                         |  MENTIONED_IN
                                                         |
-                                              Chunk(record: employees.csv row 41)
+                                              Chunk(record: employees.csv row E-1)
 ```
 
-`Organization` is a **single node**: the PDF wrote it by name, `orgs.csv` wrote it by name
-(identity defaults to `name`, #3), and `employees.csv` referenced it by foreign key and resolved
-to the same identity. Nothing merged it after the fact.
+`Organization` is a **single node**. `orgs.csv` wrote it under its record key `ORG-42` and attached
+`alias_ids: ["acme_corp__organization"]`; `employees.csv` referenced it by foreign key and landed on
+the same id without ever seeing the company's name; the PDF wrote `acme_corp__organization` from
+prose, which `AliasMatchResolution` (#4) merged in. This exact traversal is what [spike s3][s3]
+measured — 1 Acme node, 2 engineers reachable — and it is the *only* one of three candidate identity
+policies that produced it.
 
 ---
 
@@ -503,8 +640,13 @@ to the same identity. Nothing merged it after the fact.
 
 ## 8. Open questions
 
-1. **`Entity.identity` is a new ontology field.** Persisted ontologies need a default/migration
-   (`["name"]`). Confirm the ontology-store versioning story.
+Questions 1–4 and 6–8 remain open. **§8.9 was opened by the spikes.** Several earlier questions
+were *closed* by them — see §10.
+
+1. **`Entity.identity` is a new ontology field.** Persisted ontologies need a default/migration.
+   [Spike s2][s2] confirms `extra = "allow"` already carries and persists the field, so old
+   `ontology.json` files stay loadable; the remaining question is the declared default
+   (`["name"]` for unstructured-only types) and the ontology-store versioning story.
 2. **Multi-column identity** — the join separator and normalization must be pinned so ids are
    stable across sources that order columns differently.
 3. **`DATE` handling** — accepted input formats, and whether we store epoch, ISO string, or a
@@ -523,6 +665,10 @@ to the same identity. Nothing merged it after the fact.
    GraphML / RDF expected?
 8. **Row-level incremental update** — worth a dedicated path that bypasses `update()`'s
    whole-document pending-cutover, or is whole-document rebuild acceptable for the POC?
+9. **Unbridged-stub reporting.** [Spike s3][s3] showed the alias bridge needs *some* source
+   carrying both key and name. What is the right surface for "this mapping referenced
+   `Organization`, and nothing has declared it yet" — a counter in `IngestionResult`, a warning,
+   or a `finalize()`-time report?
 
 ---
 
@@ -535,9 +681,41 @@ concrete requirements and one gap that the walk surfaced:
 | Finding | Where | Folded into |
 | --- | --- | --- |
 | Structured nodes must set `name`, and structured edges must set `fact` **and** `source_chunk_ids`, or entity embedding / edge embedding / stale-edge GC each silently break | `vector_store.backfill_entity_embeddings`, `vector_store.embed_relationships`, `graph_store.delete_stale_relationships` | #6, "three properties structured writes must set" |
-| Record chunk uids keyed on the *canonical* document id would collide with the pending document's chunks during `update()`, and `rollforward_cutover()` would delete the chunks it is about to promote | `graph_store.rollforward_cutover`, `api/main.py::update` (`pending_id`) | #5, callout box |
+| Record chunk uids keyed on the *canonical* document id would collide with the pending document's chunks during `update()`, and `rollforward_cutover()` would delete the chunks it is about to promote | `graph_store.rollforward_cutover`, `api/main.py::update` (`pending_id`) | #5, callout box — **since confirmed empirically**, see §10 |
 | `get_document_entity_candidates()` has no `LIMIT` and explicitly scopes out documents with millions of entities — a large CSV is exactly that | `graph_store.get_document_entity_candidates` | §8.5 |
 | Orphan cleanup is defined purely over `MENTIONED_IN` → `Chunk` → `PART_OF` → `Document`, so record-as-chunk inherits it unchanged | `graph_store.delete_orphan_entities` | #5 |
+
+---
+
+## 10. Spike results
+
+The proposals above were then tested. Five throwaway spikes in
+[`poc/structured-ingestion/`][poc] each answer one open question — against the real `GraphStore`,
+`IngestionPipeline` and a live FalkorDB, with no LLM and no API keys. `python run_all.py` runs
+them; all five pass. Full write-ups live in each spike's `NOTES.md`, rolled up in
+[`FINDINGS.md`][findings].
+
+**Four of the five falsified something in this document.** One inverted a headline decision.
+
+| Spike | Question | Outcome |
+| --- | --- | --- |
+| [s1][s1] | Can `RecordBatch` hold a lazy stream? | **Amended #1** — pydantic keeps it lazy but *one-shot*; #6's two passes measured `step 3 saw 10 records, step 4 saw 0` with no error. Now a stream **factory** |
+| [s2][s2] | Which DSL shape expresses all four record shapes? | **Amended #2** — label-addressed edges produce a silent **self-loop** on `transactions.csv`; nodes now carry an `alias`. Two `to_ontology()` guards added |
+| [s3][s3] | Do the identity policies produce one connected graph? | **Inverted #3** — `identity=["name"]` yields 2 Acme nodes and **0** reachable people, because a normalised FK carries no name. Key + `alias_ids` is the only policy that works |
+| [s4][s4] | Is record-as-chunk really free? Is the cutover trap real? | **Confirmed #5** — canonical-keyed uids go 3 chunks → **0** through `rollforward_cutover()`, silently. Effective-uid keying survives. All three cleanup primitives behave as claimed |
+| [s5][s5] | Can the pipeline steps be reused? | **Amended #6** — reusable verbatim, but `__init__` demands a chunker and an extractor the structured path does not have. Share a `LexicalGraphWriter` base; suppress `NEXT_CHUNK` for records |
+
+**What did not change.** Record-as-chunk, `RELATES` + `rel_type`, mapping-as-ontology-fragment,
+deterministic no-LLM mapping, and "no retrieval strategy is touched" all survived contact with the
+database. Every correction above is to a *signature or a default*, not to the shape of the design.
+
+[poc]: https://github.com/FalkorDB/GraphRAG-SDK/tree/main/poc/structured-ingestion
+[findings]: https://github.com/FalkorDB/GraphRAG-SDK/blob/main/poc/structured-ingestion/FINDINGS.md
+[s1]: https://github.com/FalkorDB/GraphRAG-SDK/blob/main/poc/structured-ingestion/s1_record_stream/NOTES.md
+[s2]: https://github.com/FalkorDB/GraphRAG-SDK/blob/main/poc/structured-ingestion/s2_mapping_dsl/NOTES.md
+[s3]: https://github.com/FalkorDB/GraphRAG-SDK/blob/main/poc/structured-ingestion/s3_identity/NOTES.md
+[s4]: https://github.com/FalkorDB/GraphRAG-SDK/blob/main/poc/structured-ingestion/s4_record_as_chunk/NOTES.md
+[s5]: https://github.com/FalkorDB/GraphRAG-SDK/blob/main/poc/structured-ingestion/s5_pipeline_seam/NOTES.md
 
 ---
 
@@ -545,9 +723,9 @@ concrete requirements and one gap that the walk surfaced:
 
 | Phase | Contents |
 | --- | --- |
-| **P1 — skeleton** | `RecordLoaderStrategy` + `RecordBatch`, `CsvRecordLoader`, `RecordMapping` / `NodeMapping` / `EdgeMapping`, `mapping.to_ontology()` (#1, #2) |
-| **P2 — pipeline** | Extract the shared lexical-graph / prune / write / mentions base out of `IngestionPipeline`; add `StructuredIngestionPipeline`; deterministic record chunk uids (#5, #6) |
-| **P3 — identity** | `Entity.identity`, alias handles, `AliasMatchResolution` (#3, #4) |
+| **P1 — skeleton** | `RecordLoaderStrategy` + `RecordBatch` (stream **factory**, s1), `CsvRecordLoader`, `RecordMapping` / `NodeMapping` (with `alias`, s2) / `EdgeMapping`, `mapping.to_ontology()` with both guards (#1, #2) |
+| **P2 — pipeline** | Extract a `LexicalGraphWriter` base out of `IngestionPipeline` (s5 — a base, *not* a subclass); add `link_sequential` kwarg; `StructuredIngestionPipeline`; record chunk uids keyed on the **effective** document uid (#5, #6) |
+| **P3 — identity** | `Entity.identity` defaulting to the record key for structured sources, alias handles, `AliasMatchResolution` — on the critical path, not optional (#3, #4) |
 | **P4 — formats** | JSON / JSONL / XLSX / Parquet; PDF-table record stream; node-list + edge-list graph import (#8, #9, #10) |
 | **P5 — surface** | `ingest(mapping=...)` / `update(mapping=...)` routing, `IngestionResult` counters, `examples/11_structured_ingestion.py`, docs page, mixed-corpus integration test (#7) |
 
