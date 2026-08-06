@@ -102,11 +102,25 @@ class CachedChunkExtraction(ExtractionStrategy):
         self.cached_chunk_count = 0
         self.extracted_chunk_count = 0
 
-    async def _old_chunks_by_hash(self) -> tuple[dict[str, str], set[str]]:
-        """Return (sha256(chunk text) -> old chunk id, all old chunk ids)."""
+    async def _old_chunks_by_hash(self, exclude: set[str]) -> tuple[dict[str, str], set[str]]:
+        """Return (sha256(chunk text) -> old chunk id, all old chunk ids).
+
+        Ids in ``exclude`` — the uids of the chunks currently being written —
+        are dropped. ``update()`` writes under a pending document id, so the
+        read and write sets are disjoint there, but that is a property of the
+        caller, not of this class. If they ever overlap (wired into a path
+        where the read id is the write id, or the pending indirection
+        changes), a chunk would hash to *itself*: the rebuild would find no
+        mentions for a chunk nothing has been extracted from yet, emit empty
+        ``GraphData``, and skip the extractor — dropping entities silently,
+        with no exception for the fail-open path to catch and cache stats
+        still reporting a hit. Excluding them degrades to normal extraction.
+        """
         by_hash: dict[str, str] = {}
         all_ids: set[str] = set()
         for cid, text in await self._graph_store.get_document_chunk_texts(self._document_id):
+            if cid in exclude:
+                continue
             all_ids.add(cid)
             # First occurrence wins; duplicates map to the same content anyway.
             by_hash.setdefault(_sha256(text), cid)
@@ -262,7 +276,9 @@ class CachedChunkExtraction(ExtractionStrategy):
         """Split chunks into cached vs. new, rebuild the former from the
         graph, extract the latter with the inner strategy, and merge."""
         try:
-            old_by_hash, all_old_ids = await self._old_chunks_by_hash()
+            old_by_hash, all_old_ids = await self._old_chunks_by_hash(
+                {c.uid for c in chunks.chunks}
+            )
         except Exception as exc:
             logger.warning("Chunk cache lookup failed, extracting everything: %s", exc)
             old_by_hash, all_old_ids = {}, set()

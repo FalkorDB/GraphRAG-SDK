@@ -831,3 +831,75 @@ class TestCachedUpdateIntegration:
             cache_unchanged_chunks=True,
         )
         assert result.no_op is True
+
+
+class TestSelfMappingGuard:
+    """A chunk must never be treated as its own cache entry.
+
+    ``update()`` writes new chunks under a pending document id, so its read
+    set (``resolved_id``) and write set are disjoint and this cannot fire
+    today. But the pipeline persists chunks in Step 3 *before* extraction
+    runs in Step 4, and ``CachedChunkExtraction`` is publicly exported — so
+    any caller whose read id equals the id being written (e.g. wiring it
+    into ``ingest()``) would read back the chunks just written.
+
+    Each chunk would then hash to itself, the rebuild would find no mentions
+    for a chunk nothing has been extracted from yet, and the strategy would
+    return empty ``GraphData`` while reporting a cache hit. No exception is
+    raised, so the fail-open path cannot catch it: entities vanish silently.
+    """
+
+    async def test_self_referential_chunk_is_extracted_not_cached(self, ontology, ctx):
+        # Store returns the SAME uid the pipeline is writing, with no
+        # extracted entities behind it yet.
+        store = FakeGraphStore(chunk_texts=[("new-1", "alpha")], entity_rows=[])
+        inner = RecordingExtractor(
+            result=GraphData(
+                nodes=[GraphNode(id="alice__person", label="Person", properties={"name": "Alice"})],
+                mentions=[EntityMention(chunk_id="new-1", entity_id="alice__person")],
+            )
+        )
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("alpha", 0, "new-1")]), ontology, ctx
+        )
+
+        assert strategy.cached_chunk_count == 0, "chunk was cached against itself"
+        assert strategy.extracted_chunk_count == 1
+        assert len(inner.calls) == 1, "extractor was skipped — entities would be lost"
+        assert [n.id for n in result.nodes] == ["alice__person"]
+        assert len(result.mentions) == 1
+
+    async def test_genuine_old_chunk_still_cached_alongside_self_reference(
+        self, ontology, ctx
+    ):
+        """The guard must drop only the self-reference, not real cache hits."""
+        store = FakeGraphStore(
+            chunk_texts=[("new-1", "alpha"), ("old-2", "beta")],
+            entity_rows=[
+                ChunkEntityRow(
+                    chunk_id="old-2",
+                    entity_id="acme__organization",
+                    label="Organization",
+                    name="Acme",
+                    type="Organization",
+                    source_chunk_ids=["old-2"],
+                ),
+            ],
+        )
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("alpha", 0, "new-1"), _chunk("beta", 1, "new-2")]),
+            ontology,
+            ctx,
+        )
+
+        assert strategy.cached_chunk_count == 1
+        assert strategy.extracted_chunk_count == 1
+        assert [c.text for c in inner.calls[0].chunks] == ["alpha"]
+        assert [n.id for n in result.nodes] == ["acme__organization"]
+        # Provenance for the cached chunk is remapped onto the new uid.
+        assert result.nodes[0].properties["source_chunk_ids"] == ["new-2"]
