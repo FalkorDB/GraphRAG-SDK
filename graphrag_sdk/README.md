@@ -172,7 +172,7 @@ See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/
 |---|---------|-------------|
 | 1 | [`01_quickstart.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/01_quickstart.py) | Minimal ingest & query |
 | 2 | [`02_pdf_with_schema.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/02_pdf_with_schema.py) | PDF with custom schema |
-| 3 | [`03_custom_strategies.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/03_custom_strategies.py) | Composing strategies explicitly |
+| 3 | [`03_custom_strategies.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/03_custom_strategies.py) | Composing ingestion strategies explicitly |
 | 4 | [`04_custom_provider.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/04_custom_provider.py) | Custom LLM/Embedder |
 | 5 | [`05_notebook_demo.ipynb`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/05_notebook_demo.ipynb) | Interactive notebook walkthrough |
 

@@ -24,7 +24,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | Rank | System | Novel (Multi-Doc) | Medical (Single-Doc) | Overall |
 | :--- | :--- | :---: | :---: | :---: |
 | **1** | **FalkorDB GraphRAG SDK ◄** | **66.09** | **76.87** | **71.48** |
-| 2 | G-Reasoner | 58.94 | 73.30 | 66.12 |
+| 2 | G-reasoner | 58.94 | 73.30 | 66.12 |
 | 3 | AutoPrunedRetriever | 63.72 | 67.00 | 65.36 |
 | 4 | HippoRAG2 | 56.48 | 64.85 | 60.67 |
 | 5 | Fast-GraphRAG | 52.02 | 64.12 | 58.07 |
@@ -219,7 +219,7 @@ guards the default.
 |---|---------|-------------------|
 | 1 | [Quick Start](graphrag_sdk/examples/01_quickstart.py) | Your first ingest-and-query loop in under 30 lines |
 | 2 | [PDF with Schema](graphrag_sdk/examples/02_pdf_with_schema.py) | A PDF Q&A bot with your own entity and relation types |
-| 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | Composing ingestion and retrieval strategies explicitly |
+| 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | Composing ingestion strategies explicitly |
 | 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
 | 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
 | 7 | [Incremental Updates](graphrag_sdk/examples/07_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |

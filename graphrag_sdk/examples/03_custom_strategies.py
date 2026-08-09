@@ -1,12 +1,12 @@
 """
 GraphRAG SDK -- Custom Strategies
 ==================================================================
-Demonstrates composing the ingestion and retrieval strategies explicitly
-rather than relying on the defaults. Uses:
+Demonstrates composing the ingestion strategies explicitly rather than relying
+on the defaults. Retrieval is left at the default. Uses:
   - GraphExtraction (GLiNER2 NER + LLM relationship extraction)
   - DescriptionMergeResolution (LLM-assisted entity dedup)
   - Post-ingestion finalize (dedup, embeddings, indexes)
-  - MultiPathRetrieval (default, configured automatically)
+  - MultiPathRetrieval (the default; not passed explicitly)
 
 Prerequisites:
     pip install graphrag-sdk[litellm]
