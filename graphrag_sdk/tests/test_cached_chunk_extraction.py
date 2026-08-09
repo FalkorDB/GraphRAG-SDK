@@ -353,7 +353,12 @@ class TestRelationshipRebuild:
 
 
 class TestLabelLessEntity:
-    async def test_label_less_entity_skips_node_but_keeps_mention(self, ontology, ctx):
+    async def test_label_less_entity_falls_back_to_extraction(self, ontology, ctx):
+        """A stored entity with no concrete label cannot be re-emitted:
+        writing it would mint a duplicate node, and skipping it makes the
+        pipeline's quality filter drop its relationships, which the
+        post-cutover sweep then deletes. Rebuild must give way to real
+        extraction rather than lose edges."""
         store = FakeGraphStore(
             chunk_texts=[("old-1", "alpha")],
             entity_rows=[
@@ -366,14 +371,85 @@ class TestLabelLessEntity:
                 )
             ],
         )
-        strategy = CachedChunkExtraction(RecordingExtractor(), store, "doc-1")
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        await strategy.extract(TextChunks(chunks=[_chunk("alpha", 0, "new-1")]), ontology, ctx)
+
+        assert len(inner.calls) == 1
+        assert [c.uid for c in inner.calls[0].chunks] == ["new-1"]
+        assert strategy.cached_chunk_count == 0
+        assert strategy.extracted_chunk_count == 1
+
+    async def test_relationship_endpoint_not_mentioned_falls_back(self, ontology, ctx):
+        """A stored edge whose endpoint no cached chunk mentions cannot be
+        re-emitted: IngestionPipeline._filter_quality drops relationships
+        whose endpoints are absent from the same batch, so the rebuilt
+        provenance would never land and the post-cutover sweep would then
+        delete an edge the unchanged chunk still supports."""
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "alpha")],
+            entity_rows=[
+                ChunkEntityRow(
+                    chunk_id="old-1",
+                    entity_id="known",
+                    label="Person",
+                    name="Known",
+                    source_chunk_ids=["old-1"],
+                )
+            ],
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="known",
+                    end_entity_id="stranger",  # never mentioned by old-1
+                    rel_type="knows",
+                )
+            ],
+        )
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        await strategy.extract(TextChunks(chunks=[_chunk("alpha", 0, "new-1")]), ontology, ctx)
+
+        assert len(inner.calls) == 1
+        assert strategy.cached_chunk_count == 0
+        assert strategy.extracted_chunk_count == 1
+
+    async def test_relationship_with_both_endpoints_mentioned_is_cached(self, ontology, ctx):
+        """The guard must not fire on the normal case."""
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "alpha")],
+            entity_rows=[
+                ChunkEntityRow(
+                    chunk_id="old-1",
+                    entity_id=eid,
+                    label="Person",
+                    name=eid,
+                    source_chunk_ids=["old-1"],
+                )
+                for eid in ("a", "b")
+            ],
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="a",
+                    end_entity_id="b",
+                    rel_type="knows",
+                )
+            ],
+        )
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
 
         result = await strategy.extract(
             TextChunks(chunks=[_chunk("alpha", 0, "new-1")]), ontology, ctx
         )
 
-        assert result.nodes == []  # no node write — would mint a duplicate
-        assert result.mentions == [EntityMention(chunk_id="new-1", entity_id="ghost")]
+        assert inner.calls == []
+        assert strategy.cached_chunk_count == 1
+        assert len(result.relationships) == 1
+        assert result.relationships[0].properties["source_chunk_ids"] == ["new-1"]
 
 
 class TestFailOpen:

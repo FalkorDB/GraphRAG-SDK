@@ -28,8 +28,10 @@ Safe by construction:
 - Mentions are re-emitted against the new chunk uid, so the ``update()``
   orphan cleanup keeps every entity that unchanged chunks still support.
 - A cache failure falls back to real extraction (fail-open): the worst case is
-  paying for LLM calls that could have been skipped, never data loss. The
-  exception is an unreachable graph (``DatabaseError``) or an exhausted
+  paying for LLM calls that could have been skipped, never data loss. This
+  includes a stored entity that carries no concrete label, which cannot be
+  re-emitted without either minting a duplicate node or losing its edges.
+  The exception is an unreachable graph (``DatabaseError``) or an exhausted
   latency budget, which propagate — extraction only needs the LLM, so it
   would bill in full and then fail at the write phase regardless.
 
@@ -67,6 +69,14 @@ if TYPE_CHECKING:
     from graphrag_sdk.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
+
+
+class _UnrebuildableCacheEntry(Exception):
+    """Raised when cached data cannot be faithfully re-emitted.
+
+    Internal to this module: ``extract()`` treats it like any other cache
+    failure and falls back to real extraction, which is always correct.
+    """
 
 
 def _sha256(text: str) -> str:
@@ -192,23 +202,41 @@ class CachedChunkExtraction(ExtractionStrategy):
         for eid, props in ent_props.items():
             label = ent_labels[eid]
             if not label:
-                # No usable label: upsert_nodes would MERGE on a fallback
+                # No usable label, so upsert_nodes would MERGE on a fallback
                 # label and mint a duplicate node instead of matching this
-                # one. Skip the node write — the mention above still keeps
-                # the entity alive through orphan cleanup.
-                logger.warning("Skipping cache node write for label-less entity %s", eid)
-                continue
+                # one. Skipping just this node is not safe either: the
+                # pipeline's quality filter drops every relationship
+                # incident to a node it never saw, so the rebuilt provenance
+                # never lands and the post-cutover sweep then deletes edges
+                # the unchanged chunk still supports. Neither branch can
+                # reproduce the graph, so refuse to rebuild and let the
+                # caller fall back to real extraction.
+                raise _UnrebuildableCacheEntry(f"entity {eid!r} carries no concrete label")
             props["source_chunk_ids"] = ent_sources[eid]
             nodes.append(GraphNode(id=eid, label=label, properties=props))
 
         relationships: list[GraphRelationship] = []
         if ent_props:
+            node_ids = {n.id for n in nodes}
             rel_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
             for rel in await self._graph_store.get_relationships_for_chunks(old_ids):
                 new_uids = id_map.get(rel.chunk_id)
                 if not new_uids:
                     continue
                 key = (rel.start_entity_id, rel.end_entity_id)
+                if key[0] not in node_ids or key[1] not in node_ids:
+                    # The pipeline only persists an edge alongside the nodes
+                    # it was extracted with (see IngestionPipeline._filter_
+                    # quality), so a stored edge whose endpoints this chunk
+                    # does not mention means the graph was written by
+                    # something else. Re-emitting it would be dropped by that
+                    # same filter, losing the provenance and letting the
+                    # post-cutover sweep delete a live fact — so hand the
+                    # document to real extraction instead.
+                    raise _UnrebuildableCacheEntry(
+                        f"relationship {key[0]!r}->{key[1]!r} has an endpoint that "
+                        "no cached chunk mentions"
+                    )
                 props = rel_by_pair.get(key)
                 if props is None:
                     props = {"source_chunk_ids": []}
