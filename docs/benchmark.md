@@ -4,10 +4,11 @@ Results for [GraphRAG-SDK](https://github.com/FalkorDB/GraphRAG-SDK) on
 [GraphRAG-Bench](https://graphrag-bench.github.io/) (Xiang et al., ICLR 2026),
 covering both subsets and all four task categories.
 
-The reproduction package — the runner, both ontologies, the ontology builders
-and pinned dependencies — is available on request from
-[gal.shubeli@falkordb.com](mailto:gal.shubeli@falkordb.com). The configuration
-and procedure are documented in full below.
+The reproduction package — the runner, the ontology builders and pinned
+dependencies — is available on request; open an
+[issue](https://github.com/FalkorDB/GraphRAG-SDK/issues) or ask on
+[Discord](https://discord.gg/6M4QwDXn2w). The ontologies themselves are
+published below, and the configuration and procedure are documented in full.
 
 ## Results
 
@@ -93,11 +94,20 @@ subsets.
 
 ### Benchmark integrity
 
-The ontologies (Medical: 10 entities / 13 relations; Novel: 8 / 13) were
-hand-authored from the **corpus only**. The question sets and the `evidence`,
-`evidence_relations` and `evidence_triple` fields were never read during
-ontology design or indexing. The ontology builders are published alongside the
-runner so this is checkable.
+The ontologies were hand-authored from the **corpus only**. The question sets
+and the `evidence`, `evidence_relations` and `evidence_triple` fields were never
+read during ontology design or indexing.
+
+Both are published here so this is checkable without needing the runner:
+
+| Subset | Ontology | Entities | Relations |
+| --- | --- | ---: | ---: |
+| Medical | [`ontology_medical.json`](benchmark/ontology_medical.json) | 10 | 13 |
+| Novel | [`ontology_novel.json`](benchmark/ontology_novel.json) | 8 | 13 |
+
+They contain only domain type definitions — entity labels, their descriptions
+and properties, and the relation patterns between them. No question, answer or
+evidence text appears in either file.
 
 ## Reproducing
 
