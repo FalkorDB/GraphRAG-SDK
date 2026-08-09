@@ -4,9 +4,10 @@ Results for [GraphRAG-SDK](https://github.com/FalkorDB/GraphRAG-SDK) on
 [GraphRAG-Bench](https://graphrag-bench.github.io/) (Xiang et al., ICLR 2026),
 covering both subsets and all four task categories.
 
-Everything needed to reproduce these numbers — the runner, both ontologies,
-pinned dependencies and a single command per subset — is published at
-<REPO_URL>.
+The reproduction package — the runner, both ontologies, the ontology builders
+and pinned dependencies — is available on request from
+[gal.shubeli@falkordb.com](mailto:gal.shubeli@falkordb.com). The configuration
+and procedure are documented in full below.
 
 ## Results
 
@@ -99,6 +100,12 @@ ontology design or indexing. The ontology builders are published alongside the
 runner so this is checkable.
 
 ## Reproducing
+
+The runner reads the benchmark's own `Datasets/` and `Evaluation/` directories
+and resolves them relative to its own location, so the package is placed at
+`Examples/graphragsdk/` inside a clone of
+[GraphRAG-Benchmark](https://github.com/GraphRAG-Bench/GraphRAG-Benchmark).
+From that checkout:
 
 ```bash
 docker run -d -p 6379:6379 --name falkordb falkordb/falkordb:latest
