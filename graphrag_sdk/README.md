@@ -152,16 +152,17 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 ## Benchmark
 
-**#1 on [GraphRAG-Bench](https://graphrag-bench.github.io)** — 66.09 ACC on Novel and 76.87 on Medical, ahead of AutoPrunedRetriever (63.72 / 67.00) and G-Reasoner (58.94 / 73.30).
+**#1 on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel** — 66.09 ACC, ahead of AutoPrunedRetriever (63.72), MS-GraphRAG (50.93) and LightRAG (45.09).
 
 | Metric | Value |
 |--------|-------|
 | **Novel ACC** | 66.09 (#1) |
-| **Fact retrieval** | 65.22 |
-| **Complex reasoning** | 58.63 |
-| **Contextual summarization** | 69.54 |
-| **Creative generation** | 57.08 |
+| **Fact retrieval** | 65.49 |
+| **Complex reasoning** | 59.26 |
+| **Contextual summarization** | 75.42 |
+| **Creative generation** | 64.21 |
 | **Questions** | 2,010 across 20 novels |
+| **Medical ACC** | 76.87 (#1) |
 
 See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for methodology and reproduction.
 
@@ -171,7 +172,7 @@ See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/
 |---|---------|-------------|
 | 1 | [`01_quickstart.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/01_quickstart.py) | Minimal ingest & query |
 | 2 | [`02_pdf_with_schema.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/02_pdf_with_schema.py) | PDF with custom schema |
-| 3 | [`03_custom_strategies.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/03_custom_strategies.py) | Benchmark-winning pipeline |
+| 3 | [`03_custom_strategies.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/03_custom_strategies.py) | Composing strategies explicitly |
 | 4 | [`04_custom_provider.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/04_custom_provider.py) | Custom LLM/Embedder |
 | 5 | [`05_notebook_demo.ipynb`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/05_notebook_demo.ipynb) | Interactive notebook walkthrough |
 
