@@ -8,7 +8,7 @@ The reproduction package — the runner, the ontology builders and pinned
 dependencies — is available on request; open an
 [issue](https://github.com/FalkorDB/GraphRAG-SDK/issues) or ask on
 [Discord](https://discord.gg/6M4QwDXn2w). The ontologies themselves are
-published below, and the configuration and procedure are documented in full.
+published below, along with the full configuration.
 
 ## Results
 
@@ -109,32 +109,28 @@ They contain only domain type definitions — entity labels, their descriptions
 and properties, and the relation patterns between them. No question, answer or
 evidence text appears in either file.
 
-## Reproducing
+## How the run works
 
-The runner reads the benchmark's own `Datasets/` and `Evaluation/` directories
-and resolves them relative to its own location, so the package is placed at
-`Examples/graphragsdk/` inside a clone of
-[GraphRAG-Benchmark](https://github.com/GraphRAG-Bench/GraphRAG-Benchmark).
-From that checkout:
+Per subset, the pipeline runs in three stages:
 
-```bash
-docker run -d -p 6379:6379 --name falkordb falkordb/falkordb:latest
+1. **Index** — each corpus document is chunked, and entities and relationships
+   are extracted against that subset's ontology into its own FalkorDB graph
+   (one graph per document, so retrieval is scoped to the document a question
+   was written against).
+2. **Answer** — every question in the subset is answered through
+   `MultiPathRetrieval`, with the retrieved context recorded alongside the
+   answer.
+3. **Judge** — answers are scored by the benchmark's own
+   `Evaluation/generation_eval.py`, unmodified, with `gpt-4o-mini` as judge and
+   `bge-large-en-v1.5` embeddings.
 
-python -m venv .venv && ./.venv/bin/pip install -r Examples/graphragsdk/requirements.txt
-python -m venv .venv-eval && ./.venv-eval/bin/pip install -r Examples/graphragsdk/requirements-eval.txt
+The run produces, per subset: the leaderboard row, the fully resolved
+configuration, per-question predictions with their retrieved context, and each
+answer's individual judge scores.
 
-export AZURE_API_KEY=... AZURE_API_BASE=https://<resource>.openai.azure.com/
-
-PYTHON=./.venv/bin/python bash Examples/graphragsdk/run_all.sh
-```
-
-Each subset runs index → answer → judge → summarize, and writes its leaderboard
-row, the full configuration, per-question predictions with retrieved context,
-and each answer's judge scores. The runner and evaluator both use separate
-virtualenvs (the evaluator pins `openai<2`, the runner needs `openai>=2.20`).
-
-Approximate cost on a 24-core machine: Medical ~1.5 h, Novel ~4 h, dominated by
-extraction API calls.
+Indexing cost, measured on a 24-core machine and dominated by extraction API
+calls rather than local compute: Medical (1 corpus, 510 chunks) ~1.5 h end to
+end; Novel (20 documents, ~2,500 chunks) ~4 h.
 
 ## Counts and caveats
 
