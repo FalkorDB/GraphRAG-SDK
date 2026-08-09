@@ -23,8 +23,8 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 ## Benchmarks
 | Rank | System | Novel (Multi-Doc) | Medical (Single-Doc) | Overall |
 | :--- | :--- | :---: | :---: | :---: |
-| **1** | **FalkorDB GraphRAG SDK ◄** | **63.73** | **75.73** | **69.73** |
-| 2 | G-Reasoner | 58.94 | 73.30 | 66.12 |
+| **1** | **FalkorDB GraphRAG SDK ◄** | **66.09** | **76.87** | **71.48** |
+| 2 | G-reasoner | 58.94 | 73.30 | 66.12 |
 | 3 | AutoPrunedRetriever | 63.72 | 67.00 | 65.36 |
 | 4 | HippoRAG2 | 56.48 | 64.85 | 60.67 |
 | 5 | Fast-GraphRAG | 52.02 | 64.12 | 58.07 |
@@ -33,7 +33,22 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 | 8 | HippoRAG | 44.75 | 59.08 | 51.92 |
 | 9 | MS-GraphRAG (local) | 50.93 | 45.16 | 48.05 |
 
-> Overall ACC on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel (20 novels, 2,010 questions) and Medical (1 corpus, 2,062 questions) datasets. FalkorDB scored with `gpt-4o-mini` (Azure OpenAI); competitor numbers are from the published leaderboard. Overall = mean of Novel and Medical ACC. See [docs/benchmark.md](docs/benchmark.md) for per-category breakdowns, methodology, and reproduction instructions.
+> **How these are computed.** Per dataset, ACC is the unweighted mean of the four
+> task-category scores, matching the [GraphRAG-Bench](https://graphrag-bench.github.io)
+> leaderboard convention:
+>
+> `Dataset ACC = (Fact Retrieval + Complex Reasoning + Contextual Summarize + Creative Generation) / 4`
+> `Overall = (Novel ACC + Medical ACC) / 2`
+>
+> Overall is our own summary across the two datasets; the leaderboard ranks each
+> dataset separately. Novel has 20 documents and 2,010 questions, Medical 1 corpus
+> and 2,062 questions. FalkorDB scored August 2026 with `gpt-4o-mini` (Azure OpenAI)
+> at temperature 0.7 for both graph construction and generation, `text-embedding-3-large`
+> at 1024 dimensions, text-to-Cypher retrieval enabled, and the benchmark's own
+> `generation_eval.py` unmodified as the judge. Competitor numbers are from the
+> published leaderboard, unchanged. See [docs/benchmark.md](docs/benchmark.md) for
+> per-category results, the full 15-system comparison, configuration and reproduction
+> instructions.
 
 Vectors match similar chunks. The graph traverses relationships. Every answer cites its source.
 
@@ -109,7 +124,7 @@ async with GraphRAG(
 
 <p align="center">
   <b>→ Full walkthrough: <a href="docs/getting-started.md">Getting Started</a></b><br/>
-  <b>→ Benchmark-winning recipe: <a href="graphrag_sdk/examples/03_custom_strategies.py">Custom Strategies</a></b>
+  <b>→ Compose your own pipeline: <a href="graphrag_sdk/examples/03_custom_strategies.py">Custom Strategies</a></b>
 </p>
 
 ---
@@ -204,7 +219,7 @@ guards the default.
 |---|---------|-------------------|
 | 1 | [Quick Start](graphrag_sdk/examples/01_quickstart.py) | Your first ingest-and-query loop in under 30 lines |
 | 2 | [PDF with Schema](graphrag_sdk/examples/02_pdf_with_schema.py) | A PDF Q&A bot with your own entity and relation types |
-| 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | The benchmark-winning pipeline, ready to drop in |
+| 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | Composing ingestion strategies explicitly |
 | 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
 | 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
 | 7 | [Incremental Updates](graphrag_sdk/examples/07_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |

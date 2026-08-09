@@ -428,7 +428,7 @@ resolver = DescriptionMergeResolution(
 )
 ```
 
-**When to use:** Multi-document ingestion where the same entity appears with different descriptions. Used in the benchmark-winning pipeline.
+**When to use:** Multi-document ingestion where the same entity appears with different descriptions. Useful when the same entity is described differently across documents.
 
 ---
 
@@ -476,7 +476,7 @@ retriever = LocalRetrieval(
 
 ### Built-in: MultiPathRetrieval
 
-Production-grade retrieval with RELATES edge vector search, 2-path entity discovery, 4-path chunk retrieval, and cosine reranking. This is the **default** and the benchmark-winning strategy.
+Production-grade retrieval with RELATES edge vector search, 2-path entity discovery, 4-path chunk retrieval, and cosine reranking. This is the **default**, and the strategy used for the [GraphRAG-Bench results](benchmark.md).
 
 ```python
 from graphrag_sdk import MultiPathRetrieval

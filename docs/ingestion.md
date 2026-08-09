@@ -165,7 +165,7 @@ For a detailed explanation of the extraction process, see [extraction.md](extrac
 **Alternative: DescriptionMergeResolution**
 - Groups by `(normalized name, label)` — same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris")
 - Merges descriptions (concatenation or LLM summarization)
-- Used in the benchmark-winning pipeline
+- Useful when the same entity is described differently across documents
 
 For details on resolution strategies, see [strategies.md](strategies.md).
 
