@@ -1,8 +1,8 @@
 """
-GraphRAG SDK -- Custom Strategies (Benchmark-Winning Pipeline)
+GraphRAG SDK -- Custom Strategies
 ==================================================================
-Demonstrates the full pipeline configuration that achieved 84.8% accuracy
-on the 20-document novel benchmark. Uses:
+Demonstrates composing the ingestion and retrieval strategies explicitly
+rather than relying on the defaults. Uses:
   - GraphExtraction (GLiNER2 NER + LLM relationship extraction)
   - DescriptionMergeResolution (LLM-assisted entity dedup)
   - Post-ingestion finalize (dedup, embeddings, indexes)
@@ -125,7 +125,7 @@ async def main():
         pass
 
     # --- Ingestion with custom strategies ---
-    print("Ingesting documents with benchmark-winning pipeline...")
+    print("Ingesting documents with custom strategies...")
     t0 = time.time()
 
     for source_id, text in DOCUMENTS:

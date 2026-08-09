@@ -152,11 +152,11 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 ## Benchmark
 
-**#1 on [GraphRAG-Bench](https://graphrag-bench.github.io) Novel** — 63.73 ACC, ahead of MS-GraphRAG (50.93) and LightRAG (45.09).
+**#1 on [GraphRAG-Bench](https://graphrag-bench.github.io)** — 66.09 ACC on Novel and 76.87 on Medical, ahead of AutoPrunedRetriever (63.72 / 67.00) and G-Reasoner (58.94 / 73.30).
 
 | Metric | Value |
 |--------|-------|
-| **Novel ACC** | 63.73 (#1) |
+| **Novel ACC** | 66.09 (#1) |
 | **Fact retrieval** | 65.22 |
 | **Complex reasoning** | 58.63 |
 | **Contextual summarization** | 69.54 |
