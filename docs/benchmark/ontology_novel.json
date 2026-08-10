@@ -1,0 +1,267 @@
+{
+  "entities": [
+    {
+      "label": "Character",
+      "description": "A person or personified being — a fictional character, a historical figure, an author, or a real individual named in the text.",
+      "properties": [
+        {
+          "name": "aliases",
+          "type": "LIST",
+          "description": "Other names, titles, or epithets used for this person."
+        },
+        {
+          "name": "role",
+          "type": "STRING",
+          "description": "Their role or occupation (e.g. narrator, doctor, king)."
+        },
+        {
+          "name": "gender",
+          "type": "STRING",
+          "description": "Gender if stated or clearly implied."
+        }
+      ]
+    },
+    {
+      "label": "Location",
+      "description": "A named place: country, region, city, building, or natural feature.",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "Type of place: country, city, region, building, natural feature, etc."
+        }
+      ]
+    },
+    {
+      "label": "Organization",
+      "description": "A named group, institution, society, company, family line, or faction.",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "Type of organisation: society, company, family, government, etc."
+        }
+      ]
+    },
+    {
+      "label": "Work",
+      "description": "A named creative or scholarly work: book, poem, play, essay, or publication referenced in the text.",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "Type of work: novel, poem, play, essay, treatise, etc."
+        },
+        {
+          "name": "author",
+          "type": "STRING",
+          "description": "Named author of the work, if given."
+        }
+      ]
+    },
+    {
+      "label": "Object",
+      "description": "A notable physical object, artifact, substance, or material referred to in the text.",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "Category of the object or substance."
+        }
+      ]
+    },
+    {
+      "label": "Event",
+      "description": "A discrete happening, action, or episode in the narrative (journey, battle, death, discovery, ceremony).",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "Type of event: journey, battle, death, discovery, meeting, etc."
+        },
+        {
+          "name": "time",
+          "type": "STRING",
+          "description": "When it occurred, as stated in the text."
+        }
+      ]
+    },
+    {
+      "label": "Concept",
+      "description": "An abstract idea, theme, belief, scientific principle, or topic discussed in the text.",
+      "properties": [
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "Category of the concept: theme, scientific principle, belief, topic, etc."
+        }
+      ]
+    },
+    {
+      "label": "TimePeriod",
+      "description": "A named point or span of time: a date, year, era, season, or historical period.",
+      "properties": []
+    }
+  ],
+  "relations": [
+    {
+      "label": "INTERACTS_WITH",
+      "description": "One character speaks to, meets, or otherwise interacts with another.",
+      "patterns": [
+        [
+          "Character",
+          "Character"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "FAMILY_OF",
+      "description": "A family or kinship tie between two characters.",
+      "patterns": [
+        [
+          "Character",
+          "Character"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "MEMBER_OF",
+      "description": "A character belongs to an organisation, group, or family line.",
+      "patterns": [
+        [
+          "Character",
+          "Organization"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "LOCATED_IN",
+      "description": "A character, organisation, or event is situated in a location.",
+      "patterns": [
+        [
+          "Character",
+          "Location"
+        ],
+        [
+          "Organization",
+          "Location"
+        ],
+        [
+          "Event",
+          "Location"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "TRAVELS_TO",
+      "description": "A character moves or journeys to a location.",
+      "patterns": [
+        [
+          "Character",
+          "Location"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "PART_OF",
+      "description": "A location or organisation is a part of a larger one.",
+      "patterns": [
+        [
+          "Location",
+          "Location"
+        ],
+        [
+          "Organization",
+          "Organization"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "PARTICIPATES_IN",
+      "description": "A character takes part in an event.",
+      "patterns": [
+        [
+          "Character",
+          "Event"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "OWNS",
+      "description": "A character owns or possesses an object.",
+      "patterns": [
+        [
+          "Character",
+          "Object"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "AUTHORED",
+      "description": "A character (author) created a work.",
+      "patterns": [
+        [
+          "Character",
+          "Work"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "ASSOCIATED_WITH",
+      "description": "A character or work is associated with a concept or theme.",
+      "patterns": [
+        [
+          "Character",
+          "Concept"
+        ],
+        [
+          "Work",
+          "Concept"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "CAUSES",
+      "description": "One event causes or leads to another.",
+      "patterns": [
+        [
+          "Event",
+          "Event"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "PRECEDES",
+      "description": "One event happens before another in time.",
+      "patterns": [
+        [
+          "Event",
+          "Event"
+        ]
+      ],
+      "properties": []
+    },
+    {
+      "label": "OCCURS_DURING",
+      "description": "An event takes place during a named time period.",
+      "patterns": [
+        [
+          "Event",
+          "TimePeriod"
+        ]
+      ],
+      "properties": []
+    }
+  ]
+}

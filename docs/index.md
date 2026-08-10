@@ -6,7 +6,7 @@ GraphRAG SDK builds knowledge graphs from documents and answers questions over t
 
 ## Key Highlights
 
-- **#1 on GraphRAG-Bench Novel** — 63.73 ACC on 2,010 questions ([benchmark](benchmark.md))
+- **#1 on GraphRAG-Bench** — 66.09 ACC on Novel and 76.87 on Medical ([benchmark](benchmark.md))
 - **Simple API** -- `ingest()` + `completion()` with sensible defaults
 - **100+ LLM providers** via LiteLLM (OpenAI, Azure, Anthropic, Cohere, Ollama, and more)
 - **Fully modular** -- swap chunking, extraction, resolution, retrieval, and reranking strategies
