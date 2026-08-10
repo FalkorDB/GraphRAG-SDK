@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-10
+
+Chunk-level extraction cache for `update()` (#288): re-ingesting a
+document whose text is mostly unchanged now rebuilds the untouched
+chunks from the live graph instead of re-extracting them, so editing one
+paragraph of a 50-chunk document costs roughly one LLM extraction rather
+than fifty. Opt-in via `cache_unchanged_chunks=True` — the default is
+`False` and existing ingest paths are unaffected.
+
+The database layer gained a matching error contract: driver-level
+failures now surface as `DatabaseError`, with a new
+`DatabaseUnavailableError` separating "the server never answered" from
+"the server answered and rejected the query". That split is what lets
+the cache decide when falling open is safe. See **Changed** for the
+migration note if you were catching `redis.exceptions.*` directly.
+
 ### Added
 
 #### Chunk-level extraction cache for `update()` (`cache_unchanged_chunks`)
@@ -61,6 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already exists") is unaffected. Catch `DatabaseError` instead of
   `redis.exceptions.ConnectionError` if you were relying on the
   driver's own types.
+
 - **`FalkorDBConnection.ping()` returns `False` when the server is
   unreachable** instead of raising. Reporting "not alive" is the point
   of the call. A missing `falkordb` package still raises `ImportError`
@@ -75,6 +92,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recognizes syntax errors, invalid input, unknown functions, type
   mismatches, and missing procedures, so a rejected query fails fast
   instead of burning the full retry budget first.
+
+### Fixed
+
+- **`graphrag_sdk.__version__` reported `1.2.0` on the 1.3.0 release** —
+  the constant was not bumped alongside `pyproject.toml`, so the value
+  returned by `__version__` and by the API's `/version` endpoint was one
+  minor version stale. Both now report `1.4.0`.
 
 ## [1.3.0] - 2026-06-04
 
