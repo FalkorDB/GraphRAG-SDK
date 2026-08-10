@@ -54,6 +54,9 @@ from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
     SentenceTokenCapChunking,
 )
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import (
+    CachedChunkExtraction,
+)
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
     _strip_markdown_fences,
@@ -142,6 +145,46 @@ _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
 def _neutralize_context_close_tag(text: str) -> str:
     """Disarm any literal ``</context>`` that appears inside untrusted text."""
     return _CONTEXT_CLOSE_RE.sub("</ context>", text)
+
+
+def _same_embedding_model(stored: str, current: str) -> bool:
+    """Whether two model identifiers name the same embedding model.
+
+    A leading segment can mean two different things, and the string alone
+    doesn't say which:
+
+    - a *route* — ``"azure/text-embedding-3-large"`` is the same model as
+      ``"text-embedding-3-large"``, just reached through a different endpoint;
+    - an *owner* — ``"BAAI/bge-m3"`` and ``"ollama/bge-m3"`` are a fp32 release
+      and a quantized build, same dimensions but different vectors.
+
+    A bare name is the tell: it carries no route, so a segment present on only
+    one side is one. That case is ignored. When both sides carry a segment they
+    name owners and are compared in full, which keeps the pairs above distinct.
+
+    This matters because the dimension check can't separate them — every
+    realistic collision here has identical dimensions — and the resulting
+    failure is silent: retrieval still returns results, ranked against vectors
+    from another model.
+
+    Comparison is case-insensitive and ignores surrounding whitespace. Only a
+    whole ``/`` segment is ever ignored, never a substring, so
+    ``"text-embedding-3-large"`` and ``"text-embedding-3-large-v2"`` stay
+    distinct.
+    """
+    a = stored.strip().lower()
+    b = current.strip().lower()
+    if not a or not b:
+        return a == b
+    if a == b:
+        return True
+    _, a_sep, a_tail = a.partition("/")
+    _, b_sep, b_tail = b.partition("/")
+    if a_sep and a_tail and not b_sep:
+        return a_tail == b
+    if b_sep and b_tail and not a_sep:
+        return b_tail == a
+    return False
 
 
 def _strip_and_load_json(text: str) -> Any:
@@ -1923,6 +1966,7 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
         ctx: Context | None = None,
     ) -> UpdateResult:
@@ -1984,6 +2028,23 @@ class GraphRAG:
                 with no extra plumbing. Required in text mode.
             loader / chunker / extractor / resolver: Per-call strategy
                 overrides, identical to ``ingest()``.
+            cache_unchanged_chunks: When ``True``, wrap the extractor in
+                :class:`~graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction.CachedChunkExtraction`:
+                new chunks whose text is byte-identical to an existing
+                chunk of this document skip LLM extraction — their
+                entities/relations/mentions are rebuilt from the live
+                graph and remapped onto the new chunk uids. Only changed
+                chunks pay for extraction. Cache effectiveness is
+                reported in ``UpdateResult.metadata["cache_stats"]``
+                (``cached_chunks`` / ``extracted_chunks``). Two semantic
+                caveats: (1) the graph is the cache, so manually deleted
+                entities are NOT resurrected from unchanged chunks; (2)
+                if the ontology, prompts, or model changed since ingest,
+                unchanged chunks keep their previously extracted data.
+                Leave ``False`` (the default) to force full re-extraction
+                in those situations. No effect on the
+                ``if_missing="ingest"`` fresh-ingest fallthrough (a new
+                document has no chunks to reuse).
             if_missing: ``"error"`` (default) raises ``DocumentNotFoundError``
                 when the id is unknown. ``"ingest"`` falls through to
                 ``ingest()`` for upsert semantics.
@@ -2109,10 +2170,24 @@ class GraphRAG:
         # Contradictions surface here rather than mid-extraction.
         await self._ensure_ontology_initialized()
 
+        # Chunk-level extraction cache (opt-in). Wraps the effective
+        # extractor so byte-identical chunks are rebuilt from the live
+        # graph instead of re-extracted. Must read the OLD chunks, which
+        # still exist until the Phase 5 cutover — safe by construction.
+        active_extractor = extractor or self._default_extractor()
+        cache_wrapper: CachedChunkExtraction | None = None
+        if cache_unchanged_chunks:
+            cache_wrapper = CachedChunkExtraction(
+                inner=active_extractor,
+                graph_store=self._graph_store,
+                document_id=resolved_id,
+            )
+            active_extractor = cache_wrapper
+
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),  # unused (text is provided below)
             chunker=chunker or SentenceTokenCapChunking(),
-            extractor=extractor or self._default_extractor(),
+            extractor=active_extractor,
             resolver=resolver or ExactMatchResolution(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
@@ -2190,12 +2265,19 @@ class GraphRAG:
             f"wrote {pipeline_result.chunks_indexed} new chunks"
         )
 
+        result_metadata = dict(pipeline_result.metadata)
+        if cache_wrapper is not None:
+            result_metadata["cache_stats"] = {
+                "cached_chunks": cache_wrapper.cached_chunk_count,
+                "extracted_chunks": cache_wrapper.extracted_chunk_count,
+            }
+
         return UpdateResult(
             document_info=DocumentInfo(uid=resolved_id, path=doc_path, metadata=loaded_metadata),
             nodes_created=pipeline_result.nodes_created,
             relationships_created=pipeline_result.relationships_created,
             chunks_indexed=pipeline_result.chunks_indexed,
-            metadata=pipeline_result.metadata,
+            metadata=result_metadata,
             chunks_deleted=chunks_deleted,
             entities_deleted=entities_deleted,
             replaced_existing=True,
@@ -2324,6 +2406,7 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        cache_unchanged_chunks: bool = False,
         max_concurrency: int = 3,
         update_concurrency: int = 1,
         ctx: Context | None = None,
@@ -2377,6 +2460,11 @@ class GraphRAG:
                 ``added``/``modified``. ``deleted`` ignores this.
             resolver: Override the resolution strategy for ``added``/
                 ``modified``. ``deleted`` ignores this.
+            cache_unchanged_chunks: Forwarded to ``update()`` for the
+                ``modified`` list — unchanged chunks skip LLM extraction
+                and are rebuilt from the live graph. See
+                :meth:`update` for semantics and caveats. ``added`` and
+                ``deleted`` ignore this.
             max_concurrency: Parallelism cap for ``ingest()`` of the
                 ``added`` list. Matches ``ingest()``'s own knob and the
                 ``add`` step is pure ingestion with no orphan-cleanup
@@ -2469,6 +2557,7 @@ class GraphRAG:
                             chunker=chunker,
                             extractor=extractor,
                             resolver=resolver,
+                            cache_unchanged_chunks=cache_unchanged_chunks,
                             if_missing="ingest",
                             ctx=ctx.child(),
                         )
@@ -2829,7 +2918,7 @@ class GraphRAG:
                 stored_dim = result.result_set[0][1]
                 current_model = self.embedder.model_name
 
-                if stored_model and stored_model != current_model:
+                if stored_model and not _same_embedding_model(stored_model, current_model):
                     raise ConfigError(
                         f"Embedding model mismatch: graph was built with "
                         f"'{stored_model}' but current embedder is "
@@ -3138,6 +3227,7 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
         ctx: Context | None = None,
     ) -> UpdateResult:
@@ -3161,6 +3251,7 @@ class GraphRAG:
                 chunker=chunker,
                 extractor=extractor,
                 resolver=resolver,
+                cache_unchanged_chunks=cache_unchanged_chunks,
                 if_missing=if_missing,
                 ctx=ctx,
             )
@@ -3193,6 +3284,7 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        cache_unchanged_chunks: bool = False,
         max_concurrency: int = 3,
         update_concurrency: int = 1,
         ctx: Context | None = None,
@@ -3215,6 +3307,7 @@ class GraphRAG:
                 chunker=chunker,
                 extractor=extractor,
                 resolver=resolver,
+                cache_unchanged_chunks=cache_unchanged_chunks,
                 max_concurrency=max_concurrency,
                 update_concurrency=update_concurrency,
                 ctx=ctx,
