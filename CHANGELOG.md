@@ -27,11 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`CachedChunkExtraction(inner, graph_store, document_id)`** — the
   underlying decorator `ExtractionStrategy`, exported at top level for
   advanced pipelines. Fail-open: a cache lookup or rebuild failure
-  falls back to full extraction (worst case is paying for skippable
-  LLM calls, never data loss). An unreachable graph (`DatabaseError`)
-  and an exhausted latency budget are the exceptions and propagate —
-  extraction only needs the LLM, so it would bill in full and then
-  fail at the write phase regardless. Caveats: the graph is the
+  falls back to extraction (worst case is paying for skippable
+  LLM calls, never data loss). Fallback is scoped per chunk — a single
+  chunk the cache cannot rebuild is re-extracted on its own, and any
+  chunk transitively depending on it, rather than voiding the whole
+  document's cache. An unreachable graph
+  (`DatabaseUnavailableError`) and an exhausted latency budget are the
+  exceptions and propagate — extraction only needs the LLM, so it would
+  bill in full and then fail at the write phase regardless. A query the
+  server *rejects* (`DatabaseError`) still falls open, because the
+  server answered and the write phase will work. Caveats: the graph is the
   cache, so manually deleted entities are not resurrected from
   unchanged chunks, and ontology/prompt/model changes do not
   re-extract unchanged chunks — pass `cache_unchanged_chunks=False`
@@ -58,7 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   driver's own types.
 - **`FalkorDBConnection.ping()` returns `False` when the server is
   unreachable** instead of raising. Reporting "not alive" is the point
-  of the call.
+  of the call. A missing `falkordb` package still raises `ImportError`
+  — a broken install is a packaging bug, not a down server, and
+  reporting it as one sends operators to the wrong place.
+- **New `DatabaseUnavailableError(DatabaseError)`** distinguishes "the
+  server never answered" (unreachable, open circuit breaker, exhausted
+  retries) from "the server answered and rejected the query" (plain
+  `DatabaseError`). Existing `except DatabaseError` handlers are
+  unaffected. The chunk cache uses the split to decide whether falling
+  open is safe. `query()`'s permanent-error short-circuit now also
+  recognizes syntax errors, invalid input, unknown functions, type
+  mismatches, and missing procedures, so a rejected query fails fast
+  instead of burning the full retry budget first.
 
 ## [1.3.0] - 2026-06-04
 

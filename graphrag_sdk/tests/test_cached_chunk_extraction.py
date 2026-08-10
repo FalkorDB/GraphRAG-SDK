@@ -14,13 +14,18 @@ from unittest.mock import AsyncMock
 import pytest
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.exceptions import DatabaseError, LatencyBudgetExceededError
+from graphrag_sdk.core.exceptions import (
+    DatabaseError,
+    DatabaseUnavailableError,
+    LatencyBudgetExceededError,
+)
 from graphrag_sdk.core.models import (
     ChunkEntityRow,
     ChunkRelationshipRow,
     EntityMention,
     GraphData,
     GraphNode,
+    GraphRelationship,
     Ontology,
     TextChunk,
     TextChunks,
@@ -52,9 +57,7 @@ class FakeGraphStore:
     async def get_document_chunk_texts(self, document_id: str) -> list[tuple[str, str]]:
         return self.chunk_texts
 
-    async def get_entities_mentioned_in_chunks(
-        self, chunk_ids: list[str]
-    ) -> list[ChunkEntityRow]:
+    async def get_entities_mentioned_in_chunks(self, chunk_ids: list[str]) -> list[ChunkEntityRow]:
         wanted = set(chunk_ids)
         return [r for r in self.entity_rows if r.chunk_id in wanted]
 
@@ -131,9 +134,7 @@ class TestSplit:
         inner = RecordingExtractor()
         strategy = CachedChunkExtraction(inner, store, "doc-1")
 
-        new_chunks = TextChunks(
-            chunks=[_chunk("alpha", 0, "new-1"), _chunk("beta", 1, "new-2")]
-        )
+        new_chunks = TextChunks(chunks=[_chunk("alpha", 0, "new-1"), _chunk("beta", 1, "new-2")])
         result = await strategy.extract(new_chunks, ontology, ctx)
 
         assert inner.calls == []
@@ -496,9 +497,7 @@ class TestFailOpen:
 
 
 class TestMerge:
-    async def test_entity_in_cached_and_extracted_chunk_unions_provenance(
-        self, ontology, ctx
-    ):
+    async def test_entity_in_cached_and_extracted_chunk_unions_provenance(self, ontology, ctx):
         """Same entity in an unchanged chunk (cached) and a changed chunk
         (extracted): fresh properties win, provenance is the union."""
         store = FakeGraphStore(
@@ -548,12 +547,8 @@ class TestMerge:
         fresh = GraphData(
             extracted_entities=[ExtractedEntity(name="Alice", type="Person")],
         )
-        strategy = CachedChunkExtraction(
-            RecordingExtractor(fresh), FakeGraphStore(), "doc-1"
-        )
-        result = await strategy.extract(
-            TextChunks(chunks=[_chunk("anything")]), ontology, ctx
-        )
+        strategy = CachedChunkExtraction(RecordingExtractor(fresh), FakeGraphStore(), "doc-1")
+        result = await strategy.extract(TextChunks(chunks=[_chunk("anything")]), ontology, ctx)
         assert len(result.extracted_entities) == 1
 
 
@@ -564,9 +559,7 @@ class TestGraphStoreCacheAccessors:
     def graph_store(self, mock_connection):
         return GraphStore(mock_connection)
 
-    async def test_get_document_chunk_texts_filters_bad_rows(
-        self, graph_store, mock_connection
-    ):
+    async def test_get_document_chunk_texts_filters_bad_rows(self, graph_store, mock_connection):
         from unittest.mock import MagicMock
 
         mock_connection.query = AsyncMock(
@@ -584,9 +577,7 @@ class TestGraphStoreCacheAccessors:
         cypher = mock_connection.query.call_args[0][0]
         assert "PART_OF" in cypher and "c.text" in cypher
 
-    async def test_get_entities_mentioned_in_chunks_maps_rows(
-        self, graph_store, mock_connection
-    ):
+    async def test_get_entities_mentioned_in_chunks_maps_rows(self, graph_store, mock_connection):
         from unittest.mock import MagicMock
 
         mock_connection.query = AsyncMock(
@@ -628,9 +619,7 @@ class TestGraphStoreCacheAccessors:
         rows = await graph_store.get_entities_mentioned_in_chunks(["c1"])
         assert rows[0].label is None
 
-    async def test_get_relationships_for_chunks_maps_rows(
-        self, graph_store, mock_connection
-    ):
+    async def test_get_relationships_for_chunks_maps_rows(self, graph_store, mock_connection):
         from unittest.mock import MagicMock
 
         mock_connection.query = AsyncMock(
@@ -653,9 +642,7 @@ class TestGraphStoreCacheAccessors:
         # Single edge scan per batch — no per-chunk UNWIND re-scan.
         assert "UNWIND" not in cypher
 
-    async def test_get_relationships_one_row_per_matching_chunk(
-        self, graph_store, mock_connection
-    ):
+    async def test_get_relationships_one_row_per_matching_chunk(self, graph_store, mock_connection):
         from unittest.mock import MagicMock
 
         mock_connection.query = AsyncMock(
@@ -671,9 +658,7 @@ class TestGraphStoreCacheAccessors:
             ("c2", "a", "b"),
         }
 
-    async def test_scalar_where_list_expected_treated_as_empty(
-        self, graph_store, mock_connection
-    ):
+    async def test_scalar_where_list_expected_treated_as_empty(self, graph_store, mock_connection):
         """Tampered graphs may hold a scalar where a list is expected —
         it must not iterate as characters into bogus labels/provenance."""
         from unittest.mock import MagicMock
@@ -688,9 +673,7 @@ class TestGraphStoreCacheAccessors:
         assert rows[0].label is None  # scalar labels → no concrete label
         assert rows[0].source_chunk_ids == []  # "abc" must not become ['a','b','c']
 
-    async def test_relationship_scalar_provenance_skipped(
-        self, graph_store, mock_connection
-    ):
+    async def test_relationship_scalar_provenance_skipped(self, graph_store, mock_connection):
         from unittest.mock import MagicMock
 
         mock_connection.query = AsyncMock(
@@ -735,9 +718,7 @@ class TestCachedUpdateIntegration:
         # across both versions; only chunk 2 changes. FixedSizeChunking cuts
         # pure character windows without stripping, so padding is stable.
         part1 = _first_n_chars_stable(
-            "Alice works at Acme Corporation with her colleague Bob today.".ljust(
-                self.CHUNK, "|"
-            ),
+            "Alice works at Acme Corporation with her colleague Bob today.".ljust(self.CHUNK, "|"),
             self.CHUNK,
         )
         v1 = part1 + "Carol manages the Berlin office of Acme Corporation."
@@ -814,8 +795,7 @@ class TestCachedUpdateIntegration:
 
         # Alice's MENTIONED_IN edge must target a live chunk.
         r = await rag._graph_store.query_raw(
-            "MATCH (e:__Entity__ {name: 'Alice'})-[:MENTIONED_IN]->(c:Chunk) "
-            "RETURN collect(c.id)"
+            "MATCH (e:__Entity__ {name: 'Alice'})-[:MENTIONED_IN]->(c:Chunk) RETURN collect(c.id)"
         )
         assert set(r.result_set[0][0] or []) <= live_chunk_ids
 
@@ -859,9 +839,7 @@ class TestCachedUpdateIntegration:
         )
         assert r.result_set[0][0] == 1
 
-    async def test_default_off_extracts_all_chunks(
-        self, real_falkordb_rag_factory, scripted_llm
-    ):
+    async def test_default_off_extracts_all_chunks(self, real_falkordb_rag_factory, scripted_llm):
         """cache_unchanged_chunks defaults to False → both chunks hit the
         LLM on update (4 scripted responses, all consumed)."""
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
@@ -886,9 +864,7 @@ class TestCachedUpdateIntegration:
         )
         assert r.result_set[0][0] == 1
 
-    async def test_no_op_short_circuit_unaffected(
-        self, real_falkordb_rag_factory, scripted_llm
-    ):
+    async def test_no_op_short_circuit_unaffected(self, real_falkordb_rag_factory, scripted_llm):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
         )
@@ -948,9 +924,7 @@ class TestSelfMappingGuard:
         assert [n.id for n in result.nodes] == ["alice__person"]
         assert len(result.mentions) == 1
 
-    async def test_genuine_old_chunk_still_cached_alongside_self_reference(
-        self, ontology, ctx
-    ):
+    async def test_genuine_old_chunk_still_cached_alongside_self_reference(self, ontology, ctx):
         """The guard must drop only the self-reference, not real cache hits."""
         store = FakeGraphStore(
             chunk_texts=[("new-1", "alpha"), ("old-2", "beta")],
@@ -994,15 +968,33 @@ class TestInfrastructureErrorsPropagate:
         store = FakeGraphStore()
 
         async def _boom(document_id):
-            raise DatabaseError("connection refused")
+            raise DatabaseUnavailableError("connection refused")
 
         store.get_document_chunk_texts = _boom
         inner = RecordingExtractor()
         strategy = CachedChunkExtraction(inner, store, "doc-1")
 
-        with pytest.raises(DatabaseError):
+        with pytest.raises(DatabaseUnavailableError):
             await strategy.extract(TextChunks(chunks=[_chunk("a")]), ontology, ctx)
         assert inner.calls == [], "extraction must not run once the graph is unreachable"
+
+    async def test_rejected_query_falls_open(self, ontology, ctx):
+        """A *rejected* query is not an outage. The server answered, so the
+        write phase will work and full extraction is the correct fallback —
+        otherwise a cache-only query the server dislikes would break an
+        update that ``cache_unchanged_chunks=False`` handles fine."""
+        store = FakeGraphStore()
+
+        async def _boom(document_id):
+            raise DatabaseError("syntax error near 'any'")
+
+        store.get_document_chunk_texts = _boom
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        await strategy.extract(TextChunks(chunks=[_chunk("a")]), ontology, ctx)
+        assert len(inner.calls) == 1
+        assert strategy.cached_chunk_count == 0
 
     async def test_lookup_budget_error_propagates(self, ontology, ctx):
         store = FakeGraphStore()
@@ -1023,17 +1015,31 @@ class TestInfrastructureErrorsPropagate:
         store = FakeGraphStore(chunk_texts=[("old-1", "a")])
 
         async def _boom(chunk_ids):
-            raise DatabaseError("connection reset")
+            raise DatabaseUnavailableError("connection reset")
 
         store.get_entities_mentioned_in_chunks = _boom
         inner = RecordingExtractor()
         strategy = CachedChunkExtraction(inner, store, "doc-1")
 
-        with pytest.raises(DatabaseError):
-            await strategy.extract(
-                TextChunks(chunks=[_chunk("a", uid="new-1")]), ontology, ctx
-            )
+        with pytest.raises(DatabaseUnavailableError):
+            await strategy.extract(TextChunks(chunks=[_chunk("a", uid="new-1")]), ontology, ctx)
         assert inner.calls == []
+
+    async def test_rebuild_rejected_query_falls_open(self, ontology, ctx):
+        """Same distinction at the rebuild step."""
+        store = FakeGraphStore(chunk_texts=[("old-1", "a")])
+
+        async def _boom(chunk_ids):
+            raise DatabaseError("unknown function 'any'")
+
+        store.get_entities_mentioned_in_chunks = _boom
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        await strategy.extract(TextChunks(chunks=[_chunk("a", uid="new-1")]), ontology, ctx)
+        assert len(inner.calls) == 1
+        assert strategy.cached_chunk_count == 0
+        assert strategy.extracted_chunk_count == 1
 
     async def test_other_errors_still_fail_open(self, ontology, ctx):
         """A cache that merely misbehaves must not block the update."""
@@ -1049,3 +1055,170 @@ class TestInfrastructureErrorsPropagate:
         await strategy.extract(TextChunks(chunks=[_chunk("a")]), ontology, ctx)
         assert len(inner.calls) == 1, "fail-open path must still extract"
         assert strategy.cached_chunk_count == 0
+
+
+class TestRelationshipMergeUnion:
+    """A fact carried by both a cached and a freshly extracted chunk must
+    survive as ONE edge with both provenances.
+
+    ExactMatchResolution keys relationships on (start, type, end), keeps the
+    first occurrence and rebuilds from it — it does not merge properties the
+    way the node path does. So two rows for one fact means the second row is
+    discarded outright: the fresh chunk's corrected description is lost, and
+    its chunk id never reaches source_chunk_ids, leaving the edge to be
+    swept as unsupported on a later update. Full re-extraction never hits
+    this because _aggregate_relations collapses duplicates upstream.
+    """
+
+    def _rel(self, fact, srcs):
+        return GraphRelationship(
+            start_node_id="alice",
+            end_node_id="acme",
+            type="RELATES",
+            properties={"fact": fact, "source_chunk_ids": list(srcs)},
+        )
+
+    def test_same_edge_from_cached_and_extracted_is_unioned(self):
+        cached = GraphData(nodes=[], relationships=[self._rel("old fact", ["newA"])])
+        fresh = GraphData(nodes=[], relationships=[self._rel("corrected fact", ["newB"])])
+
+        merged = CachedChunkExtraction._merge([cached, fresh])
+
+        assert len(merged.relationships) == 1
+        props = merged.relationships[0].properties
+        assert props["fact"] == "corrected fact", "fresh extraction must win on properties"
+        assert props["source_chunk_ids"] == ["newA", "newB"], "both provenances must survive"
+
+    def test_different_edge_types_stay_separate(self):
+        a = GraphData(
+            nodes=[],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"source_chunk_ids": ["c1"]},
+                )
+            ],
+        )
+        b = GraphData(
+            nodes=[],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="MENTIONS",
+                    properties={"source_chunk_ids": ["c2"]},
+                )
+            ],
+        )
+        merged = CachedChunkExtraction._merge([a, b])
+        assert len(merged.relationships) == 2
+
+    def test_direction_is_not_collapsed(self):
+        fwd = GraphData(
+            nodes=[],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"source_chunk_ids": ["c1"]},
+                )
+            ],
+        )
+        rev = GraphData(
+            nodes=[],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="b",
+                    end_node_id="a",
+                    type="RELATES",
+                    properties={"source_chunk_ids": ["c2"]},
+                )
+            ],
+        )
+        merged = CachedChunkExtraction._merge([fwd, rev])
+        assert len(merged.relationships) == 2
+
+
+class TestPerChunkFallbackScope:
+    """An unrebuildable chunk must not cost the whole document its cache."""
+
+    async def test_only_the_bad_chunk_is_extracted(self, ontology, ctx):
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "good"), ("old-2", "bad")],
+            entity_rows=[
+                ChunkEntityRow(
+                    chunk_id="old-1",
+                    entity_id="ok",
+                    label="Person",
+                    name="Ok",
+                    source_chunk_ids=["old-1"],
+                ),
+                ChunkEntityRow(
+                    chunk_id="old-2",
+                    entity_id="broken",
+                    label="",  # no concrete label
+                    name="Broken",
+                    source_chunk_ids=["old-2"],
+                ),
+            ],
+        )
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        result = await strategy.extract(
+            TextChunks(chunks=[_chunk("good", 0, "new-1"), _chunk("bad", 1, "new-2")]),
+            ontology,
+            ctx,
+        )
+
+        assert strategy.cached_chunk_count == 1
+        assert strategy.extracted_chunk_count == 1
+        assert [c.uid for c in inner.calls[0].chunks] == ["new-2"]
+        assert any(n.id == "ok" for n in result.nodes), "the good chunk keeps its cache"
+
+    async def test_dropping_a_chunk_cascades_to_edges_that_needed_it(self, ontology, ctx):
+        """Removing a chunk removes the entities only it mentioned, which can
+        strand an edge cited by another chunk. The fixpoint must catch that."""
+        store = FakeGraphStore(
+            chunk_texts=[("old-1", "a"), ("old-2", "b")],
+            entity_rows=[
+                ChunkEntityRow(
+                    chunk_id="old-1",
+                    entity_id="known",
+                    label="Person",
+                    name="Known",
+                    source_chunk_ids=["old-1"],
+                ),
+                # only old-2 mentions 'shared', and old-2 is unrebuildable
+                ChunkEntityRow(
+                    chunk_id="old-2",
+                    entity_id="shared",
+                    label="",
+                    name="Shared",
+                    source_chunk_ids=["old-2"],
+                ),
+            ],
+            rel_rows=[
+                ChunkRelationshipRow(
+                    chunk_id="old-1",
+                    start_entity_id="known",
+                    end_entity_id="shared",
+                    rel_type="knows",
+                )
+            ],
+        )
+        inner = RecordingExtractor()
+        strategy = CachedChunkExtraction(inner, store, "doc-1")
+
+        await strategy.extract(
+            TextChunks(chunks=[_chunk("a", 0, "new-1"), _chunk("b", 1, "new-2")]),
+            ontology,
+            ctx,
+        )
+
+        assert strategy.cached_chunk_count == 0, "both chunks must fall back"
+        assert strategy.extracted_chunk_count == 2
+        assert sorted(c.uid for c in inner.calls[0].chunks) == ["new-1", "new-2"]

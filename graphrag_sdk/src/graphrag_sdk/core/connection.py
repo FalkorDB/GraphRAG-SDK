@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from graphrag_sdk.core.exceptions import DatabaseError
+from graphrag_sdk.core.exceptions import DatabaseError, DatabaseUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class FalkorDBConnection:
             # a pool per failed attempt with no way to aclose() it.
             self._driver = None
             self._graph = None
-            raise DatabaseError(
+            raise DatabaseUnavailableError(
                 f"Could not connect to FalkorDB at {self.config.host}:{self.config.port}: {exc}"
             ) from exc
 
@@ -183,7 +183,7 @@ class FalkorDBConnection:
         assert self._graph is not None  # for type-checkers
 
         if not await self._breaker.allow_request():
-            raise DatabaseError(
+            raise DatabaseUnavailableError(
                 "Circuit breaker is open — FalkorDB connection is unhealthy. "
                 "Requests will resume after recovery timeout."
             )
@@ -230,7 +230,7 @@ class FalkorDBConnection:
                 "FalkorDB query failure details",
                 exc_info=(type(last_exc), last_exc, last_exc.__traceback__),
             )
-            raise DatabaseError(
+            raise DatabaseUnavailableError(
                 f"FalkorDB query failed after {self.config.retry_count} attempts: {last_exc}"
             ) from last_exc
         raise DatabaseError("FalkorDB query failed without an exception")
@@ -241,6 +241,14 @@ class FalkorDBConnection:
         "already indexed",
         "already exists",
         "unknown index",
+        # Malformed or unsupported query: the server answered and rejected
+        # it. Retrying re-sends the same bytes, so it can only fail again —
+        # and exhausting the budget would misreport a rejection as an outage.
+        "syntax error",
+        "invalid input",
+        "unknown function",
+        "type mismatch",
+        "procedure not found",
     )
 
     @classmethod
@@ -254,7 +262,9 @@ class FalkorDBConnection:
         """Send a Redis PING to verify the connection is alive.
 
         Returns ``False`` rather than raising when the server cannot be
-        reached — reporting "not alive" is the point of the call.
+        reached — reporting "not alive" is the point of the call. An
+        ``ImportError`` from a missing driver still propagates: that is a
+        broken install, not a dead server.
         """
         try:
             self._ensure_client()
@@ -263,6 +273,11 @@ class FalkorDBConnection:
 
             redis: Redis = Redis(connection_pool=self._pool)
             return await redis.ping()
+        except ImportError:
+            # The driver isn't installed. Reporting that as "server down"
+            # sends operators to inspect a healthy database instead of the
+            # broken install, so let it surface.
+            raise
         except Exception:
             logger.debug("Ping failed", exc_info=True)
             return False

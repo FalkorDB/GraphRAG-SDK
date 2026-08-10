@@ -720,10 +720,10 @@ class GraphStore:
         label (matching how ``upsert_nodes`` writes concrete label +
         ``__Entity__`` marker). ``None`` when no concrete label exists —
         deliberately NO fallback to ``e.type``: a MERGE on a label the
-        node doesn't carry would mint a duplicate node with the same id,
-        so the consumer must skip the node write instead
-        (``CachedChunkExtraction`` keeps the mention, which is enough to
-        survive orphan cleanup).
+        node doesn't carry would mint a duplicate node with the same id.
+        ``CachedChunkExtraction`` treats every chunk mentioning such an
+        entity as unrebuildable and sends those chunks to real extraction
+        instead.
 
         Batched by ``_BATCH_SIZE`` to keep parameter sizes bounded.
         """
