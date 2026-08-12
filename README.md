@@ -96,20 +96,20 @@ async def main():
 asyncio.run(main())
 ```
 
-### 3. Define a schema (optional)
+### 3. Define an ontology (optional)
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
-        EntityType(label="Location", description="A geographic location"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
+        Entity(label="Location", description="A geographic location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Is employed by", patterns=[("Person", "Organization")]),
-        RelationType(label="LOCATED_IN", description="Is situated in", patterns=[("Organization", "Location")]),
+        Relation(label="WORKS_AT", description="Is employed by", patterns=[("Person", "Organization")]),
+        Relation(label="LOCATED_IN", description="Is situated in", patterns=[("Organization", "Location")]),
     ],
 )
 
@@ -117,7 +117,7 @@ async with GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="openai/gpt-5.5"),
     embedder=LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256),
-    schema=schema,
+    ontology=ontology,
 ) as rag:
     ...  # ingest / completion as above
 ```

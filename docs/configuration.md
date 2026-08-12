@@ -266,29 +266,29 @@ Both `LiteLLMEmbedder` and `OpenRouterEmbedder` implement binary-split error rec
 
 ---
 
-## 4. GraphSchema
+## 4. Ontology
 
-`GraphSchema` defines the structure of your knowledge graph. It constrains LLM extraction and powers the pruning step that filters non-conforming data.
+`Ontology` defines the structure of your knowledge graph. It constrains LLM extraction and powers the pruning step that filters non-conforming data.
 
 ### Components
 
-**EntityType** -- defines a node type:
+**Entity** -- defines a node type:
 
 | Field         | Type                | Default       | Description                            |
 |---------------|---------------------|---------------|----------------------------------------|
 | `label`       | `str`               | --            | The node label (e.g. `"Person"`).      |
 | `description` | `str \| None`       | `None`        | Human-readable description.            |
-| `properties`  | `list[PropertyType]` | `[]`          | Expected properties on this node type. |
+| `properties`  | `list[Attribute]` | `[]`          | Expected properties on this node type. |
 
-**RelationType** -- defines a relationship type:
+**Relation** -- defines a relationship type:
 
 | Field         | Type                | Default       | Description                              |
 |---------------|---------------------|---------------|------------------------------------------|
 | `label`       | `str`               | --            | The relationship type (e.g. `"KNOWS"`).  |
 | `description` | `str \| None`       | `None`        | Human-readable description.              |
-| `properties`  | `list[PropertyType]` | `[]`          | Expected properties on this relationship.|
+| `properties`  | `list[Attribute]` | `[]`          | Expected properties on this relationship.|
 
-**PropertyType** -- defines a property on a node or relationship:
+**Attribute** -- defines a property on a node or relationship:
 
 | Field         | Type            | Default     | Description                                                  |
 |---------------|-----------------|-------------|--------------------------------------------------------------|
@@ -301,50 +301,50 @@ Both `LiteLLMEmbedder` and `OpenRouterEmbedder` implement binary-split error rec
 
 ```python
 from graphrag_sdk.core.models import (
-    EntityType, RelationType, PropertyType, GraphSchema,
+    Entity, Relation, Attribute, Ontology,
 )
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(
+        Entity(
             label="Person",
             description="A character or real person",
             properties=[
-                PropertyType(name="name", type="STRING", required=True),
-                PropertyType(name="age", type="INTEGER"),
-                PropertyType(name="occupation", type="STRING"),
+                Attribute(name="name", type="STRING", required=True),
+                Attribute(name="age", type="INTEGER"),
+                Attribute(name="occupation", type="STRING"),
             ],
         ),
-        EntityType(
+        Entity(
             label="Location",
             description="A geographical place or setting",
             properties=[
-                PropertyType(name="name", type="STRING", required=True),
-                PropertyType(name="country", type="STRING"),
+                Attribute(name="name", type="STRING", required=True),
+                Attribute(name="country", type="STRING"),
             ],
         ),
-        EntityType(
+        Entity(
             label="Organization",
             description="A company, institution, or group",
         ),
     ],
     relations=[
-        RelationType(
+        Relation(
             label="LIVES_IN",
             description="Person resides at location",
             patterns=[("Person", "Location")],
         ),
-        RelationType(
+        Relation(
             label="WORKS_FOR",
             description="Person is employed by organization",
             patterns=[("Person", "Organization")],
         ),
-        RelationType(
+        Relation(
             label="LOCATED_IN",
             description="Organization is located at a place",
             patterns=[("Organization", "Location")],
         ),
-        RelationType(
+        Relation(
             label="KNOWS",
             description="Two people know each other",
             patterns=[("Person", "Person")],
@@ -353,12 +353,12 @@ schema = GraphSchema(
 )
 ```
 
-Each `RelationType.patterns` entry is a `(source_label, target_label)` tuple.
+Each `Relation.patterns` entry is a `(source_label, target_label)` tuple.
 An empty `patterns` list means the relation is allowed between any entity types.
 
 ### Open Schema Mode
 
-If no entity types or relation types are defined (empty `GraphSchema()`), the extraction operates in open-schema mode and the pruning step is skipped. This lets the LLM extract any entities and relationships it finds.
+If no entity types or relation types are defined (empty `Ontology()`), the extraction operates in open-schema mode and the pruning step is skipped. This lets the LLM extract any entities and relationships it finds.
 
 ---
 
@@ -392,7 +392,7 @@ Larger chunks provide more context per extraction call but increase LLM token us
 | `llm`              | `LLMInterface`  | required       | LLM provider for step 2 (verify + relationship extraction). |
 | `entity_extractor` | `EntityExtractor \| None` | `None` (`GLiNERExtractor()`) | Pluggable NER backend for step 1. |
 | `coref_resolver`   | `CorefResolver \| None` | `None` | Optional coreference resolution (e.g. `FastCorefResolver()`). |
-| `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `schema.entities` if set. |
+| `entity_types`     | `list[str] \| None` | `None` (11 default types) | Custom entity types. Overridden by `ontology.entities` if set. |
 | `max_concurrency`  | `int \| None`   | `None` (uses LLM default) | Maximum parallel LLM calls during step 2. |
 
 **Built-in entity extractors:**
@@ -434,18 +434,18 @@ extractor = GraphExtraction(
     entity_types=["Gene", "Protein", "Disease", "Drug", "Pathway"],
 )
 
-# Or define them in the schema (takes priority)
-from graphrag_sdk import GraphSchema, EntityType
+# Or define them in the ontology (takes priority)
+from graphrag_sdk import Ontology, Entity
 
-schema = GraphSchema(entities=[
-    EntityType(label="Gene", description="A gene or genetic locus"),
-    EntityType(label="Protein", description="A protein or enzyme"),
-    EntityType(label="Disease", description="A disease or condition"),
+ontology = Ontology(entities=[
+    Entity(label="Gene", description="A gene or genetic locus"),
+    Entity(label="Protein", description="A protein or enzyme"),
+    Entity(label="Disease", description="A disease or condition"),
 ])
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 ```
 
-Priority: `schema.entities` > `entity_types` param > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method).
+Priority: `ontology.entities` > `entity_types` param > defaults (Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method).
 
 ### LLM Concurrency
 

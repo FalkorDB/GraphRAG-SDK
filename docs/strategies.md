@@ -213,7 +213,7 @@ class ExtractionStrategy(ABC):
     async def extract(
         self,
         chunks: TextChunks,
-        schema: GraphSchema,
+        ontology: Ontology,
         ctx: Context,
     ) -> GraphData:
         """Extract graph data from text chunks."""
@@ -260,24 +260,24 @@ extractor = GraphExtraction(
 )
 ```
 
-**3. Use `GraphSchema` entities** (schema types override both defaults and `entity_types`):
+**3. Use `Ontology` entities** (schema types override both defaults and `entity_types`):
 
 ```python
-from graphrag_sdk import GraphRAG, GraphSchema, EntityType
+from graphrag_sdk import GraphRAG, Ontology, Entity
 
-schema = GraphSchema(entities=[
-    EntityType(label="Vehicle", description="Cars, trucks, etc."),
-    EntityType(label="Road", description="Streets, highways, etc."),
-    EntityType(label="Location", description="Cities, countries, etc."),
+ontology = Ontology(entities=[
+    Entity(label="Vehicle", description="Cars, trucks, etc."),
+    Entity(label="Road", description="Streets, highways, etc."),
+    Entity(label="Location", description="Cities, countries, etc."),
 ])
 
 # Schema entity types are automatically used for extraction
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 await rag.ingest("traffic_report.txt")
 # Extraction uses: ["Vehicle", "Road", "Location"]
 ```
 
-The priority order is: `schema.entities` > `entity_types` parameter > defaults.
+The priority order is: `ontology.entities` > `entity_types` parameter > defaults.
 
 **Default entity types:** Person, Organization, Technology, Product, Location, Date, Event, Concept, Law, Dataset, Method.
 
@@ -364,7 +364,7 @@ Replace the entire 2-step pipeline by subclassing `ExtractionStrategy`:
 
 ```python
 class MyExtraction(ExtractionStrategy):
-    async def extract(self, chunks, schema, ctx):
+    async def extract(self, chunks, ontology, ctx):
         nodes, rels = [], []
         for chunk in chunks.chunks:
             # Your extraction logic
