@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every fresh install broke on the first query (`redis` 8.1.0)** — the
+  SDK imports `redis.asyncio` directly but never declared `redis` as a
+  dependency, so pip took `falkordb`'s `redis>=7.1.0` range and resolved
+  to the newest release. redis 8.1.0 injects an internal
+  `himport_registry` key into `ConnectionPool.connection_kwargs`, which
+  `falkordb`'s `Is_Cluster()` forwards verbatim to the synchronous
+  `redis.Redis()` constructor — raising
+  `TypeError: Redis.__init__() got an unexpected keyword argument
+  'himport_registry'`, surfaced as `DatabaseUnavailableError`. `ping()`
+  still succeeded, so health checks passed and the failure only appeared
+  on real work. `redis` is now declared explicitly as `>=7.2,<8.1`. The
+  lower bound is a second fix: `falkordb` 1.6 imports
+  `redis.driver_info`, which does not exist before redis 7.2, so its
+  declared `>=7.1.0` floor was also unusable.
+
 ## [1.4.0] - 2026-08-10
 
 Chunk-level extraction cache for `update()` (#288): re-ingesting a

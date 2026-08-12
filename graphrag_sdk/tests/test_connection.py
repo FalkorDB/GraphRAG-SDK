@@ -322,3 +322,37 @@ class TestDriverErrorsBecomeDatabaseError:
              patch("falkordb.asyncio.FalkorDB") as mock_falkor:
             mock_falkor.side_effect = RedisConnectionError("Connection refused")
             assert await conn.ping() is False
+
+
+class TestRedisVersionCompat:
+    """Guards the redis-py range declared in pyproject.toml.
+
+    falkordb's ``Is_Cluster()`` copies ``pool.connection_kwargs`` off the
+    async pool and hands them straight to the *synchronous*
+    ``redis.Redis()`` constructor. Any key redis-py adds to its async pool
+    kwargs but does not accept on ``Redis.__init__`` therefore breaks the
+    first query with a TypeError. redis 8.1.0 did exactly that with
+    ``himport_registry``, so assert the invariant rather than the version
+    number — this fails on any future release that reintroduces the shape.
+    """
+
+    def _pool_kwargs(self, cfg: ConnectionConfig) -> dict:
+        """Build the pool the way _ensure_client() does, capturing its kwargs."""
+        conn = FalkorDBConnection(cfg)
+        with patch("falkordb.asyncio.FalkorDB", side_effect=RuntimeError("stop after pool")):
+            with pytest.raises(Exception):
+                conn._ensure_client()
+        assert conn._pool is not None, "pool was not constructed"
+        return conn._pool.connection_kwargs.copy()
+
+    @pytest.mark.parametrize("ssl", [False, True])
+    def test_sync_redis_accepts_async_pool_kwargs(self, ssl):
+        import redis as sync_redis
+        import redis.asyncio as async_redis
+
+        kwargs = self._pool_kwargs(ConnectionConfig(ssl=ssl))
+        # Mirror Is_Cluster()'s own fixups.
+        kwargs["ssl"] = kwargs.pop("connection_class", None) is async_redis.SSLConnection
+
+        # Constructing does not open a socket, so no live server is needed.
+        sync_redis.Redis(**kwargs)

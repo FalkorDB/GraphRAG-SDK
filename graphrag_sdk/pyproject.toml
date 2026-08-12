@@ -34,6 +34,13 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0,<3.0",
     "falkordb>=1.0,<2",
+    # We import redis.asyncio directly, so pin it explicitly rather than
+    # inheriting falkordb's range. Upper bound: redis 8.1 injects
+    # "himport_registry" into ConnectionPool.connection_kwargs, which
+    # falkordb's Is_Cluster() forwards to the sync redis.Redis() constructor
+    # -> TypeError on the first query. Lower bound: falkordb 1.6 imports
+    # redis.driver_info, which only exists from redis 7.2 on.
+    "redis>=7.2,<8.1",
     "numpy>=1.24,<3",
     "python-dotenv>=1.0",
     "tiktoken>=0.5,<1.0",
