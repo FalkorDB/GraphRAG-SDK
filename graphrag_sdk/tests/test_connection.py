@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.exceptions import DatabaseError
 
 
 class TestConnectionConfig:
@@ -198,3 +199,126 @@ class TestFalkorDBConnectionTLS:
             assert kwargs["ssl_certfile"] == "/etc/client.pem"
             assert kwargs["ssl_keyfile"] == "/etc/client.key"
             assert kwargs["ssl_check_hostname"] is True
+
+
+class TestDriverErrorsBecomeDatabaseError:
+    """Driver-level failures reach callers as ``DatabaseError``.
+
+    Callers decide what to do about an unreachable database — the chunk
+    extraction cache, for one, stops instead of paying for an LLM run whose
+    result it could not store. That decision needs a database failure to be
+    recognisable, so it cannot be left as a ``redis`` exception that only
+    reads as a generic ``Exception``.
+    """
+
+    def test_unreachable_server_on_connect(self):
+        """The driver contacts the server while being constructed, so an
+        unreachable database surfaces here rather than at query time."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        conn = FalkorDBConnection(ConnectionConfig(host="h", port=1))
+        with patch("redis.asyncio.BlockingConnectionPool"), \
+             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+            mock_falkor.side_effect = RedisConnectionError("Connection refused")
+            with pytest.raises(DatabaseError, match="Could not connect to FalkorDB"):
+                conn._ensure_client()
+
+    def test_failed_connect_leaves_no_half_built_client(self):
+        """A later attempt must reconnect rather than reuse the wreckage."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        conn = FalkorDBConnection(ConnectionConfig(host="h", port=1))
+        with patch("redis.asyncio.BlockingConnectionPool"), \
+             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+            mock_falkor.side_effect = RedisConnectionError("Connection refused")
+            with pytest.raises(DatabaseError):
+                conn._ensure_client()
+
+        assert conn._driver is None
+        assert conn._graph is None
+
+    def test_failed_connect_keeps_the_pool_closeable(self):
+        """Only close() can release a pool, so a failed attempt must not
+        strand one — and a retry must not overwrite it with a second."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        conn = FalkorDBConnection(ConnectionConfig(host="h", port=1))
+        with patch("redis.asyncio.BlockingConnectionPool") as mock_pool, \
+             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+            mock_falkor.side_effect = RedisConnectionError("Connection refused")
+            for _ in range(3):
+                with pytest.raises(DatabaseError):
+                    conn._ensure_client()
+
+            assert mock_pool.call_count == 1, "each retry allocated another pool"
+            assert conn._pool is mock_pool.return_value
+
+    def test_missing_falkordb_package_still_raises_import_error(self):
+        """A packaging problem is not a database problem."""
+        conn = FalkorDBConnection()
+        with patch.dict("sys.modules", {"falkordb.asyncio": None, "falkordb": None}):
+            with pytest.raises(ImportError):
+                conn._ensure_client()
+
+    async def test_query_wraps_error_once_retries_are_spent(self):
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=2, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=RedisConnectionError("Connection reset"))
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseError) as excinfo:
+            await conn.query("MATCH (n) RETURN n")
+
+        assert mock_graph.query.await_count == 2
+        assert isinstance(excinfo.value.__cause__, RedisConnectionError)
+
+    async def test_query_wraps_permanent_error_without_retrying(self):
+        from redis.exceptions import ResponseError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=ResponseError("Attribute already indexed"))
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseError):
+            await conn.query("CREATE INDEX ...")
+
+        assert mock_graph.query.await_count == 1
+
+    async def test_wrapped_message_keeps_the_driver_text(self):
+        """Index creation tolerates 'already indexed' by reading the message,
+        so wrapping must not hide what the driver said."""
+        from redis.exceptions import ResponseError
+
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=1, retry_delay=0.001))
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=ResponseError("Attribute already indexed"))
+        conn._driver = MagicMock()
+        conn._graph = mock_graph
+
+        with pytest.raises(DatabaseError, match="already indexed"):
+            await conn.query("CREATE INDEX ...")
+
+    async def test_open_circuit_breaker(self):
+        conn = FalkorDBConnection()
+        conn._driver = MagicMock()
+        conn._graph = MagicMock()
+        conn._breaker.allow_request = AsyncMock(return_value=False)
+
+        with pytest.raises(DatabaseError, match="Circuit breaker is open"):
+            await conn.query("MATCH (n) RETURN n")
+
+    async def test_ping_reports_unreachable_instead_of_raising(self):
+        """Liveness checks read the bool; an unreachable server is the
+        case ping() exists to report, not one it should raise on."""
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        conn = FalkorDBConnection(ConnectionConfig(host="h", port=1))
+        with patch("redis.asyncio.BlockingConnectionPool"), \
+             patch("falkordb.asyncio.FalkorDB") as mock_falkor:
+            mock_falkor.side_effect = RedisConnectionError("Connection refused")
+            assert await conn.ping() is False
