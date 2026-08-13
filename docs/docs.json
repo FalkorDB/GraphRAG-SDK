@@ -91,7 +91,7 @@
   "navbar": {
     "links": [
       {
-        "label": "Github",
+        "label": "GitHub",
         "href": "https://github.com/FalkorDB/GraphRAG-SDK"
       },
       {
