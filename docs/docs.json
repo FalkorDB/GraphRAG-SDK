@@ -1,0 +1,146 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "GraphRAG SDK",
+  "description": "The most accurate Graph RAG framework. Build knowledge graphs from documents and answer questions over them with graph-based retrieval-augmented generation, on FalkorDB.",
+  "colors": {
+    "primary": "#FF8101",
+    "light": "#FDE900",
+    "dark": "#FF8101"
+  },
+  "favicon": "/images/favicon.ico",
+  "logo": {
+    "light": "/images/falkordb-logo.svg",
+    "dark": "/images/falkordb-logo.svg",
+    "href": "https://www.falkordb.com"
+  },
+  "appearance": {
+    "default": "dark"
+  },
+  "navigation": {
+    "products": [
+      {
+        "product": "FalkorDB",
+        "description": "The open source graph database, Cypher language, and tooling.",
+        "icon": "database",
+        "href": "https://docs.falkordb.com"
+      },
+      {
+        "product": "FalkorDB Cloud",
+        "description": "The managed FalkorDB service and its provisioning API.",
+        "icon": "cloud",
+        "href": "https://docs.falkordb.cloud"
+      },
+      {
+        "product": "FalkorDB Enterprise",
+        "description": "Self-managed FalkorDB on your own Kubernetes clusters.",
+        "icon": "building",
+        "href": "https://docs.enterprise.falkordb.com"
+      },
+      {
+        "product": "GraphRAG SDK",
+        "description": "Build knowledge graphs from documents and query them with natural language.",
+        "icon": "share-nodes",
+        "anchors": [
+          {
+            "anchor": "Documentation",
+            "icon": "book-open",
+            "groups": [
+              {
+                "group": "Home",
+                "pages": [
+                  "index",
+                  "getting-started",
+                  "architecture",
+                  "configuration"
+                ]
+              },
+              {
+                "group": "Pipeline",
+                "pages": [
+                  "ingestion",
+                  "extraction",
+                  "retrieval",
+                  "storage",
+                  "graph-schema"
+                ]
+              },
+              {
+                "group": "Ontology",
+                "pages": [
+                  "ontology-discovery",
+                  "ontology-evolution",
+                  "incremental-updates"
+                ]
+              },
+              {
+                "group": "Reference",
+                "pages": [
+                  "strategies",
+                  "providers",
+                  "api-reference",
+                  "benchmark"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Github",
+        "href": "https://github.com/FalkorDB/GraphRAG-SDK"
+      },
+      {
+        "label": "Support",
+        "href": "https://support.falkordb.com"
+      },
+      {
+        "label": "Discord",
+        "href": "https://discord.com/invite/6M4QwDXn2w"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Try GraphRAG",
+      "href": "https://graphrag.falkordb.com"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/FalkorDB/GraphRAG-SDK",
+      "x": "https://x.com/FalkorDB",
+      "linkedin": "https://www.linkedin.com/company/falkordb",
+      "discord": "https://discord.com/invite/6M4QwDXn2w"
+    }
+  },
+  "integrations": {
+    "gtm": {
+      "tagId": "GTM-MBWB627H"
+    }
+  },
+  "redirects": [
+    { "source": "/index.html", "destination": "/" },
+    { "source": "/getting-started.html", "destination": "/getting-started" },
+    { "source": "/architecture.html", "destination": "/architecture" },
+    { "source": "/configuration.html", "destination": "/configuration" },
+    { "source": "/strategies.html", "destination": "/strategies" },
+    { "source": "/providers.html", "destination": "/providers" },
+    { "source": "/ingestion.html", "destination": "/ingestion" },
+    { "source": "/extraction.html", "destination": "/extraction" },
+    { "source": "/retrieval.html", "destination": "/retrieval" },
+    { "source": "/storage.html", "destination": "/storage" },
+    { "source": "/graph-schema.html", "destination": "/graph-schema" },
+    { "source": "/ontology-discovery.html", "destination": "/ontology-discovery" },
+    { "source": "/ontology-evolution.html", "destination": "/ontology-evolution" },
+    { "source": "/incremental-updates.html", "destination": "/incremental-updates" },
+    { "source": "/benchmark.html", "destination": "/benchmark" },
+    { "source": "/api-reference.html", "destination": "/api-reference" }
+  ],
+  "seo": {
+    "indexing": "all"
+  }
+}

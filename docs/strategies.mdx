@@ -1,4 +1,8 @@
-# Strategy Reference
+---
+title: "Strategy Reference"
+sidebarTitle: "Strategies"
+description: "Every swappable strategy ABC and its built-in implementations."
+---
 
 GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each concern has an abstract base class (ABC) with one or more built-in implementations. You can swap any implementation or write your own.
 
@@ -476,7 +480,7 @@ retriever = LocalRetrieval(
 
 ### Built-in: MultiPathRetrieval
 
-Production-grade retrieval with RELATES edge vector search, 2-path entity discovery, 4-path chunk retrieval, and cosine reranking. This is the **default**, and the strategy used for the [GraphRAG-Bench results](benchmark.md).
+Production-grade retrieval with RELATES edge vector search, 2-path entity discovery, 4-path chunk retrieval, and cosine reranking. This is the **default**, and the strategy used for the [GraphRAG-Bench results](/benchmark).
 
 ```python
 from graphrag_sdk import MultiPathRetrieval

@@ -46,7 +46,7 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 > at temperature 0.7 for both graph construction and generation, `text-embedding-3-large`
 > at 1024 dimensions, text-to-Cypher retrieval enabled, and the benchmark's own
 > `generation_eval.py` unmodified as the judge. Competitor numbers are from the
-> published leaderboard, unchanged. See [docs/benchmark.md](docs/benchmark.md) for
+> published leaderboard, unchanged. See [the benchmark page](https://docs.graphrag.falkordb.com/benchmark) for
 > per-category results, the full 15-system comparison, configuration and reproduction
 > instructions.
 
@@ -123,7 +123,7 @@ async with GraphRAG(
 ```
 
 <p align="center">
-  <b>→ Full walkthrough: <a href="docs/getting-started.md">Getting Started</a></b><br/>
+  <b>→ Full walkthrough: <a href="https://docs.graphrag.falkordb.com/getting-started">Getting Started</a></b><br/>
   <b>→ Compose your own pipeline: <a href="graphrag_sdk/examples/03_custom_strategies.py">Custom Strategies</a></b>
 </p>
 
@@ -228,15 +228,17 @@ guards the default.
 
 ## Documentation
 
+Full documentation: **<https://docs.graphrag.falkordb.com>**
+
 | Guide | Description |
 |-------|-------------|
-| [Getting Started](docs/getting-started.md) | Step-by-step tutorial from install to first query |
-| [Architecture](docs/architecture.md) | Pipeline design, graph schema, retrieval strategy |
-| [Configuration](docs/configuration.md) | Connection, providers, and tuning reference |
-| [Strategies](docs/strategies.md) | All ABCs and built-in implementations |
-| [Providers](docs/providers.md) | LLM and embedder configuration guide |
-| [Benchmark](docs/benchmark.md) | Methodology, results, and reproduction instructions |
-| [API Reference](docs/api-reference.md) | Full API documentation |
+| [Getting Started](https://docs.graphrag.falkordb.com/getting-started) | Step-by-step tutorial from install to first query |
+| [Architecture](https://docs.graphrag.falkordb.com/architecture) | Pipeline design, graph schema, retrieval strategy |
+| [Configuration](https://docs.graphrag.falkordb.com/configuration) | Connection, providers, and tuning reference |
+| [Strategies](https://docs.graphrag.falkordb.com/strategies) | All ABCs and built-in implementations |
+| [Providers](https://docs.graphrag.falkordb.com/providers) | LLM and embedder configuration guide |
+| [Benchmark](https://docs.graphrag.falkordb.com/benchmark) | Methodology, results, and reproduction instructions |
+| [API Reference](https://docs.graphrag.falkordb.com/api-reference) | Full API documentation |
 
 ---
 

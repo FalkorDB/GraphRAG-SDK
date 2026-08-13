@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
+  published at <https://docs.graphrag.falkordb.com>, where GraphRAG SDK now
+  appears as a product in the FalkorDB docs product switcher. Pages moved from
+  `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
+  `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
+  MDX/link validation in CI.
+
 ## [1.4.0] - 2026-08-10
 
 Chunk-level extraction cache for `update()` (#288): re-ingesting a

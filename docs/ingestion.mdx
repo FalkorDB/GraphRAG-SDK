@@ -1,4 +1,7 @@
-# Ingestion — How Documents Become a Knowledge Graph
+---
+title: "Ingestion"
+description: "How documents become a knowledge graph through the 9-step ingestion pipeline."
+---
 
 When you call `rag.ingest("document.txt")`, the SDK transforms your raw text into a structured knowledge graph through a **9-step sequential pipeline**. Think of it as an assembly line: each step takes the output of the previous one, refines it, and passes it forward.
 
@@ -117,7 +120,7 @@ Chunk 0 ──NEXT_CHUNK──> Chunk 1 ──NEXT_CHUNK──> Chunk 2
 
 2. **Step 2 (Verify + Relationships):** The LLM receives the pre-extracted entities and the original text. It verifies the entities (fixing errors, adding missed ones) and extracts all relationships between them.
 
-For a detailed explanation of the extraction process, see [extraction.md](extraction.md).
+For a detailed explanation of the extraction process, see [Extraction](/extraction).
 
 **Output:** `GraphData` containing nodes (entities), relationships, and mention records.
 
@@ -167,7 +170,7 @@ For a detailed explanation of the extraction process, see [extraction.md](extrac
 - Merges descriptions (concatenation or LLM summarization)
 - Useful when the same entity is described differently across documents
 
-For details on resolution strategies, see [strategies.md](strategies.md).
+For details on resolution strategies, see [Strategies](/strategies).
 
 **Code:** `ResolutionStrategy.resolve()` in [`ingestion/resolution_strategies/base.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/base.py)
 
@@ -183,7 +186,7 @@ For details on resolution strategies, see [strategies.md](strategies.md).
 - Batch size: 500 items per query
 - Entity nodes automatically get the `__Entity__` secondary label (structural nodes like Chunk and Document do not)
 
-For details on the storage layer, see [storage.md](storage.md).
+For details on the storage layer, see [Storage](/storage).
 
 **Code:** `GraphStore.upsert_nodes()` and `GraphStore.upsert_relationships()` in [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py)
 

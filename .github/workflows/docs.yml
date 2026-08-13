@@ -1,47 +1,40 @@
-name: Deploy Docs
+name: Docs
+
+# Mintlify deploys docs/ automatically from the default branch via its GitHub
+# app, so CI only validates that every page compiles and every link resolves.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, staging]
+  pull_request:
     paths:
       - "docs/**"
-      - "mkdocs.yml"
-      - "README.md"
+      - ".github/workflows/docs.yml"
+      - "scripts/check_mdx.mjs"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
+          node-version: "lts/*"
 
-      - run: pip install mkdocs-material
+      - name: Check MDX syntax
+        run: |
+          npm install --no-save @mdx-js/mdx remark-gfm
+          node scripts/check_mdx.mjs
 
-      - run: mkdocs build --strict
-
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site/
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Check internal links
+        working-directory: docs
+        run: |
+          npm install -g mint
+          mint broken-links
