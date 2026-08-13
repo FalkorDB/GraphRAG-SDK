@@ -133,6 +133,44 @@ class DocumentRecord(DataModel):
     content_hash: str | None = None
 
 
+class ChunkEntityRow(DataModel):
+    """One entity mentioned by a specific chunk, as read back from the graph.
+
+    Returned by ``GraphStore.get_entities_mentioned_in_chunks()``. Consumed
+    by ``CachedChunkExtraction`` to rebuild ``GraphData`` for unchanged
+    chunks without re-running LLM extraction.
+
+    ``label`` is the entity's concrete label (the non-``__Entity__`` one);
+    ``None`` if the node somehow carries no usable label (tampered graph).
+    """
+
+    chunk_id: str
+    entity_id: str
+    label: str | None = None
+    name: str | None = None
+    type: str | None = None
+    description: str | None = None
+    source_chunk_ids: list[str] = Field(default_factory=list)
+
+
+class ChunkRelationshipRow(DataModel):
+    """One RELATES edge whose provenance includes a specific chunk.
+
+    Returned by ``GraphStore.get_relationships_for_chunks()``. Consumed by
+    ``CachedChunkExtraction`` to re-emit relationship facts for unchanged
+    chunks during a cached document update.
+    """
+
+    chunk_id: str
+    start_entity_id: str
+    end_entity_id: str
+    rel_type: str | None = None
+    description: str | None = None
+    fact: str | None = None
+    src_name: str | None = None
+    tgt_name: str | None = None
+
+
 # ── Schema Types ─────────────────────────────────────────────────
 
 

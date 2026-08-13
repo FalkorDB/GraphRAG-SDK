@@ -257,7 +257,7 @@ guards the default.
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and code style guidelines.
 
-Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+Please read our [Code of Conduct](https://github.com/FalkorDB/.github/blob/main/CODE_OF_CONDUCT.md) before participating.
 
 ### Community
 
