@@ -1,7 +1,7 @@
 # GraphRAG SDK documentation
 
 Published with [Mintlify](https://mintlify.com) at
-<https://docs.graphrag.falkordb.com>, and surfaced as a product in the FalkorDB
+<https://docs.falkordb.com/graphrag>, and surfaced as a product in the FalkorDB
 docs product switcher alongside FalkorDB, FalkorDB Cloud, and FalkorDB
 Enterprise.
 
@@ -65,7 +65,7 @@ registered there as an external product in `navigation.products`:
   "product": "GraphRAG SDK",
   "description": "Build knowledge graphs from documents and query them with natural language.",
   "icon": "share-nodes",
-  "href": "https://docs.graphrag.falkordb.com"
+  "href": "https://docs.falkordb.com/graphrag"
 }
 ```
 
