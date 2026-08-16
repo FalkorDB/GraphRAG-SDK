@@ -1,7 +1,9 @@
 name: Docs
 
-# Mintlify deploys docs/ automatically from the default branch via its GitHub
-# app, so CI only validates that every page compiles and every link resolves.
+# On pull requests this only validates that every page compiles and every link
+# resolves. Once docs land on main it also notifies FalkorDB/docs, which hosts
+# the published site at https://docs.falkordb.com/graphrag and re-syncs this
+# directory when it receives the dispatch.
 
 on:
   workflow_dispatch:
@@ -40,3 +42,23 @@ jobs:
         run: |
           npm install -g mint@4.2.804
           mint broken-links
+
+  notify-docs-repo:
+    # Only after docs actually land on main, and only when validation passed —
+    # never publish a broken sync.
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch docs-updated to FalkorDB/docs
+        env:
+          # Fine-grained PAT with "Contents: write" on FalkorDB/docs, which is
+          # what the repository-dispatch endpoint requires.
+          GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          gh api /repos/FalkorDB/docs/dispatches \
+            --method POST \
+            --field event_type=docs-updated \
+            --field 'client_payload[repository]=${{ github.repository }}' \
+            --field 'client_payload[ref]=${{ github.ref_name }}' \
+            --field 'client_payload[sha]=${{ github.sha }}'
