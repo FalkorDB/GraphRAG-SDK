@@ -45,10 +45,11 @@ mint broken-links   # verify every internal link resolves
 
 `mint` requires an LTS release of Node.
 
-To validate MDX syntax across every page in one pass:
+To validate MDX syntax across every page in one pass, from the **repository
+root**:
 
 ```bash
-npm install --no-save @mdx-js/mdx remark-gfm
+npm install --no-save @mdx-js/mdx remark-frontmatter remark-gfm
 node scripts/check_mdx.mjs
 ```
 

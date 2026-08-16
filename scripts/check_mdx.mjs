@@ -5,6 +5,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { compile } from "@mdx-js/mdx";
+import remarkFrontmatter from "remark-frontmatter";
 import remarkGfm from "remark-gfm";
 
 const root = join(process.cwd(), "docs");
@@ -27,7 +28,10 @@ let failures = 0;
 for (const file of files) {
   const source = await readFile(file, "utf8");
   try {
-    await compile(source, { remarkPlugins: [remarkGfm] });
+    // remarkFrontmatter makes the YAML block metadata rather than content,
+    // matching how Mintlify strips it. Without it, front matter values that
+    // mention components (`description: "Use <Note> ..."`) fail to compile.
+    await compile(source, { remarkPlugins: [remarkFrontmatter, remarkGfm] });
   } catch (error) {
     failures += 1;
     const place = error.line ? `${error.line}:${error.column}` : "";

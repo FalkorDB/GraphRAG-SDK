@@ -14,6 +14,8 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - ".github/workflows/docs.yml"
+      - "scripts/check_mdx.mjs"
 
 permissions:
   contents: read
@@ -26,15 +28,15 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "24.19.0"
 
       - name: Check MDX syntax
         run: |
-          npm install --no-save @mdx-js/mdx remark-gfm
+          npm install --no-save @mdx-js/mdx@3.1.1 remark-frontmatter@5.0.0 remark-gfm@4.0.1
           node scripts/check_mdx.mjs
 
       - name: Check internal links
         working-directory: docs
         run: |
-          npm install -g mint
+          npm install -g mint@4.2.804
           mint broken-links

@@ -74,7 +74,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/FalkorDB/GraphRAG-SDK"
-Documentation = "https://falkordb.github.io/GraphRAG-SDK/"
+Documentation = "https://docs.graphrag.falkordb.com"
 Repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 "Bug Tracker" = "https://github.com/FalkorDB/GraphRAG-SDK/issues"
 Changelog = "https://github.com/FalkorDB/GraphRAG-SDK/blob/main/CHANGELOG.md"

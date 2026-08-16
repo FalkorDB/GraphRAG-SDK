@@ -122,24 +122,6 @@
       "tagId": "GTM-MBWB627H"
     }
   },
-  "redirects": [
-    { "source": "/index.html", "destination": "/" },
-    { "source": "/getting-started.html", "destination": "/getting-started" },
-    { "source": "/architecture.html", "destination": "/architecture" },
-    { "source": "/configuration.html", "destination": "/configuration" },
-    { "source": "/strategies.html", "destination": "/strategies" },
-    { "source": "/providers.html", "destination": "/providers" },
-    { "source": "/ingestion.html", "destination": "/ingestion" },
-    { "source": "/extraction.html", "destination": "/extraction" },
-    { "source": "/retrieval.html", "destination": "/retrieval" },
-    { "source": "/storage.html", "destination": "/storage" },
-    { "source": "/graph-schema.html", "destination": "/graph-schema" },
-    { "source": "/ontology-discovery.html", "destination": "/ontology-discovery" },
-    { "source": "/ontology-evolution.html", "destination": "/ontology-evolution" },
-    { "source": "/incremental-updates.html", "destination": "/incremental-updates" },
-    { "source": "/benchmark.html", "destination": "/benchmark" },
-    { "source": "/api-reference.html", "destination": "/api-reference" }
-  ],
   "seo": {
     "indexing": "all"
   }
