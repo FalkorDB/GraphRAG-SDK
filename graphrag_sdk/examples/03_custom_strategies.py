@@ -23,6 +23,7 @@ import time
 from graphrag_sdk import (
     ConnectionConfig,
     EntityType,
+    GraphExtraction,
     GraphRAG,
     GraphSchema,
     LiteLLM,
@@ -31,8 +32,9 @@ from graphrag_sdk import (
 )
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
-from graphrag_sdk import GraphExtraction
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
+from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
+    DescriptionMergeResolution,
+)
 
 # Sample documents (replace with your own)
 DOCUMENTS = [
@@ -42,14 +44,14 @@ DOCUMENTS = [
         "radioactivity. Born in Warsaw, Poland, she moved to Paris to study at the Sorbonne. "
         "She was the first woman to win a Nobel Prize, and the only person to win Nobel Prizes "
         "in two different sciences -- Physics in 1903 and Chemistry in 1911. She worked closely "
-        "with her husband Pierre Curie at the University of Paris."
+        "with her husband Pierre Curie at the University of Paris.",
     ),
     (
         "doc_2",
         "Pierre Curie was a French physicist and Nobel laureate. He shared the 1903 Nobel Prize "
         "in Physics with his wife Marie Curie and Henri Becquerel for their research on radiation. "
         "Pierre was a professor at the University of Paris. He tragically died in 1906 in a "
-        "street accident in Paris. After his death, Marie took over his teaching position."
+        "street accident in Paris. After his death, Marie took over his teaching position.",
     ),
 ]
 
@@ -146,15 +148,17 @@ async def main():
     print("\nRunning finalize()...")
     finalize_result = await rag.finalize()
     print(f"  Deduplicated: {finalize_result.entities_deduplicated} entities")
-    print(f"  Embedded: {finalize_result.entities_embedded} entities, "
-          f"{finalize_result.relationships_embedded} relationships")
+    print(
+        f"  Embedded: {finalize_result.entities_embedded} entities, "
+        f"{finalize_result.relationships_embedded} relationships"
+    )
 
     elapsed = time.time() - t0
     print(f"\nTotal ingestion time: {elapsed:.1f}s")
 
     # --- Graph statistics ---
     stats = await rag.get_statistics()
-    print(f"\nGraph Statistics:")
+    print("\nGraph Statistics:")
     print(f"  Nodes:         {stats['node_count']}")
     print(f"  Edges:         {stats['edge_count']}")
     print(f"  Mentions:      {stats['mention_edge_count']}")

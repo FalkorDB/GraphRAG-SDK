@@ -1,16 +1,19 @@
 """Tests for ingestion/resolution_strategies/llm_verified_resolution.py."""
+
 from __future__ import annotations
 
 import math
+
 import pytest
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship
 from graphrag_sdk.core.providers import Embedder
-from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import LLMVerifiedResolution
+from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
+    LLMVerifiedResolution,
+)
 
-from .conftest import MockEmbedder, MockLLM
-
+from .conftest import MockLLM
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -52,7 +55,6 @@ def ctx() -> Context:
 
 
 class TestLLMVerifiedResolutionInit:
-
     def test_threshold_validation_raises(self):
         """hard_threshold <= soft_threshold must raise ValueError."""
         with pytest.raises(ValueError, match="hard_threshold"):
@@ -73,7 +75,6 @@ class TestLLMVerifiedResolutionInit:
 
 
 class TestPhase1ExactMatch:
-
     async def test_same_name_same_label_merged(self, ctx):
         """'Alice' and 'alice' share normalized name → merged in Phase 1."""
         gd = GraphData(
@@ -124,7 +125,6 @@ class TestPhase1ExactMatch:
 
 
 class TestHardMergeZone:
-
     async def test_identical_vectors_hard_merged_no_llm(self, ctx):
         """Identical embeddings → similarity = 1.0 >= 0.95 → hard merge, no LLM."""
         vec = _unit([1.0, 0.0, 0.0, 0.0])
@@ -139,8 +139,10 @@ class TestHardMergeZone:
             relationships=[],
         )
         resolver = LLMVerifiedResolution(
-            llm=llm, embedder=embedder,
-            hard_threshold=0.95, soft_threshold=0.80,
+            llm=llm,
+            embedder=embedder,
+            hard_threshold=0.95,
+            soft_threshold=0.80,
         )
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 1
@@ -151,10 +153,12 @@ class TestHardMergeZone:
     async def test_hard_merge_property_inheritance(self, ctx):
         """Properties from duplicate are merged onto survivor."""
         vec = _unit([1.0, 0.0, 0.0, 0.0])
-        embedder = ControlledEmbedder({
-            "Alice": vec,
-            "Alice B": vec,
-        })
+        embedder = ControlledEmbedder(
+            {
+                "Alice": vec,
+                "Alice B": vec,
+            }
+        )
         gd = GraphData(
             nodes=[
                 GraphNode(id="a1", label="Person", properties={"name": "Alice", "color": "red"}),
@@ -162,7 +166,9 @@ class TestHardMergeZone:
             ],
             relationships=[],
         )
-        resolver = LLMVerifiedResolution(embedder=embedder, hard_threshold=0.95, soft_threshold=0.80)
+        resolver = LLMVerifiedResolution(
+            embedder=embedder, hard_threshold=0.95, soft_threshold=0.80
+        )
         result = await resolver.resolve(gd, ctx)
         assert len(result.nodes) == 1
         node = result.nodes[0]
@@ -174,7 +180,6 @@ class TestHardMergeZone:
 
 
 class TestAmbiguousZone:
-
     def _make_ambiguous_embedder(self) -> ControlledEmbedder:
         """Two vectors with cosine similarity ~0.87 (in the 0.80–0.95 zone).
         a = [1, 0] and b = [0.85, 0.527] → cosine ≈ 0.85 after normalization."""
@@ -198,8 +203,10 @@ class TestAmbiguousZone:
             relationships=[],
         )
         resolver = LLMVerifiedResolution(
-            llm=llm, embedder=embedder,
-            hard_threshold=0.95, soft_threshold=0.80,
+            llm=llm,
+            embedder=embedder,
+            hard_threshold=0.95,
+            soft_threshold=0.80,
         )
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 1
@@ -219,8 +226,10 @@ class TestAmbiguousZone:
             relationships=[],
         )
         resolver = LLMVerifiedResolution(
-            llm=llm, embedder=embedder,
-            hard_threshold=0.95, soft_threshold=0.80,
+            llm=llm,
+            embedder=embedder,
+            hard_threshold=0.95,
+            soft_threshold=0.80,
         )
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
@@ -240,8 +249,10 @@ class TestAmbiguousZone:
             relationships=[],
         )
         resolver = LLMVerifiedResolution(
-            llm=llm, embedder=embedder,
-            hard_threshold=0.95, soft_threshold=0.80,
+            llm=llm,
+            embedder=embedder,
+            hard_threshold=0.95,
+            soft_threshold=0.80,
         )
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 1
@@ -264,8 +275,10 @@ class TestAmbiguousZone:
             relationships=[],
         )
         resolver = LLMVerifiedResolution(
-            llm=llm, embedder=embedder,
-            hard_threshold=0.95, soft_threshold=0.80,
+            llm=llm,
+            embedder=embedder,
+            hard_threshold=0.95,
+            soft_threshold=0.80,
         )
         result = await resolver.resolve(gd, ctx)
         # All merged into 1
@@ -275,7 +288,6 @@ class TestAmbiguousZone:
     async def test_max_llm_pairs_cap(self, ctx):
         """Pairs above max_llm_pairs are skipped (not sent to LLM)."""
         # Build 10 nodes all with similar vectors — many ambiguous pairs
-        base = [1.0, 0.5, 0.0, 0.0]
         vectors = {}
         nodes = []
         for i in range(10):
@@ -289,11 +301,13 @@ class TestAmbiguousZone:
 
         gd = GraphData(nodes=nodes, relationships=[])
         resolver = LLMVerifiedResolution(
-            llm=llm, embedder=embedder,
-            hard_threshold=0.95, soft_threshold=0.80,
+            llm=llm,
+            embedder=embedder,
+            hard_threshold=0.95,
+            soft_threshold=0.80,
             max_llm_pairs=3,  # only top 3 pairs sent to LLM
         )
-        result = await resolver.resolve(gd, ctx)
+        await resolver.resolve(gd, ctx)
         # LLM called at most 3 times
         assert llm._call_index <= 3
 
@@ -302,13 +316,14 @@ class TestAmbiguousZone:
 
 
 class TestSkipZone:
-
     async def test_low_similarity_no_merge_no_llm(self, ctx):
         """Orthogonal vectors → similarity = 0 < 0.80 → skip, no LLM."""
-        embedder = ControlledEmbedder({
-            "Tolkien": _unit([1.0, 0.0, 0.0, 0.0]),
-            "Paris": _unit([0.0, 1.0, 0.0, 0.0]),
-        })
+        embedder = ControlledEmbedder(
+            {
+                "Tolkien": _unit([1.0, 0.0, 0.0, 0.0]),
+                "Paris": _unit([0.0, 1.0, 0.0, 0.0]),
+            }
+        )
         llm = MockLLM(responses=["YES"])
 
         gd = GraphData(
@@ -319,8 +334,10 @@ class TestSkipZone:
             relationships=[],
         )
         resolver = LLMVerifiedResolution(
-            llm=llm, embedder=embedder,
-            hard_threshold=0.95, soft_threshold=0.80,
+            llm=llm,
+            embedder=embedder,
+            hard_threshold=0.95,
+            soft_threshold=0.80,
         )
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
@@ -332,7 +349,6 @@ class TestSkipZone:
 
 
 class TestDegradation:
-
     async def test_no_embedder_only_phase1(self, ctx):
         """Without embedder, only Phase 1 (exact-match) runs."""
         gd = GraphData(
@@ -365,8 +381,10 @@ class TestDegradation:
         )
         # hard_threshold=0.99 ensures sim~0.85 is in the ambiguous zone, not hard-merged
         resolver = LLMVerifiedResolution(
-            llm=None, embedder=embedder,
-            hard_threshold=0.99, soft_threshold=0.80,
+            llm=None,
+            embedder=embedder,
+            hard_threshold=0.99,
+            soft_threshold=0.80,
         )
         result = await resolver.resolve(gd, ctx)
         # No LLM → ambiguous pairs skipped → no merge
@@ -378,11 +396,12 @@ class TestDegradation:
 
 
 class TestRelationshipHandling:
-
     async def test_relationships_remapped_after_hard_merge(self, ctx):
         """Relationships pointing to merged duplicate are remapped to survivor."""
         vec = _unit([1.0, 0.0, 0.0, 0.0])
-        embedder = ControlledEmbedder({"Alice": vec, "Alice B": vec, "Bob": _unit([0.0, 1.0, 0.0, 0.0])})
+        embedder = ControlledEmbedder(
+            {"Alice": vec, "Alice B": vec, "Bob": _unit([0.0, 1.0, 0.0, 0.0])}
+        )
 
         gd = GraphData(
             nodes=[
@@ -394,17 +413,25 @@ class TestRelationshipHandling:
                 GraphRelationship(start_node_id="bob", end_node_id="a2", type="KNOWS"),
             ],
         )
-        resolver = LLMVerifiedResolution(embedder=embedder, hard_threshold=0.95, soft_threshold=0.80)
+        resolver = LLMVerifiedResolution(
+            embedder=embedder, hard_threshold=0.95, soft_threshold=0.80
+        )
         result = await resolver.resolve(gd, ctx)
 
-        survivor_id = next(n.id for n in result.nodes if n.label == "Person" and "Alice" in n.properties.get("name", ""))
+        survivor_id = next(
+            n.id
+            for n in result.nodes
+            if n.label == "Person" and "Alice" in n.properties.get("name", "")
+        )
         rel = next(r for r in result.relationships if r.type == "KNOWS")
         assert rel.end_node_id == survivor_id
 
     async def test_duplicate_relationships_deduped(self, ctx):
         """After merge, duplicate rels pointing to same (start, type, end) collapse."""
         vec = _unit([1.0, 0.0, 0.0, 0.0])
-        embedder = ControlledEmbedder({"Alice": vec, "Alice B": vec, "Acme": _unit([0.0, 1.0, 0.0, 0.0])})
+        embedder = ControlledEmbedder(
+            {"Alice": vec, "Alice B": vec, "Acme": _unit([0.0, 1.0, 0.0, 0.0])}
+        )
 
         gd = GraphData(
             nodes=[
@@ -417,7 +444,9 @@ class TestRelationshipHandling:
                 GraphRelationship(start_node_id="a2", end_node_id="acme", type="WORKS_AT"),
             ],
         )
-        resolver = LLMVerifiedResolution(embedder=embedder, hard_threshold=0.95, soft_threshold=0.80)
+        resolver = LLMVerifiedResolution(
+            embedder=embedder, hard_threshold=0.95, soft_threshold=0.80
+        )
         result = await resolver.resolve(gd, ctx)
 
         works_at = [r for r in result.relationships if r.type == "WORKS_AT"]
@@ -428,7 +457,6 @@ class TestRelationshipHandling:
 
 
 class TestEdgeCases:
-
     async def test_empty_graph(self, ctx):
         resolver = LLMVerifiedResolution()
         result = await resolver.resolve(GraphData(), ctx)

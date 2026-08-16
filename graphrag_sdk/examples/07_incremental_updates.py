@@ -26,19 +26,12 @@ from graphrag_sdk import (
     LiteLLMEmbedder,
 )
 
-
-V1_TEXT = (
-    "Alice Johnson is a software engineer at Acme Corp in London. "
-    "She reports to Bob Smith."
-)
+V1_TEXT = "Alice Johnson is a software engineer at Acme Corp in London. She reports to Bob Smith."
 V2_TEXT = (
     "Alice Johnson is the VP of Engineering at Acme Corp in Berlin. "
     "She reports to the CEO, Carol Wei."
 )
-NEW_DOC = (
-    "Acme Corp acquired Globex Industries in 2026. "
-    "The combined company employs 5000 people."
-)
+NEW_DOC = "Acme Corp acquired Globex Industries in 2026. The combined company employs 5000 people."
 
 
 async def main():
@@ -63,7 +56,7 @@ async def main():
         # effectively a single Cypher lookup.
         result = await rag.update(text=V1_TEXT, document_id="alice_bio")
         assert result.no_op is True
-        print(f"No-op update detected (content hash matched).")
+        print("No-op update detected (content hash matched).")
 
         # ── 3. Real update — chunks replaced, orphans cleaned up ───
         # Bob Smith was only mentioned by V1; he becomes an orphan
@@ -107,7 +100,7 @@ async def main():
 
         # ── 7. Verify with a query ─────────────────────────────────
         answer = await rag.completion("Who acquired Globex Industries?")
-        print(f"\nQ: Who acquired Globex Industries?")
+        print("\nQ: Who acquired Globex Industries?")
         print(f"A: {answer.answer}")
 
 

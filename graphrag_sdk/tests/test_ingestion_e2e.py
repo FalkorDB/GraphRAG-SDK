@@ -9,9 +9,8 @@ External services (graph store, vector store) are provided by the shared
 mock_graph_store / mock_vector_store conftest fixtures.  Extraction and
 resolution are stubbed inline so each test controls only what it cares about.
 """
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 _MARKDOWN = """\
 # Project Overview
@@ -40,7 +39,9 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
     ):
         """Pipeline must complete without error and index at least one chunk."""
         from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -79,7 +80,9 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         Verifies chunk_document() is reached (not the plain chunk() fallback).
         """
         from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -122,7 +125,9 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
           → IngestionPipeline (passes chunks to vector store)
         """
         from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -170,7 +175,9 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         so breadcrumbs become graph-queryable at zero extra cost.
         """
         from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -198,11 +205,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         )
         await pipeline.run(str(md_file), ctx)
 
-        all_nodes = [
-            n
-            for call in mock_graph_store.upsert_nodes.call_args_list
-            for n in call[0][0]
-        ]
+        all_nodes = [n for call in mock_graph_store.upsert_nodes.call_args_list for n in call[0][0]]
         chunk_nodes = [n for n in all_nodes if n.label == "Chunk"]
         assert chunk_nodes, "No Chunk nodes were written to the graph store"
         for node in chunk_nodes:
@@ -215,7 +218,9 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
     ):
         """A Document node must be written with the source file path."""
         from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -243,11 +248,7 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         )
         await pipeline.run(str(md_file), ctx)
 
-        all_nodes = [
-            n
-            for call in mock_graph_store.upsert_nodes.call_args_list
-            for n in call[0][0]
-        ]
+        all_nodes = [n for call in mock_graph_store.upsert_nodes.call_args_list for n in call[0][0]]
         doc_nodes = [n for n in all_nodes if n.label == "Document"]
         assert len(doc_nodes) == 1
         assert doc_nodes[0].properties.get("path") == str(md_file)
@@ -257,7 +258,9 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
     ):
         """Markdown '#' sigils must not appear in any indexed chunk text."""
         from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -290,14 +293,23 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
         assert "Main Title" in full_text
         assert "# Main Title" not in full_text
 
+
 class TestPdfLoaderStructuralChunkingPipeline:
-    """Verifies that PdfLoader (which outputs no elements) falls back cleanly when used with StructuralChunking."""
+    """Verifies that PdfLoader (which outputs no elements) falls back cleanly when used with StructuralChunking."""  # noqa: E501
 
     async def test_pdf_loader_fallback(
         self, ctx, tmp_path, mock_graph_store, mock_vector_store, monkeypatch
     ):
-        from graphrag_sdk.core.models import DocumentInfo, DocumentOutput, GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.core.models import (
+            DocumentInfo,
+            DocumentOutput,
+            GraphData,
+            Ontology,
+            ResolutionResult,
+        )
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -318,6 +330,7 @@ class TestPdfLoaderStructuralChunkingPipeline:
                 document_info=DocumentInfo(path=source),
                 elements=None,  # Key behavior: PdfLoader returns None for elements
             )
+
         monkeypatch.setattr(PdfLoader, "load", mock_load)
 
         pdf_file = tmp_path / "doc.pdf"
@@ -332,12 +345,12 @@ class TestPdfLoaderStructuralChunkingPipeline:
             vector_store=mock_vector_store,
             ontology=Ontology(),
         )
-        
+
         result = await pipeline.run(str(pdf_file), ctx)
 
         assert result.chunks_indexed >= 1
         assert mock_vector_store.index_chunks.called
-        
+
         # Verify chunks don't have breadcrumbs but have the base strategy marker
         chunks = mock_vector_store.index_chunks.call_args[0][0]
         for chunk in chunks.chunks:
@@ -345,8 +358,9 @@ class TestPdfLoaderStructuralChunkingPipeline:
             # The exact metadata isn't strictly defined, but breadcrumbs should be empty/missing
             assert not chunk.metadata.get("breadcrumbs")
 
+
 class TestMarkdownLoaderFallbackStrategies:
-    """Verifies that MarkdownLoader composes safely with standard non-structural chunking strategies."""
+    """Verifies that MarkdownLoader composes safely with standard non-structural chunking strategies."""  # noqa: E501
 
     async def test_markdown_with_fixed_size_chunking(
         self, ctx, tmp_path, mock_graph_store, mock_vector_store
@@ -380,13 +394,13 @@ class TestMarkdownLoaderFallbackStrategies:
             vector_store=mock_vector_store,
             ontology=Ontology(),
         )
-        
+
         result = await pipeline.run(str(md_file), ctx)
 
         assert result.chunks_indexed > 1
-        
+
         chunks = mock_vector_store.index_chunks.call_args[0][0]
-        # Verify chunks contain the original text (handled by Loader) and chunked (handled by Chunker)
+        # Verify chunks contain the original text (handled by Loader) and chunked (handled by Chunker)  # noqa: E501
         full_text = " ".join(c.text for c in chunks.chunks)
         assert "# Title" in full_text
         for chunk in chunks.chunks:
@@ -400,7 +414,9 @@ class TestMarkdownLoaderFallbackStrategies:
     ):
         """Markdown loader text is correctly chunked by SentenceTokenCapChunking."""
         from graphrag_sdk.core.models import GraphData, Ontology, ResolutionResult
-        from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
+        from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import (
+            SentenceTokenCapChunking,
+        )
         from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
         from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -427,11 +443,11 @@ class TestMarkdownLoaderFallbackStrategies:
             vector_store=mock_vector_store,
             ontology=Ontology(),
         )
-        
+
         result = await pipeline.run(str(md_file), ctx)
 
         assert result.chunks_indexed > 1
-        
+
         chunks = mock_vector_store.index_chunks.call_args[0][0]
         for chunk in chunks.chunks:
             assert chunk.metadata.get("strategy") == "sentence_token_cap"

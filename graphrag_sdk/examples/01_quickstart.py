@@ -20,9 +20,8 @@ More providers: see docs/providers.md
 """
 
 import asyncio
-import os
 
-from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
+from graphrag_sdk import ConnectionConfig, GraphRAG, LiteLLM, LiteLLMEmbedder
 
 TEXT = (
     "Alice Johnson is a software engineer at Acme Corp in London. "
@@ -99,7 +98,7 @@ async def main():
                 ChatMessage(role="assistant", content="Alice works at Acme Corp in London."),
             ],
         )
-        print(f"\nQ: What is her role there?")
+        print("\nQ: What is her role there?")
         print(f"A: {followup.answer}")
 
 

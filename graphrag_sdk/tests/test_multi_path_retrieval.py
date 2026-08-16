@@ -1,4 +1,5 @@
 """Tests for retrieval/strategies/multi_path.py — MultiPathRetrieval (Lean)."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -8,8 +9,6 @@ import pytest
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import (
-    LLMResponse,
-    RawSearchResult,
     RetrieverResult,
 )
 from graphrag_sdk.retrieval.strategies.entity_discovery import (
@@ -21,7 +20,6 @@ from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
 from graphrag_sdk.retrieval.strategies.result_assembly import rerank_chunks
 
 from .conftest import MockEmbedder, MockLLM
-
 
 # -- Fixtures --
 
@@ -83,9 +81,7 @@ class TestMultiPathRetrieval:
         await strategy.search("Who is Alice?")
         assert mp_embedder.call_count > 0
 
-    async def test_latency_budget_checked_before_first_phase(
-        self, strategy, mp_embedder, mp_llm
-    ):
+    async def test_latency_budget_checked_before_first_phase(self, strategy, mp_embedder, mp_llm):
         ctx = Context(latency_budget_ms=0.0)
 
         with pytest.raises(LatencyBudgetExceededError, match="keyword extraction"):
@@ -162,24 +158,28 @@ class TestMultiPathRetrieval:
         assert mp_llm._call_index == 0
         assert mp_embedder.call_count == 0
 
-    async def test_relates_edge_vector_search(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_relates_edge_vector_search(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """RELATES edge vector search should be called and return facts + entities."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {
-                "src_name": "Alice",
-                "type": "WORKS_AT",
-                "tgt_name": "Acme Corp",
-                "fact": "Alice is a senior engineer at Acme Corp",
-                "score": 0.95,
-            },
-            {
-                "src_name": "Bob",
-                "type": "MANAGES",
-                "tgt_name": "Alice",
-                "fact": "Bob manages Alice's team",
-                "score": 0.88,
-            },
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme Corp",
+                    "fact": "Alice is a senior engineer at Acme Corp",
+                    "score": 0.95,
+                },
+                {
+                    "src_name": "Bob",
+                    "type": "MANAGES",
+                    "tgt_name": "Alice",
+                    "fact": "Bob manages Alice's team",
+                    "score": 0.88,
+                },
+            ]
+        )
 
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -203,17 +203,21 @@ class TestMultiPathRetrieval:
                 assert "WORKS_AT" in item.content
                 assert "Acme Corp" in item.content
 
-    async def test_relates_entities_merged_into_discovery(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_relates_entities_merged_into_discovery(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Entities from RELATES edges should be merged into entity discovery."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {
-                "src_name": "RelEntity1",
-                "type": "KNOWS",
-                "tgt_name": "RelEntity2",
-                "fact": "they know each other",
-                "score": 0.9,
-            },
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "RelEntity1",
+                    "type": "KNOWS",
+                    "tgt_name": "RelEntity2",
+                    "fact": "they know each other",
+                    "score": 0.9,
+                },
+            ]
+        )
 
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -229,7 +233,9 @@ class TestMultiPathRetrieval:
             if item.metadata.get("section") == "entities":
                 assert "RelEntity1" in item.content or "RelEntity2" in item.content
 
-    async def test_entity_discovery_2_paths(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_entity_discovery_2_paths(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Entity discovery should use Cypher CONTAINS and fulltext (2 paths)."""
         queries_seen = []
 
@@ -256,14 +262,20 @@ class TestMultiPathRetrieval:
         # Fulltext should be called on __Entity__
         assert mp_vector_store.fulltext_search_entities.call_count >= 1
 
-    async def test_chunk_retrieval_2_paths(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_chunk_retrieval_2_paths(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Chunk retrieval should use fulltext + vector (2 paths only)."""
-        mp_vector_store.fulltext_search_chunks = AsyncMock(return_value=[
-            {"id": "c1", "text": "Alice is an engineer.", "score": 0.8},
-        ])
-        mp_vector_store.search_chunks = AsyncMock(return_value=[
-            {"id": "c2", "text": "Bob works with Alice.", "score": 0.7},
-        ])
+        mp_vector_store.fulltext_search_chunks = AsyncMock(
+            return_value=[
+                {"id": "c1", "text": "Alice is an engineer.", "score": 0.8},
+            ]
+        )
+        mp_vector_store.search_chunks = AsyncMock(
+            return_value=[
+                {"id": "c2", "text": "Bob works with Alice.", "score": 0.7},
+            ]
+        )
 
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -277,11 +289,21 @@ class TestMultiPathRetrieval:
         assert mp_vector_store.fulltext_search_chunks.call_count >= 1
         assert mp_vector_store.search_chunks.call_count >= 1
 
-    async def test_mentioned_in_and_2hop_chunk_paths(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_mentioned_in_and_2hop_chunk_paths(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Retrieval should use MENTIONED_IN and 2-hop chunk paths when entities are discovered."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "engineer", "score": 0.9},
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme",
+                    "fact": "engineer",
+                    "score": 0.9,
+                },
+            ]
+        )
 
         queries_seen = []
 
@@ -302,20 +324,18 @@ class TestMultiPathRetrieval:
         await s.search("Who is Alice?")
 
         # MENTIONED_IN chunk queries should be present
-        mention_chunk_queries = [
-            q for q in queries_seen
-            if "MENTIONED_IN" in q and "Chunk" in q
-        ]
+        mention_chunk_queries = [q for q in queries_seen if "MENTIONED_IN" in q and "Chunk" in q]
         assert len(mention_chunk_queries) >= 1
 
         # 2-hop chunk queries (entity→neighbor→MENTIONED_IN→Chunk) should be present
         twohop_chunk_queries = [
-            q for q in queries_seen
-            if "neighbor" in q.lower() and "MENTIONED_IN" in q
+            q for q in queries_seen if "neighbor" in q.lower() and "MENTIONED_IN" in q
         ]
         assert len(twohop_chunk_queries) >= 1
 
-    async def test_mentioned_in_ranks_chunks_by_cosine(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_mentioned_in_ranks_chunks_by_cosine(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """The MENTIONED_IN path must rank chunks per entity by cosine
         distance to the query embedding — not pick an arbitrary 3.
 
@@ -325,9 +345,17 @@ class TestMultiPathRetrieval:
         """
         # Seed entity discovery so Path C runs (mirrors the setup in
         # ``test_mentioned_in_and_2hop_chunk_paths``).
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "engineer", "score": 0.9},
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme",
+                    "fact": "engineer",
+                    "score": 0.9,
+                },
+            ]
+        )
 
         captured: list[tuple[str, dict]] = []
 
@@ -349,7 +377,8 @@ class TestMultiPathRetrieval:
 
         # Find the direct MENTIONED_IN query (entity -> chunk, not 2-hop)
         direct_mention = [
-            (q, p) for q, p in captured
+            (q, p)
+            for q, p in captured
             if "MENTIONED_IN" in q and "Chunk" in q and "neighbor" not in q.lower()
         ]
         assert direct_mention, "expected at least one direct MENTIONED_IN chunk query"
@@ -364,14 +393,26 @@ class TestMultiPathRetrieval:
         assert "ORDER BY" in cypher, "expected ORDER BY to make COLLECT[..3] meaningful"
         assert "qv" in params, "query vector must be passed as a parameter"
 
-    async def test_format_produces_sections(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_format_produces_sections(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Output should include structured sections when data is available."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "engineer", "score": 0.9},
-        ])
-        mp_vector_store.fulltext_search_chunks = AsyncMock(return_value=[
-            {"id": "c1", "text": "Alice is a software engineer at Acme Corp.", "score": 0.8},
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme",
+                    "fact": "engineer",
+                    "score": 0.9,
+                },
+            ]
+        )
+        mp_vector_store.fulltext_search_chunks = AsyncMock(
+            return_value=[
+                {"id": "c1", "text": "Alice is a software engineer at Acme Corp.", "score": 0.8},
+            ]
+        )
 
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -384,11 +425,21 @@ class TestMultiPathRetrieval:
             sections = {item.metadata.get("section") for item in result.items}
             assert len(sections) >= 1
 
-    async def test_2hop_relationship_expansion(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_2hop_relationship_expansion(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """2-hop relationship expansion should be attempted for top entities."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "", "score": 0.9},
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme",
+                    "fact": "",
+                    "score": 0.9,
+                },
+            ]
+        )
 
         call_count = {"two_hop_rel": 0}
 
@@ -423,9 +474,11 @@ class TestMultiPathRetrieval:
         the full relative path to disambiguate files that share a
         basename — e.g. `operations/index.md` vs `commands/index.md`.
         """
-        mp_vector_store.fulltext_search_chunks = AsyncMock(return_value=[
-            {"id": "c1", "text": "Alice is an engineer at Acme Corp.", "score": 0.8},
-        ])
+        mp_vector_store.fulltext_search_chunks = AsyncMock(
+            return_value=[
+                {"id": "c1", "text": "Alice is an engineer at Acme Corp.", "score": 0.8},
+            ]
+        )
 
         async def mock_query_raw(cypher, params=None):
             if "PART_OF" in cypher:
@@ -470,7 +523,9 @@ class TestMultiPathRetrieval:
         hint = MultiPathRetrieval._detect_question_type("Describe Alice's role at Acme.")
         assert hint == ""
 
-    async def test_question_type_hint_in_output(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_question_type_hint_in_output(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Yes/no question should have a hint section in the output."""
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -520,7 +575,9 @@ class TestMultiPathRetrieval:
 class TestMultiPathUnwindQueries:
     """Tests for UNWIND batched Cypher queries."""
 
-    async def test_cypher_contains_uses_unwind(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_cypher_contains_uses_unwind(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Entity CONTAINS search should use UNWIND $keywords."""
         queries_seen = []
 
@@ -543,11 +600,21 @@ class TestMultiPathUnwindQueries:
         unwind_kw_queries = [q for q in queries_seen if "UNWIND $keywords" in q]
         assert len(unwind_kw_queries) >= 1
 
-    async def test_1hop_relationships_uses_unwind(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_1hop_relationships_uses_unwind(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """1-hop relationship expansion should use UNWIND $eids."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "", "score": 0.9},
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme",
+                    "fact": "",
+                    "score": 0.9,
+                },
+            ]
+        )
 
         queries_seen = []
 
@@ -574,17 +641,21 @@ class TestMultiPathUnwindQueries:
 class TestSearchRelatesEdges:
     """Tests for the _search_relates_edges method."""
 
-    async def test_returns_facts_and_entities(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_returns_facts_and_entities(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """_search_relates_edges should return fact strings and entity dict."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {
-                "src_name": "Alice",
-                "type": "WORKS_AT",
-                "tgt_name": "Acme Corp",
-                "fact": "Alice is a senior engineer",
-                "score": 0.95,
-            },
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme Corp",
+                    "fact": "Alice is a senior engineer",
+                    "score": 0.95,
+                },
+            ]
+        )
 
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -609,15 +680,17 @@ class TestSearchRelatesEdges:
 
     async def test_handles_missing_fact(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
         """Facts without fact text should still produce a line."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {
-                "src_name": "Bob",
-                "type": "KNOWS",
-                "tgt_name": "Carol",
-                "fact": "",
-                "score": 0.8,
-            },
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Bob",
+                    "type": "KNOWS",
+                    "tgt_name": "Carol",
+                    "fact": "",
+                    "score": 0.8,
+                },
+            ]
+        )
 
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -635,7 +708,9 @@ class TestSearchRelatesEdges:
         assert ":" not in fact_text  # no colon appended when fact is empty
         assert fact_score == 0.8
 
-    async def test_handles_search_failure(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_handles_search_failure(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Should gracefully handle search_relationships failure."""
         mp_vector_store.search_relationships = AsyncMock(side_effect=Exception("connection error"))
 
@@ -650,12 +725,28 @@ class TestSearchRelatesEdges:
         assert facts == []
         assert entities == {}
 
-    async def test_deduplicates_entities(self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm):
+    async def test_deduplicates_entities(
+        self, mp_graph_store, mp_vector_store, mp_embedder, mp_llm
+    ):
         """Same entity appearing in multiple edges should only appear once."""
-        mp_vector_store.search_relationships = AsyncMock(return_value=[
-            {"src_name": "Alice", "type": "WORKS_AT", "tgt_name": "Acme", "fact": "f1", "score": 0.9},
-            {"src_name": "Alice", "type": "KNOWS", "tgt_name": "Bob", "fact": "f2", "score": 0.8},
-        ])
+        mp_vector_store.search_relationships = AsyncMock(
+            return_value=[
+                {
+                    "src_name": "Alice",
+                    "type": "WORKS_AT",
+                    "tgt_name": "Acme",
+                    "fact": "f1",
+                    "score": 0.9,
+                },
+                {
+                    "src_name": "Alice",
+                    "type": "KNOWS",
+                    "tgt_name": "Bob",
+                    "fact": "f2",
+                    "score": 0.8,
+                },
+            ]
+        )
 
         s = MultiPathRetrieval(
             graph_store=mp_graph_store,
@@ -799,8 +890,20 @@ class TestSiblingExpansionIntegration:
         mp_graph_store.query_raw = AsyncMock(side_effect=capture_query)
         mp_vector_store.search_relationships = AsyncMock(
             return_value=[
-                {"src_name": "list.dedup", "type": "BELONGS_TO", "tgt_name": "FalkorDB", "fact": "", "score": 0.9},
-                {"src_name": "list.insert", "type": "BELONGS_TO", "tgt_name": "FalkorDB", "fact": "", "score": 0.85},
+                {
+                    "src_name": "list.dedup",
+                    "type": "BELONGS_TO",
+                    "tgt_name": "FalkorDB",
+                    "fact": "",
+                    "score": 0.9,
+                },
+                {
+                    "src_name": "list.insert",
+                    "type": "BELONGS_TO",
+                    "tgt_name": "FalkorDB",
+                    "fact": "",
+                    "score": 0.85,
+                },
             ]
         )
 

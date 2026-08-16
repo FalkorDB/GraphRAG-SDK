@@ -56,6 +56,7 @@ litellm = ["litellm>=1.83.0,<2.0"]
 openrouter = ["openai>=1.0,<3.0"]
 fastcoref = ["fastcoref>=2.0"]
 spacy = ["spacy>=3.0"]
+docling = ["docling>=2.91.0"]
 all = [
     "openai>=1.0,<3.0",
     "anthropic>=0.20,<1.0",
@@ -97,6 +98,12 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:.*hf_xet.download_files\\(\\) is deprecated.*:DeprecationWarning",
+    "ignore:.*`torch.jit.script` is deprecated.*:DeprecationWarning",
+    "ignore:.*The `resume_download` argument is deprecated.*:UserWarning",
+]
 markers = [
     "integration: tests that require a live FalkorDB instance",
 ]

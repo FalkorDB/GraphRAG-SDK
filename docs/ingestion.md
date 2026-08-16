@@ -55,6 +55,8 @@ Steps 1-7 run **sequentially** (each depends on the previous). Steps 8-9 run **i
 
 **How:** The `LoaderStrategy` ABC handles this. The SDK auto-detects the loader based on file extension:
 - `.pdf` files use `PdfLoader`
+- `.docx`, `.xlsx`, `.pptx`, `.html`, `.csv`, and URLs use `DoclingLoader` (if `graphrag-sdk[docling]` is installed)
+- `.md` files use `MarkdownLoader`
 - Everything else uses `TextLoader`
 - If you pass `text=` directly, the loader step is skipped entirely
 

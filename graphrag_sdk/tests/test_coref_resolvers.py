@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
-    CorefResolver,
-    FastCorefResolver,
     _COREF_PRONOUNS,
     _POSSESSIVE_PRONOUNS,
+    CorefResolver,
+    FastCorefResolver,
 )
 
 
@@ -32,6 +32,7 @@ class TestFastCorefResolver:
         """FastCorefResolver raises clear ImportError if fastcoref not installed."""
         try:
             import fastcoref  # noqa: F401
+
             pytest.skip("fastcoref is installed")
         except ImportError:
             resolver = FastCorefResolver()

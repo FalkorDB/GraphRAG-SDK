@@ -49,10 +49,14 @@ def create_schema() -> GraphSchema:
     """Generic schema suitable for technical documentation."""
     return GraphSchema(
         entities=[
-            EntityType(label="Concept",      description="A technical concept, feature, or abstraction"),
-            EntityType(label="Component",    description="A software module, library, or service"),
-            EntityType(label="Technology",   description="A programming language, framework, or tool"),
-            EntityType(label="Person",       description="An author, contributor, or mentioned individual"),
+            EntityType(label="Concept", description="A technical concept, feature, or abstraction"),
+            EntityType(label="Component", description="A software module, library, or service"),
+            EntityType(
+                label="Technology", description="A programming language, framework, or tool"
+            ),
+            EntityType(
+                label="Person", description="An author, contributor, or mentioned individual"
+            ),
             EntityType(label="Organization", description="A company, team, or standards body"),
         ],
         relations=[
@@ -196,8 +200,10 @@ async def main():
         loader=MarkdownLoader(),
         chunker=StructuralChunking(max_tokens=512),
     )
-    print(f"Done: {result.nodes_created} nodes, {result.relationships_created} edges, "
-          f"{result.chunks_indexed} chunks indexed")
+    print(
+        f"Done: {result.nodes_created} nodes, {result.relationships_created} edges, "
+        f"{result.chunks_indexed} chunks indexed"
+    )
 
     # Post-ingestion: dedup entities, embed entity/relationship descriptions,
     # and build full-text + vector indexes.  Required before retrieval works.
@@ -214,7 +220,7 @@ async def main():
     print(f"\nRetrieved {len(answer.retriever_result.items)} context items:")
     for i, item in enumerate(answer.retriever_result.items[:5]):
         score = item.score if item.score is not None else 0.0
-        print(f"  [{i+1}] (score={score:.3f}) {item.content[:120]}...")
+        print(f"  [{i + 1}] (score={score:.3f}) {item.content[:120]}...")
 
     # Graph statistics
     stats = await rag.get_statistics()

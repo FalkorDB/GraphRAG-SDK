@@ -1,9 +1,7 @@
 """Tests for DescriptionMergeResolution strategy."""
+
 from __future__ import annotations
 
-import pytest
-
-from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
@@ -14,7 +12,6 @@ from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
 )
 
 from .conftest import MockLLM
-
 
 # ── Helpers ────────────────────────────────────────────────────
 
@@ -88,9 +85,7 @@ class TestMultiNodeAboveThreshold:
     async def test_llm_summarization_triggered(self, ctx):
         summary = "Alice is a versatile professional."
         llm = MockLLM(responses=[summary])
-        resolver = DescriptionMergeResolution(
-            llm=llm, force_summary_threshold=2
-        )
+        resolver = DescriptionMergeResolution(llm=llm, force_summary_threshold=2)
         data = GraphData(
             nodes=[
                 _make_node("a-1", name="Alice", description="An engineer"),
@@ -105,9 +100,7 @@ class TestMultiNodeAboveThreshold:
         assert result.nodes[0].properties["description"] == summary
 
     async def test_no_llm_falls_back_to_concat(self, ctx):
-        resolver = DescriptionMergeResolution(
-            llm=None, force_summary_threshold=2
-        )
+        resolver = DescriptionMergeResolution(llm=None, force_summary_threshold=2)
         data = GraphData(
             nodes=[
                 _make_node("a-1", name="Alice", description="desc A"),

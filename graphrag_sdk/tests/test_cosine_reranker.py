@@ -1,16 +1,12 @@
 """Tests for retrieval/reranking_strategies/cosine.py — CosineReranker."""
+
 from __future__ import annotations
-
-from typing import Any
-
-import pytest
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import RetrieverResult, RetrieverResultItem
 from graphrag_sdk.retrieval.reranking_strategies.cosine import CosineReranker
 
 from .conftest import MockEmbedder
-
 
 # ── Tests ───────────────────────────────────────────────────────
 
@@ -38,9 +34,7 @@ class TestCosineReranker:
         embedder = MockEmbedder(dimension=8)
         reranker = CosineReranker(embedder=embedder, top_k=2)
 
-        items = [
-            RetrieverResultItem(content=f"Item {i}") for i in range(5)
-        ]
+        items = [RetrieverResultItem(content=f"Item {i}") for i in range(5)]
         result = RetrieverResult(items=items)
         ctx = Context(tenant_id="test")
 

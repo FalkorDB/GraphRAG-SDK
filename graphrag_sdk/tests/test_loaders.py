@@ -1,4 +1,5 @@
 """Tests for ingestion/loaders/ — TextLoader and PdfLoader."""
+
 from __future__ import annotations
 
 import logging
@@ -205,28 +206,28 @@ class TestMarkdownLoader:
         file.write_text(content)
         loader = MarkdownLoader()
         result = await loader.load(str(file), ctx)
-        
+
         elements = result.elements
         assert elements is not None
         assert len(elements) == 6  # 3 headers, 3 paragraphs
-        
+
         # Verify first header
         assert elements[0].type == "header"
         assert elements[0].level == 1
         assert elements[0].content == "Main Title"
         assert elements[0].breadcrumbs == ["Main Title"]
-        
+
         # Verify first paragraph
         assert elements[1].type == "paragraph"
         assert elements[1].content == "Intro paragraph."
         assert elements[1].breadcrumbs == ["Main Title"]
-        
+
         # Verify H2
         assert elements[2].type == "header"
         assert elements[2].level == 2
         assert elements[2].content == "Section 1"
         assert elements[2].breadcrumbs == ["Main Title", "Section 1"]
-        
+
         # Verify deeply nested paragraph
         assert elements[5].type == "paragraph"
         assert elements[5].content == "Deep details."
@@ -234,27 +235,29 @@ class TestMarkdownLoader:
 
     async def test_file_not_found(self, ctx):
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
+
         loader = MarkdownLoader()
         with pytest.raises(LoaderError, match="File not found"):
             await loader.load("/nonexistent.md", ctx)
 
     async def test_raises_when_markdown_it_missing(self, ctx, tmp_path, monkeypatch):
-        """When markdown-it-py is not installed, a clear install message is raised and not hidden by LoaderError."""
+        """When markdown-it-py is not installed, a clear install message is raised and not hidden by LoaderError."""  # noqa: E501
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
-        
+
         file = tmp_path / "struct.md"
         file.write_text("# Main Title\nIntro.")
-        
+
         loader = MarkdownLoader()
-        
+
         def fake_parse_markdown(self, text):
-            raise ImportError("Markdown parsing requires 'markdown-it-py'. Install with:\n  pip install graphrag-sdk[markdown]")
-            
+            raise ImportError(
+                "Markdown parsing requires 'markdown-it-py'. Install with:\n  pip install graphrag-sdk[markdown]"  # noqa: E501
+            )
+
         monkeypatch.setattr(MarkdownLoader, "_parse_markdown", fake_parse_markdown)
-        
+
         with pytest.raises(ImportError, match=r"graphrag-sdk\[markdown\]"):
             await loader.load(str(file), ctx)
-
 
     async def test_markdown_complex_structures(self, ctx, tmp_path):
         from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
@@ -279,23 +282,23 @@ class TestMarkdownLoader:
         file.write_text(content)
         loader = MarkdownLoader()
         result = await loader.load(str(file), ctx)
-        
+
         elements = result.elements
         assert elements is not None
-        
+
         # Verify table
         assert elements[1].type == "table"
         assert "| 1 | Alice |" in elements[1].content
-        
+
         # Verify paragraph
         assert elements[2].type == "paragraph"
         assert elements[2].content == "Some list:"
-        
+
         # Verify list
         assert elements[3].type == "list"
         assert "- Item 1" in elements[3].content
         assert "- Item 2" in elements[3].content
-        
+
         # Verify code block
         assert elements[5].type == "code"
         assert "def foo():" in elements[5].content

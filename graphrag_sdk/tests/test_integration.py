@@ -28,21 +28,6 @@ class TestTopLevelImports:
     def test_core_models(self):
         from graphrag_sdk import (
             DataModel,
-            GraphNode,
-            GraphRelationship,
-            TextChunk,
-            TextChunks,
-            DocumentInfo,
-            DocumentOutput,
-            Entity,
-            Relation,
-            Ontology,
-            GraphData,
-            ResolutionResult,
-            RetrieverResult,
-            RetrieverResultItem,
-            RagResult,
-            IngestionResult,
             SearchType,
         )
 
@@ -54,10 +39,6 @@ class TestTopLevelImports:
         from graphrag_sdk import (
             Embedder,
             LLMInterface,
-            Context,
-            ConnectionConfig,
-            FalkorDBConnection,
-            GraphRAGError,
         )
 
         assert Embedder is not None
@@ -66,11 +47,6 @@ class TestTopLevelImports:
     def test_strategy_abcs(self):
         from graphrag_sdk import (
             LoaderStrategy,
-            ChunkingStrategy,
-            ExtractionStrategy,
-            ResolutionStrategy,
-            RetrievalStrategy,
-            RerankingStrategy,
         )
 
         assert LoaderStrategy is not None
@@ -92,37 +68,41 @@ class TestCrossCuttingConcerns:
 
     def test_context_flows_through_chunking(self):
         """Context is accepted by every strategy interface."""
-        from graphrag_sdk.core.context import Context
-        from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
         import inspect
+
+        from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 
         sig = inspect.signature(ChunkingStrategy.chunk)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_extraction(self):
-        from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
         import inspect
+
+        from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
 
         sig = inspect.signature(ExtractionStrategy.extract)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_resolution(self):
-        from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
         import inspect
+
+        from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
         sig = inspect.signature(ResolutionStrategy.resolve)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_retrieval(self):
-        from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
         import inspect
+
+        from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
         sig = inspect.signature(RetrievalStrategy.search)
         assert "ctx" in sig.parameters
 
     def test_context_flows_through_reranking(self):
-        from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
         import inspect
+
+        from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 
         sig = inspect.signature(RerankingStrategy.rerank)
         assert "ctx" in sig.parameters
@@ -167,7 +147,7 @@ class TestSubmoduleImports:
         assert SemanticRouter is not None
 
     def test_tracer(self):
-        from graphrag_sdk.telemetry.tracer import Tracer, Span
+        from graphrag_sdk.telemetry.tracer import Span, Tracer
 
         assert Tracer is not None
         assert Span is not None

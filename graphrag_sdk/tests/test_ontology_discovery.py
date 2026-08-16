@@ -5,6 +5,7 @@ Three layers covered:
   - ``_validate_proposal`` (semantic validation)
   - ``discover_ontology`` + the public ``Ontology.from_sources`` classmethod
 """
+
 from __future__ import annotations
 
 import json
@@ -42,7 +43,6 @@ from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 
 from .conftest import MockLLM
 
-
 # ── Test helpers ───────────────────────────────────────────────────
 
 
@@ -78,8 +78,7 @@ class FixedChunker(ChunkingStrategy):
     async def chunk(self, text: str, ctx: Context) -> TextChunks:
         return TextChunks(
             chunks=[
-                TextChunk(text=c, index=i, uid=f"chunk-{i}")
-                for i, c in enumerate(self._chunks)
+                TextChunk(text=c, index=i, uid=f"chunk-{i}") for i, c in enumerate(self._chunks)
             ]
         )
 
@@ -104,9 +103,7 @@ def _valid_chunk_proposal_json() -> str:
 
 
 def _valid_doc_summary_json() -> str:
-    return json.dumps(
-        {"main_entities": ["Alice", "Acme Corp"], "aboutness": "Test doc"}
-    )
+    return json.dumps({"main_entities": ["Alice", "Acme Corp"], "aboutness": "Test doc"})
 
 
 def _valid_normalized_json() -> str:
@@ -161,9 +158,7 @@ class TestExtractWithRetry:
                 "entities": [
                     {
                         "label": "Person",
-                        "properties": [
-                            {"name": "age", "type": "INT", "description": None}
-                        ],
+                        "properties": [{"name": "age", "type": "INT", "description": None}],
                     }
                 ],
                 "relations": [],
@@ -275,9 +270,7 @@ class TestValidateProposal:
                 _ProposedEntity(label="Company", properties=[]),
             ],
             relations=[
-                _ProposedRelation(
-                    label="WORKS_AT", patterns=[("Person", "Company")], properties=[]
-                )
+                _ProposedRelation(label="WORKS_AT", patterns=[("Person", "Company")], properties=[])
             ],
         )
         assert _validate_proposal(proposal) == []
@@ -485,9 +478,7 @@ class TestPipeline:
         assert {"Person", "Company"} <= {e.label for e in ontology.entities}
 
     @pytest.mark.asyncio
-    async def test_normalization_failure_falls_back_to_unnormalized(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_normalization_failure_falls_back_to_unnormalized(self, tmp_path: Path) -> None:
         """If the final normalize LLM call fails, return the merged draft."""
         src = tmp_path / "doc.txt"
         src.write_text("Alice works at Acme.")
@@ -518,9 +509,7 @@ class TestPipeline:
 
 class TestEnsureSDKManagedAttributes:
     def test_adds_name_to_entity_that_lacks_it(self) -> None:
-        ont = Ontology(
-            entities=[Entity(label="Person", properties=[Attribute(name="role")])]
-        )
+        ont = Ontology(entities=[Entity(label="Person", properties=[Attribute(name="role")])])
         result = _ensure_sdk_managed_attributes(ont)
         person = next(e for e in result.entities if e.label == "Person")
         attr_names = [a.name for a in person.properties]
@@ -574,9 +563,7 @@ class TestDiffOntologies:
 
     def test_detects_new_entity(self) -> None:
         existing = Ontology(entities=[Entity(label="Person")])
-        discovered = Ontology(
-            entities=[Entity(label="Person"), Entity(label="Company")]
-        )
+        discovered = Ontology(entities=[Entity(label="Person"), Entity(label="Company")])
         proposal = _diff_ontologies(existing, discovered)
         assert [e.label for e in proposal.new_entities] == ["Company"]
         assert proposal.new_attributes == []
@@ -637,16 +624,13 @@ class TestDiffOntologies:
         )
         proposal = _diff_ontologies(existing, discovered)
         assert any(
-            owner == "WORKS_AT" and attr.name == "since"
-            for owner, attr in proposal.new_attributes
+            owner == "WORKS_AT" and attr.name == "since" for owner, attr in proposal.new_attributes
         )
 
     def test_does_not_propose_deletions(self) -> None:
         """Schema-shrinking is never proposed — absence from the new corpus
         is not evidence of irrelevance."""
-        existing = Ontology(
-            entities=[Entity(label="Person"), Entity(label="Country")]
-        )
+        existing = Ontology(entities=[Entity(label="Person"), Entity(label="Country")])
         discovered = Ontology(entities=[Entity(label="Person")])
         proposal = _diff_ontologies(existing, discovered)
         assert proposal.is_empty
@@ -687,18 +671,14 @@ class TestSuggestExtensions:
         assert proposal.sources_scanned == [str(src)]
 
     @pytest.mark.asyncio
-    async def test_proposal_is_empty_when_discovery_adds_nothing(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_proposal_is_empty_when_discovery_adds_nothing(self, tmp_path: Path) -> None:
         """If the discovery output is already covered by ``existing``,
         the proposal returns empty."""
         src = tmp_path / "doc.txt"
         src.write_text("Alice works at Acme Corp.")
         existing = Ontology(
             entities=[Entity(label="Person"), Entity(label="Company")],
-            relations=[
-                Relation(label="WORKS_AT", patterns=[("Person", "Company")])
-            ],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
         )
         llm = RecordingMockLLM(
             [
@@ -848,11 +828,7 @@ def _make_mock_urlopen(*, sparql_types_for: dict[str, list[str]] | None = None):
     def _mock(url_or_request, *_args, **_kwargs):
         import io
 
-        url = (
-            url_or_request.full_url
-            if hasattr(url_or_request, "full_url")
-            else url_or_request
-        )
+        url = url_or_request.full_url if hasattr(url_or_request, "full_url") else url_or_request
         # Use parsed-host comparison rather than substring matching so
         # CodeQL's "incomplete URL substring sanitization" check doesn't
         # flag the dispatcher.
@@ -891,6 +867,7 @@ class TestDBpediaCatalog:
     def catalog(self, tmp_path):
         """A fresh catalog with both endpoints mocked + cache under tmp_path."""
         from unittest.mock import patch
+
         from graphrag_sdk.discovery.catalog import DBpediaCatalog
 
         mock = _make_mock_urlopen(
@@ -900,9 +877,7 @@ class TestDBpediaCatalog:
             }
         )
         cache_path = tmp_path / "schema_org.json"
-        with patch(
-            "graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=mock
-        ):
+        with patch("graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=mock):
             yield DBpediaCatalog(cache_path=cache_path)
 
     def test_link_entity_returns_dbpedia_types(self, catalog) -> None:
@@ -920,21 +895,19 @@ class TestDBpediaCatalog:
     def test_link_entity_results_are_cached(self, tmp_path) -> None:
         """A second link_entity call for the same name hits the in-memory
         cache and does not re-issue the SPARQL query."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from graphrag_sdk.discovery.catalog import DBpediaCatalog
 
         spy = MagicMock(
-            side_effect=_make_mock_urlopen(
-                sparql_types_for={"Einstein": ["Person", "Scientist"]}
-            )
+            side_effect=_make_mock_urlopen(sparql_types_for={"Einstein": ["Person", "Scientist"]})
         )
-        with patch(
-            "graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=spy
-        ):
+        with patch("graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=spy):
             cat = DBpediaCatalog(cache_path=tmp_path / "so.json")
             cat.link_entity("Einstein")
             cat.link_entity("Einstein")
             cat.link_entity("Einstein")
+
         def _call_url(call) -> str:
             arg = call.args[0]
             return arg.full_url if hasattr(arg, "full_url") else str(arg)
@@ -977,7 +950,8 @@ class TestDBpediaCatalog:
         assert any(r.label == "AUTHOR" for r in rels)
 
     def test_schema_org_cache_is_used_on_second_construction(self, tmp_path) -> None:
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from graphrag_sdk.discovery.catalog import DBpediaCatalog
 
         cache_path = tmp_path / "so.json"
@@ -989,14 +963,13 @@ class TestDBpediaCatalog:
             first.lookup("Person")
         assert cache_path.exists()
         sentinel = MagicMock(side_effect=AssertionError("schema.org should not be hit"))
-        with patch(
-            "graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=sentinel
-        ):
+        with patch("graphrag_sdk.discovery.catalog.urllib.request.urlopen", new=sentinel):
             second = DBpediaCatalog(cache_path=cache_path)
             assert second.lookup("Person") is not None
 
     def test_schema_org_fetch_failure_raises_when_cache_missing(self, tmp_path) -> None:
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from graphrag_sdk.discovery.catalog import (
             DBpediaCatalog,
             DBpediaFetchError,
@@ -1057,15 +1030,9 @@ class TestDiscoverGrounded:
                 wanted = set(names)
                 result = []
                 if {"Person", "Organization"} <= wanted:
-                    result.append(
-                        Relation(
-                            label="WORKS_AT", patterns=[("Person", "Organization")]
-                        )
-                    )
+                    result.append(Relation(label="WORKS_AT", patterns=[("Person", "Organization")]))
                 if {"Person", "Place"} <= wanted:
-                    result.append(
-                        Relation(label="BORN_IN", patterns=[("Person", "Place")])
-                    )
+                    result.append(Relation(label="BORN_IN", patterns=[("Person", "Place")]))
                 return result
 
         return _ToyCatalog()
@@ -1155,9 +1122,7 @@ class TestDiscoverGrounded:
         )
 
     @pytest.mark.asyncio
-    async def test_existing_prior_is_merged(
-        self, tmp_path: Path, tiny_catalog
-    ) -> None:
+    async def test_existing_prior_is_merged(self, tmp_path: Path, tiny_catalog) -> None:
         from graphrag_sdk.discovery.pipeline import discover_grounded
 
         src = tmp_path / "doc.txt"
@@ -1179,9 +1144,7 @@ class TestDiscoverGrounded:
         assert "Person" in labels
 
     @pytest.mark.asyncio
-    async def test_from_sources_dispatches_to_grounded(
-        self, tmp_path: Path, tiny_catalog
-    ) -> None:
+    async def test_from_sources_dispatches_to_grounded(self, tmp_path: Path, tiny_catalog) -> None:
         """Public API: from_sources(method='grounded') routes to grounded path."""
         src = tmp_path / "doc.txt"
         src.write_text("Alice works at Acme")
@@ -1199,9 +1162,7 @@ class TestDiscoverGrounded:
         assert {"Person", "Organization"} <= {e.label for e in ontology.entities}
 
     @pytest.mark.asyncio
-    async def test_from_sources_grounded_requires_catalog(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_from_sources_grounded_requires_catalog(self, tmp_path: Path) -> None:
         src = tmp_path / "doc.txt"
         src.write_text("text")
         with pytest.raises(ValueError, match="catalog"):
@@ -1223,9 +1184,7 @@ class TestDiscoverGrounded:
             )
 
     @pytest.mark.asyncio
-    async def test_from_sources_unknown_method_raises(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_from_sources_unknown_method_raises(self, tmp_path: Path) -> None:
         src = tmp_path / "doc.txt"
         src.write_text("text")
         with pytest.raises(ValueError, match="unknown method"):
@@ -1288,9 +1247,7 @@ class TestGroundedTrim:
         src = tmp_path / "doc.txt"
         src.write_text("Alice is a software engineer born in 1990")
         # LLM keeps name + birth_date + job_title, drops the rest.
-        llm = RecordingMockLLM(
-            [json.dumps({"keep": ["name", "birth_date", "job_title"]})]
-        )
+        llm = RecordingMockLLM([json.dumps({"keep": ["name", "birth_date", "job_title"]})])
         ontology = await discover_grounded(
             str(src),
             catalog=trim_catalog,
@@ -1308,9 +1265,7 @@ class TestGroundedTrim:
         assert "call_sign" not in kept
 
     @pytest.mark.asyncio
-    async def test_trim_always_keeps_name(
-        self, tmp_path: Path, trim_catalog
-    ) -> None:
+    async def test_trim_always_keeps_name(self, tmp_path: Path, trim_catalog) -> None:
         """Even if the LLM forgets ``name``, the trim adds it back —
         the SDK-managed identifier filter relies on it being declared."""
         from graphrag_sdk.discovery.pipeline import discover_grounded
@@ -1334,9 +1289,7 @@ class TestGroundedTrim:
         assert "birth_date" in kept
 
     @pytest.mark.asyncio
-    async def test_trim_soft_fails_to_full_list(
-        self, tmp_path: Path, trim_catalog
-    ) -> None:
+    async def test_trim_soft_fails_to_full_list(self, tmp_path: Path, trim_catalog) -> None:
         """If the LLM call exhausts retries, the pipeline falls back to
         the catalog's full property list — flaky LLM does not silently
         lose schema information."""
@@ -1370,9 +1323,7 @@ class TestGroundedTrim:
         }
 
     @pytest.mark.asyncio
-    async def test_no_trim_when_llm_not_provided(
-        self, tmp_path: Path, trim_catalog
-    ) -> None:
+    async def test_no_trim_when_llm_not_provided(self, tmp_path: Path, trim_catalog) -> None:
         """Without llm=, the catalog's full property list is returned —
         unchanged from the prior behavior."""
         from graphrag_sdk.discovery.pipeline import discover_grounded

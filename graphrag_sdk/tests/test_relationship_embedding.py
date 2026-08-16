@@ -1,10 +1,8 @@
 """Tests for GraphRelationship.to_fact_text() helper."""
+
 from __future__ import annotations
 
-import pytest
-
 from graphrag_sdk.core.models import GraphRelationship
-
 
 # ── Tests ──────────────────────────────────────────────────────
 

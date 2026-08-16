@@ -16,17 +16,26 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 
 from .conftest import MockLLM
 
-
 # ── LLMExtractor Tests ────────────────────────────────────────
 
 
 class TestLLMExtractor:
     @pytest.fixture
     def extractor(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "Alice", "type": "Person", "description": "A software engineer"},
-            {"name": "Acme Corp", "type": "Organization", "description": "A tech company"},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {"name": "Alice", "type": "Person", "description": "A software engineer"},
+                        {
+                            "name": "Acme Corp",
+                            "type": "Organization",
+                            "description": "A tech company",
+                        },
+                    ]
+                )
+            ]
+        )
         return LLMExtractor(llm)
 
     async def test_basic_extraction(self, extractor):
@@ -57,11 +66,17 @@ class TestLLMExtractor:
         assert entities == []
 
     async def test_filters_invalid_names(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "he", "type": "Person", "description": "A pronoun"},
-            {"name": "A", "type": "Person", "description": "Single char"},
-            {"name": "Alice", "type": "Person", "description": "Valid"},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {"name": "he", "type": "Person", "description": "A pronoun"},
+                        {"name": "A", "type": "Person", "description": "Single char"},
+                        {"name": "Alice", "type": "Person", "description": "Valid"},
+                    ]
+                )
+            ]
+        )
         extractor = LLMExtractor(llm)
         entities = await extractor.extract_entities(
             text="He and Alice", entity_types=["Person"], source_chunk_id="c0"
@@ -78,25 +93,53 @@ class TestLLMExtractor:
         assert len(entities) == 1
 
     async def test_confidence_and_spans(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "Alice", "type": "Person", "description": "Engineer",
-             "confidence": 0.95, "start": 0, "end": 5},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {
+                            "name": "Alice",
+                            "type": "Person",
+                            "description": "Engineer",
+                            "confidence": 0.95,
+                            "start": 0,
+                            "end": 5,
+                        },
+                    ]
+                )
+            ]
+        )
         extractor = LLMExtractor(llm)
         entities = await extractor.extract_entities(
-            text="Alice", entity_types=["Person"], source_chunk_id="chunk-3",
+            text="Alice",
+            entity_types=["Person"],
+            source_chunk_id="chunk-3",
         )
         assert entities[0].confidence == 0.95
         assert entities[0].spans["chunk-3"] == [{"start": 0, "end": 5}]
 
     async def test_low_confidence_becomes_unknown(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "Maybe", "type": "Person", "description": "Uncertain",
-             "confidence": 0.3, "start": 0, "end": 5},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {
+                            "name": "Maybe",
+                            "type": "Person",
+                            "description": "Uncertain",
+                            "confidence": 0.3,
+                            "start": 0,
+                            "end": 5,
+                        },
+                    ]
+                )
+            ]
+        )
         extractor = LLMExtractor(llm, threshold=0.75)
         entities = await extractor.extract_entities(
-            text="Maybe", entity_types=["Person"], source_chunk_id="c0",
+            text="Maybe",
+            entity_types=["Person"],
+            source_chunk_id="c0",
         )
         assert entities[0].type == "Unknown"
 
@@ -108,6 +151,7 @@ class TestGLiNERExtractor:
     async def test_import_error_when_gliner_missing(self):
         try:
             import gliner  # noqa: F401
+
             pytest.skip("gliner is installed")
         except ImportError:
             extractor = GLiNERExtractor()
@@ -158,9 +202,13 @@ class TestEntityExtractorABC:
     def test_custom_subclass(self):
         class MyExtractor(EntityExtractor):
             async def extract_entities(self, text, entity_types, source_chunk_id):
-                return [ExtractedEntity(
-                    name="Test", type="Person", description="",
-                    source_chunk_ids=[source_chunk_id],
-                )]
+                return [
+                    ExtractedEntity(
+                        name="Test",
+                        type="Person",
+                        description="",
+                        source_chunk_ids=[source_chunk_id],
+                    )
+                ]
 
         assert isinstance(MyExtractor(), EntityExtractor)

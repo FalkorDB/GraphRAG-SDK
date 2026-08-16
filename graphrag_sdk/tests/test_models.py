@@ -1,10 +1,13 @@
 """Tests for core/models.py — all Pydantic v2 data models."""
+
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
 from graphrag_sdk.core.models import (
+    Attribute,
+    ChatMessage,
     DataModel,
     DocumentInfo,
     DocumentOutput,
@@ -13,12 +16,10 @@ from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
     GraphRelationship,
-    Ontology,
     IngestionResult,
-    ChatMessage,
     LLMMessage,
     LLMResponse,
-    Attribute,
+    Ontology,
     RagResult,
     RawSearchResult,
     Relation,
@@ -110,9 +111,7 @@ class TestTextChunks:
         assert chunks.chunks == []
 
     def test_with_chunks(self):
-        chunks = TextChunks(
-            chunks=[TextChunk(text="a", index=0), TextChunk(text="b", index=1)]
-        )
+        chunks = TextChunks(chunks=[TextChunk(text="a", index=0), TextChunk(text="b", index=1)])
         assert len(chunks.chunks) == 2
 
 

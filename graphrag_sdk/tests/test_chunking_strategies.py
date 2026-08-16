@@ -5,8 +5,10 @@ Strategies under test:
   2. SentenceTokenCapChunking (tiktoken, no LLM)
   3. ContextualChunking       (tiktoken + LLM — mock LLM used)
   4. CallableChunking         (adapts any function — sync & async)
-  5. StructuralChunking       (Groups document elements based on structure, constrained by a token cap) 
+  5. StructuralChunking       (Groups document elements based on structure,
+                               constrained by a token cap)
 """
+
 from __future__ import annotations
 
 import pytest
@@ -41,6 +43,7 @@ SAMPLE_TEXT = (
 # Mock LLM for ContextualChunking
 # ---------------------------------------------------------------------------
 
+
 class _ContextualMockLLM(LLMInterface):
     """Minimal LLM that satisfies ContextualChunking's abatch_invoke requirement."""
 
@@ -60,6 +63,7 @@ class _ContextualMockLLM(LLMInterface):
 # ---------------------------------------------------------------------------
 # 1. FixedSizeChunking
 # ---------------------------------------------------------------------------
+
 
 class TestFixedSizeChunking:
     async def test_produces_chunks(self, ctx):
@@ -97,6 +101,7 @@ class TestFixedSizeChunking:
 # 2. SentenceTokenCapChunking
 # ---------------------------------------------------------------------------
 
+
 class TestSentenceTokenCapChunking:
     async def test_produces_chunks(self, ctx):
         chunker = SentenceTokenCapChunking(max_tokens=100, overlap_sentences=1)
@@ -127,14 +132,19 @@ class TestSentenceTokenCapChunking:
         assert "strategy" in result.chunks[0].metadata
 
     async def test_small_cap_more_chunks_than_large(self, ctx):
-        small = await SentenceTokenCapChunking(max_tokens=30, overlap_sentences=0).chunk(SAMPLE_TEXT, ctx)
-        large = await SentenceTokenCapChunking(max_tokens=512, overlap_sentences=0).chunk(SAMPLE_TEXT, ctx)
+        small = await SentenceTokenCapChunking(max_tokens=30, overlap_sentences=0).chunk(
+            SAMPLE_TEXT, ctx
+        )
+        large = await SentenceTokenCapChunking(max_tokens=512, overlap_sentences=0).chunk(
+            SAMPLE_TEXT, ctx
+        )
         assert len(small.chunks) >= len(large.chunks)
 
 
 # ---------------------------------------------------------------------------
 # 3. ContextualChunking
 # ---------------------------------------------------------------------------
+
 
 class TestContextualChunking:
     async def test_produces_chunks(self, ctx):
@@ -180,7 +190,6 @@ class TestContextualChunking:
         for chunk in result.chunks:
             assert chunk.metadata.get("strategy") == "contextual_chunking"
 
-
     async def test_metadata_base_strategy_preserved(self, ctx):
         """metadata['base_strategy'] must reflect the underlying chunker's strategy.
 
@@ -214,9 +223,11 @@ class TestContextualChunking:
                 max_tokens=512,  # dead — should blow up
             )
 
+
 # ---------------------------------------------------------------------------
 # 4. CallableChunking
 # ---------------------------------------------------------------------------
+
 
 class TestCallableChunking:
     """Tests for the framework-agnostic callable adapter."""
@@ -253,9 +264,7 @@ class TestCallableChunking:
             assert chunk.index == i
 
     async def test_metadata_has_strategy(self, ctx):
-        chunker = CallableChunking(
-            lambda text: text.split(". "), strategy_name="sentence_split"
-        )
+        chunker = CallableChunking(lambda text: text.split(". "), strategy_name="sentence_split")
         result = await chunker.chunk(SAMPLE_TEXT, ctx)
         assert len(result.chunks) >= 1
         assert result.chunks[0].metadata["strategy"] == "sentence_split"
@@ -285,7 +294,9 @@ class TestCallableChunking:
 class TestStructuralChunking:
     async def test_chunk_with_elements(self, ctx):
         from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
 
         # Create elements
         elements = [
@@ -304,7 +315,7 @@ class TestStructuralChunking:
         result = await chunker.chunk_document(doc, ctx)
 
         assert len(result.chunks) == 1
-        text = result.chunks[0].text
+        result.chunks[0].text
         # Header text has prefix but since it's a header we avoided duplicating.
         # Actually in our code, if prefix is present but it's not a header it gets added.
         assert "Title\nIntro." in result.chunks[0].text
@@ -312,13 +323,13 @@ class TestStructuralChunking:
 
     async def test_fallback_when_oversized(self, ctx):
         from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
 
         # A very large paragraph
         large_content = "Word. " * 50
-        elements = [
-            DocumentElement(type="paragraph", content=large_content, breadcrumbs=["H1"])
-        ]
+        elements = [DocumentElement(type="paragraph", content=large_content, breadcrumbs=["H1"])]
         doc = DocumentOutput(
             text=large_content,
             document_info=DocumentInfo(path="test.md"),
@@ -336,8 +347,10 @@ class TestStructuralChunking:
 
     def test_raises_on_conflicting_kwargs(self):
         """Passing shorthand kwargs alongside fallback_chunker must raise TypeError."""
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
         from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
 
         with pytest.raises(TypeError, match="cannot be used together with 'fallback_chunker'"):
             StructuralChunking(
@@ -347,7 +360,9 @@ class TestStructuralChunking:
 
     async def test_no_elements_fallback(self, ctx):
         from graphrag_sdk.core.models import DocumentInfo, DocumentOutput
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
 
         doc = DocumentOutput(
             text="Just some text. More text.",
@@ -363,7 +378,9 @@ class TestStructuralChunking:
 
     async def test_flatten_nested_elements(self, ctx):
         from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
 
         nested_elements = [
             DocumentElement(
@@ -381,14 +398,14 @@ class TestStructuralChunking:
                                 content="Grandchild.",
                                 breadcrumbs=["Root", "Child 1", "Grandchild"],
                             )
-                        ]
+                        ],
                     ),
                     DocumentElement(
                         type="paragraph",
                         content="Child 2.",
                         breadcrumbs=["Root", "Child 2"],
-                    )
-                ]
+                    ),
+                ],
             )
         ]
 
@@ -417,11 +434,13 @@ class TestStructuralChunking:
         so breadcrumbs become graph-queryable without any extra pipeline work.
         """
         from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
 
         elements = [
-            DocumentElement(type="header",    content="Title",   breadcrumbs=["Title"]),
-            DocumentElement(type="paragraph", content="Intro.",  breadcrumbs=["Title"]),
+            DocumentElement(type="header", content="Title", breadcrumbs=["Title"]),
+            DocumentElement(type="paragraph", content="Intro.", breadcrumbs=["Title"]),
             DocumentElement(type="paragraph", content="Detail.", breadcrumbs=["Title", "Sub"]),
         ]
         doc = DocumentOutput(
@@ -444,7 +463,9 @@ class TestStructuralChunking:
     async def test_metadata_breadcrumbs_in_oversized_fallback(self, ctx):
         """Fallback chunks (oversized elements) must also carry breadcrumbs."""
         from graphrag_sdk.core.models import DocumentElement, DocumentInfo, DocumentOutput
-        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
+        from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import (
+            StructuralChunking,
+        )
 
         large_content = "Word. " * 50
         elements = [
@@ -467,4 +488,3 @@ class TestStructuralChunking:
         for chunk in result.chunks:
             assert "breadcrumbs" in chunk.metadata
             assert chunk.metadata["breadcrumbs"] == ["Chapter", "Section"]
-

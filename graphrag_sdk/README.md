@@ -36,6 +36,7 @@ asyncio.run(main())
 pip install graphrag-sdk[litellm]       # OpenAI, Azure, Anthropic, 100+ models
 pip install graphrag-sdk[openrouter]    # OpenRouter models
 pip install graphrag-sdk[pdf]           # PDF ingestion
+pip install graphrag-sdk[docling]       # DOCX, XLSX, PPTX, HTML, CSV, URLs
 pip install graphrag-sdk[all]           # Everything
 ```
 
@@ -59,7 +60,14 @@ async def main():
         llm=LiteLLM(model="openai/gpt-4o"),
         embedder=LiteLLMEmbedder(model="openai/text-embedding-3-small"),
     ) as rag:
+        # Supported formats: PDF, DOCX, XLSX, PPTX, HTML, CSV, Markdown, URLs, TXT
         await rag.ingest("report.pdf")                              # PDF
+        await rag.ingest("document.docx")                           # Word
+        await rag.ingest("spreadsheet.xlsx")                        # Excel
+        await rag.ingest("presentation.pptx")                       # PowerPoint
+        await rag.ingest("page.html")                               # HTML
+        await rag.ingest("data.csv")                                # CSV
+        await rag.ingest("notes.md")                                # Markdown
         await rag.ingest("source_id", text="Alice works at Acme.")  # Raw text
         await rag.finalize()                                         # Dedup + index
 
@@ -135,7 +143,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 
 | Concern | ABC | Built-in Options | Default |
 |---------|-----|-----------------|---------|
-| **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by extension |
+| **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `DoclingLoader` (universal: DOCX/XLSX/PPTX/HTML/CSV/URL) | Auto-detect by extension |
 | **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` |
 | **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | `GraphExtraction` |
 | **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution`, `SemanticResolution`, `LLMVerifiedResolution` | `ExactMatch` |

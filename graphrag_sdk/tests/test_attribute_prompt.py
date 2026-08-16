@@ -1,25 +1,25 @@
 """Tests for the attribute-aware prompt and coercion helpers in
 ``graph_extraction.py``."""
+
 from __future__ import annotations
 
 import pytest
 
 from graphrag_sdk.core.models import (
+    Attribute,
     Entity,
     Ontology,
-    Attribute,
     Relation,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
-    VERIFY_EXTRACT_RELS_PROMPT,
     _DEFAULT_JSON_EXAMPLE,
     _JSON_EXAMPLE_WITH_ATTRS,
+    VERIFY_EXTRACT_RELS_PROMPT,
     _coerce_attribute_value,
     _coerce_attributes,
-    _render_attribute_block,
     _ontology_has_attributes,
+    _render_attribute_block,
 )
-
 
 # ── _render_attribute_block ──────────────────────────────
 
@@ -131,9 +131,7 @@ class TestCoerceAttributes:
             "birth_date": Attribute(name="birth_date", type="DATE"),
             "nickname": Attribute(name="nickname", type="STRING"),
         }
-        result = _coerce_attributes(
-            {"age": "56", "birth_date": "1867-11-07"}, declared
-        )
+        result = _coerce_attributes({"age": "56", "birth_date": "1867-11-07"}, declared)
         assert result == {"age": 56, "birth_date": "1867-11-07", "nickname": None}
 
     def test_uncoercible_value_becomes_none(self):
