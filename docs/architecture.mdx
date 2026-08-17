@@ -1,4 +1,7 @@
-# Architecture
+---
+title: "Architecture"
+description: "How the strategy-based ingestion and retrieval pipelines fit together."
+---
 
 GraphRAG SDK v2 follows a **strategy-based pipeline architecture**. Every algorithmic concern is an abstract base class (ABC) with swappable implementations. The system has two main flows: **ingestion** (document to knowledge graph) and **retrieval** (question to answer).
 
@@ -172,8 +175,8 @@ The same pattern applies to all 6 strategy ABCs: `LoaderStrategy`, `ChunkingStra
 
 Each subsystem has a dedicated document with step-by-step explanations:
 
-- [Ingestion Pipeline](ingestion.md) — the 9-step pipeline from document to knowledge graph
-- [Extraction](extraction.md) — the 2-step hybrid extraction process (NER + LLM)
-- [Graph Schema](graph-schema.md) — how the knowledge graph is structured in FalkorDB
-- [Storage](storage.md) — GraphStore, VectorStore, and EntityDeduplicator internals
-- [Retrieval](retrieval.md) — the multi-path retrieval system that answers questions
+- [Ingestion Pipeline](/ingestion) — the 9-step pipeline from document to knowledge graph
+- [Extraction](/extraction) — the 2-step hybrid extraction process (NER + LLM)
+- [Graph Schema](/graph-schema) — how the knowledge graph is structured in FalkorDB
+- [Storage](/storage) — GraphStore, VectorStore, and EntityDeduplicator internals
+- [Retrieval](/retrieval) — the multi-path retrieval system that answers questions

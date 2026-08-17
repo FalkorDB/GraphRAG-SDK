@@ -1,47 +1,64 @@
-name: Deploy Docs
+name: Docs
+
+# On pull requests this only validates that every page compiles and every link
+# resolves. Once docs land on main it also notifies FalkorDB/docs, which hosts
+# the published site at https://docs.falkordb.com/graphrag and re-syncs this
+# directory when it receives the dispatch.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, staging]
+  pull_request:
     paths:
       - "docs/**"
-      - "mkdocs.yml"
-      - "README.md"
+      - ".github/workflows/docs.yml"
+      - "scripts/check_mdx.mjs"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+      - "scripts/check_mdx.mjs"
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
+          node-version: "24.19.0"
 
-      - run: pip install mkdocs-material
+      - name: Check MDX syntax
+        run: |
+          npm install --no-save @mdx-js/mdx@3.1.1 remark-frontmatter@5.0.0 remark-gfm@4.0.1
+          node scripts/check_mdx.mjs
 
-      - run: mkdocs build --strict
+      - name: Check internal links
+        working-directory: docs
+        run: |
+          npm install -g mint@4.2.804
+          mint broken-links
 
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site/
-
-  deploy:
-    needs: build
+  notify-docs-repo:
+    # Only after docs actually land on main, and only when validation passed —
+    # never publish a broken sync.
+    if: github.event_name != 'pull_request'
+    needs: validate
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Dispatch docs-updated to FalkorDB/docs
+        env:
+          # Fine-grained PAT with "Contents: write" on FalkorDB/docs, which is
+          # what the repository-dispatch endpoint requires.
+          GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          gh api /repos/FalkorDB/docs/dispatches \
+            --method POST \
+            --field event_type=docs-updated \
+            --field 'client_payload[repository]=${{ github.repository }}' \
+            --field 'client_payload[ref]=${{ github.ref_name }}' \
+            --field 'client_payload[sha]=${{ github.sha }}'
