@@ -174,6 +174,20 @@ class TestVectorStoreSearch:
         assert results[0]["score"] == 0.95
         cypher = mock_connection.query.call_args[0][0]
         assert "'Chunk'" in cypher
+        assert "ORDER BY score ASC" in cypher
+
+    async def test_search_entities_orders_by_distance(self, vector_store, mock_connection):
+        result_mock = MagicMock()
+        result_mock.result_set = [["entity-1", "Alice", "Engineer", 0.95]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        results = await vector_store.search_entities(query_vector=[0.1] * 8, top_k=5)
+
+        assert results[0]["id"] == "entity-1"
+        assert results[0]["score"] == 0.95
+        cypher = mock_connection.query.call_args[0][0]
+        assert "'__Entity__'" in cypher
+        assert "ORDER BY score ASC" in cypher
 
     async def test_search_chunks_empty(self, vector_store, mock_connection):
         result_mock = MagicMock()

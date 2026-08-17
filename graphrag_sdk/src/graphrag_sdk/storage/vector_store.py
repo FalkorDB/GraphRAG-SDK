@@ -359,7 +359,7 @@ class VectorStore:
             "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector)) "
             "YIELD node, score "
             "RETURN node.id AS id, node.text AS text, score "
-            "ORDER BY score DESC"
+            "ORDER BY score ASC"
         )
         try:
             result = await self._conn.query(
@@ -393,7 +393,7 @@ class VectorStore:
             "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector)) "
             "YIELD node, score "
             "RETURN node.id AS id, node.name AS name, node.description AS description, score "
-            "ORDER BY score DESC"
+            "ORDER BY score ASC"
         )
         try:
             result = await self._conn.query(
