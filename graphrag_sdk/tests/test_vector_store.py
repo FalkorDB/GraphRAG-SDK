@@ -164,29 +164,51 @@ class TestVectorStoreSearch:
     async def test_search_chunks(self, vector_store, mock_connection):
         result_mock = MagicMock()
         result_mock.result_set = [
-            ["chunk-1", "Hello world", 0.95],
+            ["chunk-self", "Hello world", 0.0],
             ["chunk-2", "Goodbye world", 0.80],
         ]
         mock_connection.query = AsyncMock(return_value=result_mock)
         results = await vector_store.search_chunks(query_vector=[0.1] * 8, top_k=5)
         assert len(results) == 2
-        assert results[0]["id"] == "chunk-1"
-        assert results[0]["score"] == 0.95
+        assert results[0]["id"] == "chunk-self"
+        assert results[0]["score"] == 0.0
+        assert results[1]["score"] == 0.80
         cypher = mock_connection.query.call_args[0][0]
         assert "'Chunk'" in cypher
         assert "ORDER BY score ASC" in cypher
 
     async def test_search_entities_orders_by_distance(self, vector_store, mock_connection):
         result_mock = MagicMock()
-        result_mock.result_set = [["entity-1", "Alice", "Engineer", 0.95]]
+        result_mock.result_set = [
+            ["entity-self", "Alice", "Engineer", 0.0],
+            ["entity-2", "Bob", "Researcher", 0.80],
+        ]
         mock_connection.query = AsyncMock(return_value=result_mock)
 
         results = await vector_store.search_entities(query_vector=[0.1] * 8, top_k=5)
 
-        assert results[0]["id"] == "entity-1"
-        assert results[0]["score"] == 0.95
+        assert results[0]["id"] == "entity-self"
+        assert results[0]["score"] == 0.0
+        assert results[1]["score"] == 0.80
         cypher = mock_connection.query.call_args[0][0]
         assert "'__Entity__'" in cypher
+        assert "ORDER BY score ASC" in cypher
+
+    async def test_search_relationships_orders_by_distance(self, vector_store, mock_connection):
+        result_mock = MagicMock()
+        result_mock.result_set = [
+            ["Alice", "WORKS_AT", "Acme", "self-match", 0.0],
+            ["Bob", "KNOWS", "Carol", "other-match", 0.80],
+        ]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
+
+        assert results[0]["fact"] == "self-match"
+        assert results[0]["score"] == 0.0
+        assert results[1]["score"] == 0.80
+        cypher = mock_connection.query.call_args[0][0]
+        assert "queryRelationships" in cypher
         assert "ORDER BY score ASC" in cypher
 
     async def test_search_chunks_empty(self, vector_store, mock_connection):

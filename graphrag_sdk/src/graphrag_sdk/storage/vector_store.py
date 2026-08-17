@@ -346,7 +346,7 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search on ``Chunk`` nodes.
+        """Vector distance search on ``Chunk`` nodes.
 
         Args:
             query_vector: The query embedding vector.
@@ -388,7 +388,11 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search on __Entity__ nodes."""
+        """Vector distance search on ``__Entity__`` nodes.
+
+        Returned scores are distances, so lower values indicate closer
+        matches.
+        """
         query = (
             "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector)) "
             "YIELD node, score "
@@ -423,7 +427,7 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 15,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search on RELATES edges.
+        """Vector distance search on RELATES edges.
 
         Uses the RELATES edge vector index for retrieval. Falls back to
         a Cypher-based cosine distance scan if edge vector queries
@@ -434,7 +438,8 @@ class VectorStore:
             top_k: Number of results to return.
 
         Returns:
-            List of dicts with src_name, type, tgt_name, fact, score.
+            List of dicts with src_name, type, tgt_name, fact, and distance
+            in the ``score`` field. Lower distances indicate closer matches.
         """
         # Try edge vector index query first (FalkorDB >= 4.2)
         query = (
@@ -443,7 +448,7 @@ class VectorStore:
             "YIELD relationship AS r, score "
             "RETURN r.src_name AS src, r.rel_type AS type, "
             "r.tgt_name AS tgt, r.fact AS fact, score "
-            "ORDER BY score DESC"
+            "ORDER BY score ASC"
         )
         try:
             result = await self._conn.query(
