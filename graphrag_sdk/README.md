@@ -164,7 +164,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Questions** | 2,010 across 20 novels |
 | **Medical ACC** | 76.87 (#1) |
 
-See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for methodology and reproduction.
+See the [benchmark page](https://docs.falkordb.com/graphrag/benchmark) for methodology and reproduction.
 
 ## Examples
 
@@ -178,13 +178,15 @@ See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/
 
 ## Documentation
 
-- [Getting Started](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/getting-started.md) -- Install to first query
-- [Architecture](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/architecture.md) -- Pipeline design and graph schema
-- [Configuration](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/configuration.md) -- Connection and provider reference
-- [Strategies](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/strategies.md) -- All ABCs and built-in implementations
-- [Providers](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/providers.md) -- LLM & embedder configuration
-- [Benchmark](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) -- Methodology and reproduction
-- [API Reference](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/api-reference.md) -- Full API documentation
+Full documentation: **<https://docs.falkordb.com/graphrag>**
+
+- [Getting Started](https://docs.falkordb.com/graphrag/getting-started) -- Install to first query
+- [Architecture](https://docs.falkordb.com/graphrag/architecture) -- Pipeline design and graph schema
+- [Configuration](https://docs.falkordb.com/graphrag/configuration) -- Connection and provider reference
+- [Strategies](https://docs.falkordb.com/graphrag/strategies) -- All ABCs and built-in implementations
+- [Providers](https://docs.falkordb.com/graphrag/providers) -- LLM & embedder configuration
+- [Benchmark](https://docs.falkordb.com/graphrag/benchmark) -- Methodology and reproduction
+- [API Reference](https://docs.falkordb.com/graphrag/api-reference) -- Full API documentation
 
 ## License
 
