@@ -147,6 +147,7 @@ class EntityDeduplicator:
                 if not await self._remap_entity_edges(dup["id"], survivor["id"]):
                     logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
                     continue
+                await self._carry_properties(dup["id"], survivor["id"])
                 try:
                     await self._graph.query_raw(
                         "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
@@ -237,6 +238,7 @@ class EntityDeduplicator:
 
                     if not await self._remap_entity_edges(dup_id, survivor_id):
                         continue
+                    await self._carry_properties(dup_id, survivor_id)
                     try:
                         await self._graph.query_raw(
                             "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
@@ -283,6 +285,51 @@ class EntityDeduplicator:
                 _MAX_PAGINATION_ITERATIONS,
             )
         return entities
+
+    # Written by the system, never carried across from a duplicate.
+    _NEVER_CARRY = frozenset({"id", "embedding"})
+
+    async def _carry_properties(self, dup_id: str, survivor_id: str) -> int:
+        """Move the duplicate's own properties onto the survivor before deleting it.
+
+        The remap migrates edges only, so ``DETACH DELETE`` would otherwise take
+        the duplicate's properties with it. That silently loses whatever only the
+        duplicate knew: the ``description`` entity vector search embeds, and every
+        typed value a structured source supplied.
+
+        keep_existing: a value already on the survivor always wins, so a merge
+        can never overwrite what the survivor knew.
+        """
+        try:
+            res = await self._graph.query_raw(
+                "MATCH (k:__Entity__ {id: $survivor_id}), (d:__Entity__ {id: $dup_id}) "
+                "RETURN properties(k), properties(d)",
+                {"survivor_id": survivor_id, "dup_id": dup_id},
+            )
+        except Exception as exc:
+            logger.warning(f"Could not read properties for {dup_id} -> {survivor_id}: {exc}")
+            return 0
+        if not res.result_set:
+            return 0
+        keep_props, dup_props = res.result_set[0][0] or {}, res.result_set[0][1] or {}
+        carry = {
+            key: value
+            for key, value in dup_props.items()
+            if key not in self._NEVER_CARRY
+            and value is not None
+            and keep_props.get(key) in (None, "", [])
+        }
+        if not carry:
+            return 0
+        try:
+            await self._graph.query_raw(
+                "MATCH (k:__Entity__ {id: $survivor_id}) SET k += $carry",
+                {"survivor_id": survivor_id, "carry": carry},
+            )
+        except Exception as exc:
+            logger.warning(f"Property carry failed for {dup_id} -> {survivor_id}: {exc}")
+            return 0
+        return len(carry)
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
         """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.
