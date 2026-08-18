@@ -81,6 +81,34 @@ _REMAP_QUERIES = [
 ]
 
 
+def _survivor_rank(entity: dict) -> tuple[int, int, int]:
+    """Rank candidates so the most reproducible identity survives a merge.
+
+    Ordered by:
+
+    1. **Derived from a declared key.** A structured node's id comes from a key
+       the mapping declared, so the next ingest of that source recomputes the
+       same id. A node extracted from prose is keyed on a surface form the model
+       happened to produce. If the prose node survives, the keyed id is gone, and
+       re-ingesting the table recreates it as a *second* node: measured as two
+       ``E-1`` people, one titled "Engineer" and one "engineer". Keeping the
+       reproducible id is what makes re-ingest idempotent after resolution.
+    2. **Real over placeholder.** A stub was created by a foreign key and knows
+       only an id and a name.
+    3. **Longest description**, the original rule, which still decides between
+       two nodes of the same provenance.
+
+    ``is_stub`` is the marker because only a mapped source writes it: ``None``
+    means the node came from extraction.
+    """
+    is_stub = entity.get("is_stub")
+    return (
+        0 if is_stub is None else 1,
+        0 if is_stub else 1,
+        len(entity.get("description") or ""),
+    )
+
+
 class EntityDeduplicator:
     """Two-phase entity deduplication engine.
 
@@ -138,8 +166,7 @@ class EntityDeduplicator:
             if len(group) < 2:
                 continue
 
-            # Survivor: longest description
-            group.sort(key=lambda e: len(e["description"]), reverse=True)
+            group.sort(key=_survivor_rank, reverse=True)
             survivor = group[0]
             duplicates = group[1:]
 
@@ -170,11 +197,13 @@ class EntityDeduplicator:
         all_ids: list[str] = []
         all_names: list[str] = []
         all_labels: list[str] = []
+        rank_by_id: dict[str, tuple[int, int, int]] = {}
         for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, "
-                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label "
+                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+                "e.is_stub AS is_stub, e.description AS desc "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -184,6 +213,12 @@ class EntityDeduplicator:
                 all_ids.append(row[0])
                 all_names.append(row[1] if len(row) > 1 and row[1] else str(row[0]))
                 all_labels.append(row[2] if len(row) > 2 and row[2] else "")
+                rank_by_id[row[0]] = _survivor_rank(
+                    {
+                        "is_stub": row[3] if len(row) > 3 else None,
+                        "description": row[4] if len(row) > 4 else "",
+                    }
+                )
             offset += batch_size
         else:
             logger.error(
@@ -234,6 +269,10 @@ class EntityDeduplicator:
                 ):
                     survivor_id = v_ids[gi]
                     dup_id = v_ids[gj]
+                    # Array order is arbitrary here, so apply the same rule as
+                    # the exact phase rather than keeping whichever came first.
+                    if rank_by_id.get(dup_id, (0, 0, 0)) > rank_by_id.get(survivor_id, (0, 0, 0)):
+                        survivor_id, dup_id = dup_id, survivor_id
                     merged_set.add(dup_id)
 
                     if not await self._remap_entity_edges(dup_id, survivor_id):
@@ -263,7 +302,8 @@ class EntityDeduplicator:
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, e.description AS desc, "
-                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label "
+                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+                "e.is_stub AS is_stub "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -276,6 +316,9 @@ class EntityDeduplicator:
                         "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
                         "description": row[2] if len(row) > 2 and row[2] else "",
                         "label": row[3] if len(row) > 3 and row[3] else "",
+                        # Only a mapped source writes is_stub, so its presence
+                        # marks an id derived from a declared key.
+                        "is_stub": row[4] if len(row) > 4 else None,
                     }
                 )
             offset += batch_size

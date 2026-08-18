@@ -347,3 +347,44 @@ class TestCrossLabelMerge:
         assert count == 1
         names = {n.properties["name"] for n in deduped}
         assert names == {"Alice", "Bob"}
+
+
+class TestSurvivorRank:
+    """Which of two duplicates survives a merge.
+
+    The rule matters beyond aesthetics: the survivor's id is the one that stays
+    in the graph, and a structured id is recomputed by every later ingest of the
+    same table. Keeping the other one silently breaks re-ingest.
+    """
+
+    @staticmethod
+    def _rank(**entity):
+        from graphrag_sdk.storage.deduplicator import _survivor_rank
+
+        return _survivor_rank(entity)
+
+    def test_a_keyed_node_outranks_one_extracted_from_prose(self):
+        keyed = self._rank(is_stub=False, description="")
+        prose = self._rank(is_stub=None, description="a much longer description")
+        assert keyed > prose
+
+    def test_a_real_node_outranks_a_placeholder(self):
+        real = self._rank(is_stub=False, description="")
+        stub = self._rank(is_stub=True, description="")
+        assert real > stub
+
+    def test_a_placeholder_still_outranks_a_prose_node(self):
+        """A stub's id also comes from a declared key, so it is reproducible."""
+        stub = self._rank(is_stub=True, description="")
+        prose = self._rank(is_stub=None, description="long description here")
+        assert stub > prose
+
+    def test_between_two_prose_nodes_the_longest_description_wins(self):
+        """The original rule, unchanged when no structured node is involved."""
+        rich = self._rank(is_stub=None, description="a long, detailed description")
+        thin = self._rank(is_stub=None, description="short")
+        assert rich > thin
+
+    def test_a_missing_description_is_treated_as_empty(self):
+        """An entity with no description at all must still rank, not raise."""
+        assert self._rank(is_stub=None) == self._rank(is_stub=None, description="")
