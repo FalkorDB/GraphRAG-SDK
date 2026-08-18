@@ -340,6 +340,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             source_passages,
             q_type_hint,
             cypher_results=cypher_facts if cypher_facts else None,
+            cypher_question=query if cypher_facts else "",
         )
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:
