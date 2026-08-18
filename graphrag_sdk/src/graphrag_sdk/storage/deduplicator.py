@@ -26,11 +26,36 @@ _MAX_PAGINATION_ITERATIONS = 10_000
 # survivor would look unrooted and could be wrongly deleted (or, more
 # commonly, wrongly retained because their list shrank to the dup's
 # contribution alone).
+#
+# Two properties of these queries are load-bearing and easy to undo by
+# "simplifying" them:
+#
+# 1. The survivor is bound by its own ``MATCH`` before the ``MERGE``.
+#    Writing the survivor inline — ``MERGE (s:__Entity__ {id: $survivor_id})
+#    -[nr:RELATES]->(b)`` — leaves ``s`` unbound, and MERGE creates the
+#    *entire* pattern when it fails to match. That silently forks the
+#    survivor into a second, type-label-less ``__Entity__`` node carrying
+#    the same id: the ghost takes the remapped edges while the real
+#    survivor is left with none. There is no uniqueness constraint on
+#    ``__Entity__.id`` to catch it.
+#
+# 2. The RELATES ``MERGE`` is keyed on ``rel_type``. Without that key it
+#    matches *any* RELATES between the pair, so a survivor's ``WORKS_AT``
+#    and a duplicate's ``FOUNDED`` collapse onto one edge — ``SET nr +=
+#    properties(r)`` then overwrites ``rel_type`` and ``fact``, destroying
+#    one fact and leaving its ``source_chunk_ids`` attached to the other,
+#    so a chunk vouches for a fact it never asserted.
+#
+# ``coalesce(r.rel_type, '')`` keeps the key non-null: FalkorDB rejects a
+# MERGE keyed on a null property outright ("Cannot merge node using null
+# property value"), which would abort the whole remap for any RELATES edge
+# written without a ``rel_type`` — leaving the duplicate un-merged.
 _REMAP_QUERIES = [
     # Outgoing RELATES from duplicate.
     "MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__) "
     "WHERE b.id <> $survivor_id "
-    "MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b) "
+    "MATCH (s:__Entity__ {id: $survivor_id}) "
+    "MERGE (s)-[nr:RELATES {rel_type: coalesce(r.rel_type, '')}]->(b) "
     "WITH r, nr, "
     "     coalesce(nr.source_chunk_ids, []) AS old, "
     "     coalesce(r.source_chunk_ids, []) AS contrib "
@@ -40,7 +65,8 @@ _REMAP_QUERIES = [
     # Incoming RELATES to duplicate.
     "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
     "WHERE a.id <> $survivor_id "
-    "MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id}) "
+    "MATCH (s:__Entity__ {id: $survivor_id}) "
+    "MERGE (a)-[nr:RELATES {rel_type: coalesce(r.rel_type, '')}]->(s) "
     "WITH r, nr, "
     "     coalesce(nr.source_chunk_ids, []) AS old, "
     "     coalesce(r.source_chunk_ids, []) AS contrib "
@@ -49,7 +75,8 @@ _REMAP_QUERIES = [
     "DELETE r",
     # MENTIONED_IN edges — no source_chunk_ids on these, plain remap.
     "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "
-    "MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c) "
+    "MATCH (s:__Entity__ {id: $survivor_id}) "
+    "MERGE (s)-[:MENTIONED_IN]->(c) "
     "DELETE r",
 ]
 

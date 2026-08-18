@@ -129,6 +129,74 @@ class TestExactMatchResolution:
             if rel.type == "LINK":
                 assert rel.end_node_id == survivor_id
 
+    async def test_distinct_facts_between_same_pair_are_kept(self, ctx):
+        """Two RELATES with different ``rel_type`` are two facts, not one.
+
+        Every data edge is written with ``type == "RELATES"`` and its
+        semantic type in ``properties["rel_type"]``. Keying dedup on
+        ``(start, rel.type, end)`` therefore reads as "one edge per entity
+        pair" and silently drops every fact after the first — here,
+        ``FOUNDED`` disappeared while ``WORKS_AT`` survived, in Python,
+        before the write ever reached the graph.
+        """
+        data = GraphData(
+            nodes=[
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "FOUNDED", "fact": "Alice founded Acme"},
+                ),
+            ],
+        )
+        resolver = ExactMatchResolution(resolve_property="name")
+        result = await resolver.resolve(data, ctx)
+        kept = sorted(r.properties["rel_type"] for r in result.relationships)
+        assert kept == ["FOUNDED", "WORKS_AT"], (
+            f"both facts must survive resolution — got {kept}. The dedup key "
+            "must include properties['rel_type'], since rel.type is always "
+            "'RELATES' for data edges."
+        )
+
+    async def test_identical_facts_between_same_pair_still_dedupe(self, ctx):
+        """The same fact twice is still one edge — the key got finer, not absent."""
+        data = GraphData(
+            nodes=[
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+            ],
+        )
+        resolver = ExactMatchResolution(resolve_property="name")
+        result = await resolver.resolve(data, ctx)
+        assert len(result.relationships) == 1, (
+            "two identical facts must still collapse to one edge — adding "
+            "rel_type to the key must not disable dedup"
+        )
+
 
 class TestCrossLabelMerge:
     """Bug 2: exact_match_merge with cross_label_merge=True groups by name

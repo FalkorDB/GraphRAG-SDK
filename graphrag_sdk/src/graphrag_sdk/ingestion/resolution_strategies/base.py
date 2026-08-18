@@ -302,13 +302,27 @@ def remap_relationships(
     relationships: list[GraphRelationship],
     id_remap: dict[str, str],
 ) -> list[GraphRelationship]:
-    """Remap relationship endpoints using id_remap and deduplicate."""
+    """Remap relationship endpoints using id_remap and deduplicate.
+
+    The dedup key includes ``properties["rel_type"]``, not just
+    ``rel.type``. Every data edge is written with ``rel.type ==
+    "RELATES"`` and its *semantic* type in the ``rel_type`` property
+    (see ``GraphExtraction._relations_to_relationships``), so a key of
+    ``(start, rel.type, end)`` reads as "one edge per entity pair" and
+    silently discards every fact after the first: ``Alice WORKS_AT
+    Acme`` and ``Alice FOUNDED Acme`` collapse, and the second is
+    dropped here — in Python, before anything reaches the graph.
+
+    Structural edges (``MENTIONED_IN``, ``PART_OF``, ``NEXT_CHUNK``)
+    carry no ``rel_type``; they fall back to ``""`` and keep their
+    previous one-edge-per-pair behaviour.
+    """
     deduplicated_rels: list[GraphRelationship] = []
-    seen_rels: set[tuple[str, str, str]] = set()
+    seen_rels: set[tuple[str, str, str, str]] = set()
     for rel in relationships:
         start = id_remap.get(rel.start_node_id, rel.start_node_id)
         end = id_remap.get(rel.end_node_id, rel.end_node_id)
-        rel_key = (start, rel.type, end)
+        rel_key = (start, rel.type, rel.properties.get("rel_type", ""), end)
         if rel_key not in seen_rels:
             seen_rels.add(rel_key)
             deduplicated_rels.append(

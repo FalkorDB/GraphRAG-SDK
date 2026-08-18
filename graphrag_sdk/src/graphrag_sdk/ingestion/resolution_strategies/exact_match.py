@@ -10,10 +10,12 @@ from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     GraphData,
     GraphNode,
-    GraphRelationship,
     ResolutionResult,
 )
-from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+from graphrag_sdk.ingestion.resolution_strategies.base import (
+    ResolutionStrategy,
+    remap_relationships,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,25 +67,11 @@ class ExactMatchResolution(ResolutionStrategy):
                 id_remap[duplicate.id] = survivor.id
                 merged_count += 1
 
-        # Remap relationship endpoints
-        deduplicated_rels: list[GraphRelationship] = []
-        seen_rels: set[tuple[str, str, str]] = set()
-
-        for rel in graph_data.relationships:
-            start = id_remap.get(rel.start_node_id, rel.start_node_id)
-            end = id_remap.get(rel.end_node_id, rel.end_node_id)
-            rel_key = (start, rel.type, end)
-
-            if rel_key not in seen_rels:
-                seen_rels.add(rel_key)
-                deduplicated_rels.append(
-                    GraphRelationship(
-                        start_node_id=start,
-                        end_node_id=end,
-                        type=rel.type,
-                        properties=rel.properties,
-                    )
-                )
+        # Remap relationship endpoints. This was an inline copy of
+        # ``remap_relationships``; the two drifted out of sync on the
+        # dedup key, so both carried the same fact-collapsing bug and
+        # each had to be found separately. Call the shared helper.
+        deduplicated_rels = remap_relationships(graph_data.relationships, id_remap)
 
         ctx.log(
             f"Resolution complete: {len(deduplicated_nodes)} nodes "

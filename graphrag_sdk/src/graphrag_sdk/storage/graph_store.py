@@ -213,11 +213,20 @@ class GraphStore:
                 # docs still support it). Special-case RELATES to UNION
                 # the lists — same idiom as the deduplicator remap path.
                 if rel_type == "RELATES":
+                    # The MERGE is keyed on ``rel_type`` as well as the pair.
+                    # Without it, one edge exists per (start, end) and a second
+                    # fact between the same two entities overwrites the first:
+                    # ``Alice WORKS_AT Acme`` then ``Alice FOUNDED Acme`` ends as
+                    # a single edge, one fact destroyed and its source chunk
+                    # attached to the surviving fact. ``coalesce(..., '')`` keeps
+                    # the merge key non-null — FalkorDB rejects a MERGE keyed on
+                    # a null property outright.
                     query = (
                         f"UNWIND $batch AS item "
                         f"MATCH (a:`{safe_src}` {{id: item.start_id}}), "
                         f"(b:`{safe_tgt}` {{id: item.end_id}}) "
-                        f"MERGE (a)-[r:`{safe_rel_type}`]->(b) "
+                        f"MERGE (a)-[r:`{safe_rel_type}` "
+                        f"{{rel_type: coalesce(item.properties.rel_type, '')}}]->(b) "
                         f"WITH r, item, "
                         f"     coalesce(r.source_chunk_ids, []) AS old, "
                         f"     coalesce(item.properties.source_chunk_ids, []) AS contrib "
@@ -257,7 +266,8 @@ class GraphStore:
                             q = (
                                 f"MATCH (a:`{safe_fb_src}` {{id: $start_id}}), "
                                 f"(b:`{safe_fb_tgt}` {{id: $end_id}}) "
-                                f"MERGE (a)-[r:`{safe_fb_rel}`]->(b) "
+                                f"MERGE (a)-[r:`{safe_fb_rel}` "
+                                f"{{rel_type: coalesce($properties.rel_type, '')}}]->(b) "
                                 f"WITH r, $properties AS props, "
                                 f"     coalesce(r.source_chunk_ids, []) AS old, "
                                 f"     coalesce($properties.source_chunk_ids, []) AS contrib "
