@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed vector-search ordering so chunk, entity, and relationship searches use
+  similarity scores, with higher values indicating closer matches.
+
 ### Changed
 
 - Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
