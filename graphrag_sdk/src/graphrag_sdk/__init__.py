@@ -99,6 +99,19 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    CsvRecordLoader,
+    RecordBatch,
+    RecordLoaderStrategy,
+)
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    EdgeMapping,
+    MappingError,
+    NodeMapping,
+    RecordMapping,
+    Table,
+)
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
@@ -213,6 +226,15 @@ __all__ = [
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    "Column",
+    "CsvRecordLoader",
+    "EdgeMapping",
+    "MappingError",
+    "NodeMapping",
+    "RecordBatch",
+    "RecordLoaderStrategy",
+    "RecordMapping",
+    "Table",
 ]
 
 

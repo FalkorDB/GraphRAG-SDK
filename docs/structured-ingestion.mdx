@@ -1,0 +1,229 @@
+---
+title: "Structured Ingestion"
+description: "Ingest CSVs and other tabular sources by declaring a mapping, so rows become typed entities in the same graph as your documents."
+---
+
+The extraction pipeline is built for prose: it chunks text, asks a model what the entities are, and describes them. Send a CSV through it and every cell arrives as a described entity, which loses the two properties a table has and a document does not — a stable key per row, and a known type per column. `age` becomes the string `"34"` if it survives at all, so nothing can be averaged, filtered numerically, or joined on a key.
+
+Structured ingestion takes the other route. You declare what the columns mean, and the SDK writes the graph deterministically, with no model in the loop:
+
+```python
+from graphrag_sdk import Column, Table
+
+ORGS = Table(
+    "Organization",
+    key="org_id",
+    name="org_name",
+    hq_country="hq_country",
+    employee_count=Column("employee_count", "INTEGER"),
+)
+
+await rag.ingest("orgs.csv", mapping=ORGS)
+```
+
+The same input always produces the same graph, because identity comes from a declared key and every type is declared rather than inferred.
+
+---
+
+## Mental Model
+
+A structured source produces exactly the same shapes as a document, so both halves of a graph are queryable the same way:
+
+| Label       | One per                | Notes                                                                 |
+| ----------- | ---------------------- | --------------------------------------------------------------------- |
+| `Document`  | source file            | Addressed by `document_id`, which defaults to the file name.          |
+| `Chunk`     | **record**             | `kind: "record"`, plus `record_key` and every cell of the row.        |
+| `__Entity__`| mapped node            | Typed properties from the declared columns.                           |
+
+A record is a chunk. That is the whole trick: a row becomes retrievable and traceable to its source in exactly the way a paragraph is, while the typed projection lives on the entity where aggregation reads it.
+
+<Note>
+Records are **not** chained with `NEXT_CHUNK`. Rows have no reading order, and text-to-Cypher is told `NEXT_CHUNK` means "the next sequential chunk", so chaining unrelated rows would assert a sequence that does not exist.
+</Note>
+
+---
+
+## Declaring a Mapping
+
+### `Table()` — one record is one entity
+
+The common case. Every keyword beyond `key` and `name` is a property; a bare string means `STRING`.
+
+```python
+ORGS = Table(
+    "Organization",     # entity label
+    key="org_id",       # the column that identifies the entity
+    name="org_name",    # the display name
+    hq_country="hq_country",
+    employee_count=Column("employee_count", "INTEGER"),
+)
+```
+
+### `RecordMapping()` — several entities and the edges between them
+
+An HR export is a person, an organization, and the employment between them:
+
+```python
+from graphrag_sdk import EdgeMapping, NodeMapping, RecordMapping
+
+EMPLOYEES = RecordMapping(
+    nodes=[
+        NodeMapping(
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={
+                "age": Column("age", "INTEGER"),
+                "title": Column("job_title"),
+                "start_date": Column("start_date", "DATE"),
+            },
+        ),
+        NodeMapping(label="Organization", key="org_id", reference=True),
+    ],
+    edges=[EdgeMapping(type="WORKS_AT", source="Person", target="Organization")],
+)
+```
+
+### What the fields mean
+
+| Field       | Meaning                                                                                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | The column that identifies the entity. Its value becomes the node id, so re-ingesting a corrected export updates in place instead of duplicating.        |
+| `name`      | The display name column. A source holding both `key` and `name` also publishes `alias_ids` — see [Bridging](#bridging-the-two-halves).                   |
+| `properties`| `{property_name: Column}`. Declared types are enforced at ingest, so a bad cell fails the ingest instead of writing a wrong type.                        |
+| `reference` | `True` when the record only points at the entity by key, as a foreign key does. Written **ON CREATE** only, so a pointer can never overwrite real data.  |
+| `alias`     | Needed when one record produces two nodes of the same label, so edges can address them apart.                                                            |
+
+Column types: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`.
+
+<Warning>
+`name` is not a mappable property — it has its own `name=` slot. Declaring it as an ontology attribute lets the extractor answer it with a null for prose mentions and blank out the display name of everything it extracts. The same applies to `id`, `type`, `description`, `source_chunk_ids`, `spans`, `embedding`, `alias_ids`, and `is_stub`, all of which the SDK writes itself.
+</Warning>
+
+### Foreign keys
+
+A row in `employees.csv` says the organization exists and gives its key. It does not know the organization's name or headcount. `reference=True` writes that honestly:
+
+- The node is created **ON CREATE only** — a pointer never overwrites what the owning source supplied.
+- It carries its key, so it is joinable by the same column the mapping declared.
+- It is flagged `is_stub: true` until the source that owns the entity arrives and fills it in.
+
+Order does not matter. Whichever source arrives first creates the node.
+
+---
+
+## Validation
+
+The mapping is checked against the source's real header **before anything is written**, so a mapping that does not fit raises `MappingError` and leaves the graph untouched:
+
+```python
+problems = EMPLOYEES.validate_against(["employee_id", "full_name"])
+# ["node 'Person': property 'age' reads missing column 'age'", ...]
+```
+
+Pass `strict=True` to also reject a source with a column the mapping never reads. It is off by default because ignoring a column is a legitimate choice; turn it on when a model authored the mapping, where a dropped column is usually a mistake.
+
+---
+
+## The Ontology
+
+A mapping projects into the ontology, and this is what makes the columns queryable:
+
+```python
+ontology = await rag.get_ontology()
+# Person: employee_id:STRING, age:INTEGER, title:STRING, start_date:DATE
+# WORKS_AT: [('Person', 'Organization')]
+```
+
+Without it, generated Cypher cannot see that `age` is a number and falls back to guessing that everything is a described entity. With it, aggregation questions become answerable.
+
+Registration is **additive**. A label a previous source already declared is extended through the ontology-evolution primitives rather than redeclared, so `employees.csv` can declare `Organization` by key alone and `orgs.csv` can later add `employee_count` to the same label. A contradiction — the same property declared with two types — still raises.
+
+---
+
+## Bridging the Two Halves
+
+Documents and tables describing the same thing must land on one node, or neither half can answer a question that needs the other's facts.
+
+The bridge is exact string equality on computed ids, not similarity. A source that carries **both** a key and a name publishes the id an extractor would independently compute for the same thing:
+
+```
+employees.csv row  →  id: e-1__person          alias_ids: [alice_smith__person]
+board_note.txt     →  id: alice_smith__person
+```
+
+`finalize()` then folds them together with the ordinary resolver and carries the table's typed columns onto the survivor:
+
+```python
+await rag.ingest("employees.csv", mapping=EMPLOYEES)
+await rag.ingest(text=BOARD_NOTE, document_id="board_note.txt")
+await rag.finalize()
+```
+
+The survivor is the node whose id came from a declared key, because that id is reproducible: the next ingest of the same table recomputes it. Keeping the prose-derived id instead would make re-ingest create a second node for the same row.
+
+<Note>
+Variant names still do not bridge. `A. Smith` and `Alice Smith` compute different ids, so they remain separate nodes. Exact equality is a deliberate floor: it never merges two different people, and anything fuzzier belongs in the semantic resolution pass.
+</Note>
+
+---
+
+## Retrieval
+
+Aggregation over typed columns needs the text-to-Cypher path, which needs the ontology the mapping declared:
+
+```python
+from graphrag_sdk import MultiPathRetrieval
+
+strategy = MultiPathRetrieval(
+    graph_store=rag._graph_store,
+    vector_store=rag._vector_store,
+    embedder=rag.embedder,
+    llm=rag.llm,
+    enable_cypher=True,
+    ontology=await rag.get_ontology(),
+)
+
+answer = await rag.completion(
+    "What is the average age of employees at Acme Corp?", strategy=strategy
+)
+```
+
+Questions that need both halves work through the same call, because by this point there is only one graph:
+
+```
+Q: Who works at the company that reported the revenue miss, and how old are they?
+A: Alice Smith, who is 34, and Bob Jones, who is 45, work at Acme Corp.
+```
+
+The employment edges and ages come from the CSV. The revenue miss comes from the note. The answer exists only because they share one `Acme Corp` node.
+
+---
+
+## Custom Sources
+
+`CsvRecordLoader` handles delimited text, sniffing comma, semicolon, tab, and pipe. Anything else is a `RecordLoaderStrategy`:
+
+```python
+from graphrag_sdk import RecordBatch, RecordLoaderStrategy
+
+class ParquetRecordLoader(RecordLoaderStrategy):
+    async def load_records(self, source: str, ctx) -> RecordBatch:
+        return RecordBatch(
+            open_records=lambda: iter(read_parquet(source)),
+            columns=["a", "b"],
+            document_info=DocumentInfo(uid=source, path=source),
+        )
+
+await rag.ingest("data.parquet", mapping=MAPPING, record_loader=ParquetRecordLoader())
+```
+
+<Warning>
+`open_records` is a **factory**, not an iterable, and that is load bearing. The write path walks the records twice, once to build a chunk per record and once to apply the mapping. A one-shot iterator is silently empty the second time, which ingests zero rows and raises nothing. A loader that genuinely cannot reopen its source should spool once and close over the buffer, so the memory cost sits where it is visible.
+</Warning>
+
+---
+
+## Full Example
+
+`examples/11_structured_ingestion.py` runs the whole path: two CSVs, a document, resolution, the declared ontology, all three classes of question, and a re-ingest.

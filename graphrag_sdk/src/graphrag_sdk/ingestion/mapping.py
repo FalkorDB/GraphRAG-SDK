@@ -18,9 +18,20 @@ from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
 COLUMN_TYPES: frozenset[str] = frozenset({"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"})
 
 # Keys the SDK writes on every entity node. A mapping that declared one of these
-# as a property name would shadow a system value, so they are rejected.
+# as a property name would shadow a system value, so they are rejected. ``name``
+# is here because it has its own slot: use ``NodeMapping(name="full_name")``.
 RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
-    {"id", "type", "description", "source_chunk_ids", "spans", "embedding", "alias_ids"}
+    {
+        "id",
+        "name",
+        "type",
+        "description",
+        "source_chunk_ids",
+        "spans",
+        "embedding",
+        "alias_ids",
+        "is_stub",
+    }
 )
 
 _TRUE = frozenset({"1", "true", "t", "yes", "y", "on"})
@@ -354,8 +365,14 @@ class RecordMapping:
         entities: list[Entity] = []
         for node in self.nodes:
             attributes: list[Attribute] = []
-            if node.name:
-                attributes.append(Attribute(name="name", type="STRING", description="display name"))
+            # ``name`` is deliberately NOT declared. The extraction path merges
+            # ontology-declared attributes over the system ones it just built
+            # (see GraphExtraction._entities_to_nodes), so declaring an
+            # attribute named ``name`` invites the extractor to answer it with a
+            # null for every prose mention and blank out the real display name.
+            # Every entity carries ``name`` already; declaring it adds nothing
+            # and costs the label its names.
+            #
             # The key survives as a queryable property in its own right, so a
             # later source can still join on it.
             attributes.append(
@@ -369,6 +386,9 @@ class RecordMapping:
                         description=col.description or f"from column {col.name}",
                     )
                 )
+            # A key column may itself be called "name" (or another system key),
+            # which would reintroduce the shadowing above through the back door.
+            attributes = [a for a in attributes if a.name not in RESERVED_PROPERTY_NAMES]
             entities.append(
                 Entity(
                     label=node.label,

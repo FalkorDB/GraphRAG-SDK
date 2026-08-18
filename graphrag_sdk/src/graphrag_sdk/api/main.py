@@ -71,10 +71,19 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    CsvRecordLoader,
+    RecordLoaderStrategy,
+)
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+from graphrag_sdk.ingestion.mapping import RecordMapping
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+from graphrag_sdk.ingestion.structured_pipeline import (
+    StructuredIngestionPipeline,
+    StructuredIngestionResult,
+)
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
@@ -1341,13 +1350,16 @@ class GraphRAG:
         *,
         text: str | None = None,
         document_id: str | None = None,
+        mapping: RecordMapping | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict_mapping: bool = False,
         loader: LoaderStrategy | None = None,
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
-    ) -> IngestionResult | list[IngestionResult | Exception]:
+    ) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult:
         """Build a knowledge graph from one or more sources.
 
         Two input modes, mutually exclusive:
@@ -1399,6 +1411,38 @@ class GraphRAG:
             callers must inspect each entry. Failures are also logged at
             WARNING.
         """
+        # ── Structured mode ──
+        # A mapping means the source is records, not prose. Routed before the
+        # prose validation below because the argument rules differ: no chunker
+        # and no extractor apply, since no model is called.
+        if mapping is not None:
+            if text is not None:
+                raise ValueError(
+                    "Cannot pass both 'mapping' and 'text'. A mapping describes a "
+                    "structured source, so pass 'source' as a path to it."
+                )
+            if isinstance(source, list):
+                raise ValueError(
+                    "'mapping' takes a single source. Each structured source has "
+                    "its own mapping, so ingest them one at a time."
+                )
+            if source is None:
+                raise ValueError("Structured ingest needs 'source' (a path to the records)")
+            for name, value in (("chunker", chunker), ("extractor", extractor)):
+                if value is not None:
+                    raise ValueError(
+                        f"'{name}' does not apply to a structured source: records are "
+                        "not chunked by a strategy and no model extracts from them."
+                    )
+            return await self._ingest_structured(
+                source,
+                mapping,
+                document_id=document_id,
+                record_loader=record_loader,
+                strict=strict_mapping,
+                ctx=ctx,
+            )
+
         # ── Validate input mode (cheap, no I/O) ──
         # Run argument-shape checks before the embedder/DB probe so a
         # caller passing bad arguments (e.g., neither source nor text)
@@ -1508,6 +1552,121 @@ class GraphRAG:
         # ingests in one session collide with ~12% probability. 64 bits
         # pushes that to roughly 2 in 10^11 for the same volume.
         return f"text-{uuid4().hex[:16]}"
+
+    async def _register_structured_ontology(self, incoming: Ontology) -> Ontology:
+        """Merge a mapping's ontology into the persisted one, additively.
+
+        ``register()`` deliberately refuses to add properties or patterns to a
+        label that already exists, because for the extraction path that would
+        mean an ingest silently reshaping the schema. A structured source has to
+        do exactly that though: prose typically creates ``Organization`` first
+        with only a name and a description, and a CSV then contributes
+        ``employee_count`` as an INTEGER. That is additive, not a modification.
+
+        So new labels and relations go through ``register()`` wholesale, and
+        anything that already exists is extended through the ontology-evolution
+        primitives, which are idempotent and raise on a type contradiction
+        rather than silently retyping a property.
+        """
+        existing = await self._ontology_store.load()
+        known_entity_props = {
+            entity.label: {prop.name for prop in entity.properties} for entity in existing.entities
+        }
+        known_relations = {relation.label: relation for relation in existing.relations}
+
+        # Pass 1: declare what is genuinely new. An existing label is included
+        # with no properties, which the store reads as "use the persisted
+        # definition" and which relation patterns can still point at.
+        declare_entities = [
+            entity
+            if entity.label not in known_entity_props
+            else Entity(label=entity.label, description=entity.description, properties=[])
+            for entity in incoming.entities
+        ]
+        declare_relations = [
+            relation for relation in incoming.relations if relation.label not in known_relations
+        ]
+        if declare_entities or declare_relations:
+            await self._ontology_store.register(
+                Ontology(entities=declare_entities, relations=declare_relations)
+            )
+
+        # Pass 2: extend what already existed.
+        for entity in incoming.entities:
+            already = known_entity_props.get(entity.label)
+            if already is None:
+                continue
+            for prop in entity.properties:
+                if prop.name not in already:
+                    await self._ontology_store.add_entity_property(entity.label, prop)
+
+        for relation in incoming.relations:
+            prior = known_relations.get(relation.label)
+            if prior is None:
+                continue
+            prior_patterns = {tuple(pattern) for pattern in prior.patterns}
+            for pattern in relation.patterns:
+                if tuple(pattern) not in prior_patterns:
+                    await self._ontology_store.add_relation_pattern_node(
+                        relation.label,
+                        pattern[0],
+                        pattern[1],
+                        description=relation.description,
+                    )
+            prior_props = {prop.name for prop in prior.properties}
+            for prop in relation.properties:
+                if prop.name not in prior_props:
+                    await self._ontology_store.add_relation_property(relation.label, prop)
+
+        return await self._ontology_store.load()
+
+    async def _ingest_structured(
+        self,
+        source: str,
+        mapping: RecordMapping,
+        *,
+        document_id: str | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict: bool = False,
+        ctx: Context | None = None,
+    ) -> StructuredIngestionResult:
+        """Ingest a structured source through the deterministic write path.
+
+        Registers the mapping's ontology first. That is what makes the source
+        queryable: the ontology store is what retrieval reads, so declaring that
+        ``Person.age`` is an INTEGER is what lets text-to-Cypher generate an
+        aggregate over it instead of guessing that everything is a described
+        entity with a description to parse.
+
+        Registration happens before any write so that a mapping which
+        contradicts the existing ontology fails before touching the graph.
+        """
+        ctx = ctx or Context()
+        await self._validate_graph_config()
+        await self._ensure_ontology_initialized()
+
+        # Declare before writing, so a mapping that contradicts the existing
+        # ontology is rejected while the graph is still clean.
+        self._global_ontology = await self._register_structured_ontology(mapping.to_ontology())
+
+        pipeline = StructuredIngestionPipeline(
+            loader=record_loader or CsvRecordLoader(document_id=document_id),
+            graph_store=self._graph_store,
+            vector_store=self._vector_store,
+        )
+        result = await pipeline.run(
+            source,
+            mapping,
+            ctx,
+            document_id=document_id,
+            strict=strict,
+        )
+        ctx_log = getattr(ctx, "log", lambda _m: None)
+        ctx_log(
+            f"Structured ingest complete for {result.document_id}. "
+            "Call finalize() once all sources are in to resolve entities across them."
+        )
+        return result
 
     async def _ingest_single(
         self,

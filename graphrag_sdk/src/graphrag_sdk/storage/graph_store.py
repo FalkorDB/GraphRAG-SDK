@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import unicodedata
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, NamedTuple
 
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
@@ -21,6 +22,27 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
 )
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
+
+
+class ReferenceNode(NamedTuple):
+    """An entity a record points at without describing.
+
+    A foreign key asserts that something exists and gives its key. It does not
+    know the thing's name or any of its attributes, so everything here is applied
+    ON CREATE only: whichever source arrives first creates the node, and the
+    source that owns the entity fills in the rest.
+
+    ``properties`` carries the key column, so the placeholder is queryable and
+    joinable by the same key the mapping declared. Without it a stub exists but
+    ``MATCH (o:Organization {org_id: 'ORG-42'})`` finds nothing, which reads as
+    missing data rather than as a placeholder.
+    """
+
+    id: str
+    label: str
+    name: str
+    properties: dict[str, Any] = {}
+
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +167,68 @@ class GraphStore:
                             raise DatabaseError(f"Node upsert failed: {inner_exc}") from inner_exc
 
         logger.debug(f"Upserted {count} nodes")
+        return count
+
+    async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
+        """Write foreign-key reference nodes, ON CREATE only.
+
+        A reference is a claim that an entity *exists*, never a claim about what
+        it is called. ``upsert_nodes`` issues ``SET n += properties``
+        unconditionally, so a row referencing ORG-42 would overwrite the ``name``
+        a dimension source already supplied ("Acme Corp") with the raw key
+        ("ORG-42"). Entity vector search embeds ``name``, so that silently makes
+        the organisation unfindable while every structural metric stays green.
+
+        Writing ON CREATE makes the operation order independent: whichever source
+        arrives first creates the node, and the one that owns the entity fills in
+        its name and properties.
+
+        Args:
+            references: :class:`ReferenceNode` entries. ``name`` and
+                ``properties`` are applied only when the node does not already
+                exist, so a reference can create a keyed placeholder but can
+                never overwrite what the owning source said.
+
+        Returns:
+            Number of references written.
+        """
+        if not references:
+            return 0
+        by_label: dict[str, list[dict[str, Any]]] = {}
+        for reference in references:
+            node_id, label, fallback, properties = ReferenceNode(*reference)
+            cleaned = self._clean_identifier(node_id)
+            if not cleaned.strip():
+                continue
+            by_label.setdefault(label, []).append(
+                {
+                    "id": cleaned,
+                    "name": fallback,
+                    "properties": self._clean_properties(dict(properties or {})),
+                }
+            )
+
+        count = 0
+        for label, batch_all in by_label.items():
+            safe_label = sanitize_cypher_label(label)
+            for start in range(0, len(batch_all), self._BATCH_SIZE):
+                batch = batch_all[start : start + self._BATCH_SIZE]
+                query = (
+                    f"UNWIND $batch AS item "
+                    f"MERGE (n:`{safe_label}` {{id: item.id}}) "
+                    f"ON CREATE SET n += item.properties, n.name = item.name, "
+                    f"n.is_stub = true "
+                    f"SET n:__Entity__"
+                )
+                try:
+                    await self._conn.query(query, {"batch": batch})
+                    count += len(batch)
+                except Exception as exc:
+                    logger.warning(
+                        f"Reference upsert failed for [{safe_label}] ({len(batch)} refs): {exc}"
+                    )
+                    raise DatabaseError(f"Reference upsert failed: {exc}") from exc
+        logger.debug(f"Upserted {count} reference nodes")
         return count
 
     async def upsert_relationships(self, relationships: list[GraphRelationship]) -> int:

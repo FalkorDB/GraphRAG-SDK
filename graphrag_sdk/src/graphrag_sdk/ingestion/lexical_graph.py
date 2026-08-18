@@ -42,6 +42,7 @@ class LexicalGraphWriter:
         ctx: Context,
         *,
         content_hash: str | None = None,
+        link_sequential: bool = True,
     ) -> None:
         """Build the mandatory provenance chain.
 
@@ -53,6 +54,12 @@ class LexicalGraphWriter:
 
         This is NON-OPTIONAL. The Zero-Loss Data principle requires
         that every piece of source material is traceable in the graph.
+
+        ``link_sequential`` chains NEXT_CHUNK between consecutive chunks. True
+        for prose, where the chunks are consecutive passages of one text. False
+        for records, which have no reading order: ``cypher_generation`` tells the
+        model NEXT_CHUNK means "the next sequential Chunk", so chaining unrelated
+        rows would assert a sequence that does not exist.
 
         ``content_hash`` is the SHA-256 of the loaded source text. When
         present it is written to the Document node so ``GraphRAG.update()``
@@ -102,7 +109,7 @@ class LexicalGraphWriter:
             )
 
             # Previous Chunk -[NEXT_CHUNK]-> Current Chunk
-            if prev_chunk_id is not None:
+            if link_sequential and prev_chunk_id is not None:
                 next_chunk_rels.append(
                     GraphRelationship(
                         start_node_id=prev_chunk_id,
