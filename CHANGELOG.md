@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept vector search scores consistent as higher-is-better similarities across
+  indexed and fallback relationship retrieval paths.
+
 ### Changed
 
 - Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
