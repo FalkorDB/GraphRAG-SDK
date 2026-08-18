@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Kept vector search scores consistent as higher-is-better similarities across
-  indexed and fallback relationship retrieval paths.
+- Fixed vector-search ordering so chunk, entity, and relationship searches use
+  distance scores, with lower values indicating closer matches.
 
 ### Changed
 
