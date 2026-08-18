@@ -7,10 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Structured ingestion — CSVs and other tabular sources by declared mapping
+
+- **`GraphRAG.ingest(source, mapping=...)`** — ingest a delimited source by
+  declaring what its columns mean, instead of sending it through the extraction
+  pipeline. No model is involved and the same input always produces the same
+  graph, because identity comes from a declared key and every property type is
+  declared rather than inferred. Run a CSV through the prose path and `age`
+  becomes the string `"34"` if it survives at all; nothing can be averaged,
+  filtered numerically, or joined on a key.
+
+- **`Table()`** for the one-record-one-entity case, **`RecordMapping`** /
+  **`NodeMapping`** / **`EdgeMapping`** / **`Column`** for records that produce
+  several entities and the edges between them. Column types: `STRING`,
+  `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. A mapping is validated against
+  the source's real header before anything is written, so a mapping that does
+  not fit raises `MappingError` and leaves the graph untouched.
+
+- **A record is a Chunk** (`kind: "record"`), carrying its cells alongside the
+  rendered text, so a row is retrievable and traceable to its source exactly as
+  a paragraph is. Records are deliberately not chained with `NEXT_CHUNK`: rows
+  have no reading order.
+
+- **`reference=True`** writes a foreign key honestly — ON CREATE only, carrying
+  its key so it is joinable, flagged `is_stub` until the source that owns the
+  entity arrives. Order between sources does not matter.
+
+- **Documents and tables land on one node.** A source holding both a key and a
+  name publishes the id an extractor would independently compute for the same
+  thing in `alias_ids`; `finalize()` folds them with the ordinary resolver and
+  carries the typed columns onto the survivor. The bridge is exact string
+  equality on computed ids, never similarity.
+
+- **`CsvRecordLoader`** (sniffs comma, semicolon, tab and pipe) plus
+  **`RecordLoaderStrategy`** / **`RecordBatch`** for other formats. A record
+  stream is a factory, not an iterator: the write path walks the records twice,
+  and a one-shot iterator would ingest zero rows without raising.
+
+- **Ontology registration is additive.** A mapping's declared types reach the
+  ontology, which is what lets text-to-Cypher see that `age` is an `INTEGER`.
+  Labels that already exist are extended through the ontology-evolution
+  primitives rather than redeclared, so one source may declare a label by key
+  alone and another add properties to it later. A type contradiction still
+  raises.
+
+- See `examples/11_structured_ingestion.py` and the
+  [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)
+  docs page.
+
 ### Fixed
 
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.
+
+- **Text-to-Cypher rows now carry their column names.** Results reached the
+  answering LLM as bare values, so `RETURN avg(p.age) AS average_age` arrived as
+  the single token `"39.5"` and was reported as missing context. Each value is
+  labelled with its column, and the section names the question the query was
+  generated from, since a scalar aggregate has no scope of its own. Only
+  reachable with `enable_cypher=True`, which is off by default.
+
+- **A merge now keeps the reproducible identity.** The survivor was chosen by
+  longest description alone, so a node extracted from prose could outrank one
+  keyed on a declared column. The keyed id then stopped existing and the next
+  ingest of that table recreated it as a second node. The rank is now: derived
+  from a declared key, then real over placeholder, then longest description. For
+  a corpus with no structured sources the ordering is unchanged.
+
+- **A mapping cannot declare `name` as a property.** The extraction path merges
+  ontology-declared attributes over the system properties it builds, so a
+  declared `name` let the extractor answer it with a null and blank out the
+  display name of everything extracted from prose.
 
 ### Changed
 
