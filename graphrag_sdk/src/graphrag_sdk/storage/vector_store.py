@@ -353,12 +353,12 @@ class VectorStore:
             top_k: Number of results to return.
 
         Returns:
-            List of dicts with id, text, score.
+            List of dicts with id, text, and similarity score (higher is closer).
         """
         query = (
             "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector)) "
             "YIELD node, score "
-            "RETURN node.id AS id, node.text AS text, score "
+            "RETURN node.id AS id, node.text AS text, (1-score) AS score "
             "ORDER BY score DESC"
         )
         try:
@@ -388,11 +388,15 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search on __Entity__ nodes."""
+        """Vector similarity search on ``__Entity__`` nodes.
+
+        Returned scores are similarities, so higher values indicate closer matches.
+        """
         query = (
             "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector)) "
             "YIELD node, score "
-            "RETURN node.id AS id, node.name AS name, node.description AS description, score "
+            "RETURN node.id AS id, node.name AS name, node.description AS description, "
+            "(1-score) AS score "
             "ORDER BY score DESC"
         )
         try:
@@ -434,7 +438,8 @@ class VectorStore:
             top_k: Number of results to return.
 
         Returns:
-            List of dicts with src_name, type, tgt_name, fact, score.
+            List of dicts with src_name, type, tgt_name, fact, and similarity
+            score (higher is closer).
         """
         # Try edge vector index query first (FalkorDB >= 4.2)
         query = (
@@ -442,7 +447,7 @@ class VectorStore:
             "'RELATES', 'embedding', $top_k, vecf32($vector)) "
             "YIELD relationship AS r, score "
             "RETURN r.src_name AS src, r.rel_type AS type, "
-            "r.tgt_name AS tgt, r.fact AS fact, score "
+            "r.tgt_name AS tgt, r.fact AS fact, (1-score) AS score "
             "ORDER BY score DESC"
         )
         try:
