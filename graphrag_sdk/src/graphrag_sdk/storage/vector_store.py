@@ -346,14 +346,14 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Vector distance search on ``Chunk`` nodes.
+        """Vector similarity search on ``Chunk`` nodes.
 
         Args:
             query_vector: The query embedding vector.
             top_k: Number of results to return.
 
         Returns:
-            List of dicts with id, text, and distance score (lower is closer).
+            List of dicts with id, text, and similarity score (higher is closer).
         """
         query = (
             "CALL db.idx.vector.queryNodes('Chunk', 'embedding', $top_k, vecf32($vector)) "
@@ -388,9 +388,9 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Vector distance search on ``__Entity__`` nodes.
+        """Vector similarity search on ``__Entity__`` nodes.
 
-        Returned scores are distances, so lower values indicate closer matches.
+        Returned scores are similarities, so higher values indicate closer matches.
         """
         query = (
             "CALL db.idx.vector.queryNodes('__Entity__', 'embedding', $top_k, vecf32($vector)) "
@@ -427,7 +427,7 @@ class VectorStore:
         query_vector: list[float],
         top_k: int = 15,
     ) -> list[dict[str, Any]]:
-        """Vector distance search on RELATES edges.
+        """Vector similarity search on RELATES edges.
 
         Uses the RELATES edge vector index for retrieval. Falls back to
         a Cypher-based cosine distance scan if edge vector queries
@@ -438,8 +438,8 @@ class VectorStore:
             top_k: Number of results to return.
 
         Returns:
-            List of dicts with src_name, type, tgt_name, fact, and distance
-            score (lower is closer).
+            List of dicts with src_name, type, tgt_name, fact, and similarity
+            score (higher is closer).
         """
         # Try edge vector index query first (FalkorDB >= 4.2)
         query = (
@@ -477,7 +477,7 @@ class VectorStore:
             "WHERE r.embedding IS NOT NULL "
             "WITH a, r, b, vec.cosineDistance(r.embedding, vecf32($vector)) AS dist "
             "RETURN r.src_name AS src, r.rel_type AS type, "
-            "r.tgt_name AS tgt, r.fact AS fact, dist AS score "
+            "r.tgt_name AS tgt, r.fact AS fact, (1-dist) AS score "
             "ORDER BY dist ASC LIMIT $top_k"
         )
         try:

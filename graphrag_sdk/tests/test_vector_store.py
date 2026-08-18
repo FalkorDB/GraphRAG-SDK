@@ -214,18 +214,18 @@ class TestVectorStoreSearch:
         assert "1-score" in cypher
         assert "ORDER BY score DESC" in cypher
 
-    async def test_search_relationships_fallback_returns_distance(
+    async def test_search_relationships_fallback_returns_similarity(
         self, vector_store, mock_connection
     ):
         fallback_result = MagicMock()
-        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 0.0]]
+        fallback_result.result_set = [["Alice", "WORKS_AT", "Acme", "self-match", 1.0]]
         mock_connection.query = AsyncMock(side_effect=[Exception("unsupported"), fallback_result])
 
         results = await vector_store.search_relationships(query_vector=[0.1] * 8, top_k=5)
 
-        assert results[0]["score"] == 0.0
+        assert results[0]["score"] == 1.0
         fallback_cypher = mock_connection.query.call_args_list[1][0][0]
-        assert "dist AS score" in fallback_cypher
+        assert "(1-dist) AS score" in fallback_cypher
 
     async def test_search_chunks_empty(self, vector_store, mock_connection):
         result_mock = MagicMock()

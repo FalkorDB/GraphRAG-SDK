@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
-  distance scores, with lower values indicating closer matches.
+  similarity scores, with higher values indicating closer matches.
 
 ### Changed
 
