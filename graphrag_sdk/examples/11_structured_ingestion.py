@@ -203,15 +203,43 @@ async def main():
             answer = await rag.completion(question, strategy=cypher_retrieval)
             print(f"\n   Q: {question}\n   A: {answer.answer}")
 
-        # ── 6. Updating a table ───────────────────────────────────
-        # Node ids come from the declared key, so re-ingesting a corrected export
-        # updates the same nodes. Nothing is duplicated and no id churns.
+        # ── 6. Keeping the table in sync ──────────────────────────
+        # A table is a snapshot, not an addition, so re-ingesting a source that
+        # is already in the graph re-syncs it. Three things happen here at once:
+        # Alice's title is corrected, a new hire appears, and Carol leaves the
+        # export entirely.
+        #
+        # The last one is the case that needs the machinery. Node ids come from
+        # the declared key, so a changed row rewrites itself and a new row simply
+        # arrives. A *removed* row has nothing left to rewrite it, so without a
+        # re-sync it would sit in the graph forever.
         EMPLOYEE_ROWS[0]["job_title"] = "Principal Engineer"
-        await rag.ingest(write_csv(workdir, "employees.csv", EMPLOYEE_ROWS), mapping=EMPLOYEES)
-        rows = await rag._graph_store.query_raw(
-            "MATCH (p:Person {employee_id:'E-1'}) RETURN p.title, count(p)"
+        EMPLOYEE_ROWS.pop()  # Carol White is no longer in the export
+        EMPLOYEE_ROWS.append(
+            {
+                "employee_id": "E-4",
+                "full_name": "Dana Reed",
+                "age": "41",
+                "job_title": "COO",
+                "start_date": "2020-06-01",
+                "org_id": "ORG-42",
+            }
         )
-        print(f"\n── after re-ingest: {rows.result_set}")
+        result = await rag.ingest(
+            write_csv(workdir, "employees.csv", EMPLOYEE_ROWS), mapping=EMPLOYEES
+        )
+        print(f"\n── re-sync: {result}")
+
+        rows = await rag._graph_store.query_raw(
+            "MATCH (p:Person) RETURN p.employee_id, p.name, p.title ORDER BY p.employee_id"
+        )
+        for employee_id, name, title in rows.result_set:
+            print(f"   {employee_id}  {name}  {title}")
+        print("   Carol White is gone, Dana Reed is new, and E-1 kept its identity.")
+
+        # And the note still owns what it legitimately knows. It called Alice an
+        # engineer in prose, but `title` is a column employees.csv declared, so
+        # the export's spelling is what the graph holds.
 
 
 if __name__ == "__main__":

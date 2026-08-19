@@ -10,6 +10,8 @@ Skipped unless ``RUN_INTEGRATION=1``.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from graphrag_sdk.ingestion.mapping import (
@@ -109,7 +111,7 @@ class TestStructuredIngestIntoARealGraph:
             "MATCH (p:Person {name:'Alice Smith'})-[:MENTIONED_IN]->(c:Chunk)"
             "<-[:PART_OF]-(d:Document) RETURN d.id, c.kind, c.record_key",
         )
-        assert rows == [["employees.csv", "record", "E-1"]]
+        assert rows == [[os.path.normpath(employees_csv), "record", "E-1"]]
 
     async def test_the_row_is_recoverable_from_its_chunk(
         self, real_falkordb_rag_factory, llm, resolver, employees_csv
@@ -278,7 +280,7 @@ class TestTheTwoHalvesBecomeOneGraph:
             "<-[:PART_OF]-(d:Document) RETURN DISTINCT d.id ORDER BY d.id",
         )
         sources = [r[0] for r in rows]
-        assert "orgs.csv" in sources
+        assert os.path.normpath(orgs_csv) in sources
         assert "board_note.txt" in sources
 
     async def test_the_cross_source_question_is_answerable_in_one_query(
@@ -366,3 +368,240 @@ class TestTheTwoHalvesBecomeOneGraph:
         rows = await _rows(rag, "MATCH (p:Person {employee_id:'E-1'}) RETURN p.description, p.age")
         assert rows[0][0], "the description the document supplied must survive the merge"
         assert rows[0][1] == 34, "and the table's typed column must survive it too"
+
+
+class TestReSyncingAStructuredSource:
+    """A table is a snapshot, so the graph has to follow it downwards too.
+
+    Rows that change and rows that appear were always handled. A row *deleted*
+    from the source was not: nothing rewrote it, so it stayed in the graph
+    forever with an orphaned record chunk still attached to its document. These
+    pin the behaviour from both entry points, because the one users reach for
+    first is plain ``ingest``.
+    """
+
+    @staticmethod
+    def _write(path, rows: list[str]) -> str:
+        path.write_text(
+            "org_id,org_name,hq_country,employee_count\n" + "".join(rows),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    ACME = "ORG-42,Acme Corp,US,1200\n"
+    GLOBEX = "ORG-7,Globex,GB,340\n"
+
+    async def test_update_removes_a_row_that_left_the_source(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(self._write(source, [self.ACME, self.GLOBEX]), mapping=ORGS)
+
+        result = await rag.update(self._write(source, [self.ACME]), mapping=ORGS)
+
+        assert result.entities_deleted == 1
+        assert await _rows(rag, "MATCH (o:Organization) RETURN o.org_id") == [["ORG-42"]]
+        assert await _rows(rag, "MATCH (:Document)-[:PART_OF]->(c:Chunk) RETURN count(c)") == [
+            [1]
+        ], "the departed row's chunk must go with it"
+
+    async def test_re_ingest_removes_a_row_that_left_the_source(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """Ingesting a source already in the graph means "this is its current
+        state", so it re-syncs rather than writing over the top."""
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(self._write(source, [self.ACME, self.GLOBEX]), mapping=ORGS)
+
+        result = await rag.ingest(self._write(source, [self.ACME]), mapping=ORGS)
+
+        assert result.replaced_existing is True
+        assert result.entities_deleted == 1
+        assert await _rows(rag, "MATCH (o:Organization) RETURN o.org_id") == [["ORG-42"]]
+
+    async def test_re_ingest_does_not_double_a_source_chunks(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """Record chunk ids derive from the effective document id, which the
+        update path deliberately makes a pending one. Writing over the top
+        afterwards would key the same row to a second chunk."""
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        path = self._write(source, [self.ACME, self.GLOBEX])
+        await rag.ingest(path, mapping=ORGS)
+        await rag.update(path, mapping=ORGS, document_id=os.path.normpath(path))
+        await rag.ingest(path, mapping=ORGS)
+
+        assert await _rows(rag, "MATCH (:Document)-[:PART_OF]->(c:Chunk) RETURN count(c)") == [[2]]
+
+    async def test_an_unchanged_source_is_a_no_op(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        path = self._write(source, [self.ACME, self.GLOBEX])
+        await rag.ingest(path, mapping=ORGS)
+
+        result = await rag.update(path, mapping=ORGS)
+        assert result.no_op is True
+
+    async def test_a_changed_mapping_is_not_an_unchanged_source(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """Identical rows under a different declaration produce a different
+        graph, so the content hash covers the mapping. Without that, adding a
+        column to a mapping would be silently ignored."""
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        path = self._write(source, [self.ACME, self.GLOBEX])
+        await rag.ingest(path, mapping=ORGS)
+
+        wider = Table(
+            "Organization",
+            key="org_id",
+            name="org_name",
+            hq_country="hq_country",
+            employee_count=Column("employee_count", "INTEGER"),
+            staff=Column("employee_count", "INTEGER"),
+        )
+        result = await rag.update(path, mapping=wider)
+
+        assert result.no_op is False
+        assert await _rows(rag, "MATCH (o:Organization {org_id:'ORG-42'}) RETURN o.staff") == [
+            [1200]
+        ]
+
+    async def test_an_entity_another_source_still_mentions_survives(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path, employees_csv
+    ):
+        """Scoped cleanup: Globex leaves orgs.csv but employees.csv still points
+        at it through Carol, so it must not be deleted."""
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(self._write(source, [self.ACME, self.GLOBEX]), mapping=ORGS)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+
+        await rag.update(self._write(source, [self.ACME]), mapping=ORGS)
+
+        assert await _rows(rag, "MATCH (o:Organization {org_id:'ORG-7'}) RETURN o.name") == [
+            ["Globex"]
+        ], "still referenced by employees.csv, so it stays"
+
+    async def test_a_mapping_that_stops_fitting_leaves_the_graph_alone(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        from graphrag_sdk.ingestion.mapping import MappingError
+
+        source = tmp_path / "orgs.csv"
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        path = self._write(source, [self.ACME, self.GLOBEX])
+        await rag.ingest(path, mapping=ORGS)
+
+        source.write_text("something,else\n1,2\n", encoding="utf-8")
+        with pytest.raises(MappingError):
+            await rag.update(path, mapping=ORGS)
+
+        assert await _rows(rag, "MATCH (o:Organization) RETURN count(o)") == [[2]]
+        pendings = await _rows(
+            rag, "MATCH (d:Document) WHERE d.id CONTAINS 'pending' RETURN count(d)"
+        )
+        assert pendings == [[0]], "a rejected mapping must not leave a pending Document behind"
+
+    async def test_update_rejects_arguments_that_cannot_apply(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        source = self._write(tmp_path / "orgs.csv", [self.ACME])
+        with pytest.raises(ValueError, match="does not apply"):
+            await rag.update(source, mapping=ORGS, chunker=object())  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="cache_unchanged_chunks"):
+            await rag.update(source, mapping=ORGS, cache_unchanged_chunks=True)
+        with pytest.raises(ValueError, match="only apply with 'mapping'"):
+            await rag.update(source, strict_mapping=True)
+
+    async def test_update_can_create_a_source_it_has_never_seen(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        source = self._write(tmp_path / "orgs.csv", [self.ACME])
+        result = await rag.update(source, mapping=ORGS, if_missing="ingest")
+        assert result.replaced_existing is False
+        assert await _rows(rag, "MATCH (o:Organization) RETURN o.org_id") == [["ORG-42"]]
+
+
+class TestTheTableOwnsItsColumns:
+    """Who wins when a document and a table disagree about a declared column.
+
+    A mapping declares its columns so generated Cypher can see their types, but
+    that also puts them in front of the extractor, which answers them from prose.
+    Measured before this: Alice's title arrived as ``"engineer"`` from a memo and
+    overwrote the ``"Engineer"`` the HR export spelled. The export owns that
+    column, so the memo does not get to write it.
+    """
+
+    async def test_prose_cannot_overwrite_a_column_the_table_declared(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, employees_csv
+    ):
+        llm = scripted_llm(
+            [("Alice Smith", "Person", "An engineer at Acme Corp")],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+        await rag.ingest(
+            text="Alice Smith is an engineer who presented the plan.",
+            document_id="board_note.txt",
+            resolver=resolver,
+        )
+        await rag.finalize()
+
+        rows = await _rows(rag, "MATCH (p:Person {employee_id:'E-1'}) RETURN p.title, p.age")
+        assert rows == [["Engineer", 34]], "the export spelled it, so the export keeps it"
+
+    async def test_a_document_still_contributes_what_it_legitimately_knows(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, employees_csv
+    ):
+        """Only the owned column's value is discarded. The entity, its name and
+        its description are exactly as extracted."""
+        llm = scripted_llm(
+            [("Alice Smith", "Person", "Led the remediation plan for the board")],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+        await rag.ingest(
+            text="Alice Smith led the remediation plan.",
+            document_id="board_note.txt",
+            resolver=resolver,
+        )
+        await rag.finalize()
+
+        rows = await _rows(rag, "MATCH (p:Person {employee_id:'E-1'}) RETURN p.description, p.name")
+        assert "remediation" in (rows[0][0] or "")
+        assert rows[0][1] == "Alice Smith"
+
+    async def test_ownership_is_scoped_to_the_declared_columns(
+        self, real_falkordb_rag_factory, llm, resolver, employees_csv
+    ):
+        """The guard is per property, not per label. ``name`` in particular is
+        never owned: it is not declarable as a mapped property at all, so a
+        document remains free to name an entity."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+        ontology = await rag.get_ontology()
+        person = next(e for e in ontology.entities if e.label == "Person")
+        owned = {p.name for p in person.properties if p.structured}
+        assert owned == {"employee_id", "age", "title"}
+        assert "name" not in owned
+
+    async def test_ownership_is_recorded_in_the_persisted_ontology(
+        self, real_falkordb_rag_factory, llm, resolver, employees_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+        reloaded = await rag.get_ontology()
+        person = next(e for e in reloaded.entities if e.label == "Person")
+        assert all(p.structured for p in person.properties), (
+            "ownership has to survive a reload, or the guard only works in the "
+            "process that happened to run the ingest"
+        )

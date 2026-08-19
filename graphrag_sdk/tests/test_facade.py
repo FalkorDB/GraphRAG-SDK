@@ -2191,6 +2191,11 @@ class TestGraphRAGUpdateSyncWrapper:
     @pytest.mark.parametrize(
         "async_name, sync_name",
         [
+            # ``ingest`` is here because it was the one that got away: the
+            # structured-source kwargs were added to the async method and the
+            # sync wrapper silently kept rejecting them, which is exactly the
+            # failure this tripwire exists to catch.
+            ("ingest", "ingest_sync"),
             ("update", "update_sync"),
             ("delete_document", "delete_document_sync"),
             ("apply_changes", "apply_changes_sync"),

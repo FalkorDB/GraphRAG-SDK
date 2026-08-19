@@ -41,6 +41,10 @@ A record is a chunk. That is the whole trick: a row becomes retrievable and trac
 Records are **not** chained with `NEXT_CHUNK`. Rows have no reading order, and text-to-Cypher is told `NEXT_CHUNK` means "the next sequential chunk", so chaining unrelated rows would assert a sequence that does not exist.
 </Note>
 
+<Warning>
+Record chunks are **not embedded**, so a row is not reachable by chunk vector search. Rows are reached through their entities and through generated Cypher, which is what the typed columns exist for. This keeps a million-row table from becoming a million embeddings, and it means a question answerable only from a row's prose rendering will not find it.
+</Warning>
+
 ---
 
 ## Declaring a Mapping
@@ -138,6 +142,62 @@ ontology = await rag.get_ontology()
 Without it, generated Cypher cannot see that `age` is a number and falls back to guessing that everything is a described entity. With it, aggregation questions become answerable.
 
 Registration is **additive**. A label a previous source already declared is extended through the ontology-evolution primitives rather than redeclared, so `employees.csv` can declare `Organization` by key alone and `orgs.csv` can later add `employee_count` to the same label. A contradiction — the same property declared with two types — still raises.
+
+---
+
+## Keeping a Table in Sync
+
+A table is a snapshot, not an addition, so ingesting a source that is already in the graph re-syncs it rather than writing over the top:
+
+```python
+await rag.ingest("employees.csv", mapping=EMPLOYEES)   # first write
+# ... the export is regenerated, with one row corrected, one added, one gone ...
+result = await rag.ingest("employees.csv", mapping=EMPLOYEES)   # re-sync
+result.entities_deleted   # 1 — the row that disappeared took its entity with it
+```
+
+Three kinds of change, and only one of them needs machinery:
+
+| Change | What happens |
+| ------ | ------------ |
+| A row's values changed | Its node id comes from the declared key, so it rewrites itself in place. |
+| A row was added | It simply arrives. |
+| A row was **deleted** | Nothing is left to rewrite it. The re-sync is what removes it. |
+
+The third case is why this path exists. The new records are written under a pending Document and swapped in atomically, so a departed row has no new chunk, the cutover deletes its old one, and its entity goes too **unless another source still mentions it**. Cleanup is scoped, never global: if `employees.csv` still points at `ORG-7`, dropping that organization from `orgs.csv` leaves the node alone.
+
+`update()` is the same operation with stricter semantics, raising if the source was never ingested:
+
+```python
+await rag.update("employees.csv", mapping=EMPLOYEES)                     # must exist
+await rag.update("new.csv", mapping=EMPLOYEES, if_missing="ingest")      # or upsert
+```
+
+<Note>
+The re-sync short-circuits when nothing changed: an unchanged source returns `no_op=True` without writing. The content hash covers the **mapping** as well as the rows, so adding a column to a declaration is never mistaken for unchanged data.
+</Note>
+
+A source is addressed by `os.path.normpath(source)` unless you pass `document_id`, matching how the text path derives a file's id. Use the same handle for `delete_document()`.
+
+---
+
+## Who Owns a Column
+
+A mapping declares its columns into the ontology so that generated Cypher can see their types. That also puts them in front of the extractor, which will then answer them from prose. Measured: a job title arrived as `"engineer"` from a memo and overwrote the `"Engineer"` the HR export spelled.
+
+So a declared column has an owner. **Extraction may not write a property that a mapping declared.** Everything else a document knows is unaffected: the entity, its name, its description, and every property no mapping claims.
+
+```
+employees.csv declares Person.title   →  "Engineer"   (kept)
+board_note.txt calls Alice an engineer →  "engineer"   (ignored, and logged)
+```
+
+Ownership is persisted with the ontology, so it holds across processes, and it is sticky: a later declaration that omits the flag cannot hand the column back to the extractor.
+
+<Note>
+If this is the wrong policy for your data, it is one guard in the ingest pipeline
+(`_drop_structured_properties`) rather than a rule spread through the write path.
+</Note>
 
 ---
 

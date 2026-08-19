@@ -20,7 +20,7 @@ from graphrag_sdk.core.models import (
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
 from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, RecordLoaderStrategy
-from graphrag_sdk.ingestion.mapping import MappingError, NodeMapping, RecordMapping
+from graphrag_sdk.ingestion.mapping import Column, MappingError, NodeMapping, RecordMapping
 from graphrag_sdk.storage.graph_store import ReferenceNode
 
 # Chunk properties the writer owns. A column with one of these names is stored
@@ -38,6 +38,39 @@ def record_chunk_uid(document_uid: str, record_key: str) -> str:
     """
     digest = hashlib.sha256(f"{document_uid}::{record_key}".encode()).hexdigest()
     return f"rec_{digest[:24]}"
+
+
+def _new_record_digest(mapping: RecordMapping, columns: list[str]) -> hashlib._Hash:
+    """Seed a digest with everything about a source other than its rows.
+
+    The mapping is folded in because identical rows under a changed declaration
+    produce a different graph, so a re-declared mapping must not look like
+    unchanged data to ``update()``'s no-op short circuit.
+    """
+    digest = hashlib.sha256(mapping.fingerprint.encode("utf-8"))
+    digest.update(b"\x00columns\x00" + "\x1f".join(columns).encode("utf-8"))
+    return digest
+
+
+def _feed_record(digest: hashlib._Hash, columns: list[str], record: dict[str, Any]) -> None:
+    """Fold one record into a digest, reading columns in declared order."""
+    digest.update(b"\x00row\x00")
+    for column in columns:
+        digest.update(f"{column}={record.get(column, '')}\x1f".encode())
+
+
+def records_content_hash(batch: RecordBatch, mapping: RecordMapping) -> str:
+    """Digest a source's records, for the ``update()`` no-op short circuit.
+
+    Costs one pass over the records. ``update()`` needs the hash *before* it
+    decides whether to write anything, which is earlier than the ingest path
+    happens to compute the same value, so this walks the stream itself rather
+    than duplicating the algorithm.
+    """
+    digest = _new_record_digest(mapping, batch.columns)
+    for record in batch:
+        _feed_record(digest, batch.columns, record)
+    return digest.hexdigest()
 
 
 def render_record(record: dict[str, Any]) -> str:
@@ -72,9 +105,28 @@ def record_cells(record: dict[str, Any]) -> dict[str, Any]:
 
 
 class StructuredIngestionResult:
-    """Counts from one structured ingest."""
+    """Counts from one structured ingest.
 
-    __slots__ = ("records", "chunks", "entities", "references", "edges", "document_id")
+    ``chunks_deleted`` / ``entities_deleted`` are non-zero when the source was
+    already in the graph and the write was a re-sync: rows that disappeared from
+    the source take their chunks with them, and entities nothing else mentions
+    any more go too. A caller watching those numbers is watching for exactly the
+    thing that used to be silent.
+    """
+
+    __slots__ = (
+        "records",
+        "chunks",
+        "entities",
+        "references",
+        "edges",
+        "document_id",
+        "content_hash",
+        "chunks_deleted",
+        "entities_deleted",
+        "replaced_existing",
+        "no_op",
+    )
 
     def __init__(self, document_id: str) -> None:
         self.document_id = document_id
@@ -82,10 +134,15 @@ class StructuredIngestionResult:
         self.chunks = 0
         self.entities = 0
         self.references = 0
+        self.content_hash = ""
         self.edges = 0
+        self.chunks_deleted = 0
+        self.entities_deleted = 0
+        self.replaced_existing = False
+        self.no_op = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        summary = {
             "document_id": self.document_id,
             "records": self.records,
             "chunks": self.chunks,
@@ -93,6 +150,12 @@ class StructuredIngestionResult:
             "references": self.references,
             "edges": self.edges,
         }
+        if self.replaced_existing:
+            summary["replaced_existing"] = True
+            summary["chunks_deleted"] = self.chunks_deleted
+            summary["entities_deleted"] = self.entities_deleted
+            summary["no_op"] = self.no_op
+        return summary
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"StructuredIngestionResult({self.as_dict()})"
@@ -177,7 +240,13 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         if not chunks.chunks:
             ctx.log(f"{source} produced no records, nothing written")
             return result
-        await self._build_lexical_graph(doc_info, chunks, ctx, link_sequential=link_sequential)
+        await self._build_lexical_graph(
+            doc_info,
+            chunks,
+            ctx,
+            content_hash=result.content_hash,
+            link_sequential=link_sequential,
+        )
 
         # Steps 4 and 5. Declared columns become entities and edges.
         nodes, references, edges = self._map_records(batch, mapping, doc_info, result)
@@ -201,10 +270,18 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         doc_info: DocumentInfo,
         result: StructuredIngestionResult,
     ) -> TextChunks:
-        """One TextChunk per record, carrying the cells alongside the text."""
+        """One TextChunk per record, carrying the cells alongside the text.
+
+        Digests the records on the way past, so the content hash costs no extra
+        pass over the source. The digest covers the mapping too: identical rows
+        under a changed declaration produce a different graph, so treating them
+        as unchanged would skip an update that was needed.
+        """
         anchor = mapping.anchor
+        digest = _new_record_digest(mapping, batch.columns)
         chunks: list[TextChunk] = []
         for index, record in enumerate(batch):
+            _feed_record(digest, batch.columns, record)
             record_key = str(record.get(anchor.key) or "").strip()
             if not record_key:
                 # Without its key a record has no stable identity, so it could
@@ -223,6 +300,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 )
             )
         result.records = result.chunks = len(chunks)
+        result.content_hash = digest.hexdigest()
         return TextChunks(chunks=chunks)
 
     def _map_records(
@@ -238,6 +316,12 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         empty by the time this pass runs, and nothing raises.
         """
         anchor = mapping.anchor
+        # Normalised once per source rather than once per record: for a large
+        # table the difference is millions of redundant dict builds.
+        node_columns = {node.handle: node.typed_properties for node in mapping.nodes}
+        edge_columns = {
+            (edge.type, edge.source, edge.target): edge.typed_properties for edge in mapping.edges
+        }
         nodes: list[GraphNode] = []
         references: list[ReferenceNode] = []
         edges: list[GraphRelationship] = []
@@ -256,7 +340,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 node_id = compute_entity_id(str(raw_key), node.label)
                 if not node_id:
                     continue
-                ids[node.alias] = node_id
+                ids[node.handle] = node_id
                 if node.reference:
                     # A record that denormalises the referenced entity's name
                     # ("org_id" plus "org_name") can label the stub properly.
@@ -284,7 +368,9 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                         GraphNode(
                             id=node_id,
                             label=node.label,
-                            properties=self._node_properties(node, record, str(raw_key)),
+                            properties=self._node_properties(
+                                node, record, str(raw_key), node_columns[node.handle]
+                            ),
                         )
                     )
                     result.entities += 1
@@ -307,7 +393,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                     "fact": f"({edge.source}, {edge.type}, {edge.target})",
                     "source_chunk_ids": [chunk_uid],
                 }
-                for prop, column in edge.properties.items():
+                for prop, column in edge_columns[(edge.type, edge.source, edge.target)].items():
                     value = column.cast(record.get(column.name))
                     if value is not None:
                         properties[prop] = value
@@ -324,7 +410,12 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         return nodes, references, edges
 
     @staticmethod
-    def _node_properties(node: NodeMapping, record: dict[str, Any], raw_key: str) -> dict[str, Any]:
+    def _node_properties(
+        node: NodeMapping,
+        record: dict[str, Any],
+        raw_key: str,
+        columns: dict[str, Column],
+    ) -> dict[str, Any]:
         """Typed properties for one entity, plus the alias that lets it resolve."""
         properties: dict[str, Any] = {node.key: raw_key, "is_stub": False}
         if node.name:
@@ -338,7 +429,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 alias = compute_entity_id(str(display), node.label)
                 if alias and alias != compute_entity_id(raw_key, node.label):
                     properties["alias_ids"] = [alias]
-        for prop, column in node.properties.items():
+        for prop, column in columns.items():
             value = column.cast(record.get(column.name))
             if value is not None:
                 properties[prop] = value

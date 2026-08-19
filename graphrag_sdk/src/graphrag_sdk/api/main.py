@@ -76,13 +76,14 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
     RecordLoaderStrategy,
 )
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
-from graphrag_sdk.ingestion.mapping import RecordMapping
+from graphrag_sdk.ingestion.mapping import MappingError, RecordMapping
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 from graphrag_sdk.ingestion.structured_pipeline import (
     StructuredIngestionPipeline,
     StructuredIngestionResult,
+    records_content_hash,
 )
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
@@ -1320,6 +1321,18 @@ class GraphRAG:
     @overload
     async def ingest(
         self,
+        source: str,
+        *,
+        mapping: RecordMapping,
+        document_id: str | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict_mapping: bool = False,
+        ctx: Context | None = None,
+    ) -> StructuredIngestionResult: ...
+
+    @overload
+    async def ingest(
+        self,
         source: str | None = None,
         *,
         text: str | None = None,
@@ -1621,6 +1634,62 @@ class GraphRAG:
         return await self._ontology_store.load()
 
     async def _ingest_structured(
+        self,
+        source: str,
+        mapping: RecordMapping,
+        *,
+        document_id: str | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict: bool = False,
+        ctx: Context | None = None,
+    ) -> StructuredIngestionResult:
+        """Write a structured source, re-syncing it if it is already in the graph.
+
+        A table is a snapshot, not an addition. Ingesting one that is already
+        present therefore means "this is the current state of it", so the call is
+        routed through :meth:`update` and rows that have since disappeared from
+        the source are removed. Writing over it in place would instead leave
+        departed rows behind forever, and would double its chunks: record chunk
+        ids are derived from the effective document id, which the update path
+        deliberately makes a pending one.
+
+        The first write of a source skips all of that and goes straight down the
+        deterministic path below.
+        """
+        ctx = ctx or Context()
+        resolved_id = document_id or os.path.normpath(source)
+        await self._validate_graph_config()
+        if await self._graph_store.get_document_record(resolved_id) is not None:
+            update_result = await self.update(
+                source,
+                document_id=resolved_id,
+                mapping=mapping,
+                record_loader=record_loader,
+                strict_mapping=strict,
+                ctx=ctx,
+            )
+            resynced = StructuredIngestionResult(resolved_id)
+            counts = update_result.metadata or {}
+            resynced.records = int(counts.get("records", 0))
+            resynced.chunks = int(counts.get("chunks", update_result.chunks_indexed))
+            resynced.entities = int(counts.get("entities", 0))
+            resynced.references = int(counts.get("references", 0))
+            resynced.edges = int(counts.get("edges", 0))
+            resynced.chunks_deleted = update_result.chunks_deleted
+            resynced.entities_deleted = update_result.entities_deleted
+            resynced.replaced_existing = True
+            resynced.no_op = update_result.no_op
+            return resynced
+        return await self._write_structured_source(
+            source,
+            mapping,
+            document_id=resolved_id,
+            record_loader=record_loader,
+            strict=strict,
+            ctx=ctx,
+        )
+
+    async def _write_structured_source(
         self,
         source: str,
         mapping: RecordMapping,
@@ -2127,6 +2196,9 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
+        mapping: RecordMapping | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict_mapping: bool = False,
         ctx: Context | None = None,
     ) -> UpdateResult:
         """Re-sync a previously-ingested document into the graph.
@@ -2176,6 +2248,18 @@ class GraphRAG:
         ``test_orphans_cleaned_after_crash_between_commit_and_cleanup``
         is the tripwire for this invariant.
 
+        Passing ``mapping`` re-syncs a *structured* source through the same
+        state machine. That is the only way a table stays correct over time:
+        plain re-ingest updates the rows that changed and adds the rows that
+        appeared, but a row **deleted** from the source has nothing left to
+        rewrite it, so it would otherwise sit in the graph forever. Here the new
+        records are written under the pending Document, so a departed row simply
+        has no new chunk, the cutover deletes its old one, and Phase 6 removes
+        the entity if no other source still mentions it.
+
+        The content hash for a structured source covers the mapping as well as
+        the rows, so re-declaring a mapping is never mistaken for unchanged data.
+
         Args:
             source: File path. Loader reads from disk. Mutually exclusive
                 with ``text``.
@@ -2207,6 +2291,13 @@ class GraphRAG:
             if_missing: ``"error"`` (default) raises ``DocumentNotFoundError``
                 when the id is unknown. ``"ingest"`` falls through to
                 ``ingest()`` for upsert semantics.
+            mapping: Declaration for a structured source. Routes the re-sync
+                through the deterministic record path: no chunker, no
+                extractor and no model are involved.
+            record_loader: How to read the structured source. Defaults to
+                :class:`~graphrag_sdk.ingestion.loaders.record_loader.CsvRecordLoader`.
+            strict_mapping: Fail when the source has a column the mapping
+                never reads.
             ctx: Execution context.
 
         Returns:
@@ -2242,6 +2333,27 @@ class GraphRAG:
                 "'document_id' is required in text mode — there is no path "
                 "to derive a stable id from."
             )
+        if mapping is not None:
+            if text is not None:
+                raise ValueError(
+                    "Cannot pass both 'mapping' and 'text'. A mapping describes a "
+                    "structured source, so pass 'source' as a path to it."
+                )
+            for name, value in (("chunker", chunker), ("extractor", extractor), ("loader", loader)):
+                if value is not None:
+                    raise ValueError(
+                        f"'{name}' does not apply to a structured source: records are "
+                        "not chunked by a strategy and no model extracts from them. "
+                        "Pass 'record_loader' to change how the source is read."
+                    )
+            if cache_unchanged_chunks:
+                raise ValueError(
+                    "'cache_unchanged_chunks' does not apply to a structured source: "
+                    "the cache exists to avoid re-running extraction, and nothing is "
+                    "extracted here."
+                )
+        elif record_loader is not None or strict_mapping:
+            raise ValueError("'record_loader' and 'strict_mapping' only apply with 'mapping'.")
 
         await self._validate_graph_config()
 
@@ -2263,9 +2375,23 @@ class GraphRAG:
         # call — the pipeline skips its loader step when ``text`` is
         # supplied, so we have to carry the metadata in ourselves.
         loaded_metadata: dict[str, Any] = {}
-        if text is not None:
+        loaded_text = ""
+        if mapping is not None:
+            assert source is not None  # guaranteed by validation above
+            # Read the records and check the mapping fits before anything is
+            # written, so a mapping that does not match the source fails without
+            # leaving a pending Document behind.
+            batch = await (record_loader or CsvRecordLoader()).load_records(source, ctx)
+            problems = mapping.validate_against(batch.columns, strict=strict_mapping)
+            if problems:
+                raise MappingError(f"mapping does not fit {source}:\n  " + "\n  ".join(problems))
+            doc_path = source
+            loaded_metadata = dict(batch.document_info.metadata or {})
+            new_hash = records_content_hash(batch, mapping)
+        elif text is not None:
             loaded_text = text
             doc_path = resolved_id
+            new_hash = hashlib.sha256(loaded_text.encode("utf-8")).hexdigest()
         else:
             assert source is not None  # guaranteed by validation above
             active_loader = loader or self._default_loader_for(source)
@@ -2273,13 +2399,31 @@ class GraphRAG:
             loaded_text = loaded.text
             doc_path = source
             loaded_metadata = dict(loaded.document_info.metadata or {})
-
-        new_hash = hashlib.sha256(loaded_text.encode("utf-8")).hexdigest()
+            new_hash = hashlib.sha256(loaded_text.encode("utf-8")).hexdigest()
 
         existing = await self._graph_store.get_document_record(resolved_id)
         if existing is None:
             if if_missing == "ingest":
                 ctx.log(f"update: id '{resolved_id}' not found, falling through to ingest")
+                if mapping is not None:
+                    structured = await self._write_structured_source(
+                        source,  # type: ignore[arg-type]  # non-None with a mapping
+                        mapping,
+                        document_id=resolved_id,
+                        record_loader=record_loader,
+                        strict=strict_mapping,
+                        ctx=ctx,
+                    )
+                    return UpdateResult(
+                        document_info=DocumentInfo(
+                            uid=resolved_id, path=doc_path, metadata=loaded_metadata
+                        ),
+                        nodes_created=structured.entities + structured.references,
+                        relationships_created=structured.edges,
+                        chunks_indexed=structured.chunks,
+                        metadata=structured.as_dict(),
+                        replaced_existing=False,
+                    )
                 ingest_result = await self._ingest_single(
                     source if source is not None else resolved_id,
                     text=loaded_text,
@@ -2333,6 +2477,53 @@ class GraphRAG:
         # extractor so byte-identical chunks are rebuilt from the live
         # graph instead of re-extracted. Must read the OLD chunks, which
         # still exist until the Phase 5 cutover — safe by construction.
+        # A structured re-sync replaces only the content-producing phase. The
+        # commit marker, cutover and orphan cleanup below are the same machinery
+        # the prose path uses, deliberately: they are what make the operation
+        # crash-safe, and a second copy of that ordering would drift out of step.
+        if mapping is not None:
+            self._global_ontology = await self._register_structured_ontology(mapping.to_ontology())
+            structured_pipeline = StructuredIngestionPipeline(
+                loader=record_loader or CsvRecordLoader(document_id=pending_id),
+                graph_store=self._graph_store,
+                vector_store=self._vector_store,
+            )
+            try:
+                # Writing under ``pending_id`` is what keeps the new record
+                # chunks off the live Document: record chunk ids are derived
+                # from the effective document id, so pointing them at the
+                # canonical id would MERGE them onto the very chunks the
+                # cutover is about to delete.
+                structured_result = await structured_pipeline.run(
+                    source,  # type: ignore[arg-type]  # non-None with a mapping
+                    mapping,
+                    ctx,
+                    document_id=pending_id,
+                    strict=strict_mapping,
+                )
+            except Exception:
+                try:
+                    await self._graph_store.cleanup_pending_documents(resolved_id)
+                except Exception:
+                    logger.debug(
+                        "update: pending cleanup failed during exception path", exc_info=True
+                    )
+                raise
+            return await self._finish_update(
+                resolved_id=resolved_id,
+                pending_id=pending_id,
+                doc_path=doc_path,
+                new_hash=new_hash,
+                loaded_metadata=loaded_metadata,
+                candidate_ids=candidate_ids,
+                old_chunk_ids=old_chunk_ids,
+                nodes_created=structured_result.entities + structured_result.references,
+                relationships_created=structured_result.edges,
+                chunks_indexed=structured_result.chunks,
+                result_metadata=structured_result.as_dict(),
+                ctx=ctx,
+            )
+
         active_extractor = extractor or self._default_extractor()
         cache_wrapper: CachedChunkExtraction | None = None
         if cache_unchanged_chunks:
@@ -2370,6 +2561,54 @@ class GraphRAG:
                 logger.debug("update: pending cleanup failed during exception path", exc_info=True)
             raise
 
+        result_metadata = dict(pipeline_result.metadata)
+        if cache_wrapper is not None:
+            result_metadata["cache_stats"] = {
+                "cached_chunks": cache_wrapper.cached_chunk_count,
+                "extracted_chunks": cache_wrapper.extracted_chunk_count,
+            }
+
+        return await self._finish_update(
+            resolved_id=resolved_id,
+            pending_id=pending_id,
+            doc_path=doc_path,
+            new_hash=new_hash,
+            loaded_metadata=loaded_metadata,
+            candidate_ids=candidate_ids,
+            old_chunk_ids=old_chunk_ids,
+            nodes_created=pipeline_result.nodes_created,
+            relationships_created=pipeline_result.relationships_created,
+            chunks_indexed=pipeline_result.chunks_indexed,
+            result_metadata=result_metadata,
+            ctx=ctx,
+        )
+
+    async def _finish_update(
+        self,
+        *,
+        resolved_id: str,
+        pending_id: str,
+        doc_path: str,
+        new_hash: str,
+        loaded_metadata: dict[str, Any],
+        candidate_ids: list[str],
+        old_chunk_ids: list[str],
+        nodes_created: int,
+        relationships_created: int,
+        chunks_indexed: int,
+        result_metadata: dict[str, Any],
+        ctx: Context,
+    ) -> UpdateResult:
+        """Commit a written pending Document and clean up after the cutover.
+
+        Phases 3b through 6 of :meth:`update`, shared by the prose and the
+        structured paths. It is one function rather than one per path because the
+        ordering inside it *is* the crash-safety contract: a second copy would
+        drift, and the drift would not surface until a crash landed in the gap.
+
+        The caller has already written the new content under ``pending_id`` and
+        snapshotted ``candidate_ids`` / ``old_chunk_ids`` from the live document.
+        """
         # ── Phase 3b: persist cleanup state on the pending Document ──
         # The lists ride along on the rename in Phase 5 and are consumed
         # by Phase 6 — i.e. cleanup is now recoverable across a crash.
@@ -2421,21 +2660,14 @@ class GraphRAG:
         ctx.log(
             f"update: {resolved_id} — "
             f"deleted {chunks_deleted} old chunks + {entities_deleted} orphan entities, "
-            f"wrote {pipeline_result.chunks_indexed} new chunks"
+            f"wrote {chunks_indexed} new chunks"
         )
-
-        result_metadata = dict(pipeline_result.metadata)
-        if cache_wrapper is not None:
-            result_metadata["cache_stats"] = {
-                "cached_chunks": cache_wrapper.cached_chunk_count,
-                "extracted_chunks": cache_wrapper.extracted_chunk_count,
-            }
 
         return UpdateResult(
             document_info=DocumentInfo(uid=resolved_id, path=doc_path, metadata=loaded_metadata),
-            nodes_created=pipeline_result.nodes_created,
-            relationships_created=pipeline_result.relationships_created,
-            chunks_indexed=pipeline_result.chunks_indexed,
+            nodes_created=nodes_created,
+            relationships_created=relationships_created,
+            chunks_indexed=chunks_indexed,
             metadata=result_metadata,
             chunks_deleted=chunks_deleted,
             entities_deleted=entities_deleted,
@@ -3314,6 +3546,18 @@ class GraphRAG:
     @overload
     def ingest_sync(
         self,
+        source: str,
+        *,
+        mapping: RecordMapping,
+        document_id: str | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict_mapping: bool = False,
+        ctx: Context | None = None,
+    ) -> StructuredIngestionResult: ...
+
+    @overload
+    def ingest_sync(
+        self,
         source: str | None = None,
         *,
         text: str | None = None,
@@ -3349,8 +3593,11 @@ class GraphRAG:
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
         max_concurrency: int = 3,
+        mapping: RecordMapping | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict_mapping: bool = False,
         ctx: Context | None = None,
-    ) -> IngestionResult | list[IngestionResult | Exception]:
+    ) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult:
         """Synchronous ingest convenience method.
 
         Keep in sync with :meth:`ingest`.
@@ -3365,6 +3612,9 @@ class GraphRAG:
                 extractor=extractor,
                 resolver=resolver,
                 max_concurrency=max_concurrency,
+                mapping=mapping,
+                record_loader=record_loader,
+                strict_mapping=strict_mapping,
                 ctx=ctx,
             )
         )
@@ -3388,6 +3638,9 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
+        mapping: RecordMapping | None = None,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict_mapping: bool = False,
         ctx: Context | None = None,
     ) -> UpdateResult:
         """Synchronous update convenience method.
@@ -3412,6 +3665,9 @@ class GraphRAG:
                 resolver=resolver,
                 cache_unchanged_chunks=cache_unchanged_chunks,
                 if_missing=if_missing,
+                mapping=mapping,
+                record_loader=record_loader,
+                strict_mapping=strict_mapping,
                 ctx=ctx,
             )
         )
