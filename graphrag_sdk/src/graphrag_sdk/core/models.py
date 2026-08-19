@@ -220,6 +220,16 @@ class Attribute(DataModel):
     name: str
     type: str = "STRING"  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
+    structured: bool = False
+    """True when a structured source's mapping declared this property.
+
+    Such a property has an owner: the table the mapping describes. It is declared
+    so that generated Cypher can see its type, but declaring it also puts it in
+    front of the extractor, which will then answer it from prose. That is how a
+    job title arrives lowercased from a memo and overwrites what the HR export
+    spelled. Extraction may fill one of these when it is absent and may never
+    overwrite it.
+    """
 
     @model_validator(mode="after")
     def _normalize_type(self) -> Attribute:

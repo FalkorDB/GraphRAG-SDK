@@ -19,6 +19,7 @@ from graphrag_sdk.core.models import (
     DocumentOutput,
     EntityMention,
     GraphData,
+    GraphNode,
     GraphRelationship,
     IngestionResult,
     Ontology,
@@ -207,6 +208,7 @@ class IngestionPipeline(LexicalGraphWriter):
             # Step 5: Prune against ontology
             ctx.log("Step 5/9: Pruning against ontology")
             graph_data = self._prune(graph_data, self.ontology)
+            graph_data = self._drop_structured_properties(graph_data, self.ontology, ctx)
 
             # Step 6: Resolve duplicate entities
             ctx.log("Step 6/9: Resolving duplicates")
@@ -297,6 +299,55 @@ class IngestionPipeline(LexicalGraphWriter):
             logger.error("Pipeline failed with unexpected error: %s", exc)
             logger.debug("Pipeline failure details", exc_info=True)
             raise IngestionError(f"Pipeline failed: {exc}") from exc
+
+    @staticmethod
+    def _drop_structured_properties(
+        graph_data: GraphData, ontology: Ontology, ctx: Context
+    ) -> GraphData:
+        """Discard extracted values for properties a structured source owns.
+
+        A mapping declares its columns into the ontology so that generated Cypher
+        can see their types. That also puts them in front of the extractor, which
+        will answer them from prose: measured as a job title arriving as
+        ``"engineer"`` from a memo and overwriting the ``"Engineer"`` the HR
+        export spelled. The export owns that column, so prose does not get to
+        write it.
+
+        Only the *value* is dropped. The entity, its name, its description and
+        every unowned property are untouched, so a document still contributes
+        everything it legitimately knows.
+        """
+        owned: dict[str, set[str]] = {}
+        for entity in ontology.entities:
+            names = {prop.name for prop in entity.properties if prop.structured}
+            if names:
+                owned[entity.label] = names
+        if not owned:
+            return graph_data
+
+        dropped: dict[str, int] = {}
+        nodes: list[GraphNode] = []
+        for node in graph_data.nodes:
+            guarded = owned.get(node.label)
+            if not guarded:
+                nodes.append(node)
+                continue
+            kept = {k: v for k, v in node.properties.items() if k not in guarded}
+            for name in node.properties.keys() & guarded:
+                dropped[f"{node.label}.{name}"] = dropped.get(f"{node.label}.{name}", 0) + 1
+            nodes.append(GraphNode(id=node.id, label=node.label, properties=kept))
+
+        if dropped:
+            # Said out loud: silently discarding an extracted value would look
+            # like the extractor never found one.
+            summary = ", ".join(f"{key} ({count})" for key, count in sorted(dropped.items()))
+            ctx.log(f"Ignored extracted values for structured-owned properties: {summary}")
+        # ``model_copy`` rather than a fresh GraphData: rebuilding it by listing
+        # fields drops the ones not listed, and ``mentions`` is what carries the
+        # MENTIONED_IN edges. Losing it silently costs every extracted entity its
+        # provenance, which only shows up later as a merged node that no longer
+        # remembers the document it came from.
+        return graph_data.model_copy(update={"nodes": nodes})
 
     def _prune(self, graph_data: GraphData, ontology: Ontology) -> GraphData:
         """Filter graph data to only include ontology-conforming nodes and relationships.

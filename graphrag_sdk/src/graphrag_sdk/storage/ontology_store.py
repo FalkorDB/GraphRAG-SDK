@@ -147,7 +147,7 @@ class OntologyStore:
             ent_prop_result = await self._query(
                 "MATCH (e:Entity)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN e.label AS owner, p.label AS name, p.type AS type, "
-                "p.description AS description"
+                "p.description AS description, p.structured AS structured"
             )
             patterned_rel_result = await self._query(
                 "MATCH (r:Relation)-[:SOURCE]->(s:Entity), (r)-[:TARGET]->(t:Entity) "
@@ -176,10 +176,13 @@ class OntologyStore:
         for row in _rows(ent_prop_result):
             if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1]):
                 continue
-            owner, name, type_, desc = row
+            owner, name, type_, desc = row[0], row[1], row[2], row[3]
+            structured = bool(row[4]) if len(row) > 4 else False
             bucket = ent_props_by_owner.setdefault(owner, {})
             if name not in bucket:
-                bucket[name] = Attribute(name=name, type=type_ or "STRING", description=desc)
+                bucket[name] = Attribute(
+                    name=name, type=type_ or "STRING", description=desc, structured=structured
+                )
 
         entities = [
             Entity(
@@ -395,12 +398,16 @@ class OntologyStore:
             "MATCH (e:Entity {label: $owner}) "
             "MERGE (e)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            "p.description = coalesce($description, p.description), "
+            # Sticky: a property a table owns stays owned even if a later
+            # prose-side declaration mentions it without the flag.
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "owner": entity_label,
                 "name": prop.name,
                 "type": prop.type,
                 "description": prop.description,
+                "structured": bool(prop.structured),
             },
         )
 
