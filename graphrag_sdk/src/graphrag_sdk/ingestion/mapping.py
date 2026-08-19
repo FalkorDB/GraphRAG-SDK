@@ -7,12 +7,16 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import math
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
 from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 # Property types a column may declare. Deliberately small, and matching the
 # uppercase convention the ontology already uses for Attribute.type.
@@ -34,6 +38,52 @@ RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
         "is_stub",
     }
 )
+
+# A graph property name and an entity label both end up in Cypher, one as a
+# parameter key and one interpolated into the query after sanitisation. Names are
+# therefore restricted to identifiers, which is both what a graph can address
+# and what keeps a declaration from reaching the driver as something it cannot
+# serialise. Measured without this: a property named with a backtick and a
+# comment marker surfaced as `DatabaseError: Invalid input at end of input`, from
+# a query the caller never wrote and cannot see.
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _check_identifier(kind: str, value: str) -> str:
+    """Reject a name that cannot safely be a graph identifier.
+
+    Applied to property names and relationship types, because both are written
+    into generated Cypher as bare names (``n.age``, ``rel_type``). A name that
+    would need quoting there is not usable even though a graph would store it.
+    """
+    if not _IDENTIFIER.match(value):
+        raise MappingError(
+            f"{kind} {value!r} is not a usable name: it must start with a letter "
+            "or underscore and contain only letters, digits and underscores. "
+            "Give it a usable name in the mapping and point it at the column, "
+            'e.g. properties={"hq_country": Column("HQ Country")}.'
+        )
+    return value
+
+
+def _check_label(label: str) -> str:
+    """Reject a label that would not survive being written to the graph.
+
+    Deliberately looser than :func:`_check_identifier`: ``Legal Entity``,
+    ``Org-Unit`` and ``Ünïcode`` are all fine as labels, because the write path
+    quotes them. What is not fine is a label the sanitiser has to *change*, since
+    the graph would then silently hold something other than what was declared:
+    ``Org`) DETACH DELETE (n) //`` was written as a label reading
+    ``Org) DETACH DELETE (n) //``, harmless but nonsense.
+    """
+    if sanitize_cypher_label(label) != label:
+        raise MappingError(
+            f"label {label!r} contains characters that cannot be written as a "
+            "label, so the graph would hold a different name than the one "
+            "declared. Remove them from the label."
+        )
+    return label
+
 
 _TRUE = frozenset({"1", "true", "t", "yes", "y", "on"})
 _FALSE = frozenset({"0", "false", "f", "no", "n", "off"})
@@ -101,12 +151,25 @@ class Column:
         if self.type == "LIST":
             if isinstance(raw, (list, tuple)):
                 return list(raw)
-            return [part.strip() for part in str(raw).split(",") if part.strip()]
+            # Parsed as one CSV row rather than split on commas, so a quoted
+            # element containing a comma survives: `"a,b",c` is two items, not
+            # three. A naive split turns one value into several silently.
+            try:
+                parts = next(csv.reader([str(raw)]))
+            except (csv.Error, StopIteration):
+                parts = str(raw).split(",")
+            return [part.strip() for part in parts if part.strip()]
         try:
             if self.type == "INTEGER":
                 return int(raw) if not isinstance(raw, str) else int(raw.replace(",", ""))
             if self.type == "FLOAT":
-                return float(raw) if not isinstance(raw, str) else float(raw.replace(",", ""))
+                value = float(raw) if not isinstance(raw, str) else float(raw.replace(",", ""))
+                if not math.isfinite(value):
+                    # "nan" and "inf" are valid float literals and poison every
+                    # aggregate they reach: one NaN turns an avg() over the whole
+                    # column into NaN, with nothing to point at.
+                    raise ValueError(f"not a finite number: {raw!r}")
+                return value
             if self.type == "BOOLEAN":
                 if isinstance(raw, bool):
                     return raw
@@ -138,6 +201,7 @@ def _as_columns(properties: dict[str, Column | str] | None) -> dict[str, Column]
                 f"property {name!r} is written by the SDK and cannot be mapped; "
                 f"reserved names are {', '.join(sorted(RESERVED_PROPERTY_NAMES))}"
             )
+        _check_identifier("property", name)
         out[name] = spec if isinstance(spec, Column) else Column(str(spec))
     return out
 
@@ -183,6 +247,7 @@ class NodeMapping:
     def __post_init__(self) -> None:
         if not self.label or not self.label.strip():
             raise MappingError("NodeMapping.label must be a non-empty label")
+        _check_label(self.label)
         if not self.key or not self.key.strip():
             raise MappingError(f"NodeMapping({self.label!r}) must declare a key column")
         if self.reference and self.properties:
@@ -258,6 +323,7 @@ class EdgeMapping:
         for label, value in (("type", self.type), ("source", self.source), ("target", self.target)):
             if not value or not str(value).strip():
                 raise MappingError(f"EdgeMapping.{label} must be non-empty")
+        _check_identifier("relationship type", self.type)
         normalised: dict[str, Column | str] = dict(_as_columns(self.properties))
         self.properties = normalised
 

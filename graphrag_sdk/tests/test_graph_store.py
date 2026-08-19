@@ -17,13 +17,28 @@ def graph_store(mock_connection):
     return GraphStore(mock_connection)
 
 
+def _upsert_queries(mock_connection):
+    """The write queries a call made, excluding the index it ensures first.
+
+    ``upsert_nodes`` range-indexes a label's ``id`` the first time it writes to
+    that label, because a MERGE can only use an index on the label in its own
+    pattern. Asserting a raw call count here would make every test in this class
+    a tripwire for that unrelated detail.
+    """
+    return [
+        call for call in mock_connection.query.call_args_list
+        if "CREATE INDEX" not in call[0][0]
+    ]
+
+
 class TestGraphStoreUpsertNodes:
     async def test_upsert_single_node(self, graph_store, mock_connection):
         nodes = [GraphNode(id="n1", label="Person", properties={"name": "Alice"})]
         result = await graph_store.upsert_nodes(nodes)
         assert result == 1
-        mock_connection.query.assert_called_once()
-        cypher = mock_connection.query.call_args[0][0]
+        writes = _upsert_queries(mock_connection)
+        assert len(writes) == 1
+        cypher = writes[0][0][0]
         assert "UNWIND" in cypher
         assert "MERGE" in cypher
         assert "Person" in cypher
@@ -36,7 +51,8 @@ class TestGraphStoreUpsertNodes:
         ]
         result = await graph_store.upsert_nodes(nodes)
         assert result == 2
-        assert mock_connection.query.call_count == 2
+        # One write per label, and an id index ensured for each.
+        assert len(_upsert_queries(mock_connection)) == 2
 
     async def test_upsert_empty_list(self, graph_store, mock_connection):
         result = await graph_store.upsert_nodes([])
@@ -67,12 +83,26 @@ class TestGraphStoreUpsertNodes:
         self, graph_store, mock_connection
     ):
         """Per-item fallback path should also use sanitized IDs and properties."""
-        mock_connection.query = AsyncMock(side_effect=[Exception("batch fail"), MagicMock()])
+
+        # Fail the batch write specifically, rather than "the first query": the
+        # upsert also ensures an id index, and positional side effects would put
+        # the failure on the wrong call.
+        async def fail_the_batch(cypher, params=None):
+            if "UNWIND" in cypher:
+                raise Exception("batch fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_the_batch)
         await graph_store.upsert_nodes(
             [GraphNode(id="id\x00\x01", label="X", properties={"t": "A\x00B"})]
         )
-        # Second call is the per-item fallback
-        fallback_params = mock_connection.query.call_args_list[1][0][1]
+        fallback = [
+            call
+            for call in mock_connection.query.call_args_list
+            if "UNWIND" not in call[0][0] and "CREATE INDEX" not in call[0][0]
+        ]
+        assert len(fallback) == 1, "the per-item fallback should have run once"
+        fallback_params = fallback[0][0][1]
         assert fallback_params["id"] == "id"
         assert fallback_params["properties"]["t"] == "AB"
 

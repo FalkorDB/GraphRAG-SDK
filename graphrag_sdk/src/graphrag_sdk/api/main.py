@@ -1790,6 +1790,10 @@ class GraphRAG:
         # ontology is rejected while the graph is still clean.
         self._global_ontology = await self._register_structured_ontology(mapping.to_ontology())
 
+        # Before the writes, not after: every node this pipeline creates is a
+        # MERGE on `id`, and without a range index each one scans the label.
+        await self._vector_store.create_id_range_indices()
+
         pipeline = StructuredIngestionPipeline(
             loader=record_loader or CsvRecordLoader(document_id=document_id),
             graph_store=self._graph_store,
@@ -2530,6 +2534,27 @@ class GraphRAG:
                 f"Pass if_missing='ingest' to upsert instead."
             )
 
+        # A document remembers how it was written, and an update may not change
+        # its mind. Re-reading a CSV as prose replaced its record chunks with one
+        # text chunk and took every entity with them: measured as two
+        # organizations before the call and none after, with nothing raised. The
+        # same call arrives from apply_changes(modified=[...]), which is how a
+        # CI-driven sync would have quietly emptied a table.
+        existing_kind = existing.kind or "prose"
+        wanted_kind = "structured" if mapping is not None else "prose"
+        if existing_kind != wanted_kind:
+            if wanted_kind == "prose":
+                raise ValueError(
+                    f"Document '{resolved_id}' was written from a structured source, "
+                    "so updating it without 'mapping' would re-read it as prose and "
+                    "delete its records. Pass the mapping that describes it."
+                )
+            raise ValueError(
+                f"Document '{resolved_id}' was written from text, so it cannot be "
+                "updated with a 'mapping'. Delete it first with delete_document() "
+                "if the source really is structured now."
+            )
+
         if existing.content_hash == new_hash:
             ctx.log(f"update: content hash matches for '{resolved_id}', no-op")
             return UpdateResult(
@@ -2567,6 +2592,7 @@ class GraphRAG:
         # crash-safe, and a second copy of that ordering would drift out of step.
         if mapping is not None:
             self._global_ontology = await self._register_structured_ontology(mapping.to_ontology())
+            await self._vector_store.create_id_range_indices()
             structured_pipeline = StructuredIngestionPipeline(
                 loader=record_loader or CsvRecordLoader(document_id=pending_id),
                 graph_store=self._graph_store,

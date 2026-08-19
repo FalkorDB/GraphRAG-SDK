@@ -247,3 +247,61 @@ class TestTableShorthand:
         assert (node.label, node.key, node.name) == ("Organization", "org_id", "org_name")
         assert node.properties["employee_count"].type == "INTEGER"
         assert node.properties["hq_country"].type == "STRING"
+
+
+class TestNamesMustBeUsable:
+    """A declaration that cannot be written to a graph is rejected at the point
+    it is written, not deep inside the driver.
+
+    Measured before this: a property named with a backtick and a comment marker
+    surfaced as ``DatabaseError: Invalid input at end of input`` from a query the
+    caller never wrote. No injection occurred, but nothing pointed at the cause.
+    """
+
+    HOSTILE = "x`) DETACH DELETE (n) //"
+
+    def test_a_property_name_must_be_an_identifier(self):
+        with pytest.raises(MappingError, match="not a usable name"):
+            NodeMapping(label="Org", key="k", properties={self.HOSTILE: "c"})
+
+    def test_a_property_name_with_a_space_is_rejected(self):
+        """Generated Cypher writes these as ``n.name``, so a name needing quotes
+        is not usable even though a graph would store it."""
+        with pytest.raises(MappingError, match="not a usable name"):
+            NodeMapping(label="Org", key="k", properties={"hq country": "c"})
+
+    def test_an_awkward_column_gets_a_usable_property_name(self):
+        """The escape: name the property, point it at the column."""
+        node = NodeMapping(label="Org", key="k", properties={"hq_country": Column("HQ Country")})
+        assert node.typed_properties["hq_country"].name == "HQ Country"
+
+    def test_a_relationship_type_must_be_an_identifier(self):
+        with pytest.raises(MappingError, match="not a usable name"):
+            EdgeMapping(type="WORKS AT", source="a", target="b")
+
+    def test_a_label_that_would_be_silently_rewritten_is_rejected(self):
+        """Labels are quoted on write, so spaces and unicode are fine. What is
+        not fine is a label the sanitiser has to change, because the graph would
+        then hold a different name than the one declared."""
+        with pytest.raises(MappingError, match="cannot be written as a label"):
+            NodeMapping(label="Org`) DETACH DELETE (n) //", key="k")
+
+    @pytest.mark.parametrize("label", ["Person", "Legal Entity", "Org-Unit", "Ünïcode"])
+    def test_a_label_a_graph_can_hold_is_accepted(self, label):
+        assert NodeMapping(label=label, key="k").label == label
+
+
+class TestCastingRefusesValuesThatPoisonQueries:
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "NaN", "Infinity"])
+    def test_non_finite_floats_are_rejected(self, raw):
+        """One NaN turns an ``avg()`` over the whole column into NaN, with
+        nothing in the result to point at the row that caused it."""
+        with pytest.raises(MappingError):
+            Column("score", "FLOAT").cast(raw)
+
+    def test_a_quoted_list_element_may_contain_a_comma(self):
+        """Splitting on commas turns one value into several, silently."""
+        assert Column("tags", "LIST").cast('"a,b",c') == ["a,b", "c"]
+
+    def test_an_ordinary_list_still_splits(self):
+        assert Column("tags", "LIST").cast("a,b, c") == ["a", "b", "c"]

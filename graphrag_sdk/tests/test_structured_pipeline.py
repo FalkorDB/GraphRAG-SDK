@@ -327,3 +327,58 @@ class TestStructuredIngest:
         result = await pipe.run(str(path), mapping, ctx)
         assert result.edges == 0
         assert "LINKS" not in store.rel_types()
+
+
+class TestRowsSharingAKey:
+    """A chunk identifies a row; only the entity identifies by key.
+
+    Measured before this: two rows keyed ``K1`` produced one chunk holding the
+    first row's cells while the ingest reported two records. A source whose key
+    column turns out not to be unique lost rows with nothing raised or logged.
+    """
+
+    MAPPING = Table("Org", key="k", name="n", v=Column("v", "INTEGER"))
+
+    @pytest.fixture
+    def duplicate_csv(self, tmp_path):
+        path = tmp_path / "dup.csv"
+        path.write_text("k,n,v\nK1,First,1\nK1,Second,2\nK2,Other,3\n", encoding="utf-8")
+        return str(path)
+
+    async def test_every_row_keeps_its_own_chunk(self, pipeline, duplicate_csv, ctx: Context):
+        pipe, store = pipeline
+        result = await pipe.run(duplicate_csv, self.MAPPING, ctx)
+        assert result.records == 3
+        chunks = [n for n in store.nodes if n.label == "Chunk"]
+        assert len(chunks) == 3, "no row may be dropped because another shares its key"
+        assert len({c.id for c in chunks}) == 3, "and their ids must differ"
+
+    async def test_rows_sharing_a_key_are_one_entity(self, pipeline, duplicate_csv, ctx: Context):
+        pipe, store = pipeline
+        await pipe.run(duplicate_csv, self.MAPPING, ctx)
+        assert {n.id for n in store.entity_nodes()} == {
+            compute_entity_id("K1", "Org"),
+            compute_entity_id("K2", "Org"),
+        }
+
+    async def test_a_repeated_key_is_reported(self, pipeline, duplicate_csv, ctx, caplog):
+        """Silently collapsing rows onto one entity is the kind of thing that is
+        only noticed months later, so it is said out loud."""
+        pipe, _ = pipeline
+        with caplog.at_level("WARNING"):
+            await pipe.run(duplicate_csv, self.MAPPING, ctx)
+        assert any("not unique" in record.getMessage() for record in caplog.records)
+
+    async def test_a_unique_key_reports_nothing(self, pipeline, employees_csv, ctx, caplog):
+        pipe, _ = pipeline
+        with caplog.at_level("WARNING"):
+            await pipe.run(str(employees_csv), EMPLOYEES, ctx)
+        assert not [r for r in caplog.records if "not unique" in r.getMessage()]
+
+    async def test_the_first_row_of_a_key_keeps_its_chunk_id(self):
+        """The occurrence suffix must not move ids that already exist in a graph,
+        so occurrence zero reproduces the original digest."""
+        from graphrag_sdk.ingestion.structured_pipeline import record_chunk_uid
+
+        assert record_chunk_uid("d", "K1") == record_chunk_uid("d", "K1", 0)
+        assert record_chunk_uid("d", "K1", 1) != record_chunk_uid("d", "K1", 0)

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+from collections.abc import Iterator
 from typing import Any
 
 from graphrag_sdk.core.context import Context
@@ -23,20 +25,30 @@ from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, RecordLoad
 from graphrag_sdk.ingestion.mapping import Column, MappingError, NodeMapping, RecordMapping
 from graphrag_sdk.storage.graph_store import ReferenceNode
 
+logger = logging.getLogger(__name__)
+
 # Chunk properties the writer owns. A column with one of these names is stored
 # under a "col_" prefix rather than silently overwriting the chunk's identity.
 _CHUNK_RESERVED = frozenset({"id", "text", "index", "kind", "record_key", "embedding"})
 
 
-def record_chunk_uid(document_uid: str, record_key: str) -> str:
+def record_chunk_uid(document_uid: str, record_key: str, occurrence: int = 0) -> str:
     """Deterministic chunk id for one record.
 
     Keyed on the *effective* document uid, never on a canonical one. Keying a
     record chunk on a canonical document id makes a pending update MERGE onto the
     live document's chunks, which the cutover then deletes: measured as three
     chunks before and zero after, with no exception raised.
+
+    ``occurrence`` distinguishes rows that share a key. A chunk identifies a
+    *row*; only the entity identifies by key. Without this, a source whose key
+    column is not unique silently loses rows: two rows keyed K1 produced one
+    chunk holding the first row's cells, while the ingest reported two. The
+    default reproduces the original digest exactly, so chunk ids already in a
+    graph do not move.
     """
-    digest = hashlib.sha256(f"{document_uid}::{record_key}".encode()).hexdigest()
+    suffix = "" if occurrence == 0 else f"::{occurrence}"
+    digest = hashlib.sha256(f"{document_uid}::{record_key}{suffix}".encode()).hexdigest()
     return f"rec_{digest[:24]}"
 
 
@@ -87,6 +99,44 @@ def render_record(record: dict[str, Any]) -> str:
         if value not in (None, "")
     ]
     return ", ".join(parts) + "." if parts else ""
+
+
+def _unique_references(references: list[ReferenceNode]) -> list[ReferenceNode]:
+    """First occurrence of each referenced id, in order.
+
+    Order matters: a reference is written ON CREATE, so the first entry is the one
+    whose name and key land on a node that does not exist yet.
+    """
+    seen: set[str] = set()
+    unique: list[ReferenceNode] = []
+    for reference in references:
+        if reference.id in seen:
+            continue
+        seen.add(reference.id)
+        unique.append(reference)
+    return unique
+
+
+def _walk_records(
+    batch: RecordBatch, mapping: RecordMapping, document_uid: str
+) -> Iterator[tuple[int, dict[str, Any], str, str]]:
+    """Yield ``(index, record, record_key, chunk_uid)`` for every usable row.
+
+    The write path walks the records twice, once for chunks and once for the
+    mapping, and both need the *same* chunk id per row. Deriving that in two
+    places is how they would drift, so it is derived here and shared. Rows
+    without a key are skipped by both passes for the same reason: with no key a
+    row has no stable identity, so it could never be updated or deleted later.
+    """
+    anchor = mapping.anchor
+    occurrences: dict[str, int] = {}
+    for index, record in enumerate(batch):
+        record_key = str(record.get(anchor.key) or "").strip()
+        if not record_key:
+            continue
+        occurrence = occurrences.get(record_key, 0)
+        occurrences[record_key] = occurrence + 1
+        yield index, record, record_key, record_chunk_uid(document_uid, record_key, occurrence)
 
 
 def record_cells(record: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +301,10 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         # Steps 4 and 5. Declared columns become entities and edges.
         nodes, references, edges = self._map_records(batch, mapping, doc_info, result)
         await self.graph_store.upsert_nodes(nodes)
-        await self.graph_store.upsert_reference_nodes(references)
+        # One entry per row arrives here, but a foreign key repeats: 25k rows
+        # pointing at 50 organizations produced 25k MERGEs for 50 nodes. They are
+        # ON CREATE only, so every repeat after the first is pure waste.
+        await self.graph_store.upsert_reference_nodes(_unique_references(references))
         await self.graph_store.upsert_relationships(edges)
 
         ctx.log(
@@ -277,19 +330,18 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         under a changed declaration produce a different graph, so treating them
         as unchanged would skip an update that was needed.
         """
-        anchor = mapping.anchor
         digest = _new_record_digest(mapping, batch.columns)
-        chunks: list[TextChunk] = []
-        for index, record in enumerate(batch):
+        for record in batch:
             _feed_record(digest, batch.columns, record)
-            record_key = str(record.get(anchor.key) or "").strip()
-            if not record_key:
-                # Without its key a record has no stable identity, so it could
-                # not be updated or deleted later. Skipping is the honest choice.
-                continue
+        result.content_hash = digest.hexdigest()
+
+        chunks: list[TextChunk] = []
+        key_counts: dict[str, int] = {}
+        for index, record, record_key, chunk_uid in _walk_records(batch, mapping, doc_info.uid):
+            key_counts[record_key] = key_counts.get(record_key, 0) + 1
             chunks.append(
                 TextChunk(
-                    uid=record_chunk_uid(doc_info.uid, record_key),
+                    uid=chunk_uid,
                     text=render_record(record),
                     index=index,
                     metadata={
@@ -300,7 +352,27 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 )
             )
         result.records = result.chunks = len(chunks)
-        result.content_hash = digest.hexdigest()
+
+        repeated = {key: count for key, count in key_counts.items() if count > 1}
+        if repeated:
+            # Each row still gets its own chunk, so no cells are lost. But the
+            # key identifies the *entity*, so repeated keys mean several rows
+            # describe one entity and only one row's values survive on it. Which
+            # one is not worth promising: within a write batch FalkorDB keeps the
+            # first, across batches the later one wins. Usually a repeated key
+            # means the wrong column was declared, which is worth saying out loud
+            # rather than leaving to be discovered.
+            sample = ", ".join(f"{key!r} x{count}" for key, count in sorted(repeated.items())[:5])
+            logger.warning(
+                "%s: column %r is the declared key but is not unique (%d repeated "
+                "values, e.g. %s). Every row is kept as its own chunk, but rows "
+                "sharing a key describe one entity, so only one row's values "
+                "survive on it.",
+                doc_info.uid,
+                mapping.anchor.key,
+                len(repeated),
+                sample,
+            )
         return TextChunks(chunks=chunks)
 
     def _map_records(
@@ -315,7 +387,6 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         This is why RecordBatch hands over a factory. A one-shot iterator is
         empty by the time this pass runs, and nothing raises.
         """
-        anchor = mapping.anchor
         # Normalised once per source rather than once per record: for a large
         # table the difference is millions of redundant dict builds.
         node_columns = {node.handle: node.typed_properties for node in mapping.nodes}
@@ -326,11 +397,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         references: list[ReferenceNode] = []
         edges: list[GraphRelationship] = []
 
-        for record in batch:
-            record_key = str(record.get(anchor.key) or "").strip()
-            if not record_key:
-                continue
-            chunk_uid = record_chunk_uid(doc_info.uid, record_key)
+        for _index, record, _record_key, chunk_uid in _walk_records(batch, mapping, doc_info.uid):
             ids: dict[str, str] = {}
 
             for node in mapping.nodes:

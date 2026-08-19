@@ -649,3 +649,76 @@ class TestAggregationThroughThePublicApi:
     ):
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
         assert await rag.query("MATCH (p:Person {name:'Nobody'}) RETURN p.name") == []
+
+
+class TestADocumentRemembersHowItWasWritten:
+    """An update may not change its mind about what a document is.
+
+    Measured before this: ``update(path)`` on a document written from a CSV
+    re-read it as prose, replaced its record chunks with one text chunk, and took
+    every entity with them. Two organizations before the call, none after, and
+    nothing raised. The same call arrives from ``apply_changes(modified=[...])``,
+    which is how a scheduled sync would have quietly emptied a table.
+    """
+
+    async def test_updating_a_table_as_prose_is_refused(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(orgs_csv, mapping=ORGS)
+
+        with pytest.raises(ValueError, match="written from a structured source"):
+            await rag.update(orgs_csv)
+
+        assert await _rows(rag, "MATCH (o:Organization) RETURN count(o)") == [[2]]
+
+    async def test_apply_changes_reports_it_instead_of_destroying_the_table(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(orgs_csv, mapping=ORGS)
+
+        result = await rag.apply_changes(modified=[orgs_csv])
+
+        assert result.modified[0].error_type == "ValueError"
+        assert await _rows(rag, "MATCH (o:Organization) RETURN count(o)") == [[2]]
+
+    async def test_updating_prose_with_a_mapping_is_refused(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, orgs_csv
+    ):
+        llm = scripted_llm([("Acme Corp", "Organization", "A company")])
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(text="Acme Corp exists.", document_id="note.txt", resolver=resolver)
+
+        with pytest.raises(ValueError, match="written from text"):
+            await rag.update(orgs_csv, mapping=ORGS, document_id="note.txt")
+
+    async def test_the_kind_is_persisted_on_the_document(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv
+    ):
+        """The guard reads this back, so it has to survive a reconnect rather than
+        living only in the process that ran the ingest."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(orgs_csv, mapping=ORGS)
+        record = await rag._graph_store.get_document_record(os.path.normpath(orgs_csv))
+        assert record is not None and record.kind == "structured"
+
+
+class TestWritesAreIndexedForScale:
+    async def test_every_written_label_gets_an_id_index(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv, employees_csv
+    ):
+        """Every write is ``MERGE (n:Label {id: ...})``, and a MERGE can only use
+        an index on the label in its own pattern. Indexing ``__Entity__.id`` does
+        not help, because that label is added by a later SET. Without a per-label
+        index, writing n nodes costs O(n^2): 25k rows took 95s, and 14s with.
+        """
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(orgs_csv, mapping=ORGS)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+
+        rows = await rag.query(
+            "CALL db.indexes() YIELD label, properties, types RETURN label, properties, types"
+        )
+        indexed = {row[0] for row in rows if "id" in (row[1] or []) and "RANGE" in str(row[2])}
+        assert {"Person", "Organization", "Chunk", "Document"} <= indexed

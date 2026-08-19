@@ -70,6 +70,8 @@ class GraphStore:
 
     def __init__(self, connection: FalkorDBConnection) -> None:
         self._conn = connection
+        # Labels whose ``id`` has been range-indexed by this instance.
+        self._id_indexed_labels: set[str] = set()
 
     # ── Write Operations ─────────────────────────────────────────
 
@@ -81,6 +83,31 @@ class GraphStore:
         "MENTIONED_IN": ("__Entity__", "Chunk"),
         "RELATES": ("__Entity__", "__Entity__"),
     }
+
+    async def _ensure_label_id_index(self, label: str) -> None:
+        """Range-index ``id`` on a label before MERGEing into it.
+
+        Every node write is ``MERGE (n:`Label` {id: ...})``, and a MERGE can only
+        use an index on the label in the *pattern*. Indexing ``__Entity__.id`` does
+        not help, because that label is added by a later ``SET`` — the MERGE still
+        scans every node of the specific label, which makes writing n nodes cost
+        O(n^2). Measured on a structured ingest: 25k rows took 95s with an
+        ``__Entity__`` index alone.
+
+        Labels come from the ontology and from mappings, so they cannot be known
+        up front and are indexed the first time they are written. Attempted once
+        per label per instance; failure is not fatal, it only costs speed.
+        """
+        if label in self._id_indexed_labels:
+            return
+        self._id_indexed_labels.add(label)
+        safe_label = sanitize_cypher_label(label)
+        try:
+            await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.id)")
+            logger.debug("Created range index on %s.id", safe_label)
+        except Exception as exc:
+            # Almost always "already indexed", which is the steady state.
+            logger.debug("Range index on %s.id not created: %s", safe_label, exc)
 
     async def upsert_nodes(self, nodes: list[GraphNode]) -> int:
         """Batch upsert nodes using UNWIND, grouped by label.
@@ -104,6 +131,7 @@ class GraphStore:
 
         count = 0
         for label, group in by_label.items():
+            await self._ensure_label_id_index(label)
             safe_label = sanitize_cypher_label(label)
             is_entity = label not in self._STRUCTURAL_LABELS
             # Sanitize IDs once and filter out None / empty (bad LLM extraction)
@@ -210,6 +238,7 @@ class GraphStore:
 
         count = 0
         for label, batch_all in by_label.items():
+            await self._ensure_label_id_index(label)
             safe_label = sanitize_cypher_label(label)
             for start in range(0, len(batch_all), self._BATCH_SIZE):
                 batch = batch_all[start : start + self._BATCH_SIZE]
@@ -503,7 +532,7 @@ class GraphStore:
     # Cypher stays here per the repository pattern — facade calls these.
 
     async def get_document_record(self, document_id: str) -> DocumentRecord | None:
-        """Return persisted Document state (``path``, ``content_hash``)
+        """Return persisted Document state (``path``, ``content_hash``, ``kind``)
         as a typed ``DocumentRecord``, or ``None`` if no such Document.
 
         Pre-1.1.0 Document nodes lack ``content_hash`` — the field will
@@ -512,13 +541,17 @@ class GraphStore:
         """
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
-            "d.content_hash AS content_hash LIMIT 1",
+            "d.content_hash AS content_hash, d.kind AS kind LIMIT 1",
             {"id": document_id},
         )
         if not result.result_set:
             return None
         row = result.result_set[0]
-        return DocumentRecord(path=row[0], content_hash=row[1])
+        return DocumentRecord(
+            path=row[0],
+            content_hash=row[1],
+            kind=row[2] if len(row) > 2 else None,
+        )
 
     async def get_document_entity_candidates(self, document_id: str) -> list[str]:
         """Return ids of entities mentioned in this document's chunks.

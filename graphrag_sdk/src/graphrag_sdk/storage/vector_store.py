@@ -82,6 +82,7 @@ class VectorStore:
         self._embedder = embedder
         self.embedding_dimension = embedding_dimension
         self._indices_ensured: bool = False
+        self._id_indices_ensured: bool = False
 
     # ── Index Management ─────────────────────────────────────────
     #
@@ -105,7 +106,7 @@ class VectorStore:
                     f"Created vector index on {descriptor} (dim={self.embedding_dimension})"
                 )
             else:
-                logger.info(f"Created fulltext index on {descriptor}")
+                logger.info(f"Created {kind} index on {descriptor}")
             return True
         except Exception as exc:
             msg = str(exc).lower()
@@ -590,6 +591,37 @@ class VectorStore:
 
     # ── Batch Operations ──────────────────────────────────────────
 
+    # Every write in the SDK is a MERGE on `id`: Document, Chunk and every
+    # entity. Without a range index each of those is a full label scan, so a
+    # single source's writes cost O(n^2) in the number of nodes it creates.
+    # Measured on a structured ingest before these existed: 500 rows in 0.36s,
+    # 1k in 1.13s, 2k in 3.98s, 4k in 15.21s — time quadrupling as rows doubled,
+    # which extrapolates to hours for a table of any real size. Prose never
+    # showed it because a document contributes few nodes per ingest.
+    _ID_INDEX_LABELS = ("Document", "Chunk", "__Entity__")
+
+    async def create_id_range_indices(self) -> bool:
+        """Range-index the ``id`` property on the labels the write path MERGEs.
+
+        Cheap and idempotent, but only attempted once per instance: re-running it
+        logs three "already indexed" failures per ingest, and these need to be in
+        place *before* a large write rather than after it.
+        """
+        if self._id_indices_ensured:
+            return True
+        ok = True
+        for label in self._ID_INDEX_LABELS:
+            ok = (
+                await self._try_create_index(
+                    f"CREATE INDEX FOR (n:`{label}`) ON (n.id)",
+                    f"{label}.id",
+                    "range",
+                )
+                and ok
+            )
+        self._id_indices_ensured = ok
+        return ok
+
     async def ensure_indices(self) -> dict[str, bool]:
         """Create all standard vector and fulltext indices (idempotent).
 
@@ -616,6 +648,7 @@ class VectorStore:
         results: dict[str, bool] = {}
 
         creators: list[tuple[str, Any]] = [
+            ("range_ids", self.create_id_range_indices),
             ("vector_Chunk", self.create_chunk_vector_index),
             ("vector_Entity", self.create_entity_vector_index),
             ("vector_RELATES", self.create_relates_vector_index),

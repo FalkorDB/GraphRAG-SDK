@@ -131,6 +131,13 @@ class DocumentRecord(DataModel):
 
     path: str | None = None
     content_hash: str | None = None
+    kind: str | None = None
+    """How the document was written: ``"structured"`` for a mapped source.
+
+    Read so an update cannot re-interpret a table as prose. Absent on documents
+    written before this field existed, and on every extracted document, so treat
+    ``None`` as "prose".
+    """
 
 
 class ChunkEntityRow(DataModel):

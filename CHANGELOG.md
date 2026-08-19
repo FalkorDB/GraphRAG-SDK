@@ -83,6 +83,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Writes are indexed, so a large source is not quadratic.** Every write is
+  `MERGE (n:Label {id: ...})`, and a MERGE can only use an index on the label in
+  its own pattern — indexing `__Entity__.id` does not help, because that label is
+  added by a later `SET`. Nothing indexed `id` at all, so writing n nodes cost
+  O(n²). Measured on a structured ingest: 4,000 rows took 15.2s and 50,000 would
+  have taken hours; they now take 1.9s and 38.5s. Range indices on `id` are
+  created for `Document`, `Chunk` and every label the write path touches, before
+  the write rather than after. Prose ingestion benefits too, where it was hidden
+  by documents contributing few nodes each.
+
+- **An update cannot re-interpret a table as prose.** `update(path)` without the
+  mapping re-read a CSV as text, replaced its record chunks with one text chunk
+  and deleted every entity: two organizations before the call, none after,
+  nothing raised. Arriving via `apply_changes(modified=[...])`, that is how a
+  scheduled sync would have quietly emptied a table. A Document now records how
+  it was written and the mismatch is refused in both directions.
+
+- **Rows sharing a key no longer disappear.** A chunk identifies a row, but its
+  id was derived from the row's *key*, so two rows with the same key collapsed
+  into one chunk holding the first row's cells while the ingest reported both.
+  Every row now keeps its own chunk, and a key that is not unique is logged with
+  the column and the repeated values, since it usually means the wrong column was
+  declared. Chunk ids for unique keys are unchanged.
+
+- **A declaration that cannot be written is rejected where it is written.**
+  Property names and relationship types must be identifiers, because generated
+  Cypher writes them as bare names; a backtick in a property name previously
+  surfaced as `DatabaseError: Invalid input at end of input` from a query the
+  caller never wrote. Labels stay permissive (`Legal Entity` is fine) but are
+  refused when the sanitiser would silently rewrite them.
+
+- **`FLOAT` rejects `nan` and `inf`,** which are valid float literals and turn an
+  `avg()` over the whole column into `NaN` with nothing to point at. **`LIST` is
+  parsed as a CSV row,** so a quoted element may contain a comma instead of being
+  split into two.
+
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.
 
