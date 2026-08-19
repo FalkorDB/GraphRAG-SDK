@@ -7,6 +7,8 @@ header the mapping cannot address.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from graphrag_sdk.core.context import Context
@@ -41,10 +43,25 @@ class TestCsvRecordLoader:
         assert first == second
         assert len(second) == 2
 
-    async def test_document_uid_defaults_to_the_file_name(self, csv_file, ctx: Context):
-        """``update()`` and ``delete_document()`` address a source by this id."""
+    async def test_document_uid_defaults_to_the_normalised_path(self, csv_file, ctx: Context):
+        """``update()`` and ``delete_document()`` address a source by this id, and
+        they derive it with ``os.path.normpath``. Defaulting to the bare file name
+        would both diverge from that and collide two same-named files from
+        different directories onto one Document."""
         batch = await CsvRecordLoader().load_records(str(csv_file), ctx)
-        assert batch.document_info.uid == "employees.csv"
+        assert batch.document_info.uid == os.path.normpath(str(csv_file))
+
+    async def test_same_name_in_two_directories_are_two_documents(self, tmp_path, ctx: Context):
+        rows = "org_id\nORG-1\n"
+        first, second = tmp_path / "a", tmp_path / "b"
+        first.mkdir()
+        second.mkdir()
+        (first / "orgs.csv").write_text(rows, encoding="utf-8")
+        (second / "orgs.csv").write_text(rows, encoding="utf-8")
+        loader = CsvRecordLoader()
+        one = await loader.load_records(str(first / "orgs.csv"), ctx)
+        two = await loader.load_records(str(second / "orgs.csv"), ctx)
+        assert one.document_info.uid != two.document_info.uid
 
     async def test_document_id_can_be_overridden(self, csv_file, ctx: Context):
         loader = CsvRecordLoader(document_id="hr-export")

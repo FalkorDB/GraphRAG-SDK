@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -92,8 +93,12 @@ class CsvRecordLoader(RecordLoaderStrategy):
         delimiter: Field separator. ``None`` sniffs it from the first kilobyte,
             which handles comma and tab without the caller choosing.
         encoding: File encoding.
-        document_id: Overrides the Document node id. Defaults to the file name,
-            which is the stable handle ``update()`` and ``delete_document()`` use.
+        document_id: Overrides the Document node id. Defaults to
+            ``os.path.normpath(source)``, matching what the text path derives for
+            a file so ``ingest``, ``update`` and ``delete_document`` all address a
+            source the same way. Using the bare file name here would both diverge
+            from that convention and collide two same-named files from different
+            directories onto one Document.
     """
 
     def __init__(
@@ -153,7 +158,7 @@ class CsvRecordLoader(RecordLoaderStrategy):
             open_records=open_records,
             columns=columns,
             document_info=DocumentInfo(
-                uid=self._document_id or path.name,
+                uid=self._document_id or os.path.normpath(source),
                 path=str(path),
                 metadata={"kind": "structured", "delimiter": delimiter},
             ),

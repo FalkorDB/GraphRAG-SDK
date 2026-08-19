@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -190,9 +191,34 @@ class NodeMapping:
                 "properties: a reference claims the entity exists, never what it "
                 "looks like. Describe it in the source that owns it."
             )
-        self.properties = _as_columns(self.properties)
+        # The field's declared type is the *input* contract (a bare string is
+        # accepted as STRING); what it holds after this line is always a Column.
+        # ``typed_properties`` is the accessor that states that.
+        normalised: dict[str, Column | str] = dict(_as_columns(self.properties))
+        self.properties = normalised
         if self.alias is None:
             self.alias = self.label
+
+    @property
+    def handle(self) -> str:
+        """The alias, which ``__post_init__`` guarantees is set.
+
+        ``alias`` is declared optional because the caller may omit it, but it is
+        never ``None`` once constructed. This says so in a way a type checker can
+        follow, without asking every caller to prove it again.
+        """
+        return self.alias or self.label
+
+    @property
+    def typed_properties(self) -> dict[str, Column]:
+        """``properties`` as columns. ``__post_init__`` already normalised them.
+
+        Hoist this out of a per-record loop rather than calling it per row.
+        """
+        return {
+            name: spec if isinstance(spec, Column) else Column(str(spec))
+            for name, spec in self.properties.items()
+        }
 
     @property
     def columns(self) -> set[str]:
@@ -200,7 +226,7 @@ class NodeMapping:
         used = {self.key}
         if self.name:
             used.add(self.name)
-        used.update(col.name for col in self.properties.values())
+        used.update(col.name for col in self.typed_properties.values())
         return used
 
 
@@ -232,11 +258,20 @@ class EdgeMapping:
         for label, value in (("type", self.type), ("source", self.source), ("target", self.target)):
             if not value or not str(value).strip():
                 raise MappingError(f"EdgeMapping.{label} must be non-empty")
-        self.properties = _as_columns(self.properties)
+        normalised: dict[str, Column | str] = dict(_as_columns(self.properties))
+        self.properties = normalised
+
+    @property
+    def typed_properties(self) -> dict[str, Column]:
+        """``properties`` as columns, normalised in ``__post_init__``."""
+        return {
+            name: spec if isinstance(spec, Column) else Column(str(spec))
+            for name, spec in self.properties.items()
+        }
 
     @property
     def columns(self) -> set[str]:
-        return {col.name for col in self.properties.values()}
+        return {col.name for col in self.typed_properties.values()}
 
 
 @dataclass
@@ -265,7 +300,7 @@ class RecordMapping:
     def __post_init__(self) -> None:
         if not self.nodes:
             raise MappingError("a RecordMapping must declare at least one node")
-        aliases = [node.alias for node in self.nodes]
+        aliases = [node.handle for node in self.nodes]
         duplicates = {a for a in aliases if aliases.count(a) > 1}
         if duplicates:
             raise MappingError(
@@ -327,19 +362,19 @@ class RecordMapping:
         for node in self.nodes:
             if node.key not in available:
                 problems.append(
-                    f"node {node.alias!r}: key column {node.key!r} is not in the source"
+                    f"node {node.handle!r}: key column {node.key!r} is not in the source"
                 )
             if node.name and node.name not in available:
                 problems.append(
-                    f"node {node.alias!r}: name column {node.name!r} is not in the source"
+                    f"node {node.handle!r}: name column {node.name!r} is not in the source"
                 )
-            for prop, col in node.properties.items():
+            for prop, col in node.typed_properties.items():
                 if col.name not in available:
                     problems.append(
-                        f"node {node.alias!r}: property {prop!r} reads missing column {col.name!r}"
+                        f"node {node.handle!r}: property {prop!r} reads missing column {col.name!r}"
                     )
         for edge in self.edges:
-            for prop, col in edge.properties.items():
+            for prop, col in edge.typed_properties.items():
                 if col.name not in available:
                     problems.append(
                         f"edge {edge.type!r}: property {prop!r} reads missing column {col.name!r}"
@@ -349,6 +384,36 @@ class RecordMapping:
             if unused:
                 problems.append("these columns are not mapped anywhere: " + ", ".join(unused))
         return problems
+
+    @property
+    def fingerprint(self) -> str:
+        """A stable digest of the declaration itself.
+
+        Structured ``update()`` short-circuits when the source's content hash is
+        unchanged, and identical rows under a *different* mapping produce a
+        different graph. Folding this into that hash is what stops a re-declared
+        mapping from being mistaken for unchanged data and silently skipped.
+
+        Order-independent by construction, so reordering nodes in a declaration
+        is not treated as a change.
+        """
+        parts: list[str] = []
+        for node in sorted(self.nodes, key=lambda n: n.handle):
+            columns = ",".join(
+                f"{prop}:{col.name}:{col.type}"
+                for prop, col in sorted(node.typed_properties.items())
+            )
+            parts.append(
+                f"node({node.handle}|{node.label}|{node.key}|{node.name or ''}"
+                f"|{'ref' if node.reference else 'own'}|{columns})"
+            )
+        for edge in sorted(self.edges, key=lambda e: (e.type, e.source, e.target)):
+            columns = ",".join(
+                f"{prop}:{col.name}:{col.type}"
+                for prop, col in sorted(edge.typed_properties.items())
+            )
+            parts.append(f"edge({edge.type}|{edge.source}|{edge.target}|{columns})")
+        return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()
 
     def to_ontology(self) -> Ontology:
         """Project the mapping into an ontology fragment.
@@ -376,14 +441,20 @@ class RecordMapping:
             # The key survives as a queryable property in its own right, so a
             # later source can still join on it.
             attributes.append(
-                Attribute(name=node.key, type="STRING", description=f"key from {node.key}")
+                Attribute(
+                    name=node.key,
+                    type="STRING",
+                    description=f"key from {node.key}",
+                    structured=True,
+                )
             )
-            for prop, col in node.properties.items():
+            for prop, col in node.typed_properties.items():
                 attributes.append(
                     Attribute(
                         name=prop,
                         type=col.type,
                         description=col.description or f"from column {col.name}",
+                        structured=True,
                     )
                 )
             # A key column may itself be called "name" (or another system key),
@@ -402,7 +473,7 @@ class RecordMapping:
                 )
             )
 
-        by_alias = {node.alias: node.label for node in self.nodes}
+        by_alias = {node.handle: node.label for node in self.nodes}
         relations = [
             Relation(
                 label=edge.type,
@@ -414,8 +485,9 @@ class RecordMapping:
                             name=prop,
                             type=col.type,
                             description=col.description or f"from column {col.name}",
+                            structured=True,
                         )
-                        for prop, col in edge.properties.items()
+                        for prop, col in edge.typed_properties.items()
                     ]
                 ),
             )
