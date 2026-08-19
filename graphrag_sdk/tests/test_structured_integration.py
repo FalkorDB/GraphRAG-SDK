@@ -605,3 +605,47 @@ class TestTheTableOwnsItsColumns:
             "ownership has to survive a reload, or the guard only works in the "
             "process that happened to run the ingest"
         )
+
+
+class TestAggregationThroughThePublicApi:
+    """The payoff, reached the documented way.
+
+    Declaring that ``age`` is an INTEGER exists so a question can be answered by
+    querying rather than by finding a passage that states the answer. That needs
+    the text-to-Cypher path, and it needs it holding the ontology the mapping
+    declared during an ingest that happened after the client was built.
+    """
+
+    async def test_declared_columns_reach_the_retrieval_strategy(
+        self, real_falkordb_rag_factory, llm, resolver, employees_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, enable_cypher=True)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+
+        strategy_ontology = rag._retrieval_strategy._ontology
+        person = next(e for e in strategy_ontology.entities if e.label == "Person")
+        assert {p.name for p in person.properties} >= {"age", "title", "employee_id"}, (
+            "the mapping declared these during an ingest that ran after the "
+            "strategy was constructed; a stale copy cannot aggregate over them"
+        )
+
+    async def test_the_public_query_reads_the_graph(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv, employees_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(orgs_csv, mapping=ORGS)
+        await rag.ingest(employees_csv, mapping=EMPLOYEES)
+
+        rows = await rag.query(
+            "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
+            "WHERE r.rel_type = 'WORKS_AT' AND o.name = $company "
+            "RETURN avg(p.age) AS mean_age, count(p) AS people",
+            {"company": "Acme Corp"},
+        )
+        assert rows == [[39.5, 2]]
+
+    async def test_query_returns_an_empty_list_when_nothing_matches(
+        self, real_falkordb_rag_factory, llm, resolver
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        assert await rag.query("MATCH (p:Person {name:'Nobody'}) RETURN p.name") == []

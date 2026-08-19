@@ -235,6 +235,16 @@ class GraphRAG:
         embedder: Embedding provider for vector operations.
         ontology: Optional graph ontology for extraction constraints.
         retrieval_strategy: Default retrieval strategy (uses MultiPathRetrieval if None).
+        enable_cypher: Add the text-to-Cypher retrieval path, which translates a
+            question into a query against the ontology and puts the rows in
+            front of the answering model. This is what answers questions no
+            passage contains the answer to — counts, averages, "how many of
+            these", "which of those" — so it is the setting that makes a
+            structured source's declared column types worth declaring. Off by
+            default because it costs an extra LLM call per query and needs an
+            ontology with real property types to be useful. Ignored when
+            ``retrieval_strategy`` is supplied, since that strategy decides for
+            itself.
 
     Example::
 
@@ -265,6 +275,7 @@ class GraphRAG:
         retrieval_strategy: RetrievalStrategy | None = None,
         embedding_dimension: int = 256,
         *,
+        enable_cypher: bool = False,
         schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
         # Back-compat: accept the legacy ``schema=`` kwarg and forward to
@@ -316,8 +327,9 @@ class GraphRAG:
         # Lazy-init flag; the first async call that needs the ontology fires
         # ``_ensure_ontology_initialized()`` to load + register the user's ontology.
         self._ontology_initialized = False
-        # Working ontology used by retrieval; populated by ``_ensure_ontology_initialized()``.
-        self._global_ontology: Ontology = self.ontology
+        # Working ontology used by retrieval; populated by
+        # ``_ensure_ontology_initialized()`` and re-published on every change.
+        self._working_ontology: Ontology = self.ontology
 
         # Default retrieval strategy
         self._retrieval_strategy = retrieval_strategy or MultiPathRetrieval(
@@ -326,7 +338,32 @@ class GraphRAG:
             embedder=self.embedder,
             llm=self.llm,
             ontology=self._global_ontology,
+            enable_cypher=enable_cypher,
         )
+        self._enable_cypher = enable_cypher
+        self._cypher_hint_logged = False
+
+    @property
+    def _global_ontology(self) -> Ontology:
+        return self._working_ontology
+
+    @_global_ontology.setter
+    def _global_ontology(self, ontology: Ontology) -> None:
+        """Publish a new working ontology, and tell retrieval about it.
+
+        A property rather than a plain attribute because the ontology changes at
+        seven different points — first load, ``set_ontology``, each evolution
+        primitive, and every structured ingest that declares typed columns — and
+        a retrieval strategy built at construction time would otherwise keep the
+        empty ontology it started with. Measured before this: after ingesting a
+        CSV the facade knew ``Organization.employee_count`` and the strategy's
+        copy had no properties at all, so generated Cypher could not have
+        aggregated over the very columns the mapping existed to declare.
+        """
+        self._working_ontology = ontology
+        strategy = getattr(self, "_retrieval_strategy", None)
+        if strategy is not None:
+            strategy.set_ontology(ontology)
 
     # -- Async context manager -------------------------------------------
     #
@@ -436,8 +473,7 @@ class GraphRAG:
                 ", ".join(DEFAULT_ENTITY_TYPES),
             )
             self._global_ontology = await self._ontology_store.register(default_schema)
-        if hasattr(self._retrieval_strategy, "_ontology"):
-            self._retrieval_strategy._ontology = self._global_ontology
+
         self._ontology_initialized = True
 
     async def get_ontology(self) -> Ontology:
@@ -1291,6 +1327,42 @@ class GraphRAG:
         """
         return await self._graph_store.get_statistics()
 
+    async def query(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
+        """Run a Cypher query and return its rows.
+
+        The escape hatch for reading your own graph: checking what an ingest
+        actually wrote, aggregating over declared columns yourself instead of
+        through a generated query, or anything the typed methods above do not
+        cover. Without it the only way to look at the graph through this object
+        was to reach into its internals, which is what the examples and docs used
+        to do.
+
+        Runs exactly the Cypher you pass, with no rewriting and no read-only
+        enforcement, so treat it the way you would treat a database console: fine
+        for your own queries, not a place to interpolate untrusted input. Use
+        ``params`` for values rather than formatting them into the string.
+
+        Args:
+            cypher: The query.
+            params: Query parameters, referenced as ``$name`` in the query.
+
+        Returns:
+            Result rows, each a list of column values in the order returned.
+            An empty list when the query matched nothing.
+
+        Example::
+
+            rows = await rag.query(
+                "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
+                "WHERE r.rel_type = 'WORKS_AT' AND o.name = $company "
+                "RETURN avg(p.age) AS mean_age",
+                {"company": "Acme Corp"},
+            )
+        """
+        result = await self._graph_store.query_raw(cypher, params)
+        rows = getattr(result, "result_set", None) or []
+        return [list(row) for row in rows]
+
     async def delete_all(self) -> None:
         """Drop the entire knowledge graph (data + ontology).
 
@@ -1735,6 +1807,18 @@ class GraphRAG:
             f"Structured ingest complete for {result.document_id}. "
             "Call finalize() once all sources are in to resolve entities across them."
         )
+        if not self._enable_cypher and not self._cypher_hint_logged:
+            # Said once, because declaring column types and then never reading
+            # them is the quiet way for this whole path to under-deliver: the
+            # graph looks right and the aggregate questions still come back
+            # unanswered.
+            self._cypher_hint_logged = True
+            logger.info(
+                "This source declared typed columns, but text-to-Cypher retrieval "
+                "is off, so questions that aggregate over them (counts, averages) "
+                "cannot be answered from the types. Pass enable_cypher=True to "
+                "GraphRAG(...) to turn it on."
+            )
         return result
 
     async def _ingest_single(

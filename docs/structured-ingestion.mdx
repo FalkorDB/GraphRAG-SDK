@@ -230,22 +230,29 @@ Variant names still do not bridge. `A. Smith` and `Alice Smith` compute differen
 
 ## Retrieval
 
-Aggregation over typed columns needs the text-to-Cypher path, which needs the ontology the mapping declared:
+Aggregation over typed columns needs the text-to-Cypher path, which is what turns a question into a query against the ontology your mappings declared. Turn it on when you build the client:
 
 ```python
-from graphrag_sdk import MultiPathRetrieval
-
-strategy = MultiPathRetrieval(
-    graph_store=rag._graph_store,
-    vector_store=rag._vector_store,
-    embedder=rag.embedder,
-    llm=rag.llm,
+rag = GraphRAG(
+    connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
+    llm=llm,
+    embedder=embedder,
     enable_cypher=True,
-    ontology=await rag.get_ontology(),
 )
 
-answer = await rag.completion(
-    "What is the average age of employees at Acme Corp?", strategy=strategy
+answer = await rag.completion("What is the average age of employees at Acme Corp?")
+```
+
+It is off by default because it costs an extra LLM call per question and needs an ontology with real property types to be worth it. A structured source is exactly that ontology, so this is the setting that makes declaring column types pay off. The strategy is kept in step with the ontology as ingests evolve it, so a mapping registered after the client was built is still visible to generated queries.
+
+To aggregate yourself instead, `rag.query()` runs Cypher directly:
+
+```python
+rows = await rag.query(
+    "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
+    "WHERE r.rel_type = 'WORKS_AT' AND o.name = $company "
+    "RETURN avg(p.age) AS mean_age",
+    {"company": "Acme Corp"},
 )
 ```
 

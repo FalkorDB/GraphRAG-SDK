@@ -321,7 +321,7 @@ async def real_falkordb_rag_factory(embedder):
 
     created: list[Any] = []
 
-    def _make(*, llm, resolver, ontology=None):
+    def _make(*, llm, resolver, ontology=None, **kwargs):
         config = ConnectionConfig(
             host=os.getenv("FALKOR_HOST", "localhost"),
             port=int(os.getenv("FALKOR_PORT", "6379")),
@@ -329,15 +329,18 @@ async def real_falkordb_rag_factory(embedder):
             password=os.getenv("FALKOR_PASSWORD") or None,
             graph_name=f"test_{uuid4().hex[:8]}",
         )
-        kwargs = dict(
+        options = dict(
             connection=config,
             llm=llm,
             embedder=embedder,
             embedding_dimension=embedder.dimension,
         )
         if ontology is not None:
-            kwargs["ontology"] = ontology
-        rag = GraphRAG(**kwargs)
+            options["ontology"] = ontology
+        # Anything else the test asked for (e.g. enable_cypher) goes straight
+        # through, so a new GraphRAG option does not need a fixture change.
+        options.update(kwargs)
+        rag = GraphRAG(**options)
         # Per-call resolver injection (apply_changes / update / ingest don't
         # accept a default-resolver kwarg on the facade — but each call does).
         rag._test_resolver = resolver  # marker, not used by SDK

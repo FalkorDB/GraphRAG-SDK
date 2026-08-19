@@ -53,6 +53,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone and another add properties to it later. A type contradiction still
   raises.
 
+- **`GraphRAG(enable_cypher=True)`** — turns on text-to-Cypher retrieval, which
+  translates a question into a query against the ontology. This is what answers
+  questions no passage contains the answer to (counts, averages, "how many of
+  these"), so it is the setting that makes a structured source's declared column
+  types worth declaring. Previously the only way to reach it was to hand-build a
+  `MultiPathRetrieval` out of `rag._graph_store` and `rag._vector_store`. Off by
+  default: it costs an extra LLM call per question.
+
+- **`GraphRAG.query(cypher, params)`** — read your own graph. The escape hatch
+  for checking what an ingest wrote or aggregating yourself, and previously
+  absent, which is why the examples and docs reached into internals.
+
+- **`RetrievalStrategy.set_ontology()`** — a hook the facade calls whenever the
+  working ontology changes. A no-op by default, overridden by
+  `MultiPathRetrieval`.
+
+- **Re-syncing a structured source.** Ingesting a table already in the graph now
+  re-syncs it rather than writing over the top, so a row **deleted** from the
+  source is removed instead of persisting forever with an orphaned chunk.
+  `update(..., mapping=...)` is the same operation with stricter semantics, and
+  both run through the existing crash-safe cutover. Cleanup is scoped: an entity
+  another source still mentions survives. `StructuredIngestionResult` reports
+  `chunks_deleted` / `entities_deleted`.
+
 - See `examples/11_structured_ingestion.py` and the
   [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)
   docs page.
@@ -75,6 +99,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ingest of that table recreated it as a second node. The rank is now: derived
   from a declared key, then real over placeholder, then longest description. For
   a corpus with no structured sources the ordering is unchanged.
+
+- **The retrieval strategy no longer holds a stale ontology.** It was built at
+  construction time and only refreshed on the ontology's first load, so every
+  later change was invisible to it — including every structured ingest, which is
+  precisely when new typed columns appear. Measured: after ingesting a CSV the
+  facade knew `Organization.employee_count` and the strategy's copy had no
+  properties at all, so generated Cypher could not aggregate over the column the
+  mapping existed to declare. The working ontology is now republished to the
+  strategy on every change.
+
+- **A structured source is addressed like every other file.** The record loader
+  defaulted a Document id to the bare file name while the text path uses
+  `os.path.normpath(source)`, so `ingest` and `update` disagreed about which
+  document a source was, and two same-named exports in different directories
+  collided into one Document.
+
+- **`ingest_sync()` accepts `mapping`.** It had no such parameter, so the sync
+  API could not ingest a structured source at all, and neither `ingest` overload
+  mentioned it, so a type checker rejected the call the docs teach. The existing
+  wrapper-drift tripwire test now covers `ingest` too, which is why this survived.
 
 - **A mapping cannot declare `name` as a property.** The extraction path merges
   ontology-declared attributes over the system properties it builds, so a

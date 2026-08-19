@@ -53,6 +53,19 @@ class RetrievalStrategy(ABC):
         self._graph = graph_store
         self._vector = vector_store
 
+    def set_ontology(self, ontology: Any) -> None:
+        """Adopt the current ontology. Called whenever the facade's changes.
+
+        A strategy that generates Cypher needs the *current* ontology, not the
+        one that existed when it was constructed. An ingest can add labels and
+        properties — a structured source declares typed columns, which is the
+        whole reason its generated queries can aggregate — and a strategy holding
+        the ontology from construction time would be blind to all of it.
+
+        A no-op by default, so a strategy that does not read the ontology need
+        not implement it.
+        """
+
     async def search(
         self,
         query: str,

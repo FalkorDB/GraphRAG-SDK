@@ -38,7 +38,6 @@ from graphrag_sdk import (
     GraphRAG,
     LiteLLM,
     LiteLLMEmbedder,
-    MultiPathRetrieval,
     NodeMapping,
     RecordMapping,
     Table,
@@ -143,6 +142,11 @@ async def main():
         llm=llm,
         embedder=embedder,
         embedding_dimension=256,
+        # The reason to declare column types at all. Without it, a question like
+        # "what is the average age" has no passage to retrieve and cannot be
+        # answered; with it, the question becomes a query against the ontology
+        # the mappings declared.
+        enable_cypher=True,
     ) as rag:
         # ── 1. The structured half ─────────────────────────────────
         # No model is involved. Same input, same graph, every time.
@@ -180,16 +184,6 @@ async def main():
                 print(f"   {entity.label}: {declared}")
 
         # ── 5. Retrieval ──────────────────────────────────────────
-        # Aggregation needs the text-to-Cypher path, which needs the ontology.
-        cypher_retrieval = MultiPathRetrieval(
-            graph_store=rag._graph_store,
-            vector_store=rag._vector_store,
-            embedder=rag.embedder,
-            llm=rag.llm,
-            enable_cypher=True,
-            ontology=ontology,
-        )
-
         questions = [
             # Structured only: an average over a typed column.
             "What is the average age of employees at Acme Corp?",
@@ -200,7 +194,7 @@ async def main():
         ]
         print("── retrieval")
         for question in questions:
-            answer = await rag.completion(question, strategy=cypher_retrieval)
+            answer = await rag.completion(question)
             print(f"\n   Q: {question}\n   A: {answer.answer}")
 
         # ── 6. Keeping the table in sync ──────────────────────────
@@ -230,10 +224,9 @@ async def main():
         )
         print(f"\n── re-sync: {result}")
 
-        rows = await rag._graph_store.query_raw(
+        for employee_id, name, title in await rag.query(
             "MATCH (p:Person) RETURN p.employee_id, p.name, p.title ORDER BY p.employee_id"
-        )
-        for employee_id, name, title in rows.result_set:
+        ):
             print(f"   {employee_id}  {name}  {title}")
         print("   Carol White is gone, Dana Reed is new, and E-1 kept its identity.")
 
