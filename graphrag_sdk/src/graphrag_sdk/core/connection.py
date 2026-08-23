@@ -249,6 +249,10 @@ class FalkorDBConnection:
         "unknown function",
         "type mismatch",
         "procedure not found",
+        # Semantic rejections observed on LLM-generated queries (#292) —
+        # deterministic, so a retry can only replay the same failure.
+        "for both a node and a relationship",
+        "unexpected clause",
     )
 
     @classmethod
