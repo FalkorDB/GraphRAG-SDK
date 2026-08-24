@@ -53,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone and another add properties to it later. A type contradiction still
   raises.
 
+- **`GraphRAG(mappings=[...])`** and **`GraphRAG.declare_mapping()`** — register
+  a structured mapping's labels and column types without writing any data. The
+  extractor then has the real labels available while it reads a document instead
+  of guessing from a built-in list, which produces more correct labels first time
+  (9 merges instead of 4 on one corpus). No longer required for correctness, only
+  for quality.
+
 - **`GraphRAG(enable_cypher=True)`** — turns on text-to-Cypher retrieval, which
   translates a question into a query against the ontology. This is what answers
   questions no passage contains the answer to (counts, averages, "how many of
@@ -82,6 +89,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs page.
 
 ### Fixed
+
+- **A table and a document now join regardless of which is ingested first.**
+  Resolution matches on name *and* label, which is what keeps "Apple" the company
+  apart from "Apple" the fruit. But an extractor can only use a label the
+  ontology already has, so a document read before any mapping was declared filed
+  "Carbon Farming" under a guessed `Concept`, the mapping later declared it a
+  `MitigationPractice`, and the two could never merge. Measured on one corpus
+  with only the order changed: prose first merged 0, tables first merged 5, with
+  nothing raised either way. A declared type now beats a guessed one — the same
+  rule that already governs declared columns — so the declared label absorbs the
+  guessed one while keeping the document's description. Two *declared* labels
+  sharing a name are still kept apart, as is a name under only undeclared labels.
+  Whatever remains unmerged is surfaced as
+  `FinalizeResult.unmerged_name_collisions` instead of appearing as a bare
+  `entities_deduplicated=0`.
 
 - **Writes are indexed, so a large source is not quadratic.** Every write is
   `MERGE (n:Label {id: ...})`, and a MERGE can only use an index on the label in

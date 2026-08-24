@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Sequence
 from typing import Any, Literal, overload
 from uuid import uuid4
 
@@ -235,6 +236,11 @@ class GraphRAG:
         embedder: Embedding provider for vector operations.
         ontology: Optional graph ontology for extraction constraints.
         retrieval_strategy: Default retrieval strategy (uses MultiPathRetrieval if None).
+        mappings: Structured mappings to declare up front, before anything is
+            ingested. Pass them here and the graph no longer depends on the
+            order sources arrive in — see :meth:`declare_mapping` for why that
+            matters. Declaring a mapping writes no data; ``ingest(mapping=...)``
+            still does the actual load.
         enable_cypher: Add the text-to-Cypher retrieval path, which translates a
             question into a query against the ontology and puts the rows in
             front of the answering model. This is what answers questions no
@@ -276,6 +282,7 @@ class GraphRAG:
         embedding_dimension: int = 256,
         *,
         enable_cypher: bool = False,
+        mappings: Sequence[RecordMapping] | None = None,
         schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
         # Back-compat: accept the legacy ``schema=`` kwarg and forward to
@@ -342,6 +349,10 @@ class GraphRAG:
         )
         self._enable_cypher = enable_cypher
         self._cypher_hint_logged = False
+        # Declared before the first ingest of anything, which is what makes the
+        # graph independent of the order sources arrive in. See
+        # ``declare_mapping``.
+        self._declared_mappings: list[RecordMapping] = list(mappings or [])
 
     @property
     def _global_ontology(self) -> Ontology:
@@ -457,6 +468,7 @@ class GraphRAG:
         if self._ontology_initialized:
             return
         loaded = await self._ontology_store.load()
+        declared_mappings = self._declared_mappings
         if self.ontology.entities or self.ontology.relations:
             self._global_ontology = await self._ontology_store.register(self.ontology)
         elif loaded.entities or loaded.relations:
@@ -473,6 +485,9 @@ class GraphRAG:
                 ", ".join(DEFAULT_ENTITY_TYPES),
             )
             self._global_ontology = await self._ontology_store.register(default_schema)
+
+        for mapping in declared_mappings:
+            self._global_ontology = await self._register_structured_ontology(mapping.to_ontology())
 
         self._ontology_initialized = True
 
@@ -518,6 +533,47 @@ class GraphRAG:
         self.ontology = ontology
         self._ontology_initialized = False
         await self._ensure_ontology_initialized()
+        return self._global_ontology
+
+    async def declare_mapping(self, mapping: RecordMapping) -> Ontology:
+        """Register a structured mapping's labels and column types up front.
+
+        Writes no data. Its only job is to put the mapping's labels into the
+        ontology *before* anything is extracted, and that ordering decides
+        whether the two halves of a graph ever join.
+
+        The extractor can only label an entity with a label the ontology already
+        has. So if a document is read first, "Carbon Farming" is filed under a
+        built-in guess like ``Concept``; a CSV then declares it a
+        ``MitigationPractice``, and resolution — which matches on name *and*
+        label, so that "Apple" the company never merges with "Apple" the fruit —
+        correctly refuses to join them. Two nodes, same name, different label,
+        no error. Measured on the same files with only the order changed: prose
+        first merged 0 entities, tables first merged 5.
+
+        Declaring up front removes the ordering question rather than answering
+        it: the label exists before the extractor runs, so it uses it.
+
+            for mapping in (EMPLOYEES, ORGS):
+                await rag.declare_mapping(mapping)
+            # now ingest documents and tables in any order
+
+        Passing ``mappings=[...]`` to the constructor does the same thing and is
+        usually tidier. Declaring is additive and idempotent, and it raises the
+        same contradiction errors an ingest would, so a mapping that disagrees
+        with the existing ontology fails here rather than mid-load.
+
+        Args:
+            mapping: The declaration whose ontology should be registered.
+
+        Returns:
+            The merged ontology.
+        """
+        await self._validate_graph_config()
+        await self._ensure_ontology_initialized()
+        self._global_ontology = await self._register_structured_ontology(mapping.to_ontology())
+        if mapping not in self._declared_mappings:
+            self._declared_mappings.append(mapping)
         return self._global_ontology
 
     async def save_ontology(self, path: str, *, indent: int = 2) -> None:
@@ -3536,11 +3592,27 @@ class GraphRAG:
         Returns:
             Total number of duplicate entities merged.
         """
+        await self._ensure_ontology_initialized()
         return await self._deduplicator.deduplicate(
             fuzzy=fuzzy,
             similarity_threshold=similarity_threshold,
             batch_size=batch_size,
+            declared_labels=self._mapping_declared_labels(),
         )
+
+    def _mapping_declared_labels(self) -> set[str]:
+        """Labels a structured mapping declared, rather than an extractor guessed.
+
+        Read from the persisted ontology, where a mapping marks every property it
+        declares. A label with any such property was described by a source that
+        knows its type, which is what makes it authoritative when the same name
+        also arrives under a label an extractor picked from a built-in list.
+        """
+        return {
+            entity.label
+            for entity in self._global_ontology.entities
+            if any(prop.structured for prop in entity.properties)
+        }
 
     async def finalize(self) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
@@ -3588,9 +3660,19 @@ class GraphRAG:
         index_results = await self._vector_store.ensure_indices()
         ctx_log(f"finalize: indexes = {index_results}")
 
+        collisions = dict(getattr(self._deduplicator, "cross_label_names", {}) or {})
+        if collisions and not dedup_count:
+            ctx_log(
+                f"finalize: {len(collisions)} name(s) exist under more than one label and "
+                "were not merged — declare structured mappings before ingesting documents "
+                "(GraphRAG(mappings=[...]) or declare_mapping()) so the extractor can use "
+                "the declared labels"
+            )
+
         return FinalizeResult(
             null_stubs_removed=null_cleaned,
             entities_deduplicated=dedup_count,
+            unmerged_name_collisions=collisions,
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
             indexes=index_results,

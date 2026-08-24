@@ -722,3 +722,157 @@ class TestWritesAreIndexedForScale:
         )
         indexed = {row[0] for row in rows if "id" in (row[1] or []) and "RANGE" in str(row[2])}
         assert {"Person", "Organization", "Chunk", "Document"} <= indexed
+
+
+class TestIngestOrderMustNotDecideTheGraph:
+    """Declaring mappings up front, and why it exists.
+
+    The extractor can only label an entity with a label the ontology already
+    has. Read a document before a mapping is declared and "Carbon Farming" is
+    filed under a built-in guess like ``Concept``; the table then declares it a
+    ``MitigationPractice``, and resolution — which matches on name *and* label so
+    "Apple" the company never joins "Apple" the fruit — correctly refuses to
+    merge them. Same files, only the order changed: prose first merged 0,
+    tables first merged 5. Nothing was raised either way.
+    """
+
+    NOTE = (
+        "Carbon Farming is the umbrella set of agricultural practices for "
+        "sequestration. Alternate Wetting and Drying (AWD) is a rice water "
+        "management practice that reduces methane."
+    )
+
+    @pytest.fixture
+    def practices_csv(self, tmp_path):
+        path = tmp_path / "practices.csv"
+        path.write_text(
+            "practice_id,practice_name,crop_system\n"
+            "PR-CF,Carbon Farming,multi-crop\n"
+            "PR-AWD,Alternate Wetting and Drying (AWD),rice\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    @staticmethod
+    def _mapping():
+        return Table(
+            "MitigationPractice", key="practice_id", name="practice_name", crop_system="crop_system"
+        )
+
+    async def test_declaring_a_mapping_writes_no_data(
+        self, real_falkordb_rag_factory, llm, resolver, practices_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.declare_mapping(self._mapping())
+
+        assert await _rows(rag, "MATCH (n) RETURN count(n)") == [[0]]
+        ontology = await rag.get_ontology()
+        assert any(e.label == "MitigationPractice" for e in ontology.entities)
+
+    async def test_declaring_is_idempotent(self, real_falkordb_rag_factory, llm, resolver):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.declare_mapping(self._mapping())
+        await rag.declare_mapping(self._mapping())
+        ontology = await rag.get_ontology()
+        practice = next(e for e in ontology.entities if e.label == "MitigationPractice")
+        assert {p.name for p in practice.properties} == {"practice_id", "crop_system"}
+
+    async def test_constructor_mappings_are_declared_before_the_first_ingest(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, practices_csv
+    ):
+        """The whole point: prose arrives first and still lands on the declared
+        label, so the halves join."""
+        llm = scripted_llm(
+            [
+                ("Carbon Farming", "MitigationPractice", "Umbrella set of practices"),
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, mappings=[self._mapping()])
+        await rag.ingest(text=self.NOTE, document_id="note.txt", resolver=resolver)
+        await rag.ingest(practices_csv, mapping=self._mapping())
+        result = await rag.finalize()
+
+        assert result.entities_deduplicated >= 1
+        bridged = await _rows(
+            rag,
+            "MATCH (e:__Entity__)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(d:Document) "
+            "WITH e, count(DISTINCT d) AS n WHERE n > 1 RETURN count(e)",
+        )
+        assert bridged == [[1]]
+
+    async def test_a_guessed_label_is_adopted_into_the_declared_one(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, practices_csv
+    ):
+        """The fix, without the caller doing anything.
+
+        The extractor guessed ``Concept`` from a built-in list; the mapping
+        *declares* ``MitigationPractice``. Same thing, described by two sources,
+        one of which knows its type. The declared label survives and absorbs the
+        other, so a table and a document join regardless of arrival order.
+        """
+        llm = scripted_llm(
+            [("Carbon Farming", "Concept", "An agricultural approach")],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(text=self.NOTE, document_id="note.txt", resolver=resolver)
+        await rag.ingest(practices_csv, mapping=self._mapping())
+        result = await rag.finalize()
+
+        assert result.entities_deduplicated >= 1
+        rows = await _rows(
+            rag,
+            "MATCH (e:__Entity__) WHERE e.name = 'Carbon Farming' "
+            "RETURN count(e), head([l IN labels(e) WHERE l <> '__Entity__'])",
+        )
+        assert rows == [[1, "MitigationPractice"]], "one node, under the declared label"
+        assert result.unmerged_name_collisions == {}
+
+    async def test_the_documents_description_survives_the_adoption(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, practices_csv
+    ):
+        """Adopting must not cost what the document knew."""
+        llm = scripted_llm(
+            [("Carbon Farming", "Concept", "Umbrella practices for sequestration")],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(text=self.NOTE, document_id="note.txt", resolver=resolver)
+        await rag.ingest(practices_csv, mapping=self._mapping())
+        await rag.finalize()
+
+        rows = await _rows(
+            rag,
+            "MATCH (e:MitigationPractice {name:'Carbon Farming'}) "
+            "RETURN e.description, e.practice_id",
+        )
+        assert "sequestration" in (rows[0][0] or "")
+        assert rows[0][1] == "PR-CF", "and the table's own key is still there"
+
+    async def test_two_guessed_labels_are_still_kept_apart(
+        self, real_falkordb_rag_factory, scripted_llm, resolver
+    ):
+        """The guard that matters stays. Neither label is declared by a mapping,
+        so there is nothing authoritative to prefer, and "Apple" the company must
+        not become "Apple" the fruit."""
+        llm = scripted_llm(
+            [
+                ("Apple", "Organization", "A technology company"),
+                ("Apple", "Product", "A fruit"),
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(text="Apple builds computers.", document_id="a.txt", resolver=resolver)
+        await rag.ingest(text="Apple grows on trees.", document_id="b.txt", resolver=resolver)
+        result = await rag.finalize()
+
+        assert await _rows(rag, "MATCH (e:__Entity__) WHERE e.name = 'Apple' RETURN count(e)") == [
+            [2]
+        ], "no mapping declared either label, so neither wins"
+        assert "apple" in result.unmerged_name_collisions
+
+    async def test_nothing_is_reported_when_labels_agree(
+        self, real_falkordb_rag_factory, llm, resolver, practices_csv
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(practices_csv, mapping=self._mapping())
+        result = await rag.finalize()
+        assert result.unmerged_name_collisions == {}

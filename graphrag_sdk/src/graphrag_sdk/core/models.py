@@ -742,6 +742,17 @@ class FinalizeResult(DataModel):
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
+    unmerged_name_collisions: dict[str, list[str]] = Field(default_factory=dict)
+    """Names that exist under more than one label, mapped to those labels.
+
+    Never merged, deliberately: matching on name *and* label is what stops
+    "Apple" the company joining "Apple" the fruit. But it is also the fingerprint
+    of an ingest-order mistake — a document read before a mapping was declared
+    has its entities labelled by guesswork, and a table declaring the same name
+    under its own label can no longer join them. Non-empty here with
+    ``entities_deduplicated == 0`` is the signature of that, and the fix is to
+    declare mappings up front.
+    """
 
 
 class UpdateResult(IngestionResult):

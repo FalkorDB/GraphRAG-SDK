@@ -272,6 +272,45 @@ await rag.finalize()
 
 The survivor is the node whose id came from a declared key, because that id is reproducible: the next ingest of the same table recomputes it. Keeping the prose-derived id instead would make re-ingest create a second node for the same row.
 
+### Order does not matter
+
+A table and a document can arrive in either order. That is worth stating because
+it used to be false, and silently so.
+
+Resolution matches on name **and** label, which is what stops "Apple" the
+company merging with "Apple" the fruit. But an extractor can only label an
+entity with a label the ontology already has, so a document read before any
+mapping was declared files "Carbon Farming" under a built-in guess like
+`Concept`. The table then declares it a `MitigationPractice`, the labels differ,
+and the two never join. Measured on one corpus with only the order changed:
+prose first merged 0 entities, tables first merged 5, and nothing was raised
+either way.
+
+A declared type now beats a guessed one, the same rule that governs declared
+[columns](#who-owns-a-column). When a name exists under one label a mapping
+declared and one or more labels nothing declared, the declared label survives and
+absorbs the rest, keeping the document's description and mentions. Two *declared*
+labels sharing a name are left alone and reported, because that is a real
+modelling conflict rather than a guess to correct — as is a name under only
+undeclared labels, which is the Apple case.
+
+Anything left unmerged is reported rather than silent:
+
+```python
+result = await rag.finalize()
+result.unmerged_name_collisions   # {"apple": ["organization", "product"]}
+```
+
+Declaring mappings up front is still worth doing, because then the extractor has
+the real labels available while it reads and gets more of them right first time
+(on the same corpus, 9 merges instead of 4):
+
+```python
+rag = GraphRAG(..., mappings=[EMPLOYEES, ORGS])
+# or later, writing no data:
+await rag.declare_mapping(EMPLOYEES)
+```
+
 <Note>
 Variant names still do not bridge. `A. Smith` and `Alice Smith` compute different ids, so they remain separate nodes. Exact equality is a deliberate floor: it never merges two different people, and anything fuzzier belongs in the semantic resolution pass.
 </Note>
