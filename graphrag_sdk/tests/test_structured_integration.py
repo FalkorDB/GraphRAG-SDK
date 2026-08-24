@@ -14,13 +14,7 @@ import os
 
 import pytest
 
-from graphrag_sdk.ingestion.mapping import (
-    Column,
-    EdgeMapping,
-    NodeMapping,
-    RecordMapping,
-    Table,
-)
+from graphrag_sdk.ingestion.mapping import Column, Link, Table
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 
 ORGS = Table(
@@ -31,17 +25,13 @@ ORGS = Table(
     employee_count=Column("employee_count", "INTEGER"),
 )
 
-EMPLOYEES = RecordMapping(
-    nodes=[
-        NodeMapping(
-            label="Person",
-            key="employee_id",
-            name="full_name",
-            properties={"age": Column("age", "INTEGER"), "title": Column("job_title")},
-        ),
-        NodeMapping(label="Organization", key="org_id", reference=True),
-    ],
-    edges=[EdgeMapping(type="WORKS_AT", source="Person", target="Organization")],
+EMPLOYEES = Table(
+    "Person",
+    key="employee_id",
+    name="full_name",
+    age=Column("age", "INTEGER"),
+    title=Column("job_title"),
+    links=[Link("WORKS_AT", to="Organization", by="org_id")],
 )
 
 

@@ -11,6 +11,7 @@ import csv
 import hashlib
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -341,6 +342,52 @@ class EdgeMapping:
 
 
 @dataclass
+class Link:
+    """A column that points at another entity, and the edge to it.
+
+    A foreign key is the whole reason a table is worth putting in a graph: the
+    ``org_id`` sitting in an employee export is not text, it is an edge. This is
+    how you say so.
+
+    Args:
+        type: The relationship, e.g. ``"WORKS_AT"``. Written onto a ``RELATES``
+            edge as its ``rel_type``, which is how every data edge is stored.
+        to: The label of the entity being pointed at.
+        by: The column holding its key.
+        name: Optional column holding the target's display name, when the row
+            denormalises it. Without one the placeholder is named by its key, so
+            a node reads as "ORG-42" until the source that owns it arrives.
+        properties: Optional columns written onto the edge itself, e.g. the date
+            an employment started.
+
+    The target is written **ON CREATE only**. This row says the organization
+    exists and gives its key; it does not claim to describe it, so it can never
+    overwrite what the source that owns the organization supplied. That is what
+    makes the order of two files irrelevant.
+
+    Example::
+
+        Table("Person", key="employee_id", name="full_name",
+              age=Column("age", "INTEGER"),
+              links=[Link("WORKS_AT", to="Organization", by="org_id")])
+    """
+
+    type: str
+    to: str
+    by: str
+    name: str | None = None
+    properties: dict[str, Column | str] = field(default_factory=dict)
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        for label, value in (("type", self.type), ("to", self.to), ("by", self.by)):
+            if not value or not str(value).strip():
+                raise MappingError(f"Link.{label} must be non-empty")
+        _check_identifier("relationship type", self.type)
+        _check_label(self.to)
+
+
+@dataclass
 class RecordMapping:
     """How one structured source becomes nodes and edges.
 
@@ -591,30 +638,94 @@ def _merge_entities(entities: list[Entity]) -> list[Entity]:
     return list(merged.values())
 
 
-def Table(  # noqa: N802 - reads as a declaration, not a function call
-    node: str,
-    key: str,
-    name: str | None = None,
-    *,
-    description: str | None = None,
-    **properties: Column | str,
-) -> RecordMapping:
-    """Shorthand for the common case: one record is one entity.
+class Table(RecordMapping):
+    """How one table becomes part of the graph. The only mapping you write.
+
+    Each record becomes one entity, plus an edge for every column that points at
+    something else. That covers a dimension export and a fact export alike, so
+    there is nothing to switch to when a table turns out to have a foreign key in
+    it: you add a ``links`` entry rather than rewriting the declaration.
+
+    Args:
+        node: The label each record becomes, e.g. ``"Organization"``.
+        key: The column identifying the record. Its value becomes the node id, so
+            re-loading a corrected export updates in place instead of
+            duplicating.
+        name: The column holding the display name. A table with both a key and a
+            name also publishes the id an extractor would compute for the same
+            thing, which is what lets a row and a sentence become one node.
+        links: Columns that point at other entities. See :class:`Link`.
+        description: Optional prose, carried into the generated ontology.
+        **properties: ``property_name=column``. A bare string means STRING; wrap
+            it in :class:`Column` to declare a type. The property name must be a
+            usable identifier, so point an awkward column at a clean name:
+            ``hq_country=Column("HQ Country")``.
 
     Example::
 
-        Table("Organization", key="org_id", name="org_name",
-              hq_country="hq_country",
-              employee_count=Column("employee_count", "INTEGER"))
+        ORGS = Table("Organization", key="org_id", name="org_name",
+                     hq_country="hq_country",
+                     employee_count=Column("employee_count", "INTEGER"))
+
+        EMPLOYEES = Table("Person", key="employee_id", name="full_name",
+                          age=Column("age", "INTEGER"),
+                          title=Column("job_title"),
+                          links=[Link("WORKS_AT", to="Organization", by="org_id")])
     """
-    return RecordMapping(
-        nodes=[
-            NodeMapping(
-                label=node,
-                key=key,
-                name=name,
-                properties=dict(properties),
-                description=description,
+
+    def __init__(
+        self,
+        node: str,
+        key: str,
+        name: str | None = None,
+        *,
+        links: Sequence[Link] | None = None,
+        description: str | None = None,
+        **properties: Column | str,
+    ) -> None:
+        subject = NodeMapping(
+            label=node,
+            key=key,
+            name=name,
+            properties=dict(properties),
+            description=description,
+        )
+        nodes = [subject]
+        edges: list[EdgeMapping] = []
+        for link in links or ():
+            if not isinstance(link, Link):
+                raise MappingError(
+                    f"links must contain Link objects, got {type(link).__name__}. "
+                    'Write links=[Link("WORKS_AT", to="Organization", by="org_id")].'
+                )
+            # A target keyed by the same column as the subject would be the
+            # subject, and an edge from a thing to itself says nothing.
+            if link.by == key and link.to == node:
+                raise MappingError(
+                    f"link {link.type!r} points at {link.to!r} by column {link.by!r}, "
+                    "which is this record's own key, so it would link the record to "
+                    "itself. Point it at the column holding the other entity's key."
+                )
+            alias = link.to if link.to != node else f"{link.to}__{link.by}"
+            if any(existing.handle == alias for existing in nodes):
+                alias = f"{alias}__{link.type}"
+            nodes.append(
+                NodeMapping(
+                    label=link.to,
+                    key=link.by,
+                    name=link.name,
+                    reference=True,
+                    alias=alias,
+                    description=link.description,
+                )
             )
-        ]
-    )
+            edges.append(
+                EdgeMapping(
+                    type=link.type,
+                    source=subject.handle,
+                    target=alias,
+                    properties=dict(link.properties),
+                    description=link.description,
+                )
+            )
+        super().__init__(nodes=nodes, edges=edges)

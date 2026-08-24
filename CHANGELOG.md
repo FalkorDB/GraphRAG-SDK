@@ -19,11 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes the string `"34"` if it survives at all; nothing can be averaged,
   filtered numerically, or joined on a key.
 
-- **`Table()`** for the one-record-one-entity case, **`RecordMapping`** /
-  **`NodeMapping`** / **`EdgeMapping`** / **`Column`** for records that produce
-  several entities and the edges between them. Column types: `STRING`,
-  `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. A mapping is validated against
-  the source's real header before anything is written, so a mapping that does
+- **`Table()`** and **`Link()`** are the whole declaration surface. A table
+  describes one entity per record, and `links=[Link(...)]` turns a column that
+  holds another entity's key into an actual edge. Adding a link is an argument
+  rather than a rewrite, so a table that turns out to have a foreign key does not
+  force the declaration into a different shape. Column types via **`Column`**:
+  `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. A mapping is validated
+  against the source's real header before anything is written, so one that does
   not fit raises `MappingError` and leaves the graph untouched.
 
 - **A record is a Chunk** (`kind: "record"`), carrying its cells alongside the
@@ -31,9 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a paragraph is. Records are deliberately not chained with `NEXT_CHUNK`: rows
   have no reading order.
 
-- **`reference=True`** writes a foreign key honestly — ON CREATE only, carrying
-  its key so it is joinable, flagged `is_stub` until the source that owns the
-  entity arrives. Order between sources does not matter.
+- **A link's target is written ON CREATE only,** carrying its key so it is
+  joinable and flagged `is_stub` until the source that owns the entity arrives.
+  Order between sources does not matter.
 
 - **Documents and tables land on one node.** A source holding both a key and a
   name publishes the id an extractor would independently compute for the same

@@ -34,12 +34,10 @@ from pathlib import Path
 from graphrag_sdk import (
     Column,
     ConnectionConfig,
-    EdgeMapping,
     GraphRAG,
+    Link,
     LiteLLM,
     LiteLLMEmbedder,
-    NodeMapping,
-    RecordMapping,
     Table,
 )
 
@@ -86,13 +84,7 @@ BOARD_NOTE = (
 
 # ── The mappings ────────────────────────────────────────────────
 
-# One record is one organization. Table() is the shorthand for that case.
-#
-#   key   the column that identifies the entity. Its value becomes the node id,
-#         so re-ingesting updates in place instead of duplicating.
-#   name  the display name. A source holding both key and name also publishes
-#         the id an extractor would compute for the same thing, which is what
-#         lets this node and a node extracted from prose become one.
+# One record is one organization: a key, a name, and two typed columns.
 ORGS = Table(
     "Organization",
     key="org_id",
@@ -101,25 +93,25 @@ ORGS = Table(
     employee_count=Column("employee_count", "INTEGER"),
 )
 
-# One record is a person, plus an edge to the organization it points at.
-EMPLOYEES = RecordMapping(
-    nodes=[
-        NodeMapping(
-            label="Person",
-            key="employee_id",
-            name="full_name",
-            properties={
-                "age": Column("age", "INTEGER"),
-                "title": Column("job_title"),
-                "start_date": Column("start_date", "DATE"),
-            },
-        ),
-        # A foreign key: this row says the organization exists and gives its key,
-        # but knows nothing else about it. reference=True writes it ON CREATE
-        # only, so a pointer can never overwrite the name orgs.csv supplied.
-        NodeMapping(label="Organization", key="org_id", reference=True),
-    ],
-    edges=[EdgeMapping(type="WORKS_AT", source="Person", target="Organization")],
+# One record is a person, plus a link to the organization it points at. The link
+# is what turns an `org_id` column from text into an edge.
+#
+#   key    the column identifying the record. Its value becomes the node id, so
+#          re-ingesting a corrected export updates in place.
+#   name   the display name. A table carrying both key and name also publishes
+#          the id an extractor would compute for the same thing, which is what
+#          lets this node and a node from prose become one.
+#   links  a column pointing at another entity. The target is written ON CREATE
+#          only, so a pointer can never overwrite the name orgs.csv supplied,
+#          and the two files can arrive in either order.
+EMPLOYEES = Table(
+    "Person",
+    key="employee_id",
+    name="full_name",
+    age=Column("age", "INTEGER"),
+    title=Column("job_title"),
+    start_date=Column("start_date", "DATE"),
+    links=[Link("WORKS_AT", to="Organization", by="org_id")],
 )
 
 

@@ -77,7 +77,7 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
     RecordLoaderStrategy,
 )
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
-from graphrag_sdk.ingestion.mapping import MappingError, RecordMapping
+from graphrag_sdk.ingestion.mapping import MappingError, Table
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
@@ -282,7 +282,7 @@ class GraphRAG:
         embedding_dimension: int = 256,
         *,
         enable_cypher: bool = False,
-        mappings: Sequence[RecordMapping] | None = None,
+        mappings: Sequence[Table] | None = None,
         schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
         # Back-compat: accept the legacy ``schema=`` kwarg and forward to
@@ -352,7 +352,7 @@ class GraphRAG:
         # Declared before the first ingest of anything, which is what makes the
         # graph independent of the order sources arrive in. See
         # ``declare_mapping``.
-        self._declared_mappings: list[RecordMapping] = list(mappings or [])
+        self._declared_mappings: list[Table] = list(mappings or [])
 
     @property
     def _global_ontology(self) -> Ontology:
@@ -535,7 +535,7 @@ class GraphRAG:
         await self._ensure_ontology_initialized()
         return self._global_ontology
 
-    async def declare_mapping(self, mapping: RecordMapping) -> Ontology:
+    async def declare_mapping(self, mapping: Table) -> Ontology:
         """Register a structured mapping's labels and column types up front.
 
         Writes no data. Its only job is to put the mapping's labels into the
@@ -1451,7 +1451,7 @@ class GraphRAG:
         self,
         source: str,
         *,
-        mapping: RecordMapping,
+        mapping: Table,
         document_id: str | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -1491,7 +1491,7 @@ class GraphRAG:
         *,
         text: str | None = None,
         document_id: str | None = None,
-        mapping: RecordMapping | None = None,
+        mapping: Table | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
         loader: LoaderStrategy | None = None,
@@ -1764,7 +1764,7 @@ class GraphRAG:
     async def _ingest_structured(
         self,
         source: str,
-        mapping: RecordMapping,
+        mapping: Table,
         *,
         document_id: str | None = None,
         record_loader: RecordLoaderStrategy | None = None,
@@ -1820,7 +1820,7 @@ class GraphRAG:
     async def _write_structured_source(
         self,
         source: str,
-        mapping: RecordMapping,
+        mapping: Table,
         *,
         document_id: str | None = None,
         record_loader: RecordLoaderStrategy | None = None,
@@ -2340,7 +2340,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
-        mapping: RecordMapping | None = None,
+        mapping: Table | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
         ctx: Context | None = None,
@@ -3740,7 +3740,7 @@ class GraphRAG:
         self,
         source: str,
         *,
-        mapping: RecordMapping,
+        mapping: Table,
         document_id: str | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -3785,7 +3785,7 @@ class GraphRAG:
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
         max_concurrency: int = 3,
-        mapping: RecordMapping | None = None,
+        mapping: Table | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
         ctx: Context | None = None,
@@ -3830,7 +3830,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
-        mapping: RecordMapping | None = None,
+        mapping: Table | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
         ctx: Context | None = None,

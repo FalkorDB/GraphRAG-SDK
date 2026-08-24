@@ -106,10 +106,8 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
 )
 from graphrag_sdk.ingestion.mapping import (
     Column,
-    EdgeMapping,
+    Link,
     MappingError,
-    NodeMapping,
-    RecordMapping,
     Table,
 )
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
@@ -228,12 +226,10 @@ __all__ = [
     "VectorStore",
     "Column",
     "CsvRecordLoader",
-    "EdgeMapping",
     "MappingError",
-    "NodeMapping",
     "RecordBatch",
     "RecordLoaderStrategy",
-    "RecordMapping",
+    "Link",
     "Table",
 ]
 

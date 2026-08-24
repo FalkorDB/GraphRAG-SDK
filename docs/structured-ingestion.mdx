@@ -49,43 +49,55 @@ Record chunks are **not embedded**, so a row is not reachable by chunk vector se
 
 ## Declaring a Mapping
 
-### `Table()` — one record is one entity
+One form, `Table`. Each record becomes one entity, plus an edge for every column
+that points at something else.
 
-The common case. Every keyword beyond `key` and `name` is a property; a bare string means `STRING`.
+### A table that describes one thing
+
+Every keyword beyond `key` and `name` is a property. A bare string means
+`STRING`; wrap it in `Column` to declare a type.
 
 ```python
+from graphrag_sdk import Column, Table
+
 ORGS = Table(
-    "Organization",     # entity label
-    key="org_id",       # the column that identifies the entity
-    name="org_name",    # the display name
+    "Organization",     # what each record becomes
+    key="org_id",       # the column identifying it
+    name="org_name",    # the column holding its display name
     hq_country="hq_country",
     employee_count=Column("employee_count", "INTEGER"),
 )
 ```
 
-### `RecordMapping()` — several entities and the edges between them
+### A table with a foreign key
 
-An HR export is a person, an organization, and the employment between them:
+An HR export is not one thing. It is a person, the company they work for, and
+the employment between them. The `org_id` column is not text, it is an edge, and
+`links` is how you say so:
 
 ```python
-from graphrag_sdk import EdgeMapping, NodeMapping, RecordMapping
+from graphrag_sdk import Link
 
-EMPLOYEES = RecordMapping(
-    nodes=[
-        NodeMapping(
-            label="Person",
-            key="employee_id",
-            name="full_name",
-            properties={
-                "age": Column("age", "INTEGER"),
-                "title": Column("job_title"),
-                "start_date": Column("start_date", "DATE"),
-            },
-        ),
-        NodeMapping(label="Organization", key="org_id", reference=True),
-    ],
-    edges=[EdgeMapping(type="WORKS_AT", source="Person", target="Organization")],
+EMPLOYEES = Table(
+    "Person",
+    key="employee_id",
+    name="full_name",
+    age=Column("age", "INTEGER"),
+    title=Column("job_title"),
+    links=[Link("WORKS_AT", to="Organization", by="org_id")],
 )
+```
+
+Note what did **not** happen: adding a link is an extra argument, not a rewrite.
+The declaration you started with is still there.
+
+A `Link` can also carry the target's name, when the row denormalises it, and
+properties of its own:
+
+```python
+Link("WORKS_AT", to="Organization", by="org_id",
+     name="org_name",                                  # names the target
+     properties={"since": Column("start_date", "DATE")})  # goes on the edge
 ```
 
 ### What the fields mean
@@ -95,8 +107,8 @@ EMPLOYEES = RecordMapping(
 | `key`       | The column that identifies the entity. Its value becomes the node id, so re-ingesting a corrected export updates in place instead of duplicating. Should be unique per row: see below.        |
 | `name`      | The display name column. A source holding both `key` and `name` also publishes `alias_ids` — see [Bridging](#bridging-the-two-halves).                   |
 | `properties`| `{property_name: Column}`. Declared types are enforced at ingest, so a bad cell fails the ingest instead of writing a wrong type.                        |
-| `reference` | `True` when the record only points at the entity by key, as a foreign key does. Written **ON CREATE** only, so a pointer can never overwrite real data.  |
-| `alias`     | Needed when one record produces two nodes of the same label, so edges can address them apart.                                                            |
+| a link's target | Written **ON CREATE** only, so a pointer can never overwrite real data. That is what makes the order of two files irrelevant.                        |
+| `links`     | Columns that point at other entities. Each becomes a reference node plus an edge. Two links to the same label are kept apart automatically.               |
 
 Column types: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`.
 
@@ -129,13 +141,14 @@ row's values end up on it. Which one is not defined. That usually means the wron
 column was declared as the key, so it is logged as a warning naming the column and
 the repeated values.
 
-### Foreign keys
+### What a link writes
 
-A row in `employees.csv` says the organization exists and gives its key. It does not know the organization's name or headcount. `reference=True` writes that honestly:
+A row in `employees.csv` says the organization exists and gives its key. It does not know the organization's name or headcount, and a `Link` writes that honestly:
 
-- The node is created **ON CREATE only** — a pointer never overwrites what the owning source supplied.
+- The target is created **ON CREATE only** — a pointer never overwrites what the owning source supplied.
 - It carries its key, so it is joinable by the same column the mapping declared.
 - It is flagged `is_stub: true` until the source that owns the entity arrives and fills it in.
+- The edge is a `RELATES` edge carrying the link's `type` as its `rel_type`, which is how every data edge is stored.
 
 Order does not matter. Whichever source arrives first creates the node.
 

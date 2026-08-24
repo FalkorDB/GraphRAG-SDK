@@ -14,6 +14,7 @@ from graphrag_sdk.ingestion.mapping import (
     RESERVED_PROPERTY_NAMES,
     Column,
     EdgeMapping,
+    Link,
     MappingError,
     NodeMapping,
     RecordMapping,
@@ -305,3 +306,116 @@ class TestCastingRefusesValuesThatPoisonQueries:
 
     def test_an_ordinary_list_still_splits(self):
         assert Column("tags", "LIST").cast("a,b, c") == ["a", "b", "c"]
+
+
+class TestTableIsTheOnlyFormYouWrite:
+    """One declaration that grows, instead of two that you switch between.
+
+    A table with a foreign key used to require rewriting the whole declaration
+    into a different shape. Adding a link is now an argument, not a rewrite.
+    """
+
+    def test_a_link_adds_a_reference_and_an_edge(self):
+        table = Table(
+            "Person",
+            key="employee_id",
+            name="full_name",
+            age=Column("age", "INTEGER"),
+            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        )
+        assert [n.label for n in table.nodes] == ["Person", "Organization"]
+        assert table.anchor.label == "Person", "the subject stays the record's own entity"
+        target = table.nodes[1]
+        assert (target.key, target.reference) == ("org_id", True), (
+            "a link points at something without claiming to describe it"
+        )
+        assert [(e.type, e.source, e.target) for e in table.edges] == [
+            ("WORKS_AT", "Person", "Organization")
+        ]
+
+    def test_a_table_without_links_is_unchanged(self):
+        table = Table("Organization", key="org_id", name="org_name", hq="hq_country")
+        assert len(table.nodes) == 1
+        assert table.edges == []
+
+    def test_a_link_may_name_its_target(self):
+        """A denormalised name makes the placeholder "Acme Corp" not "ORG-42"."""
+        table = Table(
+            "Person",
+            key="e",
+            links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+        )
+        assert table.nodes[1].name == "org_name"
+
+    def test_link_properties_land_on_the_edge(self):
+        table = Table(
+            "Person",
+            key="e",
+            links=[
+                Link(
+                    "WORKS_AT",
+                    to="Organization",
+                    by="org_id",
+                    properties={"since": Column("start_date", "DATE")},
+                )
+            ],
+        )
+        assert table.edges[0].typed_properties["since"].type == "DATE"
+
+    def test_the_ontology_declares_the_relationship_pattern(self):
+        table = Table("Person", key="e", links=[Link("WORKS_AT", to="Organization", by="org_id")])
+        relation = table.to_ontology().relations[0]
+        assert relation.label == "WORKS_AT"
+        assert list(relation.patterns) == [("Person", "Organization")]
+
+    def test_two_links_to_the_same_label_get_distinct_handles(self):
+        table = Table(
+            "Contract",
+            key="contract_id",
+            links=[
+                Link("BUYER", to="Organization", by="buyer_id"),
+                Link("SELLER", to="Organization", by="seller_id"),
+            ],
+        )
+        assert len({n.handle for n in table.nodes}) == 3, "handles must stay unique"
+        assert {e.target for e in table.edges} == {n.handle for n in table.nodes[1:]}
+
+    def test_a_link_on_the_records_own_key_is_rejected(self):
+        """It would link the record to itself, which says nothing."""
+        with pytest.raises(MappingError, match="own key"):
+            Table("Person", key="employee_id", links=[Link("KNOWS", to="Person", by="employee_id")])
+
+    def test_links_must_be_link_objects(self):
+        with pytest.raises(MappingError, match="must contain Link objects"):
+            Table("Person", key="e", links=[("WORKS_AT", "Organization", "org_id")])  # type: ignore[list-item]
+
+    def test_a_link_validates_its_names(self):
+        with pytest.raises(MappingError, match="not a usable name"):
+            Link("WORKS AT", to="Organization", by="org_id")
+        with pytest.raises(MappingError, match="cannot be written as a label"):
+            Link("WORKS_AT", to="Org`) DELETE (n) //", by="org_id")
+
+    def test_columns_include_every_column_a_link_reads(self):
+        table = Table(
+            "Person",
+            key="employee_id",
+            name="full_name",
+            links=[
+                Link(
+                    "WORKS_AT",
+                    to="Organization",
+                    by="org_id",
+                    name="org_name",
+                    properties={"since": Column("start_date", "DATE")},
+                )
+            ],
+        )
+        assert table.columns == {"employee_id", "full_name", "org_id", "org_name", "start_date"}
+
+    def test_validation_against_a_header_covers_link_columns(self):
+        table = Table(
+            "Person", key="employee_id", links=[Link("WORKS_AT", to="Organization", by="org_id")]
+        )
+        assert table.validate_against(["employee_id", "org_id"]) == []
+        problems = table.validate_against(["employee_id"])
+        assert any("org_id" in p for p in problems)

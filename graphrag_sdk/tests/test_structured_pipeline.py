@@ -16,14 +16,7 @@ import pytest
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.loaders.record_loader import CsvRecordLoader
-from graphrag_sdk.ingestion.mapping import (
-    Column,
-    EdgeMapping,
-    MappingError,
-    NodeMapping,
-    RecordMapping,
-    Table,
-)
+from graphrag_sdk.ingestion.mapping import Column, Link, MappingError, Table
 from graphrag_sdk.ingestion.structured_pipeline import (
     StructuredIngestionPipeline,
     record_cells,
@@ -76,17 +69,13 @@ class RecordingGraphStore:
         return sorted(r.properties.get("rel_type", r.type) for r in self.relationships)
 
 
-EMPLOYEES = RecordMapping(
-    nodes=[
-        NodeMapping(
-            label="Person",
-            key="employee_id",
-            name="full_name",
-            properties={"age": Column("age", "INTEGER"), "title": Column("job_title")},
-        ),
-        NodeMapping(label="Organization", key="org_id", reference=True),
-    ],
-    edges=[EdgeMapping(type="WORKS_AT", source="Person", target="Organization")],
+EMPLOYEES = Table(
+    "Person",
+    key="employee_id",
+    name="full_name",
+    age=Column("age", "INTEGER"),
+    title=Column("job_title"),
+    links=[Link("WORKS_AT", to="Organization", by="org_id")],
 )
 
 
@@ -195,12 +184,11 @@ class TestStructuredIngest:
         """A denormalised name makes the stub "Acme Corp" instead of "ORG-42"."""
         path = tmp_path / "e.csv"
         path.write_text("employee_id,full_name,org_id,org_name\nE-1,Alice,ORG-42,Acme Corp\n")
-        mapping = RecordMapping(
-            nodes=[
-                NodeMapping(label="Person", key="employee_id", name="full_name"),
-                NodeMapping(label="Organization", key="org_id", name="org_name", reference=True),
-            ],
-            edges=[EdgeMapping(type="WORKS_AT", source="Person", target="Organization")],
+        mapping = Table(
+            "Person",
+            key="employee_id",
+            name="full_name",
+            links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
         )
         store = RecordingGraphStore()
         pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
@@ -315,13 +303,7 @@ class TestStructuredIngest:
     ):
         path = tmp_path / "same.csv"
         path.write_text("a_id,b_id\nX-1,X-1\n")
-        mapping = RecordMapping(
-            nodes=[
-                NodeMapping(alias="a", label="Thing", key="a_id"),
-                NodeMapping(alias="b", label="Thing", key="b_id"),
-            ],
-            edges=[EdgeMapping(type="LINKS", source="a", target="b")],
-        )
+        mapping = Table("Thing", key="a_id", links=[Link("LINKS", to="Thing", by="b_id")])
         store = RecordingGraphStore()
         pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
         result = await pipe.run(str(path), mapping, ctx)
