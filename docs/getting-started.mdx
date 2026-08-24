@@ -64,23 +64,23 @@ If you use a `.env` file, load it yourself before importing the SDK (e.g., via `
 
 ---
 
-## 5. Define a Schema
+## 5. Define an Ontology
 
-A `GraphSchema` tells the extraction pipeline which entity and relationship types to look for in your documents.
+An `Ontology` tells the extraction pipeline which entity and relationship types to look for in your documents.
 
 ```python
-from graphrag_sdk import GraphSchema, EntityType, RelationType
+from graphrag_sdk import Ontology, Entity, Relation
 
-schema = GraphSchema(
+ontology = Ontology(
     entities=[
-        EntityType(label="Person", description="A human being"),
-        EntityType(label="Organization", description="A company or institution"),
-        EntityType(label="Place", description="A geographic location"),
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
+        Entity(label="Place", description="A geographic location"),
     ],
     relations=[
-        RelationType(label="WORKS_AT", description="Employment relationship"),
-        RelationType(label="LOCATED_IN", description="Geographic location"),
-        RelationType(label="KNOWS", description="Personal acquaintance"),
+        Relation(label="WORKS_AT", description="Employment relationship"),
+        Relation(label="LOCATED_IN", description="Geographic location"),
+        Relation(label="KNOWS", description="Personal acquaintance"),
     ],
 )
 ```
@@ -91,7 +91,7 @@ You can add as many entity and relationship types as your domain requires. Descr
 
 ## 6. Initialize GraphRAG
 
-Create a `GraphRAG` instance by providing a connection, LLM, embedder, and schema:
+Create a `GraphRAG` instance by providing a connection, LLM, embedder, and ontology:
 
 ```python
 from graphrag_sdk import GraphRAG, ConnectionConfig, LiteLLM, LiteLLMEmbedder
@@ -100,7 +100,7 @@ rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=LiteLLM(model="azure/gpt-4.1"),
     embedder=LiteLLMEmbedder(model="azure/text-embedding-3-large", dimensions=256),
-    schema=schema,
+    ontology=ontology,
     embedding_dimension=256,  # must match your embedding model's output dimension
 )
 ```

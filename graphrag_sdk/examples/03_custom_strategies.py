@@ -22,12 +22,12 @@ import time
 
 from graphrag_sdk import (
     ConnectionConfig,
-    EntityType,
+    Entity,
     GraphRAG,
-    GraphSchema,
     LiteLLM,
     LiteLLMEmbedder,
-    RelationType,
+    Ontology,
+    Relation,
 )
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
@@ -53,41 +53,41 @@ DOCUMENTS = [
     ),
 ]
 
-SCHEMA = GraphSchema(
+ONTOLOGY = Ontology(
     entities=[
-        EntityType(label="Person", description="A historical figure or scientist"),
-        EntityType(label="Place", description="A city, country, or geographic location"),
-        EntityType(label="Organization", description="A university, institution, or award body"),
-        EntityType(label="Event", description="A significant event, award, or discovery"),
-        EntityType(label="Concept", description="A scientific field or abstract idea"),
+        Entity(label="Person", description="A historical figure or scientist"),
+        Entity(label="Place", description="A city, country, or geographic location"),
+        Entity(label="Organization", description="A university, institution, or award body"),
+        Entity(label="Event", description="A significant event, award, or discovery"),
+        Entity(label="Concept", description="A scientific field or abstract idea"),
     ],
     relations=[
-        RelationType(
+        Relation(
             label="LOCATED_IN",
             description="Is located in a place",
             patterns=[("Person", "Place"), ("Organization", "Place")],
         ),
-        RelationType(
+        Relation(
             label="WORKS_AT",
             description="Works at an institution",
             patterns=[("Person", "Organization")],
         ),
-        RelationType(
+        Relation(
             label="MARRIED_TO",
             description="Is married to",
             patterns=[("Person", "Person")],
         ),
-        RelationType(
+        Relation(
             label="RELATED_TO",
             description="Has a relationship with",
             patterns=[("Person", "Person")],
         ),
-        RelationType(
+        Relation(
             label="AWARDED",
             description="Received an award or prize",
             patterns=[("Person", "Event")],
         ),
-        RelationType(
+        Relation(
             label="RESEARCHED",
             description="Conducted research on a topic",
             patterns=[("Person", "Concept")],
@@ -115,7 +115,7 @@ async def main():
         connection=ConnectionConfig(host="localhost", graph_name="strategies_demo"),
         llm=llm,
         embedder=embedder,
-        schema=SCHEMA,
+        ontology=ONTOLOGY,
     )
 
     # Clear previous data

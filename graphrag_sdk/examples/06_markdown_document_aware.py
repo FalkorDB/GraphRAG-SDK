@@ -34,44 +34,44 @@ import sys
 
 from graphrag_sdk import (
     ConnectionConfig,
-    EntityType,
+    Entity,
     GraphRAG,
-    GraphSchema,
     LiteLLM,
     LiteLLMEmbedder,
-    RelationType,
+    Ontology,
+    Relation,
 )
 from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 
 
-def create_schema() -> GraphSchema:
-    """Generic schema suitable for technical documentation."""
-    return GraphSchema(
+def create_ontology() -> Ontology:
+    """Generic ontology suitable for technical documentation."""
+    return Ontology(
         entities=[
-            EntityType(label="Concept",      description="A technical concept, feature, or abstraction"),
-            EntityType(label="Component",    description="A software module, library, or service"),
-            EntityType(label="Technology",   description="A programming language, framework, or tool"),
-            EntityType(label="Person",       description="An author, contributor, or mentioned individual"),
-            EntityType(label="Organization", description="A company, team, or standards body"),
+            Entity(label="Concept",      description="A technical concept, feature, or abstraction"),
+            Entity(label="Component",    description="A software module, library, or service"),
+            Entity(label="Technology",   description="A programming language, framework, or tool"),
+            Entity(label="Person",       description="An author, contributor, or mentioned individual"),
+            Entity(label="Organization", description="A company, team, or standards body"),
         ],
         relations=[
-            RelationType(
+            Relation(
                 label="DEPENDS_ON",
                 description="Requires another component or technology",
                 patterns=[("Component", "Component"), ("Component", "Technology")],
             ),
-            RelationType(
+            Relation(
                 label="IMPLEMENTS",
                 description="Provides a concrete implementation of a concept",
                 patterns=[("Component", "Concept")],
             ),
-            RelationType(
+            Relation(
                 label="CREATED_BY",
                 description="Was authored or maintained by a person or organization",
                 patterns=[("Component", "Person"), ("Component", "Organization")],
             ),
-            RelationType(
+            Relation(
                 label="RELATED_TO",
                 description="Has a general relationship with",
                 patterns=[
@@ -172,7 +172,7 @@ async def main():
         connection=ConnectionConfig(host="localhost", graph_name="markdown_demo"),
         llm=llm,
         embedder=embedder,
-        schema=create_schema(),
+        ontology=create_ontology(),
     )
 
     # delete_all() must come BEFORE ingest().

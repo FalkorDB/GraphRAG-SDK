@@ -204,15 +204,15 @@ Entities that don't match any type (or fall below the confidence threshold) are 
 
 There are three ways to define entity types, listed by priority:
 
-**1. GraphSchema entities (highest priority):**
+**1. Ontology entities (highest priority):**
 ```python
-from graphrag_sdk import GraphSchema, EntityType
+from graphrag_sdk import Ontology, Entity
 
-schema = GraphSchema(entities=[
-    EntityType(label="Gene", description="A gene or genetic locus"),
-    EntityType(label="Disease", description="A disease or condition"),
+ontology = Ontology(entities=[
+    Entity(label="Gene", description="A gene or genetic locus"),
+    Entity(label="Disease", description="A disease or condition"),
 ])
-rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, schema=schema)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 # Extraction uses: ["Gene", "Disease"]
 ```
 

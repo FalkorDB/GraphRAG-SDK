@@ -28,8 +28,8 @@ This document explains what each step does, why it exists, and how to tune it.
               4b. Quality Filter
               (remove bad nodes/dangling edges)
                     |
-              5. Prune Against Schema
-              (keep only schema-conforming data)
+              5. Prune Against Ontology
+              (keep only ontology-conforming data)
                     |
               6. Resolve Duplicates
               (merge same-entity mentions)
@@ -138,17 +138,17 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 ---
 
-### Step 5 — Prune Against Schema
+### Step 5 — Prune Against Ontology
 
-**What it does:** Filters extracted data to only keep entities and relationships that match your schema definition.
+**What it does:** Filters extracted data to only keep entities and relationships that match your ontology definition.
 
 **How it works:**
-- If your schema defines entity types (e.g., Person, Organization, Location), only entities with those labels pass through
-- If your schema defines relationship types, only those relationship types pass through
+- If your ontology defines entity types (e.g., Person, Organization, Location), only entities with those labels pass through
+- If your ontology defines relationship types, only those relationship types pass through
 - Relationships whose endpoints were pruned are also removed
 - **Special cases:** `"Unknown"` entities (low-confidence NER) and `"RELATES"` edges (the unified relationship type) always pass through
 
-**Open schema mode:** If you define no entity or relationship types (empty `GraphSchema()`), this step is skipped entirely — everything passes through.
+**Open ontology mode:** If you define no entity or relationship types (empty `Ontology()`), this step is skipped entirely — everything passes through.
 
 **Code:** `IngestionPipeline._prune()` in [`ingestion/pipeline.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/pipeline.py)
 
