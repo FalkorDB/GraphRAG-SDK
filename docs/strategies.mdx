@@ -264,7 +264,7 @@ extractor = GraphExtraction(
 )
 ```
 
-**3. Use `Ontology` entities** (schema types override both defaults and `entity_types`):
+**3. Use `Ontology` entities** (ontology entity types override both defaults and `entity_types`):
 
 ```python
 from graphrag_sdk import GraphRAG, Ontology, Entity
@@ -275,7 +275,7 @@ ontology = Ontology(entities=[
     Entity(label="Location", description="Cities, countries, etc."),
 ])
 
-# Schema entity types are automatically used for extraction
+# Ontology entity types are automatically used for extraction
 rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology)
 await rag.ingest("traffic_report.txt")
 # Extraction uses: ["Vehicle", "Road", "Location"]

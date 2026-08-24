@@ -248,14 +248,14 @@ ontology = Ontology(
 
 A relationship with an empty `patterns` list is allowed between any entity types.
 
-### Open Schema Mode
+### Open Ontology Mode
 
-If you create an empty schema (`Ontology()`), the pipeline operates in **open schema mode**:
+If you create an empty ontology (`Ontology()`), the pipeline operates in **open ontology mode**:
 - The LLM extracts any entities and relationships it finds
 - The pruning step is skipped entirely
 - The 11 default entity types are used for NER
 
-This is good for exploration. For production, a defined schema produces cleaner, more consistent graphs.
+This is good for exploration. For production, a defined ontology produces cleaner, more consistent graphs.
 
 ---
 

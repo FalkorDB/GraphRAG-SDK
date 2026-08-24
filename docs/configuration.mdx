@@ -298,9 +298,8 @@ Both `LiteLLMEmbedder` and `OpenRouterEmbedder` implement binary-split error rec
 | `name`        | `str`           | --          | Property name.                                               |
 | `type`        | `str`           | `"STRING"`  | Type hint: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. |
 | `description` | `str \| None`   | `None`      | Human-readable description.                                  |
-| `required`    | `bool`          | `False`     | Whether the property is required.                            |
 
-### Example Schema Definition
+### Example Ontology Definition
 
 ```python
 from graphrag_sdk.core.models import (
@@ -359,9 +358,9 @@ ontology = Ontology(
 Each `Relation.patterns` entry is a `(source_label, target_label)` tuple.
 An empty `patterns` list means the relation is allowed between any entity types.
 
-### Open Schema Mode
+### Open Ontology Mode
 
-If no entity types or relation types are defined (empty `Ontology()`), the extraction operates in open-schema mode and the pruning step is skipped. This lets the LLM extract any entities and relationships it finds.
+If no entity types or relation types are defined (empty `Ontology()`), the extraction operates in open-ontology mode and the pruning step is skipped. This lets the LLM extract any entities and relationships it finds.
 
 ---
 

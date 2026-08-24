@@ -47,7 +47,7 @@ GraphRAG(
 | `connection` | `FalkorDBConnection \| ConnectionConfig` | required | Database connection or config to create one |
 | `llm` | `LLMInterface` | required | LLM provider |
 | `embedder` | `Embedder` | required | Embedding provider |
-| `schema` | `Ontology \| None` | `None` | Schema constraints for extraction (empty = unconstrained) |
+| `ontology` | `Ontology \| None` | `None` | Ontology constraints for extraction (empty = unconstrained) |
 | `retrieval_strategy` | `RetrievalStrategy \| None` | `None` | Default retrieval strategy (uses `MultiPathRetrieval` if None) |
 
 **Public attributes:** `llm`, `embedder`, `ontology`, `graph_store`, `vector_store`
@@ -525,7 +525,7 @@ Deterministic entity ID from normalized name and optional type. When `entity_typ
 ## Ontology
 
 ```python
-from graphrag_sdk import Ontology, Entity, Relation
+from graphrag_sdk import Ontology, Entity, Relation, Attribute
 ```
 
 ### Entity
@@ -544,6 +544,7 @@ class Relation(DataModel):
     label: str                            # e.g. "WORKS_AT"
     description: str | None = None
     patterns: list[tuple[str, str]] = []  # Allowed (source_label, target_label) pairs
+    properties: list[Attribute] = []      # Optional property definitions
 ```
 
 ### Attribute
