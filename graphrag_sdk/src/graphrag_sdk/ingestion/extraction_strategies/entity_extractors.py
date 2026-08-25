@@ -67,7 +67,19 @@ _PRONOUNS: set[str] = {
     "its",
 }
 
-_ENTITY_STOPLIST: set[str] = _PRONOUNS | {
+# Shell and system abbreviations that read as entities to an NER model but name
+# nothing in any document domain.  Ported here from the extraction prompt, which
+# used to ask the LLM to remove them: a fixed list costs nothing, cannot vary
+# between runs, and cannot be quietly skipped the way the prompt instruction was
+# (see RESULTS.md P2.10).  Well-known two-letter acronyms - AI, US, UK, EU, UN,
+# Go - are deliberately absent and stay.
+_SHELL_TOKENS: frozenset[str] = frozenset({
+    "sh", "cd", "ls", "rm", "cp", "mv", "dt", "bg", "fg", "fn", "df", "du",
+    "ps", "cat", "pwd", "echo", "mkdir", "rmdir", "chmod", "chown", "grep",
+    "awk", "sed", "env", "sudo", "ssh", "tmp", "var", "usr", "bin", "etc",
+})
+
+_ENTITY_STOPLIST: set[str] = _PRONOUNS | _SHELL_TOKENS | {
     # Generic/anonymous references
     "narrator",
     "the narrator",
@@ -182,6 +194,10 @@ def is_valid_entity_name(name: str) -> bool:
     if not is_acronym and stripped.lower() in _ENTITY_STOPLIST:
         return False
     if is_specific_date(stripped):
+        return False
+    # Operator and punctuation tokens (+=, ->, ==, !=). A name with no letter or
+    # digit anywhere in it cannot be the name of anything.
+    if not any(ch.isalnum() for ch in stripped):
         return False
     return True
 
