@@ -22,6 +22,7 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
     Ontology,
     Relation,
+    RESERVED_NODE_LABELS,
     TextChunks,
 )
 from graphrag_sdk.core.providers import LLMInterface
@@ -336,6 +337,38 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
     return extra
 
 
+def _reject_reserved_labels(types: list[str]) -> list[str]:
+    """Reject entity types that collide with the store's structural labels.
+
+    ``Document`` and ``Chunk`` are used by the graph store for corpus
+    bookkeeping. An extracted entity carrying one of those labels fails two
+    ways at once, both silently:
+
+    1. Document-level queries (``MATCH (p:Document) ...``) start returning
+       extracted entities, so document counts and lookups are wrong. This was
+       found in the field as an 11-document corpus reporting 106 documents.
+    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
+       label is *not* structural, so the node never receives ``__Entity__``
+       and is dropped from deduplication and retrieval. It is written, then
+       ignored.
+
+    Neither failure raises, so the graph just quietly degrades. Fail here
+    instead, at configuration time, where the caller can act on it.
+    """
+    reserved = {label.casefold(): label for label in RESERVED_NODE_LABELS}
+    clashes = [t for t in types if str(t).strip().casefold() in reserved]
+    if clashes:
+        raise ValueError(
+            f"entity_types may not contain the reserved label(s) {sorted(set(clashes))}. "
+            f"{sorted(RESERVED_NODE_LABELS)} are used internally for corpus "
+            "bookkeeping; reusing them silently corrupts document counts and "
+            "removes the entity from deduplication and retrieval. "
+            "Rename the type (e.g. 'Document' -> 'Publication', "
+            "'Chunk' -> 'TextSegment')."
+        )
+    return list(types)
+
+
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
     """Format entity types for prompt injection.
 
@@ -431,7 +464,9 @@ class GraphExtraction(ExtractionStrategy):
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.entity_types = entity_types or list(DEFAULT_ENTITY_TYPES)
+        self.entity_types = _reject_reserved_labels(
+            entity_types or list(DEFAULT_ENTITY_TYPES)
+        )
         self._max_concurrency = max_concurrency
 
     async def extract(
@@ -442,7 +477,10 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: ontology overrides instance default
         if ontology.entities:
-            entity_types = [e.label for e in ontology.entities]
+            # Ontology labels bypass the constructor, so re-check here: an
+            # ontology declaring a reserved label must fail as loudly as
+            # passing one to entity_types would.
+            entity_types = _reject_reserved_labels([e.label for e in ontology.entities])
             entity_type_descs: dict[str, str] = {
                 e.label: e.description for e in ontology.entities if e.description
             }
