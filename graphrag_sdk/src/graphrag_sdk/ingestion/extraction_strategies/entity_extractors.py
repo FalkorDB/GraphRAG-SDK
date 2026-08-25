@@ -380,6 +380,18 @@ class GLiNERExtractor(EntityExtractor):
     so a single instance can be safely shared across concurrent
     ``asyncio.to_thread`` calls (e.g. parallel doc ingestion).
 
+    GLiNER has a hard input limit (``config.max_len``) and truncates anything
+    beyond it **silently** — no exception, no warning, the tail simply never
+    reaches the model. Measured on ``gliner_medium-v2.1`` (``max_len`` 384): a
+    probe entity placed at word-token 388 is always returned, at 389 never.
+    The default model's limit is 2048, but real documents still exceed it —
+    disabling windowing on our benchmark corpus dropped recall from 0.805 to
+    0.621 — so windowing matters regardless of the model.
+
+    To keep long chunks fully visible, text longer than ``window_tokens`` is
+    processed as a series of overlapping windows and the results are merged.
+    Short text takes a fast path and behaves exactly as before.
+
     **Thresholds are model-specific and are not comparable between models.**
     ``DEFAULT_THRESHOLDS`` records the measured operating point for each known
     model, and ``threshold=None`` (the default) looks it up. Passing an explicit
@@ -392,7 +404,16 @@ class GLiNERExtractor(EntityExtractor):
         threshold: Confidence threshold (0-1). Below this → "Unknown".
             ``None`` (default) selects the value measured for ``model_name``.
         model_name: HuggingFace model name for GLiNER.
+        window_tokens: Word-tokens per inference window. ``None`` derives it
+            from the model's own ``config.max_len`` minus a safety margin.
+        window_overlap: Word-tokens shared between consecutive windows. Must
+            exceed the model's ``max_width`` (longest representable entity,
+            12 words by default) or entities on a boundary are lost.
     """
+
+    # Safety margin under config.max_len; the label prompt and special tokens
+    # share the window with the text.
+    _WINDOW_MARGIN = 34
 
     #: Default model. Measured against ``gliner_medium-v2.1`` on an 11-document
     #: benchmark: ceiling recall 0.805 vs 0.709, 432MB vs 781MB on disk, 1004MB
@@ -419,6 +440,8 @@ class GLiNERExtractor(EntityExtractor):
         self,
         threshold: float | None = None,
         model_name: str | None = None,
+        window_tokens: int | None = None,
+        window_overlap: int = 48,
     ) -> None:
         self._model_name = model_name or self.DEFAULT_MODEL
         if threshold is None:
@@ -441,6 +464,9 @@ class GLiNERExtractor(EntityExtractor):
         # ``_CACHE_LOCK`` and inference deliberately takes no lock at all.
         # See ``_predict_sync`` for the thread-safety evidence.
         self._lock = threading.Lock()
+        self._window_tokens = window_tokens
+        self._window_overlap = window_overlap
+        self._splitter: Any = None
 
     def _load_model(self) -> Any:
         if self._model is None:
@@ -485,9 +511,63 @@ class GLiNERExtractor(EntityExtractor):
                 cls._MODEL_CACHE[model_name] = cached
         return cached
 
+    def _resolve_window(self, model: Any) -> int:
+        """Window size in word-tokens, derived from the model if not set."""
+        if self._window_tokens is not None:
+            return self._window_tokens
+        max_len = getattr(getattr(model, "config", None), "max_len", None)
+        if not isinstance(max_len, int) or max_len <= 0:
+            max_len = 384
+        return max(64, max_len - self._WINDOW_MARGIN)
+
+    def _word_spans(self, model: Any, text: str) -> list[tuple[str, int, int]]:
+        """Split text the same way GLiNER does, keeping char offsets."""
+        if self._splitter is None:
+            splitter = getattr(
+                getattr(model, "data_processor", None), "words_splitter", None
+            )
+            if splitter is None:
+                from gliner.data_processing import WordsSplitter
+
+                splitter = WordsSplitter()
+            self._splitter = splitter
+        return list(self._splitter(text))
+
+    @staticmethod
+    def _merge(preds: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Deduplicate predictions from overlapping windows.
+
+        Identical spans found in two windows collapse to the highest-scoring
+        copy. A span that is strictly contained in a longer span of the same
+        label is dropped: it is the truncated remains of an entity clipped by a
+        window edge, which the neighbouring window saw whole.
+        """
+        best: dict[tuple[int, int, str], dict[str, Any]] = {}
+        for p in preds:
+            key = (p["start"], p["end"], p["label"])
+            prev = best.get(key)
+            if prev is None or p.get("score", 0.0) > prev.get("score", 0.0):
+                best[key] = p
+
+        kept: list[dict[str, Any]] = []
+        for p in best.values():
+            contained = any(
+                q is not p
+                and q["label"] == p["label"]
+                and q["start"] <= p["start"]
+                and p["end"] <= q["end"]
+                and (q["end"] - q["start"]) > (p["end"] - p["start"])
+                for q in best.values()
+            )
+            if not contained:
+                kept.append(p)
+        kept.sort(key=lambda p: (p["start"], p["end"]))
+        return kept
+
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
         model = self._load_model()
         labels = [t.lower() for t in entity_types]
+        window = self._resolve_window(model)
 
         # No lock here, deliberately.
         #
@@ -508,17 +588,51 @@ class GLiNERExtractor(EntityExtractor):
         # locked 3.75 s / 3.54 s versus unlocked 2.21 s / 2.46 s = **1.56x**.
         # Note issue #71 claimed 3.44x; the honest measured figure is 1.56x,
         # because torch's own intra-op threading already uses the cores.
-        return self._predict_body(model, text, labels)
+        return self._predict_body(model, text, labels, window)
 
     def _predict_body(
         self,
         model: Any,
         text: str,
         labels: list[str],
+        window: int,
     ) -> list[dict[str, Any]]:
-        """Inference. Split out from :meth:`_predict_sync` so the lock removal
-        above could be A/B tested by wrapping one call site."""
-        return model.predict_entities(text, labels, threshold=self._threshold)
+        """Windowed inference. Split out from :meth:`_predict_sync` so the
+        lock removal above could be A/B tested by wrapping one call site."""
+        words = self._word_spans(model, text)
+
+        # Fast path: fits in one window, identical to unwindowed behaviour.
+        if len(words) <= window:
+            return model.predict_entities(text, labels, threshold=self._threshold)
+
+        step = max(1, window - self._window_overlap)
+        out: list[dict[str, Any]] = []
+        for begin in range(0, len(words), step):
+            span = words[begin : begin + window]
+            if not span:
+                break
+            lo, hi = span[0][1], span[-1][2]
+            for p in model.predict_entities(
+                text[lo:hi], labels, threshold=self._threshold
+            ):
+                p = dict(p)
+                p["start"] += lo
+                p["end"] += lo
+                p["text"] = text[p["start"] : p["end"]]
+                out.append(p)
+            if begin + window >= len(words):
+                break
+
+        merged = self._merge(out)
+        logger.debug(
+            "GLiNER windowed inference: %d word-tokens -> %d windows, "
+            "%d raw predictions -> %d after merge",
+            len(words),
+            (len(words) - 1) // step + 1,
+            len(out),
+            len(merged),
+        )
+        return merged
 
     async def extract_entities(
         self,
