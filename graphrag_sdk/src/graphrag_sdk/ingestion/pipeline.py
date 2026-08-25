@@ -38,9 +38,7 @@ logger = logging.getLogger(__name__)
 _PATTERN_MISMATCH_SAMPLE_SIZE = 3
 
 
-def _assign_deterministic_chunk_uids(
-    doc_info: DocumentInfo, chunks: TextChunks
-) -> None:
+def _assign_deterministic_chunk_uids(doc_info: DocumentInfo, chunks: TextChunks) -> None:
     """Replace random chunk UIDs with a content-derived, stable identity.
 
     ``TextChunk.uid`` defaults to ``uuid4()``, so every ingest of the *same*
@@ -70,9 +68,7 @@ def _assign_deterministic_chunk_uids(
     """
     doc_key = doc_info.uid or doc_info.path or ""
     for chunk in chunks.chunks:
-        digest = hashlib.sha256(
-            f"{doc_key}\x00{chunk.index}\x00{chunk.text}".encode()
-        ).hexdigest()
+        digest = hashlib.sha256(f"{doc_key}\x00{chunk.index}\x00{chunk.text}".encode()).hexdigest()
         chunk.uid = f"chunk-{digest[:32]}"
 
 
