@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
 from graphrag_sdk.core.models import ExtractedEntity
@@ -757,3 +758,158 @@ class LLMExtractor(EntityExtractor):
                 )
             )
         return entities
+
+
+# ── spaCy Extractor ──────────────────────────────────────────────
+
+
+class SpacyExtractor(EntityExtractor):
+    """Classic (non zero-shot) NER via spaCy, for well-known proper nouns.
+
+    This exists to cover a measured blind spot rather than as a general
+    extractor. Swapping the GLiNER default to ``gliner-bi-small-v2.0`` gained 49
+    gold entities but *lost* 24, and the losses were textbook proper nouns —
+    ``Baghdad``, ``Cairo``, ``Madrid``, ``Barcelona``, ``Constantinople``,
+    ``Paris Observatory`` — which a supervised model trained on exactly those
+    categories gets right trivially.
+
+    Used alone it is a poor fit for GraphRAG: its label set is fixed, so it
+    cannot represent custom types such as ``Method`` or ``Technology``. Its
+    value is as the second half of a :class:`CompositeExtractor`.
+
+    ``DEFAULT_LABELS`` is deliberately narrow. Measured on an 11-document
+    benchmark (157 chunks), unioned with the default GLiNER extractor:
+
+    ===========================  ======  =========  =====
+    spaCy labels added           recall  precision  F1
+    ===========================  ======  =========  =====
+    none (GLiNER alone)          0.494   0.554      0.522
+    PERSON/ORG/GPE/FAC           0.613   0.499      0.550
+    + LOC                        0.616   0.497      0.550
+    + NORP                       0.616   0.477      0.538
+    all 12 usable labels         0.654   0.352      0.458
+    ===========================  ======  =========  =====
+
+    Widening past the four default labels buys recall by giving away
+    precision, and F1 falls off a cliff at the wide setting. The narrow set
+    recovers 18 of the 24 lost entities for ~5s per 157 chunks.
+
+    Requires the ``spacy`` extra and a downloaded model::
+
+        pip install "graphrag-sdk[spacy]"
+        python -m spacy download en_core_web_lg
+    """
+
+    #: spaCy labels kept by default. Everything else is dropped rather than
+    #: guessed at, because a wrong type is worse than a missing entity here.
+    DEFAULT_LABELS = frozenset({"PERSON", "ORG", "GPE", "FAC"})
+
+    #: spaCy label -> the generic type name we look for in ``entity_types``.
+    #: Candidates are tried in order and the first one the caller allows wins,
+    #: so this works whether a schema calls it ``Place``, ``Location`` or
+    #: ``Organization``.
+    LABEL_MAP: dict[str, tuple[str, ...]] = {
+        "PERSON": ("Person",),
+        "ORG": ("Organization", "Institution", "Company"),
+        "GPE": ("Location", "Place", "GeographicLocation"),
+        "LOC": ("Location", "Place", "GeographicLocation"),
+        "FAC": ("Building", "Facility", "Location", "Place"),
+        "NORP": ("Group", "Nationality", "Organization"),
+        "EVENT": ("Event",),
+        "PRODUCT": ("Product",),
+        "WORK_OF_ART": ("Work", "Publication", "Product"),
+        "LAW": ("Law",),
+        "DATE": ("Date",),
+        "LANGUAGE": ("Language",),
+    }
+
+    DEFAULT_MODEL = "en_core_web_lg"
+
+    def __init__(
+        self,
+        model_name: str | None = None,
+        labels: Iterable[str] | None = None,
+        confidence: float = 0.5,
+    ) -> None:
+        """Initialise the extractor.
+
+        Args:
+            model_name: spaCy pipeline to load. Defaults to ``en_core_web_lg``.
+                ``en_core_web_sm`` is ~2.6x smaller and just as fast but
+                measured 0.554 ceiling recall against 0.601 for ``lg``.
+            labels: spaCy entity labels to keep. Defaults to
+                :attr:`DEFAULT_LABELS`. Widening this reduces F1 — see the
+                class docstring for the measured trade.
+            confidence: Score recorded on emitted entities. spaCy's ``ents``
+                expose no per-span probability, so this is a fixed stand-in
+                rather than a real confidence, and is set at the default
+                GLiNER threshold so these entities are neither favoured nor
+                penalised relative to GLiNER's.
+        """
+        self._model_name = model_name or self.DEFAULT_MODEL
+        self._labels = frozenset(labels) if labels is not None else self.DEFAULT_LABELS
+        self._confidence = confidence
+        self._nlp: Any = None
+        self._lock = asyncio.Lock()
+
+    async def _get_nlp(self) -> Any:
+        if self._nlp is not None:
+            return self._nlp
+        async with self._lock:
+            if self._nlp is None:
+                self._nlp = await asyncio.to_thread(self._load)
+        return self._nlp
+
+    def _load(self) -> Any:
+        try:
+            import spacy
+        except ImportError as exc:  # pragma: no cover - depends on env
+            raise ImportError(
+                "SpacyExtractor requires the 'spacy' extra. Install with: "
+                'pip install "graphrag-sdk[spacy]"'
+            ) from exc
+        try:
+            # The parser and lemmatizer cost time and contribute nothing to NER.
+            return spacy.load(self._model_name, disable=["lemmatizer", "textcat"])
+        except OSError as exc:  # pragma: no cover - depends on env
+            raise OSError(
+                f"spaCy model '{self._model_name}' is not installed. Run: "
+                f"python -m spacy download {self._model_name}"
+            ) from exc
+
+    def _type_for(self, label: str, entity_types: list[str]) -> str | None:
+        """Map a spaCy label onto an allowed type, or None if unrepresentable."""
+        for candidate in self.LABEL_MAP.get(label, ()):
+            mapped = label_for_type(candidate, entity_types)
+            if mapped != UNKNOWN_LABEL:
+                return mapped
+        return None
+
+    async def extract_entities(
+        self,
+        text: str,
+        entity_types: list[str],
+        source_chunk_id: str,
+    ) -> list[ExtractedEntity]:
+        nlp = await self._get_nlp()
+        doc = await asyncio.to_thread(nlp, text)
+
+        preds: list[dict[str, Any]] = []
+        for ent in doc.ents:
+            if ent.label_ not in self._labels:
+                continue
+            etype = self._type_for(ent.label_, entity_types)
+            if etype is None:
+                continue  # caller's schema has no home for this label
+            preds.append(
+                {
+                    "text": ent.text,
+                    "label": etype,
+                    "score": self._confidence,
+                    "start": ent.start_char,
+                    "end": ent.end_char,
+                }
+            )
+        return _parse_predictions(preds, entity_types, source_chunk_id, self._confidence)
+
+
