@@ -392,6 +392,18 @@ class GLiNERExtractor(EntityExtractor):
     processed as a series of overlapping windows and the results are merged.
     Short text takes a fast path and behaves exactly as before.
 
+    **Confidence handling.** By default the model is queried at ``threshold``,
+    so anything less confident is discarded inside GLiNER and never reaches this
+    SDK. Set ``candidate_threshold`` below ``threshold`` to instead *keep* those
+    entities and label them ``"Unknown"``. The rest of the pipeline is already
+    built for this: ontology filtering explicitly whitelists ``"Unknown"`` so
+    low-confidence nodes survive pruning, and entity resolution prefers any
+    specific type over ``"Unknown"`` when merging duplicates. Off by default —
+    lowering ``threshold`` outright was measured to raise entity recall 32%
+    while dropping entity F1 0.568 -> 0.474 and triple F1 0.236 -> 0.211, so
+    low-confidence predictions are mostly noise and should be marked, not
+    trusted.
+
     **Thresholds are model-specific and are not comparable between models.**
     ``DEFAULT_THRESHOLDS`` records the measured operating point for each known
     model, and ``threshold=None`` (the default) looks it up. Passing an explicit
@@ -442,6 +454,7 @@ class GLiNERExtractor(EntityExtractor):
         model_name: str | None = None,
         window_tokens: int | None = None,
         window_overlap: int = 48,
+        candidate_threshold: float | None = None,
     ) -> None:
         self._model_name = model_name or self.DEFAULT_MODEL
         if threshold is None:
@@ -457,6 +470,13 @@ class GLiNERExtractor(EntityExtractor):
                     self._FALLBACK_THRESHOLD,
                 )
         self._threshold = threshold
+        if candidate_threshold is not None and candidate_threshold > threshold:
+            raise ValueError(
+                f"candidate_threshold ({candidate_threshold}) must be <= "
+                f"threshold ({threshold}); a candidate floor above the demotion "
+                f"line would discard the very entities it is meant to keep"
+            )
+        self._candidate_threshold = candidate_threshold
         self._model: Any = None
         # Retained only so callers/tests that swap in a context manager to
         # A/B the removed inference lock keep working. Nothing in this class
@@ -568,6 +588,15 @@ class GLiNERExtractor(EntityExtractor):
         model = self._load_model()
         labels = [t.lower() for t in entity_types]
         window = self._resolve_window(model)
+        # What we ask the MODEL for. Anything between this floor and
+        # ``self._threshold`` comes back and is demoted to ``UNKNOWN_LABEL`` by
+        # ``_parse_predictions`` rather than being discarded. When no candidate
+        # threshold is configured the two are equal and nothing is demoted.
+        floor = (
+            self._threshold
+            if self._candidate_threshold is None
+            else self._candidate_threshold
+        )
 
         # No lock here, deliberately.
         #
@@ -588,7 +617,7 @@ class GLiNERExtractor(EntityExtractor):
         # locked 3.75 s / 3.54 s versus unlocked 2.21 s / 2.46 s = **1.56x**.
         # Note issue #71 claimed 3.44x; the honest measured figure is 1.56x,
         # because torch's own intra-op threading already uses the cores.
-        return self._predict_body(model, text, labels, window)
+        return self._predict_body(model, text, labels, window, floor)
 
     def _predict_body(
         self,
@@ -596,6 +625,7 @@ class GLiNERExtractor(EntityExtractor):
         text: str,
         labels: list[str],
         window: int,
+        floor: float,
     ) -> list[dict[str, Any]]:
         """Windowed inference. Split out from :meth:`_predict_sync` so the
         lock removal above could be A/B tested by wrapping one call site."""
@@ -603,7 +633,7 @@ class GLiNERExtractor(EntityExtractor):
 
         # Fast path: fits in one window, identical to unwindowed behaviour.
         if len(words) <= window:
-            return model.predict_entities(text, labels, threshold=self._threshold)
+            return model.predict_entities(text, labels, threshold=floor)
 
         step = max(1, window - self._window_overlap)
         out: list[dict[str, Any]] = []
@@ -612,9 +642,7 @@ class GLiNERExtractor(EntityExtractor):
             if not span:
                 break
             lo, hi = span[0][1], span[-1][2]
-            for p in model.predict_entities(
-                text[lo:hi], labels, threshold=self._threshold
-            ):
+            for p in model.predict_entities(text[lo:hi], labels, threshold=floor):
                 p = dict(p)
                 p["start"] += lo
                 p["end"] += lo
