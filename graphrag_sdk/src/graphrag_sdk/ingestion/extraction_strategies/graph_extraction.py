@@ -467,6 +467,10 @@ class GraphExtraction(ExtractionStrategy):
         if not active_chunks:
             return GraphData(nodes=[], relationships=[])
 
+        # Chunks whose extraction raised. Tracked so the caller can tell an
+        # empty document from a broken one, and retry just these uids.
+        failed_chunk_uids: set[str] = set()
+
         # ── Optional: Coreference resolution per chunk ──
         chunk_texts: list[str] = []
         if self.coref_resolver is not None:
@@ -537,6 +541,7 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(active_chunks[i].uid)
                     chunk_entities.append([])
                 else:
                     chunk_entities.append(result)
@@ -568,6 +573,7 @@ class GraphExtraction(ExtractionStrategy):
 
         all_entities: list[ExtractedEntity] = []
         all_relations: list[ExtractedRelation] = []
+        rels_by_chunk: dict[int, list[ExtractedRelation]] = {}
 
         if step2_prompts:
             step2_results = await self.llm.abatch_invoke(step2_prompts, **batch_kw2)
@@ -580,6 +586,10 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 2 verify+rels failed for chunk {chunk.index}: {item.error}",
                         logging.WARNING,
                     )
+                    # Relations for this chunk are lost even though step 1
+                    # entities survive, so it counts as failed: the caller
+                    # needs to know this chunk's edges were never extracted.
+                    failed_chunk_uids.add(chunk.uid)
                     # Fall back to step 1 entities only
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
@@ -601,6 +611,9 @@ class GraphExtraction(ExtractionStrategy):
                 else:
                     # LLM returned no entities — use step 1 entities
                     all_entities.extend(chunk_entities[chunk_idx])
+                rels_by_chunk.setdefault(chunk_idx, []).extend(rels)
+
+            for rels in rels_by_chunk.values():
                 all_relations.extend(rels)
 
         # ── Aggregate across chunks ──
@@ -629,12 +642,22 @@ class GraphExtraction(ExtractionStrategy):
             mentions=all_mentions,
             extracted_entities=merged_entities,
             extracted_relations=merged_relations,
+            chunks_attempted=len(active_chunks),
+            failed_chunks=sorted(failed_chunk_uids),
         )
 
         ctx.log(
             f"Extracted {len(nodes)} nodes, {len(relationships)} relationships, "
             f"{len(all_mentions)} mentions"
         )
+        if failed_chunk_uids:
+            # Escalate: an INFO summary saying "0 nodes" reads as an empty
+            # document. Say plainly that chunks were lost.
+            ctx.log(
+                f"{len(failed_chunk_uids)} of {len(active_chunks)} chunks failed "
+                f"extraction and contributed nothing to the graph",
+                logging.WARNING,
+            )
         return graph_data
 
     @staticmethod
