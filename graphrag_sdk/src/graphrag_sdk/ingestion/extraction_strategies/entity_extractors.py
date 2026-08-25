@@ -380,18 +380,60 @@ class GLiNERExtractor(EntityExtractor):
     so a single instance can be safely shared across concurrent
     ``asyncio.to_thread`` calls (e.g. parallel doc ingestion).
 
+    **Thresholds are model-specific and are not comparable between models.**
+    ``DEFAULT_THRESHOLDS`` records the measured operating point for each known
+    model, and ``threshold=None`` (the default) looks it up. Passing an explicit
+    number that was tuned for a different model is the single easiest way to
+    break this class: the bi-encoder models return almost nothing at the 0.75
+    that suits ``gliner_medium-v2.1`` — measured at **2 entities for an entire
+    corpus**, with no error raised.
+
     Args:
         threshold: Confidence threshold (0-1). Below this → "Unknown".
+            ``None`` (default) selects the value measured for ``model_name``.
         model_name: HuggingFace model name for GLiNER.
     """
 
+    #: Default model. Measured against ``gliner_medium-v2.1`` on an 11-document
+    #: benchmark: ceiling recall 0.805 vs 0.709, 432MB vs 781MB on disk, 1004MB
+    #: vs 1532MB resident, ~14s vs ~29s, and a 2048-word window vs 384.
+    DEFAULT_MODEL = "knowledgator/gliner-bi-small-v2.0"
+
+    #: Confidence thresholds are on different scales per model and MUST be
+    #: re-tuned when the model changes. Each value below is the measured best
+    #: end-to-end operating point, not a guess.
+    DEFAULT_THRESHOLDS: dict[str, float] = {
+        "knowledgator/gliner-bi-small-v2.0": 0.5,
+        "knowledgator/gliner-bi-base-v2.0": 0.5,
+        "urchade/gliner_medium-v2.1": 0.75,
+        "urchade/gliner_large-v2.1": 0.75,
+        "gliner-community/gliner_medium-v2.5": 0.75,
+    }
+
+    #: Used when ``model_name`` is not in ``DEFAULT_THRESHOLDS``. The GLiNER
+    #: library's own default, which is a safer guess than assuming our tuned
+    #: value transfers to an unknown model.
+    _FALLBACK_THRESHOLD = 0.5
+
     def __init__(
         self,
-        threshold: float = 0.75,
-        model_name: str = "urchade/gliner_medium-v2.1",
+        threshold: float | None = None,
+        model_name: str | None = None,
     ) -> None:
+        self._model_name = model_name or self.DEFAULT_MODEL
+        if threshold is None:
+            threshold = self.DEFAULT_THRESHOLDS.get(
+                self._model_name, self._FALLBACK_THRESHOLD
+            )
+            if self._model_name not in self.DEFAULT_THRESHOLDS:
+                logger.warning(
+                    "No measured threshold for GLiNER model %r; falling back to "
+                    "%.2f. Thresholds are not comparable between models, so "
+                    "tune this before relying on the results.",
+                    self._model_name,
+                    self._FALLBACK_THRESHOLD,
+                )
         self._threshold = threshold
-        self._model_name = model_name
         self._model: Any = None
         self._lock = threading.Lock()
 
