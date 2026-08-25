@@ -91,11 +91,14 @@ from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
     FastCorefResolver,
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    CompositeExtractor,
     EntityExtractor,
     GLiNERExtractor,
     LLMExtractor,
+    SpacyExtractor,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    DEFAULT_RELATION_TYPES,
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
@@ -130,6 +133,7 @@ from graphrag_sdk.storage.ontology_store import (
 from graphrag_sdk.storage.vector_store import VectorStore
 
 __all__ = [
+    "DEFAULT_RELATION_TYPES",
     # Version
     "__version__",
     # API
@@ -191,8 +195,10 @@ __all__ = [
     "CachedChunkExtraction",
     "GraphExtraction",
     "EntityExtractor",
+    "CompositeExtractor",
     "GLiNERExtractor",
     "LLMExtractor",
+    "SpacyExtractor",
     "CorefResolver",
     "FastCorefResolver",
     "IngestionPipeline",
