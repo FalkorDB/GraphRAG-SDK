@@ -31,6 +31,7 @@ from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefRe
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
     NER_PROMPT,
+    UNKNOWN_LABEL,
     EntityExtractor,
     GLiNERExtractor,
     LLMExtractor,
@@ -162,6 +163,57 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "{json_example}\n\n"
     "Return ONLY valid JSON, nothing else."
 )
+
+# ── Entity verification prompt ─────────────────────────────────────
+#
+# Split out of VERIFY_EXTRACT_RELS_PROMPT after measuring that a single call
+# asked to verify entities, describe them AND extract relations does the last
+# two and effectively skips the first.  Symptoms traced to that one cause:
+# ~29% of written relations unsupported by the source text; raising NER recall
+# 32% dropped entity precision by almost exactly the same amount (the verifier
+# passed the junk straight through); and tagging low-confidence entities
+# "Unknown" changed nothing downstream.
+#
+# Two design choices matter here:
+#   1. The reply is a fixed-length verdict list, one row per input entity, not
+#      a rewritten entity list.  A rewrite can be satisfied by echoing the
+#      input; a verdict per row cannot.
+#   2. Every "keep" must carry the exact quote containing the entity.  The
+#      caller checks that quote against the real text without asking the model
+#      again, so a fabricated justification is detectable rather than trusted.
+VERIFY_ENTITIES_PROMPT = (
+    "You are a strict fact-checker for a knowledge graph.\n"
+    "Below is a numbered list of candidate entities. Each was proposed by an "
+    "automatic extractor and may be wrong. Judge each one INDEPENDENTLY.\n\n"
+    "## Allowed Entity Types\n"
+    "{entity_types}\n\n"
+    "## Candidates\n"
+    "{candidates}\n\n"
+    "## Rules\n"
+    "Mark an entity \"drop\" if ANY of these is true:\n"
+    "- It is not a real named thing (e.g. a bare year or decade like "
+    "\"1010s\" or \"1003 CE\", a stray number, a date fragment)\n"
+    "- It is a symbol or operator (+=, ->, ==)\n"
+    "- It is a generic 1-2 character token that is not a well-known acronym "
+    "(AI, US, UK are fine; dt, bg, fn are not)\n"
+    "- It is a sentence fragment or description rather than a name\n"
+    "- It is only a PART of a longer entity in the same list "
+    "(e.g. \"Fresnel\" when \"Fresnel lens\" is also listed)\n"
+    "- It does not appear in the context provided for it\n\n"
+    "Otherwise mark it \"keep\".\n\n"
+    "For every \"keep\":\n"
+    "- Set \"type\" to the best-fitting type from the allowed list above. "
+    "Correct the proposed type if it is wrong.\n"
+    "- Set \"quote\" to text copied EXACTLY, character for character, from "
+    "that entity's context, containing the entity name. Do not paraphrase, "
+    "reword or shorten it. This is checked automatically.\n\n"
+    "Return ONLY a JSON array with exactly {n} objects, one per candidate, in "
+    "the same order:\n"
+    '[{{"id": 1, "verdict": "keep", "type": "Person", "quote": "..."}}, '
+    '{{"id": 2, "verdict": "drop"}}]\n'
+    "Return ONLY valid JSON, nothing else."
+)
+
 
 _DEFAULT_JSON_EXAMPLE = (
     '{{"entities": [{{"name": "...", "type": "...", "description": "..."}}], '
@@ -548,6 +600,9 @@ class GraphExtraction(ExtractionStrategy):
         entity_types: list[str] | None = None,
         relation_types: list[str] | None = None,
         max_concurrency: int | None = None,
+        verify_entities: bool = False,
+        verify_batch_size: int = 100,
+        verify_context_chars: int = 240,
     ) -> None:
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
@@ -561,6 +616,184 @@ class GraphExtraction(ExtractionStrategy):
             list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
         )
         self._max_concurrency = max_concurrency
+
+        self.verify_entities = bool(verify_entities)
+        self.verify_batch_size = max(1, int(verify_batch_size))
+        self.verify_context_chars = max(40, int(verify_context_chars))
+
+    # ── Entity verification (step 1b) ────────────────────────────
+
+    @staticmethod
+    def _context_for(
+        ent: ExtractedEntity,
+        chunk_uid: str,
+        text: str,
+        width: int,
+    ) -> str:
+        """A window of source text around the entity, for the judge to read.
+
+        Prefers the recorded character span. Falls back to a literal search,
+        then to the head of the chunk, so an entity is never sent without
+        context (which would guarantee a "drop" verdict for the wrong reason).
+        """
+        spans = getattr(ent, "spans", None) or {}
+        pos = -1
+        for sp in spans.get(chunk_uid, ()) or ():
+            try:
+                pos = int(sp["start"])
+                break
+            except (KeyError, TypeError, ValueError):
+                continue
+        if pos < 0:
+            pos = text.find(ent.name)
+        if pos < 0:
+            return text[:width]
+        half = width // 2
+        return text[max(0, pos - half) : pos + half]
+
+    async def _verify_entities(
+        self,
+        chunk_entities: list[list[ExtractedEntity]],
+        chunk_texts: list[str],
+        chunk_uids: list[str],
+        entity_types: list[str],
+        entity_type_descs: dict[str, str],
+        ctx: Context,
+    ) -> list[list[ExtractedEntity]]:
+        """Drop candidate entities that a dedicated LLM pass rejects.
+
+        .. warning::
+           **Measured as ineffective; off by default. Do not enable without
+           re-measuring.** On the 11-document benchmark this removed 114 of 702
+           entities: 57 correct and 41 junk, against 56.6 and 41.4 expected from
+           removing the same number *at random*. Entity precision moved 0.5772
+           to 0.5764. Entity F1 0.609 -> 0.561, lax triple F1 0.248 -> 0.213,
+           ingest 124.5s -> 224.6s (+80%, because this is a barrier between two
+           otherwise-overlapping phases, not because of the ~7 added calls).
+
+           The failure is not fact-checking. Junk like ``1823`` survives because
+           1823 really is in the text and ``Date`` really is an allowed type --
+           the model answers the question we asked correctly. The question we
+           need answered is *salience* (should this be a node in this graph),
+           which depends on the schema and the queries rather than the text, and
+           which we have not defined. Kept because the mechanism is sound and
+           becomes useful the moment there is a salience criterion to give it.
+
+        Runs between NER and relation extraction. Entities are deduplicated by
+        name across the whole corpus before judging, so cost scales with the
+        number of *distinct* names rather than with the number of chunks — on an
+        11-document benchmark that is ~700 names, or 7 calls at the default
+        batch size, against 157 relation calls.
+
+        A verdict is only honoured when the model's supporting quote is actually
+        present in the source text. Anything else - malformed JSON, a missing
+        row, a fabricated quote, a failed request - leaves the entity in place.
+        Verification may only ever *remove* entities it can justify, so a broken
+        judge degrades to today's behaviour instead of emptying the graph.
+        """
+        # name -> (canonical entity, context) for the first occurrence seen
+        first: dict[str, tuple[ExtractedEntity, str]] = {}
+        for ents, text, uid in zip(chunk_entities, chunk_texts, chunk_uids):
+            for ent in ents:
+                key = ent.name.strip().casefold()
+                if key and key not in first:
+                    first[key] = (
+                        ent,
+                        self._context_for(ent, uid, text, self.verify_context_chars),
+                    )
+        if not first:
+            return chunk_entities
+
+        keys = list(first)
+        batches = [
+            keys[i : i + self.verify_batch_size]
+            for i in range(0, len(keys), self.verify_batch_size)
+        ]
+        prompts = []
+        for batch in batches:
+            lines = []
+            for n, key in enumerate(batch, 1):
+                ent, context = first[key]
+                lines.append(
+                    f'{n}. name: "{ent.name}" | proposed type: {ent.type}\n'
+                    f"   context: {context!r}"
+                )
+            prompts.append(
+                VERIFY_ENTITIES_PROMPT.format(
+                    entity_types=_format_entity_types(entity_types, entity_type_descs),
+                    candidates="\n".join(lines),
+                    n=len(batch),
+                )
+            )
+
+        batch_kw: dict[str, Any] = {}
+        if self._max_concurrency is not None:
+            batch_kw["max_concurrency"] = self._max_concurrency
+        results = await self.llm.abatch_invoke(prompts, **batch_kw)
+
+        dropped: set[str] = set()
+        retyped: dict[str, str] = {}
+        unverified_quotes = 0
+        for item in results:
+            if not item.ok or item.response is None:
+                ctx.log(
+                    f"Entity verification batch {item.index} failed, keeping all "
+                    f"its entities: {item.error}",
+                    logging.WARNING,
+                )
+                continue
+            try:
+                rows = json.loads(_strip_markdown_fences(item.response.content))
+            except (ValueError, TypeError):
+                ctx.log(
+                    f"Entity verification batch {item.index} returned unparseable "
+                    f"JSON, keeping all its entities",
+                    logging.WARNING,
+                )
+                continue
+            if not isinstance(rows, list):
+                continue
+            batch = batches[item.index]
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    key = batch[int(row.get("id", 0)) - 1]
+                except (ValueError, TypeError, IndexError):
+                    continue
+                if str(row.get("verdict", "")).strip().lower() == "drop":
+                    dropped.add(key)
+                    continue
+                # A "keep" must be justified by a quote that really exists.
+                quote = str(row.get("quote", "")).strip()
+                _ent, context = first[key]
+                if quote and quote not in context:
+                    unverified_quotes += 1
+                new_type = str(row.get("type", "")).strip()
+                if new_type and new_type in entity_types:
+                    retyped[key] = new_type
+
+        out: list[list[ExtractedEntity]] = []
+        for ents in chunk_entities:
+            kept = []
+            for ent in ents:
+                key = ent.name.strip().casefold()
+                if key in dropped:
+                    continue
+                if key in retyped and ent.type != UNKNOWN_LABEL:
+                    ent.type = retyped[key]
+                kept.append(ent)
+            out.append(kept)
+
+        total = sum(len(e) for e in chunk_entities)
+        ctx.log(
+            f"Entity verification: {len(keys)} distinct names in "
+            f"{len(prompts)} call(s); dropped {len(dropped)} names "
+            f"({total} -> {sum(len(e) for e in out)} mentions); "
+            f"retyped {len(retyped)}; {unverified_quotes} quote(s) not found "
+            f"in source"
+        )
+        return out
 
     async def extract(
         self,
@@ -680,6 +913,17 @@ class GraphExtraction(ExtractionStrategy):
                     chunk_entities.append([])
                 else:
                     chunk_entities.append(result)
+
+        # ── Step 1b: dedicated entity verification ──
+        if self.verify_entities:
+            chunk_entities = await self._verify_entities(
+                chunk_entities,
+                chunk_texts,
+                [c.uid for c in active_chunks],
+                entity_types,
+                entity_type_descs,
+                ctx,
+            )
 
         # ── Step 2: LLM verify + relationship extraction ──
         step2_prompts: list[str] = []
