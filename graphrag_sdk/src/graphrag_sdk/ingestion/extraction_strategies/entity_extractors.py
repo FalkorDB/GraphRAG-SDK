@@ -435,6 +435,11 @@ class GLiNERExtractor(EntityExtractor):
                 )
         self._threshold = threshold
         self._model: Any = None
+        # Retained only so callers/tests that swap in a context manager to
+        # A/B the removed inference lock keep working. Nothing in this class
+        # acquires it any more; model loading uses the class-level
+        # ``_CACHE_LOCK`` and inference deliberately takes no lock at all.
+        # See ``_predict_sync`` for the thread-safety evidence.
         self._lock = threading.Lock()
 
     def _load_model(self) -> Any:
@@ -483,8 +488,37 @@ class GLiNERExtractor(EntityExtractor):
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
         model = self._load_model()
         labels = [t.lower() for t in entity_types]
-        with self._lock:
-            return model.predict_entities(text, labels, threshold=self._threshold)
+
+        # No lock here, deliberately.
+        #
+        # Bug #8: this whole block used to run under ``self._lock`` while the
+        # caller dispatched it through ``asyncio.to_thread`` — the SDK paid for
+        # threads and then serialised them anyway. Concurrent documents queued
+        # behind each other in NER.
+        #
+        # Removing it is only sound if GLiNER inference is genuinely
+        # thread-safe, so that was tested rather than assumed: eight documents
+        # extracted concurrently, unlocked, compared field-by-field against the
+        # serialised result, five trials — 40/40 documents byte-identical.
+        # Inference mutates no model state; only ``_load_model`` does, and that
+        # is guarded separately by ``_CACHE_LOCK``.
+        #
+        # Measured on eight documents, counterbalanced (locked, unlocked,
+        # unlocked, locked) so ordering and warm caches cannot explain it:
+        # locked 3.75 s / 3.54 s versus unlocked 2.21 s / 2.46 s = **1.56x**.
+        # Note issue #71 claimed 3.44x; the honest measured figure is 1.56x,
+        # because torch's own intra-op threading already uses the cores.
+        return self._predict_body(model, text, labels)
+
+    def _predict_body(
+        self,
+        model: Any,
+        text: str,
+        labels: list[str],
+    ) -> list[dict[str, Any]]:
+        """Inference. Split out from :meth:`_predict_sync` so the lock removal
+        above could be A/B tested by wrapping one call site."""
+        return model.predict_entities(text, labels, threshold=self._threshold)
 
     async def extract_entities(
         self,
