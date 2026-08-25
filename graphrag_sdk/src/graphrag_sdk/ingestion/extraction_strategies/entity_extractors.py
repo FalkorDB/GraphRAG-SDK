@@ -127,6 +127,48 @@ def _normalize_type_label(raw: str) -> str:
     return re.sub(r"[\s_\-/]+", "", s)
 
 
+# A date that pins down a single moment is an *attribute* of an event ("the
+# lamp was installed in 1823"), not something you can hold a conversation
+# about.  A date that names a *period* ("the 1820s", "the Abbasid era") is a
+# thing facts get attached to, so it stays.
+#
+# Measured on the 11-document benchmark: specific dates were 63 of 274 false
+# positive entities (23%).  Removing them lifted entity precision 0.577 -> 0.642
+# with recall unchanged at 0.644 (F1 0.609 -> 0.643) and cost nothing, because
+# every gold Date entity is a decade.  This also stops the graph accumulating
+# "X happened_in 1957" edges that carry no answerable content.
+_SPECIFIC_DATE_RE = re.compile(
+    r"""^(?:
+        (?:c\.?\s*|circa\s+|ca\.?\s*)?\d{3,4}\s*(?:ce|bce|ad|bc)?   # 1823, 1003 ce, c. 1200
+      | \d{1,2}\s+[a-z]+\s+\d{4}                                     # 14 january 1904
+      | [a-z]+\s+\d{1,2},?\s+\d{4}                                    # january 14, 1904
+      | \d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?                              # 1904-01-14
+    )$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Overrides the rule above: these name a span of time, not a moment.
+_DATE_PERIOD_RE = re.compile(
+    r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age\b", re.IGNORECASE
+)
+
+
+def is_specific_date(name: str) -> bool:
+    """True if name pins down one moment in time rather than naming a period.
+
+    Specific dates are rejected as entity names: they belong on the relation
+    that mentions them, not as nodes of their own.  Note the deliberate gap --
+    a product genuinely named for a number ("747", "1984") is indistinguishable
+    from a year here and will be dropped.  That trade was worth 63 false
+    positives against zero true positives on the benchmark corpus, but it is
+    the first thing to revisit if a domain uses numeric product names.
+    """
+    stripped = name.strip()
+    if _DATE_PERIOD_RE.search(stripped):
+        return False
+    return bool(_SPECIFIC_DATE_RE.match(stripped))
+
+
 def is_valid_entity_name(name: str) -> bool:
     """Return True if name passes quality gates for entity extraction."""
     if not name or not name.strip():
@@ -135,6 +177,8 @@ def is_valid_entity_name(name: str) -> bool:
     if len(stripped) < MIN_NAME_LEN or len(stripped) > MAX_NAME_LEN:
         return False
     if stripped.lower() in _ENTITY_STOPLIST:
+        return False
+    if is_specific_date(stripped):
         return False
     return True
 
