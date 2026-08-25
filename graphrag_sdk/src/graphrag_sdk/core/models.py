@@ -563,13 +563,39 @@ class Ontology(DataModel):
 
 
 class GraphData(DataModel):
-    """Entities and relationships extracted from text."""
+    """Entities and relationships extracted from text.
+
+    ``chunks_attempted`` / ``failed_chunks`` exist because a per-chunk
+    extraction failure is otherwise invisible: failures are swallowed and the
+    chunk contributes nothing, so a document where every call failed returns
+    exactly what a document containing no entities returns — same type, same
+    empty lists, no exception. Callers had no way to tell "nothing to find"
+    from "found nothing because everything broke", and a *partial* failure
+    silently shipped a half-empty graph that looked successful.
+
+    Read them together: ``0`` entities from ``0`` attempted chunks is an empty
+    document; ``0`` from ``14`` is a broken one. ``failed_chunks`` carries the
+    chunk uids that raised so the caller can retry just those (see
+    ``BackfillExecutor``, which follows the same convention) rather than
+    re-ingesting the document.
+    """
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
     mentions: list[EntityMention] = Field(default_factory=list)
     extracted_entities: list[ExtractedEntity] = Field(default_factory=list)
     extracted_relations: list[ExtractedRelation] = Field(default_factory=list)
+    chunks_attempted: int = 0
+    failed_chunks: list[str] = Field(default_factory=list)
+
+    @property
+    def extraction_failed(self) -> bool:
+        """True when every attempted chunk failed.
+
+        Distinguishes total extraction failure from a genuinely empty
+        document, which reports ``chunks_attempted == 0``.
+        """
+        return self.chunks_attempted > 0 and len(self.failed_chunks) == self.chunks_attempted
 
 
 class ExtractedEntity(DataModel):
