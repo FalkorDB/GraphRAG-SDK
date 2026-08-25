@@ -14,12 +14,12 @@ from typing import Any
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
     ChunkEntityRow,
     ChunkRelationshipRow,
     DocumentRecord,
     GraphNode,
     GraphRelationship,
-    RESERVED_NODE_LABELS,
 )
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
@@ -233,9 +233,7 @@ class GraphStore:
                 )
             if not cleaned_group:
                 continue
-            hint_src, hint_tgt = self._REL_LABEL_HINTS.get(
-                rel_type, ("__Entity__", "__Entity__")
-            )
+            hint_src, hint_tgt = self._REL_LABEL_HINTS.get(rel_type, ("__Entity__", "__Entity__"))
             await self._ensure_id_index(sanitize_cypher_label(hint_src))
             await self._ensure_id_index(sanitize_cypher_label(hint_tgt))
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):

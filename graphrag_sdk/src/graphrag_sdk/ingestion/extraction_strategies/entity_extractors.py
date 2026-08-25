@@ -74,53 +74,87 @@ _PRONOUNS: set[str] = {
 # between runs, and cannot be quietly skipped the way the prompt instruction was
 # (see RESULTS.md P2.10).  Well-known two-letter acronyms - AI, US, UK, EU, UN,
 # Go - are deliberately absent and stay.
-_SHELL_TOKENS: frozenset[str] = frozenset({
-    "sh", "cd", "ls", "rm", "cp", "mv", "dt", "bg", "fg", "fn", "df", "du",
-    "ps", "cat", "pwd", "echo", "mkdir", "rmdir", "chmod", "chown", "grep",
-    "awk", "sed", "env", "sudo", "ssh", "tmp", "var", "usr", "bin", "etc",
-})
+_SHELL_TOKENS: frozenset[str] = frozenset(
+    {
+        "sh",
+        "cd",
+        "ls",
+        "rm",
+        "cp",
+        "mv",
+        "dt",
+        "bg",
+        "fg",
+        "fn",
+        "df",
+        "du",
+        "ps",
+        "cat",
+        "pwd",
+        "echo",
+        "mkdir",
+        "rmdir",
+        "chmod",
+        "chown",
+        "grep",
+        "awk",
+        "sed",
+        "env",
+        "sudo",
+        "ssh",
+        "tmp",
+        "var",
+        "usr",
+        "bin",
+        "etc",
+    }
+)
 
-_ENTITY_STOPLIST: set[str] = _PRONOUNS | _SHELL_TOKENS | {
-    # Generic/anonymous references
-    "narrator",
-    "the narrator",
-    "author",
-    "the author",
-    "reader",
-    "the reader",
-    "speaker",
-    "the speaker",
-    "listener",
-    "the listener",
-    "the man",
-    "the woman",
-    "the boy",
-    "the girl",
-    "the child",
-    "man",
-    "woman",
-    "boy",
-    "girl",
-    "child",
-    "people",
-    "person",
-    "someone",
-    "somebody",
-    "everyone",
-    "everybody",
-    "mistress",
-    "master",
-    # Meta-textual
-    "story",
-    "chapter",
-    "passage",
-    "book",
-    "text",
-    "narrative",
-    "paragraph",
-    "section",
-    "document",
-}
+_ENTITY_STOPLIST: set[str] = (
+    _PRONOUNS
+    | _SHELL_TOKENS
+    | {
+        # Generic/anonymous references
+        "narrator",
+        "the narrator",
+        "author",
+        "the author",
+        "reader",
+        "the reader",
+        "speaker",
+        "the speaker",
+        "listener",
+        "the listener",
+        "the man",
+        "the woman",
+        "the boy",
+        "the girl",
+        "the child",
+        "man",
+        "woman",
+        "boy",
+        "girl",
+        "child",
+        "people",
+        "person",
+        "someone",
+        "somebody",
+        "everyone",
+        "everybody",
+        "mistress",
+        "master",
+        # Meta-textual
+        "story",
+        "chapter",
+        "passage",
+        "book",
+        "text",
+        "narrative",
+        "paragraph",
+        "section",
+        "document",
+    }
+)
 
 
 # ── Entity Utility Functions ─────────────────────────────────────
@@ -161,9 +195,7 @@ _SPECIFIC_DATE_RE = re.compile(
 )
 
 # Overrides the rule above: these name a span of time, not a moment.
-_DATE_PERIOD_RE = re.compile(
-    r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age\b", re.IGNORECASE
-)
+_DATE_PERIOD_RE = re.compile(r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age\b", re.IGNORECASE)
 
 
 def is_specific_date(name: str) -> bool:
@@ -459,9 +491,7 @@ class GLiNERExtractor(EntityExtractor):
     ) -> None:
         self._model_name = model_name or self.DEFAULT_MODEL
         if threshold is None:
-            threshold = self.DEFAULT_THRESHOLDS.get(
-                self._model_name, self._FALLBACK_THRESHOLD
-            )
+            threshold = self.DEFAULT_THRESHOLDS.get(self._model_name, self._FALLBACK_THRESHOLD)
             if self._model_name not in self.DEFAULT_THRESHOLDS:
                 logger.warning(
                     "No measured threshold for GLiNER model %r; falling back to "
@@ -525,8 +555,7 @@ class GLiNERExtractor(EntityExtractor):
                     from gliner import GLiNER
                 except ImportError:
                     raise ImportError(
-                        "GLiNER is required for GLiNERExtractor. "
-                        "Install with: pip install gliner"
+                        "GLiNER is required for GLiNERExtractor. Install with: pip install gliner"
                     )
                 cached = GLiNER.from_pretrained(model_name)
                 cls._MODEL_CACHE[model_name] = cached
@@ -544,9 +573,7 @@ class GLiNERExtractor(EntityExtractor):
     def _word_spans(self, model: Any, text: str) -> list[tuple[str, int, int]]:
         """Split text the same way GLiNER does, keeping char offsets."""
         if self._splitter is None:
-            splitter = getattr(
-                getattr(model, "data_processor", None), "words_splitter", None
-            )
+            splitter = getattr(getattr(model, "data_processor", None), "words_splitter", None)
             if splitter is None:
                 from gliner.data_processing import WordsSplitter
 
@@ -593,11 +620,7 @@ class GLiNERExtractor(EntityExtractor):
         # ``self._threshold`` comes back and is demoted to ``UNKNOWN_LABEL`` by
         # ``_parse_predictions`` rather than being discarded. When no candidate
         # threshold is configured the two are equal and nothing is demoted.
-        floor = (
-            self._threshold
-            if self._candidate_threshold is None
-            else self._candidate_threshold
-        )
+        floor = self._threshold if self._candidate_threshold is None else self._candidate_threshold
 
         # No lock here, deliberately.
         #
@@ -1006,10 +1029,7 @@ class CompositeExtractor(EntityExtractor):
         source_chunk_id: str,
     ) -> list[ExtractedEntity]:
         results = await asyncio.gather(
-            *(
-                e.extract_entities(text, entity_types, source_chunk_id)
-                for e in self._extractors
-            ),
+            *(e.extract_entities(text, entity_types, source_chunk_id) for e in self._extractors),
             return_exceptions=True,
         )
 
@@ -1036,9 +1056,7 @@ class CompositeExtractor(EntityExtractor):
                     if (
                         self._suppress_overlaps
                         and spans
-                        and any(
-                            s < ce and cs < e for (s, e) in spans for (cs, ce) in claimed
-                        )
+                        and any(s < ce and cs < e for (s, e) in spans for (cs, ce) in claimed)
                     ):
                         continue  # fragment of an entity a better extractor already has
                     merged[key] = ent

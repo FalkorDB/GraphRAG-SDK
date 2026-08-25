@@ -13,6 +13,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
+    RESERVED_NODE_LABELS,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -22,7 +23,6 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
     Ontology,
     Relation,
-    RESERVED_NODE_LABELS,
     TextChunks,
 )
 from graphrag_sdk.core.providers import LLMInterface
@@ -190,21 +190,21 @@ VERIFY_ENTITIES_PROMPT = (
     "## Candidates\n"
     "{candidates}\n\n"
     "## Rules\n"
-    "Mark an entity \"drop\" if ANY of these is true:\n"
+    'Mark an entity "drop" if ANY of these is true:\n'
     "- It is not a real named thing (e.g. a bare year or decade like "
-    "\"1010s\" or \"1003 CE\", a stray number, a date fragment)\n"
+    '"1010s" or "1003 CE", a stray number, a date fragment)\n'
     "- It is a symbol or operator (+=, ->, ==)\n"
     "- It is a generic 1-2 character token that is not a well-known acronym "
     "(AI, US, UK are fine; dt, bg, fn are not)\n"
     "- It is a sentence fragment or description rather than a name\n"
     "- It is only a PART of a longer entity in the same list "
-    "(e.g. \"Fresnel\" when \"Fresnel lens\" is also listed)\n"
+    '(e.g. "Fresnel" when "Fresnel lens" is also listed)\n'
     "- It does not appear in the context provided for it\n\n"
-    "Otherwise mark it \"keep\".\n\n"
-    "For every \"keep\":\n"
-    "- Set \"type\" to the best-fitting type from the allowed list above. "
+    'Otherwise mark it "keep".\n\n'
+    'For every "keep":\n'
+    '- Set "type" to the best-fitting type from the allowed list above. '
     "Correct the proposed type if it is wrong.\n"
-    "- Set \"quote\" to text copied EXACTLY, character for character, from "
+    '- Set "quote" to text copied EXACTLY, character for character, from '
     "that entity's context, containing the entity name. Do not paraphrase, "
     "reword or shorten it. This is checked automatically.\n\n"
     "Return ONLY a JSON array with exactly {n} objects, one per candidate, in "
@@ -607,9 +607,7 @@ class GraphExtraction(ExtractionStrategy):
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.entity_types = _reject_reserved_labels(
-            entity_types or list(DEFAULT_ENTITY_TYPES)
-        )
+        self.entity_types = _reject_reserved_labels(entity_types or list(DEFAULT_ENTITY_TYPES))
         # `is None` rather than falsy: relation_types=[] is a meaningful request
         # for open-vocabulary mode, not an omission.
         self.relation_types = (
@@ -714,8 +712,7 @@ class GraphExtraction(ExtractionStrategy):
             for n, key in enumerate(batch, 1):
                 ent, context = first[key]
                 lines.append(
-                    f'{n}. name: "{ent.name}" | proposed type: {ent.type}\n'
-                    f"   context: {context!r}"
+                    f'{n}. name: "{ent.name}" | proposed type: {ent.type}\n   context: {context!r}'
                 )
             prompts.append(
                 VERIFY_ENTITIES_PROMPT.format(
@@ -942,9 +939,7 @@ class GraphExtraction(ExtractionStrategy):
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
                 relation_patterns=_format_relation_patterns(prompt_relations),
                 attribute_block=_render_attribute_block(ontology),
-                relationship_type_instruction=_relationship_type_instruction(
-                    prompt_relations
-                ),
+                relationship_type_instruction=_relationship_type_instruction(prompt_relations),
                 entities_json=entities_json,
                 text=text,
                 json_example=_JSON_EXAMPLE_WITH_ATTRS if has_attrs else _DEFAULT_JSON_EXAMPLE,
