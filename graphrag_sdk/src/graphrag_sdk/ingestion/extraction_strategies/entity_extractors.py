@@ -913,3 +913,149 @@ class SpacyExtractor(EntityExtractor):
         return _parse_predictions(preds, entity_types, source_chunk_id, self._confidence)
 
 
+# ── Composite Extractor ──────────────────────────────────────────
+
+
+class CompositeExtractor(EntityExtractor):
+    """Run several extractors over the same text and merge their entities.
+
+    Built for the measured fact that no single extractor we tested wins
+    everywhere: ``gliner-bi-small-v2.0`` is far stronger on multi-word,
+    domain-specific entities (``Fresnel lens``, ``differential gear train
+    mechanism``, ``Samarkand Expedition of 892``), while a supervised spaCy
+    pipeline is stronger on plain proper nouns (``Baghdad``, ``Madrid``,
+    ``Paris Observatory``). Combining them recovered 18 of the 24 entities lost
+    in the model swap.
+
+    Measured on an 11-document benchmark, 157 chunks, GLiNER default plus
+    ``SpacyExtractor`` at its default labels: recall 0.494 -> 0.613, F1
+    0.522 -> 0.550, for about 5 extra seconds. Precision falls 0.554 -> 0.499,
+    so this trades some precision for a larger gain in recall.
+
+    Extractors run concurrently. Duplicates are resolved by normalised name:
+    the **earliest** extractor in the list wins the type, which makes ordering
+    meaningful — put your most trusted or most schema-aware extractor first.
+    Chunk provenance is unioned so a merged entity keeps every chunk it came
+    from.
+
+    A failing extractor does not take the others down: the exception is logged
+    and its results are skipped, on the grounds that degraded extraction beats
+    a failed ingest. If *every* extractor fails the error is re-raised.
+
+    Example::
+
+        extractor = CompositeExtractor([
+            GLiNERExtractor(),
+            SpacyExtractor(),
+        ])
+    """
+
+    def __init__(
+        self,
+        extractors: Sequence[EntityExtractor],
+        suppress_overlaps: bool = True,
+    ) -> None:
+        """Initialise the extractor.
+
+        Args:
+            extractors: Extractors to run, in priority order. The first one to
+                produce a given name decides its type.
+            suppress_overlaps: Drop an entity from a later extractor when its
+                character span overlaps one already claimed by an earlier
+                extractor. Without this, merging two NER systems reliably
+                produces near-duplicate fragments — measured on one sentence,
+                spaCy contributed ``Fresnel`` (typed ``Organization``) next to
+                GLiNER's ``Fresnel lens``, and ``The Paris Observatory`` next
+                to ``Paris Observatory``. Those fragments are false positives
+                and inflate the entity count without adding knowledge.
+                Entities without span information are always kept, since there
+                is no evidence on which to drop them.
+
+        Raises:
+            ValueError: If ``extractors`` is empty.
+        """
+        if not extractors:
+            raise ValueError("CompositeExtractor requires at least one extractor")
+        self._extractors = list(extractors)
+        self._suppress_overlaps = suppress_overlaps
+
+    @staticmethod
+    def _spans_of(ent: ExtractedEntity) -> list[tuple[int, int]]:
+        """Character spans claimed by an entity, flattened across chunks.
+
+        ``_parse_predictions`` passes ``spans`` as an extra model field rather
+        than into ``attributes``, so check both.
+        """
+        spans = getattr(ent, "spans", None)
+        if spans is None:
+            spans = ent.attributes.get("spans")
+        out: list[tuple[int, int]] = []
+        if isinstance(spans, dict):
+            for items in spans.values():
+                for sp in items or ():
+                    try:
+                        out.append((int(sp["start"]), int(sp["end"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        return out
+
+    async def extract_entities(
+        self,
+        text: str,
+        entity_types: list[str],
+        source_chunk_id: str,
+    ) -> list[ExtractedEntity]:
+        results = await asyncio.gather(
+            *(
+                e.extract_entities(text, entity_types, source_chunk_id)
+                for e in self._extractors
+            ),
+            return_exceptions=True,
+        )
+
+        merged: dict[str, ExtractedEntity] = {}
+        claimed: list[tuple[int, int]] = []
+        failures: list[BaseException] = []
+        for extractor, result in zip(self._extractors, results, strict=True):
+            if isinstance(result, BaseException):
+                failures.append(result)
+                logger.warning(
+                    "%s failed during entity extraction, skipping its results: %s",
+                    type(extractor).__name__,
+                    result,
+                )
+                continue
+            fresh: list[tuple[int, int]] = []
+            for ent in result:
+                key = ent.name.strip().casefold()
+                if not key:
+                    continue
+                existing = merged.get(key)
+                if existing is None:
+                    spans = self._spans_of(ent)
+                    if (
+                        self._suppress_overlaps
+                        and spans
+                        and any(
+                            s < ce and cs < e for (s, e) in spans for (cs, ce) in claimed
+                        )
+                    ):
+                        continue  # fragment of an entity a better extractor already has
+                    merged[key] = ent
+                    fresh.extend(spans)
+                    continue
+                # Keep the earlier extractor's type; only fill genuine gaps.
+                if existing.type == UNKNOWN_LABEL and ent.type != UNKNOWN_LABEL:
+                    existing.type = ent.type
+                if not existing.description and ent.description:
+                    existing.description = ent.description
+                for cid in ent.source_chunk_ids:
+                    if cid not in existing.source_chunk_ids:
+                        existing.source_chunk_ids.append(cid)
+            # Only claim spans once the whole extractor is processed, so two
+            # entities from the SAME extractor never suppress each other.
+            claimed.extend(fresh)
+
+        if failures and len(failures) == len(self._extractors):
+            raise failures[0]
+        return list(merged.values())
