@@ -107,6 +107,12 @@ DEFAULT_RELATION_TYPES: list[str] = [
     "based_on",
 ]
 
+# This prompt asks for entity verification AND descriptions AND relations.
+# Removing the verification job was tried and REVERTED: without it the LLM
+# emitted 813 entities instead of 719 and entity precision fell 0.645 -> 0.551
+# (RESULTS.md P2.12). The instruction is doing real work, even though a
+# dedicated call built to do the same job scored no better than random
+# (P2.10). Do not remove it again without re-running that measurement.
 VERIFY_EXTRACT_RELS_PROMPT = (
     "You are an expert knowledge graph builder.\n"
     "Given the text and pre-extracted entities below, do two things:\n"
@@ -123,18 +129,28 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "{text}\n\n"
     "## Instructions\n\n"
     "### Entities\n"
-    "- REMOVE any entity that is:\n"
-    "  - A purely symbolic or operator token (e.g. +=, ->, ++, ==, !=)\n"
-    "  - A common non-domain-specific shell/system abbreviation "
-    "(e.g. sh, cd, dt, ls, rm, cp, mv)\n"
-    "  - A generic short token (1-2 characters) that is not a widely-recognised "
-    "named entity or acronym (AI, US, UK, Go are fine; dt, bg, fn are not)\n"
+    "- REMOVE any entity that is not a real named thing in the text: an "
+    "operator or symbol token, a generic shell or system abbreviation, or a "
+    "short token that is not a widely-recognised name or acronym.\n"
     "- For each verified entity provide a concise 1-2 sentence description "
     "capturing key attributes and roles from the text. This description is "
     "embedded for semantic search.\n\n"
     "### Relationships\n"
     "- Extract ALL factual connections stated or implied in the text.\n"
-    "- source and target must be entity names from the verified entity list.\n"
+    "- source and target must be entity names from the entity list above.\n"
+    # Measured (P5.6): "ALL" above is not enough on its own -- the model treats
+    # the task as a summary, returns ~12 relations per chunk and stops while
+    # using 2.5k of a 16k reply budget.  Giving it twice the text grew the reply
+    # 1.3%; the three lines below grew it 15.5% for +4% ingest time, and beat a
+    # second "what did you miss?" LLM call that cost 4.7x the ingest time.
+    # Do not extend this with a per-entity walkthrough instruction: measured at
+    # 4.6x ingest time and a worse graph than changing nothing.
+    "- This is an EXHAUSTIVE extraction task, NOT a summary. Do not stop after "
+    "the most important or most obvious connections.\n"
+    "- There is no maximum. A dense paragraph often yields 20 or more "
+    "relationships. A long list is correct, not a mistake.\n"
+    "- Never end the list early. Never leave connections out because you have "
+    "already written several.\n"
     "{relationship_type_instruction}"
     "- description: one sentence describing the relationship as a "
     "standalone fact. This is embedded for semantic search — it must be "
@@ -536,11 +552,13 @@ class GraphExtraction(ExtractionStrategy):
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.relation_types = (
-            list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
-        )
         self.entity_types = _reject_reserved_labels(
             entity_types or list(DEFAULT_ENTITY_TYPES)
+        )
+        # `is None` rather than falsy: relation_types=[] is a meaningful request
+        # for open-vocabulary mode, not an omission.
+        self.relation_types = (
+            list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
         )
         self._max_concurrency = max_concurrency
 
