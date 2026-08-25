@@ -12,7 +12,7 @@ import logging
 import re
 import threading
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from graphrag_sdk.core.models import ExtractedEntity
 from graphrag_sdk.core.providers import LLMInterface
@@ -439,18 +439,46 @@ class GLiNERExtractor(EntityExtractor):
 
     def _load_model(self) -> Any:
         if self._model is None:
-            with self._lock:
-                # Double-check after acquiring lock
-                if self._model is None:
-                    try:
-                        from gliner import GLiNER
-                    except ImportError:
-                        raise ImportError(
-                            "GLiNER is required for GLiNERExtractor. "
-                            "Install with: pip install gliner"
-                        )
-                    self._model = GLiNER.from_pretrained(self._model_name)
+            self._model = self._get_shared_model(self._model_name)
         return self._model
+
+    # Process-wide cache of loaded GLiNER models, keyed on model name.
+    #
+    # Bug #11: nothing cached the model, so every ``GLiNERExtractor`` instance
+    # loaded its own copy. Measured with current (not peak) RSS, creating six
+    # extractors and forcing each to load:
+    #
+    #     baseline 74.5 MB -> 2447 MB after 6 copies = ~395 MB per copy
+    #
+    # which projects to ~11.6 GB for 30 concurrent documents. That matches the
+    # customer report of large RSS under concurrent ingest. With this cache the
+    # second and later extractors for the same model cost ~0.
+    #
+    # Keyed on model name rather than shared unconditionally because two
+    # extractors may legitimately want different models; those must stay
+    # separate or one would silently answer with the other's weights.
+    _MODEL_CACHE: ClassVar[dict[str, Any]] = {}
+    _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
+
+    @classmethod
+    def _get_shared_model(cls, model_name: str) -> Any:
+        cached = cls._MODEL_CACHE.get(model_name)
+        if cached is not None:
+            return cached
+        with cls._CACHE_LOCK:
+            # Double-checked: another thread may have loaded it while we waited.
+            cached = cls._MODEL_CACHE.get(model_name)
+            if cached is None:
+                try:
+                    from gliner import GLiNER
+                except ImportError:
+                    raise ImportError(
+                        "GLiNER is required for GLiNERExtractor. "
+                        "Install with: pip install gliner"
+                    )
+                cached = GLiNER.from_pretrained(model_name)
+                cls._MODEL_CACHE[model_name] = cached
+        return cached
 
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
         model = self._load_model()
