@@ -1369,10 +1369,13 @@ class GraphRAG:
 
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
-        - Chunker: SentenceTokenCapChunking(max_tokens=512, overlap_sentences=2)
+        - Chunker: SentenceTokenCapChunking(max_tokens=384, overlap_sentences=2)
           — sentence-aware, never splits entity names at chunk boundaries.
-          Override with ``chunker=FixedSizeChunking(...)`` if you need
-          character-window chunking.
+          384 is the measured best size for relationship extraction, which
+          returns a roughly fixed number of facts per call — smaller chunks
+          mean more calls and more facts. Override with
+          ``chunker=FixedSizeChunking(...)``
+          if you need character-window chunking.
         - Extractor: GraphExtraction with configured LLM
         - Resolver: ExactMatchResolution
 
