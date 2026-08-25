@@ -176,7 +176,10 @@ def is_valid_entity_name(name: str) -> bool:
     stripped = name.strip()
     if len(stripped) < MIN_NAME_LEN or len(stripped) > MAX_NAME_LEN:
         return False
-    if stripped.lower() in _ENTITY_STOPLIST:
+    # "US" is a country, "us" is a pronoun, and casefolding the stoplist check
+    # conflates them. An all-caps short token is an acronym, not a pronoun.
+    is_acronym = len(stripped) <= 3 and stripped.isupper() and stripped.isalpha()
+    if not is_acronym and stripped.lower() in _ENTITY_STOPLIST:
         return False
     if is_specific_date(stripped):
         return False
