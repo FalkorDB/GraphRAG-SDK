@@ -38,6 +38,44 @@ logger = logging.getLogger(__name__)
 _PATTERN_MISMATCH_SAMPLE_SIZE = 3
 
 
+def _assign_deterministic_chunk_uids(
+    doc_info: DocumentInfo, chunks: TextChunks
+) -> None:
+    """Replace random chunk UIDs with a content-derived, stable identity.
+
+    ``TextChunk.uid`` defaults to ``uuid4()``, so every ingest of the *same*
+    document minted brand-new chunk IDs. The lexical graph MERGEs chunks on
+    that ID, so nothing ever matched and re-ingesting silently duplicated the
+    whole chunk layer.
+
+    Measured on the benchmark corpus before this fix — ingesting one unchanged
+    document three times in a row::
+
+        round 1: 17 Chunks, 171 MENTIONED_IN
+        round 2: 34 Chunks, 343 MENTIONED_IN
+        round 3: 51 Chunks, 513 MENTIONED_IN
+
+    Entities were unaffected (94 -> 95) because those MERGE on a normalised
+    name, which *is* stable. Only the lexical layer duplicated.
+
+    The UID is derived from the owning document's UID, the chunk index and a
+    hash of the chunk text. Including the document UID keeps two documents that
+    happen to share a paragraph as distinct chunks; including the text means an
+    edited document produces new chunks rather than silently overwriting the
+    old text under a recycled ``doc:index`` key.
+
+    Chunkers that deliberately assign their own meaningful UIDs are not
+    special-cased: this runs after chunking and overwrites unconditionally, so
+    identity is decided in exactly one place.
+    """
+    doc_key = doc_info.uid or doc_info.path or ""
+    for chunk in chunks.chunks:
+        digest = hashlib.sha256(
+            f"{doc_key}\x00{chunk.index}\x00{chunk.text}".encode()
+        ).hexdigest()
+        chunk.uid = f"chunk-{digest[:32]}"
+
+
 class IngestionPipeline:
     """Sequential orchestrator for knowledge graph construction.
 
@@ -180,6 +218,8 @@ class IngestionPipeline:
             if not chunks.chunks:
                 ctx.log("No chunks produced, pipeline complete")
                 return IngestionResult(document_info=document.document_info)
+
+            _assign_deterministic_chunk_uids(document.document_info, chunks)
 
             # Step 3: Build lexical graph (MANDATORY — not a strategy).
             # Hash the loaded text so ``GraphRAG.update()`` can short-circuit
