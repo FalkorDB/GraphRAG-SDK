@@ -23,7 +23,9 @@ class StructuralChunking(ChunkingStrategy):
 
     Args:
         fallback_chunker: Chunker to handle oversized elements. Default: SentenceTokenCapChunking.
-        max_tokens: Maximum tokens per structural chunk. Default: 512.
+        max_tokens: Maximum tokens per structural chunk. Default: 384
+            (measured best for relationship extraction; see
+            SentenceTokenCapChunking for why).
         encoding_name: tiktoken encoding to use. Default ``cl100k_base``.
     """
 
@@ -55,10 +57,10 @@ class StructuralChunking(ChunkingStrategy):
                     "fallback chunker directly."
                 )
             self.fallback_chunker = fallback_chunker
-            self.max_tokens = 512
+            self.max_tokens = 384
             self.encoding_name = "cl100k_base"
         else:
-            self.max_tokens = max_tokens if max_tokens is not StructuralChunking._UNSET else 512
+            self.max_tokens = max_tokens if max_tokens is not StructuralChunking._UNSET else 384
             self.encoding_name = (
                 encoding_name if encoding_name is not StructuralChunking._UNSET else "cl100k_base"
             )
