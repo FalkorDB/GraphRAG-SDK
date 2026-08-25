@@ -32,6 +32,14 @@ class DataModel(BaseModel):
 # ── Graph Data Types ─────────────────────────────────────────────
 
 
+#: Node labels the graph store reserves for corpus bookkeeping. They must not
+#: be used as entity types: an entity carrying one of these labels corrupts
+#: document-level queries and is never marked ``__Entity__``, so it silently
+#: disappears from deduplication and retrieval. Single source of truth for
+#: ``GraphStore._STRUCTURAL_LABELS`` and the extractor's config-time check.
+RESERVED_NODE_LABELS: frozenset[str] = frozenset({"Chunk", "Document"})
+
+
 class GraphNode(DataModel):
     """A node in the knowledge graph."""
 

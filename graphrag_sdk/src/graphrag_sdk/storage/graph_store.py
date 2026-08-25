@@ -19,6 +19,7 @@ from graphrag_sdk.core.models import (
     DocumentRecord,
     GraphNode,
     GraphRelationship,
+    RESERVED_NODE_LABELS,
 )
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
@@ -52,7 +53,7 @@ class GraphStore:
     # ── Write Operations ─────────────────────────────────────────
 
     _BATCH_SIZE = 500
-    _STRUCTURAL_LABELS = frozenset({"Chunk", "Document"})
+    _STRUCTURAL_LABELS = RESERVED_NODE_LABELS
     _REL_LABEL_HINTS: dict[str, tuple[str, str]] = {
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),
