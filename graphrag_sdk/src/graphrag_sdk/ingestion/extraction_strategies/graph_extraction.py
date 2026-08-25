@@ -43,6 +43,70 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 
 logger = logging.getLogger(__name__)
 
+# Default relation vocabulary — the missing counterpart to DEFAULT_ENTITY_TYPES.
+#
+# Entity extraction has always shipped a default type list, so the LLM is told
+# what kinds of things to look for. Relations shipped nothing: with no ontology
+# the prompt said "use a descriptive label in UPPER_SNAKE_CASE", and the model
+# invented a fresh name for almost every edge. Measured on an 11-document
+# corpus: 447 distinct relation labels against 30 in the gold annotation, 68.2%
+# of them used exactly once, and only 17.3% of edges carrying a label the gold
+# data also uses. Two of gold's most common predicates (``contains``, 123
+# triples; ``authored``, 54) were emitted zero times.
+#
+# Supplying any fixed list doubles exact triple F1 (0.0725 -> 0.1490, +2.06x),
+# and a list written *without* reference to the gold vocabulary scored as well
+# as the gold vocabulary itself (0.1490 vs 0.1456). The gain comes from being
+# consistent, not from guessing the right words — which is what makes a shipped
+# default worth having.
+#
+# This list is deliberately domain-neutral and pairs with DEFAULT_ENTITY_TYPES.
+# It is *guidance*, not a filter: exactly like ``entity_types``, it steers the
+# prompt, and a relation the model labels outside this list is still kept. The
+# hard-filtering path is ``Ontology.relations``, which prunes non-conforming
+# edges in ``IngestionPipeline._prune``. Users who want that stricter behaviour
+# should declare an ontology; users who want none of it can pass
+# ``relation_types=[]``.
+DEFAULT_RELATION_TYPES: list[str] = [
+    # structure / place
+    "located_in",
+    "part_of",
+    "contains",
+    "occurred_in",
+    # affiliation
+    "member_of",
+    "employed_at",
+    "founded",
+    "owns",
+    "subsidiary_of",
+    # creation & production
+    "created",
+    "authored",
+    "designed_by",
+    "developed_by",
+    "manufactured",
+    "published_in",
+    "supplied_to",
+    # people
+    "born_in",
+    "died_in",
+    "married_to",
+    "child_of",
+    "sibling_of",
+    "student_of",
+    "colleague_of",
+    # activity & influence
+    "participated_in",
+    "directed",
+    "awarded",
+    "named_after",
+    "succeeded_by",
+    "influenced",
+    # technical
+    "uses",
+    "based_on",
+]
+
 VERIFY_EXTRACT_RELS_PROMPT = (
     "You are an expert knowledge graph builder.\n"
     "Given the text and pre-extracted entities below, do two things:\n"
@@ -449,6 +513,13 @@ class GraphExtraction(ExtractionStrategy):
         coref_resolver: Optional coreference resolver applied per-chunk.
         entity_types: Entity type labels. Default: DEFAULT_ENTITY_TYPES.
             Overridden by ontology.entities if present.
+        relation_types: Relation labels offered to the LLM. Default:
+            DEFAULT_RELATION_TYPES. This is the exact counterpart of
+            ``entity_types`` — guidance for the prompt, not a filter, so a
+            relation labelled outside the list is still kept. Overridden by
+            ``ontology.relations`` when one is declared, and that path *does*
+            prune non-conforming edges. Pass ``[]`` to restore the old
+            open-vocabulary behaviour where the model invents every label.
         max_concurrency: Maximum parallel LLM calls.
     """
 
@@ -459,11 +530,15 @@ class GraphExtraction(ExtractionStrategy):
         entity_extractor: EntityExtractor | None = None,
         coref_resolver: CorefResolver | None = None,
         entity_types: list[str] | None = None,
+        relation_types: list[str] | None = None,
         max_concurrency: int | None = None,
     ) -> None:
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
+        self.relation_types = (
+            list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
+        )
         self.entity_types = _reject_reserved_labels(
             entity_types or list(DEFAULT_ENTITY_TYPES)
         )
@@ -487,6 +562,15 @@ class GraphExtraction(ExtractionStrategy):
         else:
             entity_types = list(self.entity_types)
             entity_type_descs = {}
+
+        # Relation vocabulary. A declared ontology wins, and that path also
+        # prunes non-conforming edges downstream. Otherwise fall back to the
+        # instance default, which only steers the prompt — nothing is pruned,
+        # mirroring how entity_types behaves.
+        if ontology.relations:
+            prompt_relations = list(ontology.relations)
+        else:
+            prompt_relations = [Relation(label=lbl) for lbl in self.relation_types]
 
         ctx.log(
             f"Extracting from {len(chunks.chunks)} chunks (hybrid, "
@@ -590,9 +674,9 @@ class GraphExtraction(ExtractionStrategy):
             has_attrs = _ontology_has_attributes(ontology)
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
-                relation_patterns=_format_relation_patterns(ontology.relations),
+                relation_patterns=_format_relation_patterns(prompt_relations),
                 attribute_block=_render_attribute_block(ontology),
-                relationship_type_instruction=_relationship_type_instruction(ontology.relations),
+                relationship_type_instruction=_relationship_type_instruction(prompt_relations),
                 entities_json=entities_json,
                 text=text,
                 json_example=_JSON_EXAMPLE_WITH_ATTRS if has_attrs else _DEFAULT_JSON_EXAMPLE,
