@@ -866,3 +866,94 @@ class TestIngestOrderMustNotDecideTheGraph:
         await rag.ingest(practices_csv, mapping=self._mapping())
         result = await rag.finalize()
         assert result.unmerged_name_collisions == {}
+
+
+class TestAdoptionMovesEverythingItShould:
+    """The adoption pass deletes a node, so what was on it must survive.
+
+    Merging across labels is the one place the resolver crosses a line it
+    otherwise holds, and it does so by deleting the guessed node. Anything the
+    document contributed has to arrive on the survivor first.
+    """
+
+    PRACTICES = Table("Practice", key="pid", name="pname", crop=Column("crop"))
+
+    @pytest.fixture
+    def practices_csv(self, tmp_path):
+        path = tmp_path / "p.csv"
+        path.write_text("pid,pname,crop\nPR-CF,Carbon Farming,multi\n", encoding="utf-8")
+        return str(path)
+
+    async def test_edges_in_both_directions_move_to_the_survivor(
+        self, real_falkordb_rag_factory, llm, resolver, practices_csv
+    ):
+        """Adoption deletes the guessed node, so its edges must move first.
+
+        The edges are written directly here rather than extracted: the scripted
+        extraction fixture emits ``"relationships": []``, so a prose-driven test
+        would pass while proving nothing.
+        """
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(practices_csv, mapping=self.PRACTICES)
+
+        # A guessed twin of the declared node, with an edge each way.
+        await rag.query(
+            "MERGE (g:Concept {id:'carbon_farming__concept'}) "
+            "SET g.name = 'Carbon Farming', g.description = 'from prose' "
+            "SET g:__Entity__ "
+            "MERGE (o:Location {id:'kenya__location'}) SET o.name = 'Kenya' SET o:__Entity__ "
+            "MERGE (g)-[:RELATES {rel_type:'PRACTISED_IN'}]->(o) "
+            "MERGE (o)-[:RELATES {rel_type:'HOSTS'}]->(g)"
+        )
+
+        await rag.finalize()
+
+        assert await _rows(
+            rag, "MATCH (e:__Entity__ {id:'carbon_farming__concept'}) RETURN count(e)"
+        ) == [[0]], "the guessed node is gone"
+        outgoing = await _rows(
+            rag,
+            "MATCH (p:Practice {name:'Carbon Farming'})-[r:RELATES]->(o) RETURN r.rel_type, o.name",
+        )
+        incoming = await _rows(
+            rag,
+            "MATCH (p:Practice {name:'Carbon Farming'})<-[r:RELATES]-(o) RETURN r.rel_type, o.name",
+        )
+        assert outgoing == [["PRACTISED_IN", "Kenya"]], "direction must be preserved"
+        assert incoming == [["HOSTS", "Kenya"]]
+
+    async def test_the_documents_provenance_moves_too(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, practices_csv
+    ):
+        """If the MENTIONED_IN edges did not move, the surviving node would no
+        longer remember the document it came from."""
+        llm = scripted_llm([("Carbon Farming", "Concept", "An approach")])
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(text="Carbon Farming matters.", document_id="note.txt", resolver=resolver)
+        await rag.ingest(practices_csv, mapping=self.PRACTICES)
+        await rag.finalize()
+
+        rows = await _rows(
+            rag,
+            "MATCH (p:Practice {name:'Carbon Farming'})-[:MENTIONED_IN]->(:Chunk)"
+            "<-[:PART_OF]-(d:Document) RETURN DISTINCT d.id ORDER BY d.id",
+        )
+        sources = [r[0] for r in rows]
+        assert "note.txt" in sources, "the document must still be reachable"
+        assert len(sources) == 2, "and so must the table"
+
+    async def test_running_finalize_twice_changes_nothing(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, practices_csv
+    ):
+        llm = scripted_llm([("Carbon Farming", "Concept", "An approach")])
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        await rag.ingest(text="Carbon Farming matters.", document_id="note.txt", resolver=resolver)
+        await rag.ingest(practices_csv, mapping=self.PRACTICES)
+
+        first = await rag.finalize()
+        snapshot = await _rows(rag, "MATCH (e:__Entity__) RETURN e.id ORDER BY e.id")
+        second = await rag.finalize()
+
+        assert first.entities_deduplicated >= 1
+        assert second.entities_deduplicated == 0, "nothing left to merge"
+        assert await _rows(rag, "MATCH (e:__Entity__) RETURN e.id ORDER BY e.id") == snapshot

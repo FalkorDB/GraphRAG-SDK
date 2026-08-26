@@ -419,3 +419,56 @@ class TestTableIsTheOnlyFormYouWrite:
         assert table.validate_against(["employee_id", "org_id"]) == []
         problems = table.validate_against(["employee_id"])
         assert any("org_id" in p for p in problems)
+
+    def test_three_links_to_one_label_are_all_kept(self):
+        """Handles are derived, so a third link must not collide with a second.
+
+        Disambiguating by relationship type collided as soon as two links shared
+        one, and the failure surfaced as a complaint about "duplicate aliases" —
+        a word the caller never wrote.
+        """
+        table = Table(
+            "Contract",
+            key="contract_id",
+            links=[
+                Link("PARTY_TO", to="Organization", by="a_id"),
+                Link("PARTY_TO", to="Organization", by="b_id"),
+                Link("PARTY_TO", to="Organization", by="c_id"),
+            ],
+        )
+        assert [n.key for n in table.nodes] == ["contract_id", "a_id", "b_id", "c_id"]
+        assert len({n.handle for n in table.nodes}) == 4
+        assert len(table.edges) == 3
+
+    def test_two_links_naming_the_same_target_twice_are_refused(self):
+        with pytest.raises(MappingError, match="same target twice"):
+            Table(
+                "Contract",
+                key="contract_id",
+                links=[
+                    Link("A", to="Organization", by="a_id"),
+                    Link("B", to="Organization", by="org_id"),
+                    Link("C", to="Organization", by="org_id"),
+                ],
+            )
+
+    def test_a_link_may_point_at_the_records_own_label(self):
+        """A manager is a Person too. Only the record's own *key* is refused."""
+        table = Table(
+            "Person", key="employee_id", links=[Link("MANAGES", to="Person", by="manager_id")]
+        )
+        assert [n.key for n in table.nodes] == ["employee_id", "manager_id"]
+
+    def test_a_property_cannot_be_called_name(self):
+        """Structurally impossible: ``name`` binds to the display-name parameter,
+        so it can never reach the property map."""
+        table = Table("Organization", key="org_id", **{"name": "org_name"})
+        assert table.anchor.name == "org_name"
+        assert table.anchor.properties == {}
+
+    def test_link_order_does_not_change_the_fingerprint(self):
+        """Reordering a declaration is not a change, so it must not force a
+        re-sync of an unchanged source."""
+        a = Table("P", key="k", links=[Link("A", to="X", by="x"), Link("B", to="Y", by="y")])
+        b = Table("P", key="k", links=[Link("B", to="Y", by="y"), Link("A", to="X", by="x")])
+        assert a.fingerprint == b.fingerprint

@@ -706,9 +706,21 @@ class Table(RecordMapping):
                     "which is this record's own key, so it would link the record to "
                     "itself. Point it at the column holding the other entity's key."
                 )
+            # Handles are internal, so they are derived rather than asked for.
+            # The first link to a label takes the label; any later one is told
+            # apart by its column, which is the thing that actually differs.
+            # Disambiguating by relationship type instead would collide as soon
+            # as two links share a type, and the failure surfaced as a complaint
+            # about "duplicate aliases" — a word the caller never wrote.
             alias = link.to if link.to != node else f"{link.to}__{link.by}"
             if any(existing.handle == alias for existing in nodes):
-                alias = f"{alias}__{link.type}"
+                alias = f"{link.to}__{link.by}"
+            if any(existing.handle == alias for existing in nodes):
+                raise MappingError(
+                    f"two links both point at {link.to!r} by column {link.by!r}, "
+                    "so they describe the same target twice. Drop one, or point "
+                    "them at the different columns holding each target's key."
+                )
             nodes.append(
                 NodeMapping(
                     label=link.to,
