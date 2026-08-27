@@ -45,6 +45,8 @@ UI_FEEDBACK.md
 *.odp
 *.pptx
 *.pdf
+# ...except the notebook fixtures, which are synthetic and a few KB each
+!graphrag_sdk/examples/data/**/*.pdf
 
 # Local bug reproduction scripts
 bugs/

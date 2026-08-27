@@ -1,0 +1,3 @@
+contract_id,contract_name,buyer_org_id,seller_org_id,value_musd,signed_date
+C-100,Nordic transmission agreement,ORG-NW,ORG-KG,412.0,2026-03-14
+C-101,Peaking capacity option,ORG-NW,ORG-MF,58.5,2026-05-02
