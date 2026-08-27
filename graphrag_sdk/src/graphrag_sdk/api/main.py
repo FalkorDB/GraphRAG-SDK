@@ -78,6 +78,11 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
 )
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.mapping import MappingError, Table
+from graphrag_sdk.ingestion.mapping_proposal import (
+    MappingProposal,
+    count_entities_per_label,
+    propose_mapping,
+)
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
@@ -534,6 +539,112 @@ class GraphRAG:
         self._ontology_initialized = False
         await self._ensure_ontology_initialized()
         return self._global_ontology
+
+    async def _warn_about_a_parallel_label(self, incoming: Ontology, existing: Ontology) -> None:
+        """Say something when a mapping introduces a label beside one in use.
+
+        A hand-written mapping can name any label it likes, so it can declare
+        ``Person`` on a graph whose entities are all ``Employee``. Both then
+        exist, one real person is held as two nodes, and the facts are split
+        between them: resolution matches on name *and* label and will not join
+        across the two, correctly, because nothing says they mean the same thing.
+
+        Only a warning. Declaring a genuinely new type is ordinary — the first
+        ingest into an empty graph does it — and refusing would make that case
+        tiresome to no purpose. But it is worth naming the labels that already
+        hold data, because that is the information the author was missing.
+        """
+        new_labels = [
+            entity.label
+            for entity in incoming.entities
+            if entity.label not in {e.label for e in existing.entities}
+        ]
+        if not new_labels:
+            return
+        counts = await count_entities_per_label(existing, self._graph_store)
+        in_use = {label: held for label, held in counts.items() if held}
+        if not in_use:
+            return
+        populated = ", ".join(
+            f"{label} ({held})" for label, held in sorted(in_use.items(), key=lambda kv: -kv[1])
+        )
+        logger.warning(
+            "This mapping declares %s, which the ontology did not have. Labels already "
+            "holding entities: %s. If one of those means the same thing, use it instead — "
+            "two labels for one kind of thing cannot be joined by resolution, so the same "
+            "real-world entity ends up held twice with its facts split. "
+            "await rag.propose_mapping(source) picks from what already exists.",
+            ", ".join(repr(label) for label in new_labels),
+            populated,
+        )
+
+    async def propose_mapping(
+        self,
+        source: str,
+        *,
+        record_loader: RecordLoaderStrategy | None = None,
+        sample_rows: int = 500,
+        ctx: Context | None = None,
+    ) -> MappingProposal:
+        """Propose a mapping for a structured source, fitted to this graph's ontology.
+
+        Writing a mapping by hand means choosing a label by hand, and a label
+        chosen by hand can invent ``Person`` while the graph already uses
+        ``Employee``. Nothing catches that, and one real person ends up held as
+        two nodes with the facts split between them. A proposal cannot: it must
+        choose a label the ontology already has, so the table speaks the same
+        vocabulary the documents do and a name match is also a label match.
+
+        One model call, at authoring time, and it decides as little as possible.
+        The key column, every column's type, and which columns are foreign keys
+        are *measured* — a unique complete column is the key, a value that parses
+        as an integer everywhere is an INTEGER, and a column whose values already
+        resolve to entities of a known label is a reference to it. What is left
+        for the model is the part no measurement answers: which existing concept
+        the rows describe, and what to call the relationships.
+
+        Nothing is written and nothing is applied. Review
+        :attr:`MappingProposal.evidence`, then either use
+        :attr:`MappingProposal.table` directly or commit
+        :meth:`MappingProposal.as_code` and pass the committed mapping. The
+        second is preferable: a proposal regenerated on every run puts a model
+        back in the ingest path, and a declared mapping exists so that no model
+        runs there.
+
+        When no existing label fits, the proposal still comes back but
+        :attr:`MappingProposal.requested_new_label` is set. Applying it then
+        introduces a type to the ontology, which is a decision rather than a nod.
+
+        Args:
+            source: Path to the structured source.
+            record_loader: How to read it. Defaults to
+                :class:`~graphrag_sdk.ingestion.loaders.record_loader.CsvRecordLoader`.
+            sample_rows: How many rows to read for profiling.
+            ctx: Execution context.
+
+        Returns:
+            A :class:`MappingProposal` to review.
+
+        Example::
+
+            proposal = await rag.propose_mapping("employees.csv")
+            print(proposal.summary())
+            if not proposal.introduces_a_new_type:
+                await rag.ingest("employees.csv", mapping=proposal.table)
+        """
+        ctx = ctx or Context()
+        await self._validate_graph_config()
+        await self._ensure_ontology_initialized()
+        batch = await (record_loader or CsvRecordLoader()).load_records(source, ctx)
+        return await propose_mapping(
+            batch,
+            self._global_ontology,
+            self.llm,
+            graph_store=self._graph_store,
+            source=source,
+            sample_rows=sample_rows,
+            ctx=ctx,
+        )
 
     async def declare_mapping(self, mapping: Table) -> Ontology:
         """Register a structured mapping's labels and column types up front.
@@ -1584,6 +1695,14 @@ class GraphRAG:
                 ctx=ctx,
             )
 
+        # A tabular file with no mapping would go down the text path from here,
+        # which is silently the wrong thing: one chunk holding the raw commas and
+        # not a single typed column. Refuse it while the caller can still act.
+        if text is None:
+            for candidate in source if isinstance(source, list) else [source]:
+                if isinstance(candidate, str):
+                    self._refuse_table_as_prose(candidate, loader)
+
         # ── Validate input mode (cheap, no I/O) ──
         # Run argument-shape checks before the embedder/DB probe so a
         # caller passing bad arguments (e.g., neither source nor text)
@@ -1713,6 +1832,7 @@ class GraphRAG:
         known_entity_props = {
             entity.label: {prop.name for prop in entity.properties} for entity in existing.entities
         }
+        await self._warn_about_a_parallel_label(incoming, existing)
         known_relations = {relation.label: relation for relation in existing.relations}
 
         # Pass 1: declare what is genuinely new. An existing label is included
@@ -1880,6 +2000,38 @@ class GraphRAG:
                 "GraphRAG(...) to turn it on."
             )
         return result
+
+    # Suffixes the record loader can read. A file with one of these and no
+    # mapping is almost always a mistake, and a silent one.
+    _TABULAR_SUFFIXES = (".csv", ".tsv", ".psv", ".tab")
+
+    @classmethod
+    def _refuse_table_as_prose(cls, source: str, loader: LoaderStrategy | None) -> None:
+        """Stop a table being read as prose by accident.
+
+        Without a mapping a CSV goes down the text path: the whole file becomes
+        one chunk with its commas intact, an extractor pulls out whatever it
+        happens to notice, and no column keeps its type. Measured on a two-row
+        export: one entity written, ``age`` absent entirely, nothing raised.
+
+        That is worth an exception rather than a warning, because the graph looks
+        populated afterwards and a log line will not save anyone. Passing a
+        loader explicitly is the escape, and it is a real case: a table of
+        support tickets or survey answers is prose that happens to live in
+        columns, and its text should be chunked and extracted.
+        """
+        if loader is not None:
+            return
+        if not source.lower().endswith(cls._TABULAR_SUFFIXES):
+            return
+        raise ValueError(
+            f"{source} looks like a table but no 'mapping' was given, so it would be "
+            "read as prose: the whole file becomes one text chunk and no column keeps "
+            "its type. Either pass a mapping — ingest(source, mapping=Table(...)) — or "
+            "ask for one with await rag.propose_mapping(source). If the file really is "
+            "prose that happens to live in columns, say so explicitly by passing a "
+            "loader: ingest(source, loader=TextLoader())."
+        )
 
     async def _ingest_single(
         self,

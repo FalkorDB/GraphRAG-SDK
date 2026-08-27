@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone and another add properties to it later. A type contradiction still
   raises.
 
+- **`GraphRAG.propose_mapping(source)`** — proposes a mapping fitted to the
+  graph's existing ontology, so a table cannot invent `Person` beside an
+  `Employee` that already holds data. One model call, at authoring time, and it
+  decides as little as possible: the key column, every column's type and which
+  columns are foreign keys are *measured* (a foreign key by computing the
+  expected entity id and looking it up, so a reference is proven rather than
+  guessed from a column name), and labels are offered with how many entities each
+  already holds. What is left to the model is which existing concept the rows
+  describe and what to call the relationships; a label outside the ontology is
+  rejected and fed back. Returns a reviewable `MappingProposal` carrying the
+  evidence for each choice, `as_code()` for committing, and
+  `requested_new_label` when nothing fitted. Nothing is written or applied.
+
+- **`TextLoader` is exported**, because it is the documented escape for a table
+  that really is prose.
+
 - **`GraphRAG(mappings=[...])`** and **`GraphRAG.declare_mapping()`** — register
   a structured mapping's labels and column types without writing any data. The
   extractor then has the real labels available while it reads a document instead
@@ -91,6 +107,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs page.
 
 ### Fixed
+
+- **A table is no longer read as prose by accident.** Ingesting a `.csv` without
+  a mapping took the text path: the whole file became one chunk with its commas
+  intact and no column kept its type. Measured on a two-row export — one entity
+  written, `age` absent entirely, nothing raised. It now raises, naming both ways
+  out, because the graph looks populated afterwards and a warning would not save
+  anyone. Passing a loader explicitly remains the escape, for the real case of a
+  ticket or survey export whose text should be chunked.
+
+- **A hand-written mapping that introduces a label beside one already in use now
+  says so,** naming the labels that hold entities. Two labels for one kind of
+  thing cannot be joined by resolution, so the same real-world entity ends up
+  held twice with its facts split.
+
+- **A column named `links`, `key` or `name` no longer crashes a proposal.** Those
+  are `Table`'s own parameter names, so passing them as properties raised
+  `TypeError: got multiple values for keyword argument`. Such a column is left
+  unmapped and reported.
 
 - **A table and a document now join regardless of which is ingested first.**
   Resolution matches on name *and* label, which is what keeps "Apple" the company

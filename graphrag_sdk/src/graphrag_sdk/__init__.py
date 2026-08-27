@@ -104,12 +104,14 @@ from graphrag_sdk.ingestion.loaders.record_loader import (
     RecordBatch,
     RecordLoaderStrategy,
 )
+from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.mapping import (
     Column,
     Link,
     MappingError,
     Table,
 )
+from graphrag_sdk.ingestion.mapping_proposal import MappingProposal
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
@@ -208,6 +210,7 @@ __all__ = [
     "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
+    "TextLoader",
     "ResolutionStrategy",
     "DescriptionMergeResolution",
     "ExactMatchResolution",
@@ -227,6 +230,7 @@ __all__ = [
     "Column",
     "CsvRecordLoader",
     "MappingError",
+    "MappingProposal",
     "RecordBatch",
     "RecordLoaderStrategy",
     "Link",

@@ -154,6 +154,114 @@ Order does not matter. Whichever source arrives first creates the node.
 
 ---
 
+## Letting the SDK propose the mapping
+
+Writing a mapping by hand means choosing a label by hand, and a label chosen by
+hand can invent `Person` while the graph already holds `Employee`. Both then
+exist, one real person is kept as two nodes, and the facts split between them.
+
+`propose_mapping()` cannot do that, because it must choose a label the ontology
+already has:
+
+```python
+proposal = await rag.propose_mapping("people.csv")
+print(proposal.summary())
+```
+
+```text
+people.csv → Employee
+  key 'person_id' — unique and complete across 500 sampled rows
+  label 'Employee' — chosen from 12 in the ontology, which already holds 40 entities
+  name 'full_name' — joins rows to mentions in documents
+  org_id → Organization (5/5 sampled values already exist)
+  age INTEGER — every sampled value parses
+  hire_date DATE — every sampled value parses
+  ? columns not mapped anywhere: internal_notes
+```
+
+One model call, at authoring time, and it decides as little as possible.
+Everything a reading of the data settles is measured:
+
+| Decided by measurement | How |
+| --- | --- |
+| the key column | the column that is unique and complete across the sample |
+| every column's type | tried against the actual values; one unparseable value widens it |
+| which columns are foreign keys | the expected entity id is computed and looked up, so a reference is proven rather than guessed from a column name |
+| which labels are worth reusing | how many entities each already holds |
+
+What is left for the model is the part no measurement answers: which existing
+concept the rows describe, and what to call the relationships. A label outside
+the ontology is rejected and fed back, so it cannot drift.
+
+### Review it, then commit it
+
+```python
+print(proposal.as_code())        # valid Python, ready to paste
+proposal.table                   # or use it directly
+proposal.introduces_a_new_type   # True when no existing label fitted
+```
+
+Committing the code is preferable to regenerating the proposal on every run: a
+proposal in the ingest path is a model in the ingest path, and a declared mapping
+exists precisely so that no model runs there.
+
+When nothing in the ontology fits, the proposal still comes back but
+`requested_new_label` is set. Applying it then adds a type to the ontology, which
+is a decision rather than a nod.
+
+<Note>
+Writing the mapping yourself is unchanged and needs no model. If it declares a
+label the ontology does not have while other labels already hold entities, the
+SDK logs which ones — a new label is ordinary on a fresh graph, but a second
+label for a kind of thing that already exists cannot be joined by resolution.
+</Note>
+
+---
+
+## A table is never read as prose by accident
+
+Without a mapping, a `.csv` would take the text path: the whole file becomes one
+chunk with its commas intact, an extractor pulls out whatever it happens to
+notice, and no column keeps its type. Measured on a two-row export: one entity
+written, `age` absent entirely, nothing raised.
+
+So it is refused instead:
+
+```python
+await rag.ingest("employees.csv")
+```
+
+```text
+ValueError: employees.csv looks like a table but no 'mapping' was given, so it
+would be read as prose: the whole file becomes one text chunk and no column keeps
+its type. Either pass a mapping — ingest(source, mapping=Table(...)) — or ask for
+one with await rag.propose_mapping(source). If the file really is prose that
+happens to live in columns, say so explicitly by passing a loader:
+ingest(source, loader=TextLoader()).
+```
+
+An exception rather than a warning, because the graph looks populated afterwards
+and a log line would not save anyone.
+
+The escape is real and worth knowing: a table of support tickets, survey answers
+or meeting notes is prose that happens to live in columns, and its text should be
+chunked and extracted.
+
+```python
+from graphrag_sdk import TextLoader
+
+await rag.ingest("tickets.csv", loader=TextLoader())
+```
+
+<Warning>
+The choice is per **file**, not per column. A mapping never extracts from text, so
+a source like `ticket_id, customer, body` either keeps its typed identity and
+loses whatever `body` mentions, or gets the entities from `body` and loses the
+identity and the link. Marking a column as prose within a mapping is not built.
+</Warning>
+
+---
+
 ## Validation
 
 The mapping is checked against the source's real header **before anything is written**, so a mapping that does not fit raises `MappingError` and leaves the graph untouched:
