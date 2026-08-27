@@ -102,6 +102,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another source still mentions survives. `StructuredIngestionResult` reports
   `chunks_deleted` / `entities_deleted`.
 
+- **`examples/12_hybrid_walkthrough.ipynb`** — a notebook that ingests two
+  synthetic PDFs and three CSVs into one graph, printing a Cypher query at each
+  step to paste into the FalkorDB browser so the graph can be watched as it
+  forms. Generates its own data, including the PDFs via a small dependency-free
+  writer, so nothing binary is committed and a re-run starts clean. Covers
+  proposal, hand-written mappings, two links from one row, the join at
+  `finalize()`, all three classes of question, a re-sync that removes a departed
+  row, and the two refusals.
+
 - See `examples/11_structured_ingestion.py` and the
   [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)
   docs page.
