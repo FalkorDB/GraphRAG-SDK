@@ -80,6 +80,10 @@ def _rag_with_context(mock_conn, embedder, items, *, answer="Alice Johnson found
 class TestAbstention:
     async def test_negative_min_items_is_rejected_before_retrieval(self):
         rag = MagicMock(spec=GraphRAG)
+        # Explicit AsyncMocks: this test asserts non-invocation, so signature
+        # fidelity from the spec buys nothing, and the intent reads clearer.
+        rag.retrieve = AsyncMock()
+        rag.completion = AsyncMock()
 
         with pytest.raises(ValueError, match="min_items must be non-negative"):
             await example.answer_or_abstain(rag, "Q?", min_items=-1)
@@ -213,12 +217,13 @@ class TestGroundedAnswer:
         )
         assert result.question == "What did she build?"
 
-    async def test_divergent_second_retrieval_still_reports_citations(self):
-        """A grounded answer must never come back with empty provenance.
+    async def test_divergent_second_retrieval_abstains(self):
+        """Gate-only evidence must never be cited for a second-pass answer.
 
         ``completion()`` retrieves independently of the gate, so the two
         passes can disagree. When the second pass yields no usable evidence
-        the gate's own supporting items are cited instead.
+        the answer is ungrounded: citing the gate's items instead would
+        attach provenance the generated answer never saw.
         """
         supporting = RetrieverResultItem(content="Evidence.", metadata={"chunk_id": "c1"})
         rag = MagicMock(spec=GraphRAG)
@@ -234,9 +239,10 @@ class TestGroundedAnswer:
 
         result = await example.answer_or_abstain(rag, "Q?")
 
-        assert result.grounded is True
-        assert result.citations == ["chunk_id=c1"]
-        assert result.context == [supporting]
+        assert result.grounded is False
+        assert result.answer == example.INSUFFICIENT_EVIDENCE
+        assert result.citations == []
+        assert result.context == []
 
     async def test_supported_question_returns_grounded_answer_with_citations(
         self, mock_conn, embedder

@@ -196,17 +196,17 @@ async def answer_or_abstain(
     completion_kwargs["rewrite_question_with_history"] = False
     result = await rag.completion(resolved_question, **completion_kwargs)
 
-    # ``return_context=True`` populates ``retriever_result``; fall back to the
-    # gate's own retrieval if a custom pipeline leaves it unset.
-    items = result.retriever_result.items if result.retriever_result else supporting
-    cited = [item for item in items if is_evidence(item, min_score)]
+    # ``completion()`` runs its own retrieval, so the two passes can disagree.
+    # Cite only what generation actually retrieved: substituting the gate's
+    # items would attach provenance the answer never saw, which is the exact
+    # failure this example exists to prevent. If generation's own evidence
+    # fails the same bar, refuse — a passing gate does not license an
+    # ungrounded answer.
+    generated_from = result.retriever_result.items if result.retriever_result else []
+    cited = [item for item in generated_from if is_evidence(item, min_score)]
 
-    # ``completion()`` retrieves independently of the gate above, and keyword
-    # extraction is an LLM call — the two passes can disagree. Never report a
-    # grounded answer with no provenance; fall back to the evidence the gate
-    # actually approved.
-    if not cited:
-        cited = supporting
+    if len(cited) < min_items:
+        return GroundedAnswer(question=question, answer=refusal, grounded=False)
 
     return GroundedAnswer(
         question=question,

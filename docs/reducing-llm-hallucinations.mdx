@@ -111,6 +111,10 @@ strategy = MultiPathRetrieval(
     embedder=embedder,
     llm=llm,
     enable_cypher=True,  # opt-in, off by default
+    # Required: GraphRAG injects the ontology only into its own default
+    # strategy, never into one you pass as `strategy=`. Without this, the
+    # text-to-Cypher prompt is built against an empty schema.
+    ontology=await rag.get_ontology(),
 )
 result = await rag.completion("How many organizations are mentioned?", strategy=strategy)
 ```
@@ -153,7 +157,10 @@ print(result.answer)
 
 for item in result.retriever_result.items:
     if item.metadata.get("section") == "passages":
-        for passage in item.content.split("\n---\n"):
+        # The section content opens with a "## Source Document Passages"
+        # header glued to the first passage — strip it before splitting.
+        body = item.content.removeprefix("## Source Document Passages\n")
+        for passage in body.split("\n---\n"):
             print(passage)
 ```
 
@@ -177,9 +184,10 @@ rather than trusting the answer at face value.
 useful signals to log next to every answer you serve.
 </Tip>
 
-`retrieve()` runs the same retrieval path *without* calling the LLM, which
-makes it the natural place to put a gate: you decide whether to generate
-before paying for a generation.
+`retrieve()` runs the same retrieval path *without* reaching the generation
+call, which makes it the natural place to put a gate: you decide whether to
+generate before paying for a generation. (It is not LLM-free — see the cost
+note below.)
 
 ## Defining an abstention path
 
@@ -238,6 +246,12 @@ question never reaches the generation call. Three details matter in practice:
   retrieval error. Scores are what make the gate discriminating.
 - **Return a fixed refusal string**, rather than prose the model wrote, so
   abstentions stay machine-detectable in logs and evaluations.
+- **Don't share one `Context` across both calls.** `Context` starts its clock
+  when it is constructed and `remaining_budget_ms` never resets, so a `ctx`
+  passed to `retrieve()` and then reused for `completion()` charges the gate's
+  latency against the generation's budget — and the double retrieval makes that
+  budget roughly twice as tight. Build a fresh `Context` for the second call, or
+  size `latency_budget_ms` for the whole two-phase sequence.
 
 Tune the thresholds to your risk tolerance — for example, restrict the
 supporting sections to `"passages"` specifically if only source-text-grounded

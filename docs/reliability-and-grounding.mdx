@@ -160,25 +160,40 @@ print("\n---\n".join(passages))
 document attribution; `facts` and `relationships` carry the graph-level
 evidence.
 
-To close the loop from a chunk id back to its document, query the graph
-directly:
+A `chunk_id` in `item.metadata` is what lets you close the loop from a
+retrieved item back to its document. Only `LocalRetrieval` populates it —
+`MultiPathRetrieval` sets `metadata` to `{"section": ...}` and rerankers copy
+that metadata through unchanged, so under the default strategy the list below
+is empty and you should use the `[Source: <path>]` prefix on `passages`
+entries instead:
 
 ```python
-from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore, VectorStore
+from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
 
 connection = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
 graph = GraphStore(connection)
-chunk_item = next(
-    item for item in result.retriever_result.items if item.metadata.get("chunk_id")
-)
-chunk_id = chunk_item.metadata["chunk_id"]
 
-evidence = await graph.query_raw(
-    "MATCH (d:Document)-[:PART_OF]->(c:Chunk {id: $chunk_id}) "
-    "RETURN d.id AS document_id, d.path AS path, c.index AS chunk_index",
-    {"chunk_id": chunk_id},
+retrieved = await rag.retrieve(
+    "What did Professor Harmon discover?",
+    strategy=LocalRetrieval(
+        graph_store=graph,
+        vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
+        embedder=embedder,
+        top_k=5,
+    ),
 )
-print(evidence.result_set)
+
+for item in retrieved.items:
+    chunk_id = item.metadata.get("chunk_id")
+    if chunk_id is None:
+        continue
+    evidence = await graph.query_raw(
+        "MATCH (d:Document)-[:PART_OF]->(c:Chunk {id: $chunk_id}) "
+        "RETURN d.id AS document_id, d.path AS path, c.index AS chunk_index",
+        {"chunk_id": chunk_id},
+    )
+    print(evidence.result_set)
 ```
 
 And from an entity back to the passages that mention it:
@@ -224,6 +239,10 @@ strategy = MultiPathRetrieval(
     max_relationships=20,  # cap on expanded RELATES edges
     rel_top_k=15,          # RELATES edge vector search results
     enable_cypher=True,    # opt-in graph query path
+    # Required: a strategy you construct yourself never receives the ontology.
+    # GraphRAG only injects it into its own default strategy, so text-to-Cypher
+    # would otherwise generate against an empty schema.
+    ontology=await rag.get_ontology(),
 )
 
 result = await rag.completion("How is Acme Corp connected to Initech?", strategy=strategy)
@@ -361,6 +380,14 @@ for item in retrieved.items:
   `score = None` — scoring happens internally during fact filtering and passage
   reranking and is not surfaced per section. `LocalRetrieval` items do carry the
   chunk's vector similarity in `score`.
+
+  Attaching a reranker populates `score`, but note what it scores: a
+  `MultiPathRetrieval` item is a whole concatenated section, so `CosineReranker`
+  embeds that entire block against the question. One highly relevant passage is
+  diluted by everything else in the same section, and the resulting number is
+  systematically lower than a per-chunk similarity. Calibrate section-level
+  thresholds against your own corpus rather than reusing a chunk-level value —
+  a `LocalRetrieval`-derived threshold will over-abstain here.
 </Warning>
 
 ---
@@ -468,7 +495,10 @@ Practices that reduce unsupported claims:
 
 Answer quality problems are usually retrieval problems. `GraphRAG.retrieve()`
 runs the full retrieval and reranking pipeline and returns the context
-**without calling the generation model** — no LLM cost, no generation variance:
+**without calling the generation model** — no generation cost, no generation
+variance. It is not free, though: the default `MultiPathRetrieval` still issues
+an LLM keyword-extraction call, plus a text-to-Cypher call when
+`enable_cypher=True`.
 
 <CodeGroup>
 

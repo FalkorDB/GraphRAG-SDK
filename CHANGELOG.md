@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accuracy to the SDK APIs that implement them.
 - New example `graphrag_sdk/examples/grounded_answers_with_abstention.py`
   showing a retrieval gate that returns an explicit evidence-insufficient
-  response — with zero LLM calls — before generation, plus the citations
+  response — before the generation call — plus the citations
   behind a grounded answer. Covered by
   `graphrag_sdk/tests/test_grounded_abstention.py`.
 
