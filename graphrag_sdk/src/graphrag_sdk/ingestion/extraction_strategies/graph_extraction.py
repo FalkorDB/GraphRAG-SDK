@@ -13,6 +13,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
+    RESERVED_NODE_LABELS,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -30,6 +31,7 @@ from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import CorefRe
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     DEFAULT_ENTITY_TYPES,
     NER_PROMPT,
+    UNKNOWN_LABEL,
     EntityExtractor,
     GLiNERExtractor,
     LLMExtractor,
@@ -42,6 +44,76 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 
 logger = logging.getLogger(__name__)
 
+# Default relation vocabulary — the missing counterpart to DEFAULT_ENTITY_TYPES.
+#
+# Entity extraction has always shipped a default type list, so the LLM is told
+# what kinds of things to look for. Relations shipped nothing: with no ontology
+# the prompt said "use a descriptive label in UPPER_SNAKE_CASE", and the model
+# invented a fresh name for almost every edge. Measured on an 11-document
+# corpus: 447 distinct relation labels against 30 in the gold annotation, 68.2%
+# of them used exactly once, and only 17.3% of edges carrying a label the gold
+# data also uses. Two of gold's most common predicates (``contains``, 123
+# triples; ``authored``, 54) were emitted zero times.
+#
+# Supplying any fixed list doubles exact triple F1 (0.0725 -> 0.1490, +2.06x),
+# and a list written *without* reference to the gold vocabulary scored as well
+# as the gold vocabulary itself (0.1490 vs 0.1456). The gain comes from being
+# consistent, not from guessing the right words — which is what makes a shipped
+# default worth having.
+#
+# This list is deliberately domain-neutral and pairs with DEFAULT_ENTITY_TYPES.
+# It is *guidance*, not a filter: exactly like ``entity_types``, it steers the
+# prompt, and a relation the model labels outside this list is still kept. The
+# hard-filtering path is ``Ontology.relations``, which prunes non-conforming
+# edges in ``IngestionPipeline._prune``. Users who want that stricter behaviour
+# should declare an ontology; users who want none of it can pass
+# ``relation_types=[]``.
+DEFAULT_RELATION_TYPES: list[str] = [
+    # structure / place
+    "located_in",
+    "part_of",
+    "contains",
+    "occurred_in",
+    # affiliation
+    "member_of",
+    "employed_at",
+    "founded",
+    "owns",
+    "subsidiary_of",
+    # creation & production
+    "created",
+    "authored",
+    "designed_by",
+    "developed_by",
+    "manufactured",
+    "published_in",
+    "supplied_to",
+    # people
+    "born_in",
+    "died_in",
+    "married_to",
+    "child_of",
+    "sibling_of",
+    "student_of",
+    "colleague_of",
+    # activity & influence
+    "participated_in",
+    "directed",
+    "awarded",
+    "named_after",
+    "succeeded_by",
+    "influenced",
+    # technical
+    "uses",
+    "based_on",
+]
+
+# This prompt asks for entity verification AND descriptions AND relations.
+# Removing the verification job was tried and REVERTED: without it the LLM
+# emitted 813 entities instead of 719 and entity precision fell 0.645 -> 0.551
+# (RESULTS.md P2.12). The instruction is doing real work, even though a
+# dedicated call built to do the same job scored no better than random
+# (P2.10). Do not remove it again without re-running that measurement.
 VERIFY_EXTRACT_RELS_PROMPT = (
     "You are an expert knowledge graph builder.\n"
     "Given the text and pre-extracted entities below, do two things:\n"
@@ -58,18 +130,28 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "{text}\n\n"
     "## Instructions\n\n"
     "### Entities\n"
-    "- REMOVE any entity that is:\n"
-    "  - A purely symbolic or operator token (e.g. +=, ->, ++, ==, !=)\n"
-    "  - A common non-domain-specific shell/system abbreviation "
-    "(e.g. sh, cd, dt, ls, rm, cp, mv)\n"
-    "  - A generic short token (1-2 characters) that is not a widely-recognised "
-    "named entity or acronym (AI, US, UK, Go are fine; dt, bg, fn are not)\n"
+    "- REMOVE any entity that is not a real named thing in the text: an "
+    "operator or symbol token, a generic shell or system abbreviation, or a "
+    "short token that is not a widely-recognised name or acronym.\n"
     "- For each verified entity provide a concise 1-2 sentence description "
     "capturing key attributes and roles from the text. This description is "
     "embedded for semantic search.\n\n"
     "### Relationships\n"
     "- Extract ALL factual connections stated or implied in the text.\n"
-    "- source and target must be entity names from the verified entity list.\n"
+    "- source and target must be entity names from the entity list above.\n"
+    # Measured (P5.6): "ALL" above is not enough on its own -- the model treats
+    # the task as a summary, returns ~12 relations per chunk and stops while
+    # using 2.5k of a 16k reply budget.  Giving it twice the text grew the reply
+    # 1.3%; the three lines below grew it 15.5% for +4% ingest time, and beat a
+    # second "what did you miss?" LLM call that cost 4.7x the ingest time.
+    # Do not extend this with a per-entity walkthrough instruction: measured at
+    # 4.6x ingest time and a worse graph than changing nothing.
+    "- This is an EXHAUSTIVE extraction task, NOT a summary. Do not stop after "
+    "the most important or most obvious connections.\n"
+    "- There is no maximum. A dense paragraph often yields 20 or more "
+    "relationships. A long list is correct, not a mistake.\n"
+    "- Never end the list early. Never leave connections out because you have "
+    "already written several.\n"
     "{relationship_type_instruction}"
     "- description: one sentence describing the relationship as a "
     "standalone fact. This is embedded for semantic search — it must be "
@@ -81,6 +163,57 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "{json_example}\n\n"
     "Return ONLY valid JSON, nothing else."
 )
+
+# ── Entity verification prompt ─────────────────────────────────────
+#
+# Split out of VERIFY_EXTRACT_RELS_PROMPT after measuring that a single call
+# asked to verify entities, describe them AND extract relations does the last
+# two and effectively skips the first.  Symptoms traced to that one cause:
+# ~29% of written relations unsupported by the source text; raising NER recall
+# 32% dropped entity precision by almost exactly the same amount (the verifier
+# passed the junk straight through); and tagging low-confidence entities
+# "Unknown" changed nothing downstream.
+#
+# Two design choices matter here:
+#   1. The reply is a fixed-length verdict list, one row per input entity, not
+#      a rewritten entity list.  A rewrite can be satisfied by echoing the
+#      input; a verdict per row cannot.
+#   2. Every "keep" must carry the exact quote containing the entity.  The
+#      caller checks that quote against the real text without asking the model
+#      again, so a fabricated justification is detectable rather than trusted.
+VERIFY_ENTITIES_PROMPT = (
+    "You are a strict fact-checker for a knowledge graph.\n"
+    "Below is a numbered list of candidate entities. Each was proposed by an "
+    "automatic extractor and may be wrong. Judge each one INDEPENDENTLY.\n\n"
+    "## Allowed Entity Types\n"
+    "{entity_types}\n\n"
+    "## Candidates\n"
+    "{candidates}\n\n"
+    "## Rules\n"
+    'Mark an entity "drop" if ANY of these is true:\n'
+    "- It is not a real named thing (e.g. a bare year or decade like "
+    '"1010s" or "1003 CE", a stray number, a date fragment)\n'
+    "- It is a symbol or operator (+=, ->, ==)\n"
+    "- It is a generic 1-2 character token that is not a well-known acronym "
+    "(AI, US, UK are fine; dt, bg, fn are not)\n"
+    "- It is a sentence fragment or description rather than a name\n"
+    "- It is only a PART of a longer entity in the same list "
+    '(e.g. "Fresnel" when "Fresnel lens" is also listed)\n'
+    "- It does not appear in the context provided for it\n\n"
+    'Otherwise mark it "keep".\n\n'
+    'For every "keep":\n'
+    '- Set "type" to the best-fitting type from the allowed list above. '
+    "Correct the proposed type if it is wrong.\n"
+    '- Set "quote" to text copied EXACTLY, character for character, from '
+    "that entity's context, containing the entity name. Do not paraphrase, "
+    "reword or shorten it. This is checked automatically.\n\n"
+    "Return ONLY a JSON array with exactly {n} objects, one per candidate, in "
+    "the same order:\n"
+    '[{{"id": 1, "verdict": "keep", "type": "Person", "quote": "..."}}, '
+    '{{"id": 2, "verdict": "drop"}}]\n'
+    "Return ONLY valid JSON, nothing else."
+)
+
 
 _DEFAULT_JSON_EXAMPLE = (
     '{{"entities": [{{"name": "...", "type": "...", "description": "..."}}], '
@@ -336,6 +469,38 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
     return extra
 
 
+def _reject_reserved_labels(types: list[str]) -> list[str]:
+    """Reject entity types that collide with the store's structural labels.
+
+    ``Document`` and ``Chunk`` are used by the graph store for corpus
+    bookkeeping. An extracted entity carrying one of those labels fails two
+    ways at once, both silently:
+
+    1. Document-level queries (``MATCH (p:Document) ...``) start returning
+       extracted entities, so document counts and lookups are wrong. This was
+       found in the field as an 11-document corpus reporting 106 documents.
+    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
+       label is *not* structural, so the node never receives ``__Entity__``
+       and is dropped from deduplication and retrieval. It is written, then
+       ignored.
+
+    Neither failure raises, so the graph just quietly degrades. Fail here
+    instead, at configuration time, where the caller can act on it.
+    """
+    reserved = {label.casefold(): label for label in RESERVED_NODE_LABELS}
+    clashes = [t for t in types if str(t).strip().casefold() in reserved]
+    if clashes:
+        raise ValueError(
+            f"entity_types may not contain the reserved label(s) {sorted(set(clashes))}. "
+            f"{sorted(RESERVED_NODE_LABELS)} are used internally for corpus "
+            "bookkeeping; reusing them silently corrupts document counts and "
+            "removes the entity from deduplication and retrieval. "
+            "Rename the type (e.g. 'Document' -> 'Publication', "
+            "'Chunk' -> 'TextSegment')."
+        )
+    return list(types)
+
+
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
     """Format entity types for prompt injection.
 
@@ -416,6 +581,13 @@ class GraphExtraction(ExtractionStrategy):
         coref_resolver: Optional coreference resolver applied per-chunk.
         entity_types: Entity type labels. Default: DEFAULT_ENTITY_TYPES.
             Overridden by ontology.entities if present.
+        relation_types: Relation labels offered to the LLM. Default:
+            DEFAULT_RELATION_TYPES. This is the exact counterpart of
+            ``entity_types`` — guidance for the prompt, not a filter, so a
+            relation labelled outside the list is still kept. Overridden by
+            ``ontology.relations`` when one is declared, and that path *does*
+            prune non-conforming edges. Pass ``[]`` to restore the old
+            open-vocabulary behaviour where the model invents every label.
         max_concurrency: Maximum parallel LLM calls.
     """
 
@@ -426,13 +598,198 @@ class GraphExtraction(ExtractionStrategy):
         entity_extractor: EntityExtractor | None = None,
         coref_resolver: CorefResolver | None = None,
         entity_types: list[str] | None = None,
+        relation_types: list[str] | None = None,
         max_concurrency: int | None = None,
+        verify_entities: bool = False,
+        verify_batch_size: int = 100,
+        verify_context_chars: int = 240,
     ) -> None:
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.entity_types = entity_types or list(DEFAULT_ENTITY_TYPES)
+        self.entity_types = _reject_reserved_labels(entity_types or list(DEFAULT_ENTITY_TYPES))
+        # `is None` rather than falsy: relation_types=[] is a meaningful request
+        # for open-vocabulary mode, not an omission.
+        self.relation_types = (
+            list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
+        )
         self._max_concurrency = max_concurrency
+        self.verify_entities = bool(verify_entities)
+        self.verify_batch_size = max(1, int(verify_batch_size))
+        self.verify_context_chars = max(40, int(verify_context_chars))
+
+    # ── Entity verification (step 1b) ────────────────────────────
+
+    @staticmethod
+    def _context_for(
+        ent: ExtractedEntity,
+        chunk_uid: str,
+        text: str,
+        width: int,
+    ) -> str:
+        """A window of source text around the entity, for the judge to read.
+
+        Prefers the recorded character span. Falls back to a literal search,
+        then to the head of the chunk, so an entity is never sent without
+        context (which would guarantee a "drop" verdict for the wrong reason).
+        """
+        spans = getattr(ent, "spans", None) or {}
+        pos = -1
+        for sp in spans.get(chunk_uid, ()) or ():
+            try:
+                pos = int(sp["start"])
+                break
+            except (KeyError, TypeError, ValueError):
+                continue
+        if pos < 0:
+            pos = text.find(ent.name)
+        if pos < 0:
+            return text[:width]
+        half = width // 2
+        return text[max(0, pos - half) : pos + half]
+
+    async def _verify_entities(
+        self,
+        chunk_entities: list[list[ExtractedEntity]],
+        chunk_texts: list[str],
+        chunk_uids: list[str],
+        entity_types: list[str],
+        entity_type_descs: dict[str, str],
+        ctx: Context,
+    ) -> list[list[ExtractedEntity]]:
+        """Drop candidate entities that a dedicated LLM pass rejects.
+
+        .. warning::
+           **Measured as ineffective; off by default. Do not enable without
+           re-measuring.** On the 11-document benchmark this removed 114 of 702
+           entities: 57 correct and 41 junk, against 56.6 and 41.4 expected from
+           removing the same number *at random*. Entity precision moved 0.5772
+           to 0.5764. Entity F1 0.609 -> 0.561, lax triple F1 0.248 -> 0.213,
+           ingest 124.5s -> 224.6s (+80%, because this is a barrier between two
+           otherwise-overlapping phases, not because of the ~7 added calls).
+
+           The failure is not fact-checking. Junk like ``1823`` survives because
+           1823 really is in the text and ``Date`` really is an allowed type --
+           the model answers the question we asked correctly. The question we
+           need answered is *salience* (should this be a node in this graph),
+           which depends on the schema and the queries rather than the text, and
+           which we have not defined. Kept because the mechanism is sound and
+           becomes useful the moment there is a salience criterion to give it.
+
+        Runs between NER and relation extraction. Entities are deduplicated by
+        name across the whole corpus before judging, so cost scales with the
+        number of *distinct* names rather than with the number of chunks — on an
+        11-document benchmark that is ~700 names, or 7 calls at the default
+        batch size, against 157 relation calls.
+
+        A verdict is only honoured when the model's supporting quote is actually
+        present in the source text. Anything else - malformed JSON, a missing
+        row, a fabricated quote, a failed request - leaves the entity in place.
+        Verification may only ever *remove* entities it can justify, so a broken
+        judge degrades to today's behaviour instead of emptying the graph.
+        """
+        # name -> (canonical entity, context) for the first occurrence seen
+        first: dict[str, tuple[ExtractedEntity, str]] = {}
+        for ents, text, uid in zip(chunk_entities, chunk_texts, chunk_uids):
+            for ent in ents:
+                key = ent.name.strip().casefold()
+                if key and key not in first:
+                    first[key] = (
+                        ent,
+                        self._context_for(ent, uid, text, self.verify_context_chars),
+                    )
+        if not first:
+            return chunk_entities
+
+        keys = list(first)
+        batches = [
+            keys[i : i + self.verify_batch_size]
+            for i in range(0, len(keys), self.verify_batch_size)
+        ]
+        prompts = []
+        for batch in batches:
+            lines = []
+            for n, key in enumerate(batch, 1):
+                ent, context = first[key]
+                lines.append(
+                    f'{n}. name: "{ent.name}" | proposed type: {ent.type}\n   context: {context!r}'
+                )
+            prompts.append(
+                VERIFY_ENTITIES_PROMPT.format(
+                    entity_types=_format_entity_types(entity_types, entity_type_descs),
+                    candidates="\n".join(lines),
+                    n=len(batch),
+                )
+            )
+
+        batch_kw: dict[str, Any] = {}
+        if self._max_concurrency is not None:
+            batch_kw["max_concurrency"] = self._max_concurrency
+        results = await self.llm.abatch_invoke(prompts, **batch_kw)
+
+        dropped: set[str] = set()
+        retyped: dict[str, str] = {}
+        unverified_quotes = 0
+        for item in results:
+            if not item.ok or item.response is None:
+                ctx.log(
+                    f"Entity verification batch {item.index} failed, keeping all "
+                    f"its entities: {item.error}",
+                    logging.WARNING,
+                )
+                continue
+            try:
+                rows = json.loads(_strip_markdown_fences(item.response.content))
+            except (ValueError, TypeError):
+                ctx.log(
+                    f"Entity verification batch {item.index} returned unparseable "
+                    f"JSON, keeping all its entities",
+                    logging.WARNING,
+                )
+                continue
+            if not isinstance(rows, list):
+                continue
+            batch = batches[item.index]
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    key = batch[int(row.get("id", 0)) - 1]
+                except (ValueError, TypeError, IndexError):
+                    continue
+                if str(row.get("verdict", "")).strip().lower() == "drop":
+                    dropped.add(key)
+                    continue
+                # A "keep" must be justified by a quote that really exists.
+                quote = str(row.get("quote", "")).strip()
+                _ent, context = first[key]
+                if quote and quote not in context:
+                    unverified_quotes += 1
+                new_type = str(row.get("type", "")).strip()
+                if new_type and new_type in entity_types:
+                    retyped[key] = new_type
+
+        out: list[list[ExtractedEntity]] = []
+        for ents in chunk_entities:
+            kept = []
+            for ent in ents:
+                key = ent.name.strip().casefold()
+                if key in dropped:
+                    continue
+                if key in retyped and ent.type != UNKNOWN_LABEL:
+                    ent.type = retyped[key]
+                kept.append(ent)
+            out.append(kept)
+
+        total = sum(len(e) for e in chunk_entities)
+        ctx.log(
+            f"Entity verification: {len(keys)} distinct names in "
+            f"{len(prompts)} call(s); dropped {len(dropped)} names "
+            f"({total} -> {sum(len(e) for e in out)} mentions); "
+            f"retyped {len(retyped)}; {unverified_quotes} quote(s) not found "
+            f"in source"
+        )
+        return out
 
     async def extract(
         self,
@@ -442,13 +799,25 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: ontology overrides instance default
         if ontology.entities:
-            entity_types = [e.label for e in ontology.entities]
+            # Ontology labels bypass the constructor, so re-check here: an
+            # ontology declaring a reserved label must fail as loudly as
+            # passing one to entity_types would.
+            entity_types = _reject_reserved_labels([e.label for e in ontology.entities])
             entity_type_descs: dict[str, str] = {
                 e.label: e.description for e in ontology.entities if e.description
             }
         else:
             entity_types = list(self.entity_types)
             entity_type_descs = {}
+
+        # Relation vocabulary. A declared ontology wins, and that path also
+        # prunes non-conforming edges downstream. Otherwise fall back to the
+        # instance default, which only steers the prompt — nothing is pruned,
+        # mirroring how entity_types behaves.
+        if ontology.relations:
+            prompt_relations = list(ontology.relations)
+        else:
+            prompt_relations = [Relation(label=lbl) for lbl in self.relation_types]
 
         ctx.log(
             f"Extracting from {len(chunks.chunks)} chunks (hybrid, "
@@ -466,6 +835,10 @@ class GraphExtraction(ExtractionStrategy):
 
         if not active_chunks:
             return GraphData(nodes=[], relationships=[])
+
+        # Chunks whose extraction raised. Tracked so the caller can tell an
+        # empty document from a broken one, and retry just these uids.
+        failed_chunk_uids: set[str] = set()
 
         # ── Optional: Coreference resolution per chunk ──
         chunk_texts: list[str] = []
@@ -537,9 +910,21 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(active_chunks[i].uid)
                     chunk_entities.append([])
                 else:
                     chunk_entities.append(result)
+
+        # ── Step 1b: dedicated entity verification ──
+        if self.verify_entities:
+            chunk_entities = await self._verify_entities(
+                chunk_entities,
+                chunk_texts,
+                [c.uid for c in active_chunks],
+                entity_types,
+                entity_type_descs,
+                ctx,
+            )
 
         # ── Step 2: LLM verify + relationship extraction ──
         step2_prompts: list[str] = []
@@ -552,9 +937,9 @@ class GraphExtraction(ExtractionStrategy):
             has_attrs = _ontology_has_attributes(ontology)
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
-                relation_patterns=_format_relation_patterns(ontology.relations),
+                relation_patterns=_format_relation_patterns(prompt_relations),
                 attribute_block=_render_attribute_block(ontology),
-                relationship_type_instruction=_relationship_type_instruction(ontology.relations),
+                relationship_type_instruction=_relationship_type_instruction(prompt_relations),
                 entities_json=entities_json,
                 text=text,
                 json_example=_JSON_EXAMPLE_WITH_ATTRS if has_attrs else _DEFAULT_JSON_EXAMPLE,
@@ -568,6 +953,7 @@ class GraphExtraction(ExtractionStrategy):
 
         all_entities: list[ExtractedEntity] = []
         all_relations: list[ExtractedRelation] = []
+        rels_by_chunk: dict[int, list[ExtractedRelation]] = {}
 
         if step2_prompts:
             step2_results = await self.llm.abatch_invoke(step2_prompts, **batch_kw2)
@@ -580,6 +966,10 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 2 verify+rels failed for chunk {chunk.index}: {item.error}",
                         logging.WARNING,
                     )
+                    # Relations for this chunk are lost even though step 1
+                    # entities survive, so it counts as failed: the caller
+                    # needs to know this chunk's edges were never extracted.
+                    failed_chunk_uids.add(chunk.uid)
                     # Fall back to step 1 entities only
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
@@ -601,6 +991,9 @@ class GraphExtraction(ExtractionStrategy):
                 else:
                     # LLM returned no entities — use step 1 entities
                     all_entities.extend(chunk_entities[chunk_idx])
+                rels_by_chunk.setdefault(chunk_idx, []).extend(rels)
+
+            for rels in rels_by_chunk.values():
                 all_relations.extend(rels)
 
         # ── Aggregate across chunks ──
@@ -629,12 +1022,22 @@ class GraphExtraction(ExtractionStrategy):
             mentions=all_mentions,
             extracted_entities=merged_entities,
             extracted_relations=merged_relations,
+            chunks_attempted=len(active_chunks),
+            failed_chunks=sorted(failed_chunk_uids),
         )
 
         ctx.log(
             f"Extracted {len(nodes)} nodes, {len(relationships)} relationships, "
             f"{len(all_mentions)} mentions"
         )
+        if failed_chunk_uids:
+            # Escalate: an INFO summary saying "0 nodes" reads as an empty
+            # document. Say plainly that chunks were lost.
+            ctx.log(
+                f"{len(failed_chunk_uids)} of {len(active_chunks)} chunks failed "
+                f"extraction and contributed nothing to the graph",
+                logging.WARNING,
+            )
         return graph_data
 
     @staticmethod
