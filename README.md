@@ -1,7 +1,7 @@
 <h1 align="center">GraphRAG-SDK</h1>
 <h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
 
-<p align="center"><b>Benchmark-leading accuracy</b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b><a href="#quick-start">5-minute setup</a></b></p>
+<p align="center"><b>Benchmark-leading accuracy</b> · <b><a href="https://docs.falkordb.com/graphrag/hallucination-reduction">Reduce LLM hallucinations</a></b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b><a href="#quick-start">5-minute setup</a></b></p>
 
 <p align="center">
   <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg?label=pypi" alt="PyPI version"></a>
@@ -17,6 +17,22 @@
 
 
 Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers in under 5 minutes.
+
+It is designed to **reduce LLM hallucinations**: every answer is grounded in context retrieved from the knowledge graph and stays traceable to its source chunks through `MENTIONS` provenance edges, so any claim can be checked against the document it came from. When the graph holds no supporting evidence, your application can abstain and say so instead of letting the model guess — see the [hallucination reduction guide](https://docs.falkordb.com/graphrag/hallucination-reduction) and the [grounded answers with abstention example](graphrag_sdk/examples/grounded_answers_with_abstention.py).
+
+---
+
+## Why GraphRAG for factual reliability?
+
+Hallucinations in RAG are usually a retrieval failure, not a model failure: the model is asked to answer from context that never contained the answer. A knowledge graph attacks that at the retrieval layer, and keeps the evidence attached to the answer.
+
+- **Relationship traversal retrieves the connected evidence vector similarity misses** — multi-hop facts rarely live in one chunk that happens to be similar to the question.
+- **Every answer is traceable to its source chunks** via `MENTIONS` edges; pass `return_context=True` to `completion()` to get the retrieval trail back with the answer.
+- **The schema/ontology constrains what can be extracted**, so the graph stores typed, checkable facts instead of free-form model output.
+- **The system can abstain when evidence is insufficient** — gate generation on retrieval and return an explicit "evidence-insufficient" response ([example](graphrag_sdk/examples/grounded_answers_with_abstention.py)).
+- **Benchmark accuracy is the measurable outcome** of all of the above — see the table below.
+
+→ Full guide: [Reducing LLM hallucinations](https://docs.falkordb.com/graphrag/hallucination-reduction)
 
 ---
 
@@ -227,6 +243,7 @@ guards the default.
 | 8 | [Ontology Lifecycle](graphrag_sdk/examples/08_ontology_lifecycle.py) | Declare an ontology, ingest with it, and round-trip it as JSON config |
 | 9 | [Ontology Evolution](graphrag_sdk/examples/09_ontology_evolution.py) | Mutating schema evolution — rename types and atomically add attributes with LLM backfill |
 | 10 | [Ontology Discovery](graphrag_sdk/examples/10_ontology_discovery.py) | Discover an ontology from raw sources and propose extensions as new docs arrive |
+| ★ | [Grounded Answers with Abstention](graphrag_sdk/examples/grounded_answers_with_abstention.py) | Cite the retrieved context behind an answer, and abstain when the graph has no supporting evidence |
 
 ---
 
@@ -241,6 +258,7 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 | [Configuration](https://docs.falkordb.com/graphrag/configuration) | Connection, providers, and tuning reference |
 | [Strategies](https://docs.falkordb.com/graphrag/strategies) | All ABCs and built-in implementations |
 | [Providers](https://docs.falkordb.com/graphrag/providers) | LLM and embedder configuration guide |
+| [Hallucination Reduction](https://docs.falkordb.com/graphrag/hallucination-reduction) | Grounding, provenance, abstention, and how to verify answers |
 | [Benchmark](https://docs.falkordb.com/graphrag/benchmark) | Methodology, results, and reproduction instructions |
 | [API Reference](https://docs.falkordb.com/graphrag/api-reference) | Full API documentation |
 

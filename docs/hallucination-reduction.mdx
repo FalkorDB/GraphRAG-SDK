@@ -1,0 +1,201 @@
+---
+title: "Reducing LLM Hallucinations"
+description: "Ground every answer in retrieved graph context, keep the provenance trail, and abstain when the evidence is insufficient."
+---
+
+A hallucination is a fluent answer that the evidence does not support. In a RAG
+system it is usually a *retrieval* failure rather than a model failure: the
+model was handed context that never contained the answer, and it filled the gap
+anyway.
+
+GraphRAG SDK reduces hallucinations along three axes: it retrieves connected
+evidence instead of merely similar text, it keeps every answer traceable to the
+source chunks it came from, and it lets your application refuse to answer when
+the graph holds nothing relevant.
+
+<Note>
+  No retrieval system eliminates hallucinations. The goal here is to make
+  answers **grounded**, **verifiable**, and **refusable** — so a wrong answer is
+  detectable instead of invisible.
+</Note>
+
+---
+
+## Why LLMs hallucinate in RAG
+
+Three failure modes account for most of it:
+
+1. **The evidence was never retrieved.** Vector similarity ranks chunks that
+   *look like* the question. Multi-hop facts ("who manages the office that Acme
+   opened in 2026?") are spread across chunks, and none of them individually
+   resembles the question.
+2. **The answer is unverifiable.** If the response arrives without the context
+   that produced it, nobody — human or eval harness — can tell a grounded claim
+   from an invented one.
+3. **The model answers anyway.** Asked a question the corpus says nothing
+   about, a helpful assistant produces a plausible answer rather than admitting
+   the gap.
+
+Each one has a countermeasure in this SDK.
+
+---
+
+## Graph grounding and MENTIONS provenance
+
+Ingestion writes typed entities and relations extracted from each chunk, and
+links every entity back to the chunks that mention it with a `MENTIONS` edge.
+Retrieval then works over the graph: entity discovery, relationship expansion,
+`RELATES` fact search, full-text and vector chunk search all feed the same
+context bundle (see [Architecture](/architecture) and
+[Retrieval](/retrieval) for the full pipeline).
+
+Two properties follow:
+
+- **Connected evidence is retrievable.** Traversing relationships pulls in
+  chunks that are topically dissimilar to the question but factually necessary
+  to answer it.
+- **Every context item has a provenance trail.** Because the chunk is the unit
+  that `MENTIONS` points at, an answer can always be walked back to the
+  document text that supports it.
+
+---
+
+## Inspect the retrieval trail with return\_context
+
+`completion()` returns a `RagResult`. Pass `return_context=True` and the
+`retriever_result` field is populated with the `RetrieverResult` that fed
+generation — a list of `RetrieverResultItem` objects, each with `content`,
+`score` and a `metadata` dict.
+
+<CodeGroup>
+
+```python Grounded answer with citations
+result = await rag.completion("Who founded Acme Corp?", return_context=True)
+
+print(result.answer)
+for item in result.retriever_result.items:
+    print(item.metadata.get("chunk_id"), item.score, item.content[:120])
+```
+
+```python Retrieval only (no generation)
+context = await rag.retrieve("Who founded Acme Corp?")
+print(len(context.items), "context items")
+```
+
+</CodeGroup>
+
+`retrieve()` runs the same retrieval path without calling the LLM, which makes
+it the natural place to put a gate: you decide whether to generate *before*
+paying for a generation.
+
+<Tip>
+  `result.metadata` also carries `num_context_items` and `retrieval_query` —
+  useful signals to log next to every answer you serve.
+</Tip>
+
+---
+
+## Abstain when evidence is insufficient
+
+The abstention pattern is small: retrieve, count the supporting items, and
+either answer or return an explicit evidence-insufficient response.
+
+```python
+INSUFFICIENT_EVIDENCE = (
+    "I don't have enough evidence in the knowledge graph to answer that question."
+)
+
+
+async def answer_or_abstain(rag, question, *, min_items=1, min_score=None):
+    retrieved = await rag.retrieve(question)
+    supporting = [
+        item
+        for item in retrieved.items
+        if item.content.strip()
+        and item.metadata.get("section") != "hint"
+        and (min_score is None or (item.score is not None and item.score >= min_score))
+    ]
+    if len(supporting) < min_items:
+        return INSUFFICIENT_EVIDENCE, []
+
+    result = await rag.completion(question, return_context=True)
+    return result.answer, result.retriever_result.items
+```
+
+Two details matter in practice:
+
+- **Filter non-evidence sections.** The default `MultiPathRetrieval` strategy
+  may emit an answer-format `hint` section that carries no document evidence;
+  counting it would defeat the gate.
+- **Only threshold on scores when the pipeline produces them.**
+  `MultiPathRetrieval` does not populate `score`. Use `LocalRetrieval` or apply
+  `CosineReranker` if you want a similarity floor — otherwise leave
+  `min_score` unset and gate on item count. See [Strategies](/strategies).
+
+<Warning>
+  Returning a fixed refusal string, rather than prose the model wrote, keeps
+  abstentions machine-detectable in logs and evaluations.
+</Warning>
+
+The runnable version of this pattern, including printing the cited source
+chunks, lives in
+[`examples/grounded_answers_with_abstention.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/grounded_answers_with_abstention.py).
+
+---
+
+## Schema constraints as a guardrail
+
+An explicit ontology bounds what extraction is allowed to write into the graph.
+When you declare that `WORKS_AT` connects a `Person` to an `Organization`,
+extraction output that does not fit is not silently promoted to a stored
+"fact":
+
+```python
+from graphrag_sdk import GraphSchema, EntityType, RelationType
+
+schema = GraphSchema(
+    entities=[
+        EntityType(label="Person", description="A human being"),
+        EntityType(label="Organization", description="A company or institution"),
+    ],
+    relations=[
+        RelationType(
+            label="WORKS_AT",
+            description="Is employed by",
+            patterns=[("Person", "Organization")],
+        ),
+    ],
+)
+```
+
+Fewer junk facts in the graph means fewer junk facts in the retrieved context —
+grounding is only as good as what got stored. See
+[Graph Schema](/graph-schema) and [Ontology Discovery](/ontology-discovery) if
+you would rather derive the schema from your corpus than write it by hand.
+
+---
+
+## Verify and evaluate grounding
+
+Treat grounding as something you measure, not something you assume:
+
+- **Log the trail.** Store `retriever_result` items (chunk ids and scores)
+  next to each served answer so any claim can be re-checked later.
+- **Test the refusal path.** Assert that a question with no supporting context
+  returns your evidence-insufficient response. The SDK ships such a test in
+  `graphrag_sdk/tests/test_grounded_abstention.py`.
+- **Track abstention rate.** A rate near zero usually means the gate is too
+  loose; a rate that spikes usually means ingestion or `finalize()` coverage
+  regressed.
+- **Benchmark end to end.** Fact-retrieval accuracy is the aggregate signal
+  that grounding is working — see [Benchmark](/benchmark) for methodology and
+  reproduction.
+
+---
+
+## Related
+
+- [Architecture](/architecture) — how chunks, entities and `MENTIONS` edges fit together
+- [Retrieval](/retrieval) — the retrieval paths that gather evidence
+- [Strategies](/strategies) — retrieval and reranking strategies, including scored ones
+- [Benchmark](/benchmark) — measured accuracy and reproduction instructions
