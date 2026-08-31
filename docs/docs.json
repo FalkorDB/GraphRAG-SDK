@@ -66,6 +66,12 @@
                 ]
               },
               {
+                "group": "Reliability",
+                "pages": [
+                  "reliability-and-grounding"
+                ]
+              },
+              {
                 "group": "Ontology",
                 "pages": [
                   "ontology-discovery",

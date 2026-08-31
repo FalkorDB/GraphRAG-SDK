@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New documentation page **Reliability and Grounding**
+  (`docs/reliability-and-grounding.mdx`), mapping grounded retrieval, source
+  provenance, evidence trails, relationship-aware retrieval, metadata
+  filtering, confidence thresholds, abstention behavior, unsupported claims,
+  retrieval validation and factual accuracy to the SDK APIs that implement
+  them.
+
 ### Fixed
 
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
