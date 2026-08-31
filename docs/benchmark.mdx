@@ -21,6 +21,11 @@ dependencies — is available on request; open an
 [Discord](https://discord.gg/6M4QwDXn2w). The ontologies themselves are
 published below, along with the full configuration.
 
+This score is a ceiling on task performance against a fixed dataset, not a
+guarantee about your data. Grounded retrieval and an explicit abstention path
+are what set the floor for production reliability — see
+[Reducing LLM Hallucinations](/reducing-llm-hallucinations).
+
 ## Results
 
 Scores are ACC unless noted. **Average is the unweighted mean of the four ACC
@@ -164,6 +169,15 @@ reported to the benchmark authors.
 over 2053 of 2062 Medical and 1995 of 2009 Novel predictions. Every prediction
 itself succeeded; there were no generation failures or empty answers in either
 subset.
+
+<Note>
+A benchmark score measures task performance on a fixed, offline dataset. It
+does not measure hallucination rate on your own data — that also depends on
+your source-data quality, how narrowly retrieval is scoped, prompting, and
+the abstention logic your application defines. See
+[Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how to ground
+and verify answers in your own deployment.
+</Note>
 
 ---
 
