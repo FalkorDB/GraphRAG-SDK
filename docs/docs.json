@@ -52,6 +52,7 @@
                   "index",
                   "getting-started",
                   "architecture",
+                  "reducing-llm-hallucinations",
                   "configuration"
                 ]
               },

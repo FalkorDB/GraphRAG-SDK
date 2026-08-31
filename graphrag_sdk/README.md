@@ -182,6 +182,7 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 
 - [Getting Started](https://docs.falkordb.com/graphrag/getting-started) -- Install to first query
 - [Architecture](https://docs.falkordb.com/graphrag/architecture) -- Pipeline design and graph schema
+- [Reducing LLM Hallucinations](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) -- Grounded retrieval, provenance, and abstention
 - [Configuration](https://docs.falkordb.com/graphrag/configuration) -- Connection and provider reference
 - [Strategies](https://docs.falkordb.com/graphrag/strategies) -- All ABCs and built-in implementations
 - [Providers](https://docs.falkordb.com/graphrag/providers) -- LLM & embedder configuration
