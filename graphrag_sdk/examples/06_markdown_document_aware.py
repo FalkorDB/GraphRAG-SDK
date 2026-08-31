@@ -194,7 +194,7 @@ async def main():
     result = await rag.ingest(
         md_path,
         loader=MarkdownLoader(),
-        chunker=StructuralChunking(max_tokens=512),
+        chunker=StructuralChunking(max_tokens=384),
     )
     print(f"Done: {result.nodes_created} nodes, {result.relationships_created} edges, "
           f"{result.chunks_indexed} chunks indexed")

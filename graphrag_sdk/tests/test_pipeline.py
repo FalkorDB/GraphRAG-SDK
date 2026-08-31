@@ -696,3 +696,51 @@ class TestPruneMethod:
         # Total count is reported, but the sampled list does not contain 50 entries.
         assert "Pruned 50" in msg
         assert msg.count("('Company', 'Person')") <= 3
+
+
+class TestDeterministicChunkUids:
+    """Bug #12 — re-ingesting an unchanged document duplicated its chunks.
+
+    ``TextChunk.uid`` defaulted to ``uuid4()``, so the lexical graph's
+    ``MERGE (c:Chunk {id: ...})`` never matched an existing chunk. Measured on
+    the benchmark corpus, ingesting one unchanged file three times:
+    17 -> 34 -> 51 Chunks and 171 -> 343 -> 513 MENTIONED_IN. After the fix the
+    same three rounds hold at 17 Chunks / 170 MENTIONED_IN.
+    """
+
+    @staticmethod
+    def _chunks(texts, doc_uid="doc-1"):
+        from graphrag_sdk.core.models import DocumentInfo, TextChunk, TextChunks
+        from graphrag_sdk.ingestion.pipeline import _assign_deterministic_chunk_uids
+
+        info = DocumentInfo(uid=doc_uid, path="/tmp/a.txt")
+        chunks = TextChunks(
+            chunks=[TextChunk(text=t, index=i) for i, t in enumerate(texts)]
+        )
+        _assign_deterministic_chunk_uids(info, chunks)
+        return [c.uid for c in chunks.chunks]
+
+    def test_same_document_yields_same_uids(self):
+        a = self._chunks(["alpha", "beta"])
+        b = self._chunks(["alpha", "beta"])
+        assert a == b
+
+    def test_uids_replace_the_random_default(self):
+        from graphrag_sdk.core.models import TextChunk
+
+        assert self._chunks(["alpha"])[0] != TextChunk(text="alpha", index=0).uid
+
+    def test_different_text_yields_different_uid(self):
+        assert self._chunks(["alpha"]) != self._chunks(["alpha edited"])
+
+    def test_different_index_yields_different_uid(self):
+        """Two chunks with identical text must stay distinct nodes."""
+        uids = self._chunks(["same", "same"])
+        assert uids[0] != uids[1]
+
+    def test_different_document_yields_different_uid(self):
+        assert self._chunks(["alpha"], "doc-1") != self._chunks(["alpha"], "doc-2")
+
+    def test_uids_are_unique_within_a_document(self):
+        uids = self._chunks([f"chunk {i}" for i in range(50)])
+        assert len(set(uids)) == 50
