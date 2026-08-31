@@ -15,6 +15,16 @@ The pattern has two halves:
      trail comes back alongside the answer and every claim can be traced
      to its source chunks.
 
+Counting items is not enough on its own. No path in the default
+``MultiPathRetrieval`` strategy applies a similarity floor — chunk vector
+search takes the top 15 hits and reranking takes the top *k* of those, both
+without a threshold — so a non-empty graph nearly always returns *something*,
+however unrelated. A count-only gate therefore fires only in the degenerate
+cases (empty graph, no ingestion, retrieval error). To abstain on a question
+your corpus genuinely does not cover, you need per-item scores: attach a
+``CosineReranker`` (or use ``LocalRetrieval``) and pass ``min_score``, as
+``main()`` does below.
+
 ``answer_or_abstain()`` below is deliberately small and dependency-free so
 you can copy it into your own application (it is also exercised by
 ``graphrag_sdk/tests/test_grounded_abstention.py``).
@@ -43,7 +53,13 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
-from graphrag_sdk import ConnectionConfig, GraphRAG, LiteLLM, LiteLLMEmbedder
+from graphrag_sdk import (
+    ConnectionConfig,
+    CosineReranker,
+    GraphRAG,
+    LiteLLM,
+    LiteLLMEmbedder,
+)
 
 TEXT = (
     "Acme Corp was founded in 2015 by Alice Johnson and is headquartered in London. "
@@ -62,6 +78,10 @@ INSUFFICIENT_EVIDENCE = (
 #: MultiPathRetrieval emits an answer-format hint section that carries no
 #: document evidence. Ignore it when deciding whether to abstain.
 NON_EVIDENCE_SECTIONS = frozenset({"hint"})
+
+#: Similarity floor for a reranked item to count as evidence. Corpus- and
+#: embedding-model-dependent: measure your own scores before trusting it.
+MIN_SCORE = 0.35
 
 
 @dataclass
@@ -182,6 +202,11 @@ async def main():
     llm = LiteLLM(model="openai/gpt-5.5")
     embedder = LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256)
 
+    # Scores are what make the gate discriminating. Without a reranker the
+    # default strategy leaves ``score`` unset on every item, and the gate
+    # degrades to "did retrieval return anything at all?".
+    reranker = CosineReranker(embedder=embedder, top_k=10)
+
     async with GraphRAG(
         connection=ConnectionConfig(host="localhost", graph_name="grounded_abstention"),
         llm=llm,
@@ -193,12 +218,32 @@ async def main():
         await rag.finalize()
 
         # ── 2. A question the corpus supports → grounded answer ────
-        report(await answer_or_abstain(rag, "Who founded Acme Corp?"))
+        report(
+            await answer_or_abstain(
+                rag,
+                "Who founded Acme Corp?",
+                min_score=MIN_SCORE,
+                reranker=reranker,
+            )
+        )
 
         # ── 3. A question the corpus says nothing about → abstain ──
-        # Nothing in the graph mentions revenue, so the gate fires
-        # before the LLM ever sees the question.
-        report(await answer_or_abstain(rag, "What was Acme Corp's revenue in 2024?"))
+        # The corpus covers Acme's founding, offices and staff, but says
+        # nothing about revenue. Retrieval still returns the Acme chunks —
+        # they share vocabulary with the question — so the abstention
+        # depends on those chunks scoring below MIN_SCORE, not on retrieval
+        # coming back empty. Tune MIN_SCORE against your own corpus: print
+        # the scores first (see the "Are the scores plausible?" check in the
+        # Reliability and Grounding docs), then set the floor just under the
+        # weakest answer you would still accept.
+        report(
+            await answer_or_abstain(
+                rag,
+                "What was Acme Corp's revenue in 2024?",
+                min_score=MIN_SCORE,
+                reranker=reranker,
+            )
+        )
 
 
 if __name__ == "__main__":

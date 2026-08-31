@@ -9,7 +9,7 @@ returned field, with the honest answer about what the SDK enforces and what it
 leaves to you.
 
 <Note>
-  Everything here describes shipped behaviour. Where a capability is **not**
+  Everything here describes shipped behavior. Where a capability is **not**
   built in — abstention enforcement and declarative metadata filters are the two
   cases — the page says so and shows the supported workaround.
 </Note>
@@ -67,7 +67,7 @@ Two grounding safeguards run automatically when you use the default prompt
 template:
 
 - Retrieved document text is scanned for a forged `</context>` closing tag and
-  neutralised, so untrusted source text cannot break out of the context block
+  neutralized, so untrusted source text cannot break out of the context block
   and issue instructions.
 - The delimited system prompt explicitly tells the model that everything inside
   `<context>` is data, not instructions.
@@ -97,7 +97,7 @@ Document ──PART_OF──▶ Chunk ──NEXT_CHUNK──▶ Chunk
 
 | Element | Key fields |
 | --- | --- |
-| `Document` | `id` (the `document_id` you passed to `ingest()`, or the normalised source path), `path`, `content_hash`, plus any loader metadata |
+| `Document` | `id` (the `document_id` you passed to `ingest()`, or the normalized source path), `path`, `content_hash`, plus any loader metadata |
 | `Chunk` | `id` (the chunk uid), `text`, `index`, `embedding` |
 | `__Entity__` | `id`, `name`, `description`, `type`, `label`, `embedding` |
 | `RELATES` | `src_name`, `rel_type`, `tgt_name`, `fact`, `description`, `source_chunk_ids`, `embedding` |
@@ -321,7 +321,7 @@ descending.
 <Note>
   This was corrected recently: earlier releases ordered by raw distance, which
   ranked the *least* similar results first. If you pinned a threshold against
-  the old behaviour, invert it.
+  the old behavior, invert it.
 </Note>
 
 | Cutoff | Where | Default |
@@ -414,7 +414,7 @@ if result.answer.strip() == "INSUFFICIENT_CONTEXT":
 
 <Warning>
   A custom `prompt_template` must keep both `{context}` and `{question}`
-  placeholders, and it opts out of the `</context>` neutralisation and the
+  placeholders, and it opts out of the `</context>` neutralization and the
   delimited system prompt described under
   [Grounded retrieval](#grounded-retrieval).
 </Warning>

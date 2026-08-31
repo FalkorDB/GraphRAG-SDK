@@ -227,15 +227,23 @@ question costs zero LLM calls. Three details matter in practice:
 - **Only threshold on scores when the pipeline produces them.**
   `MultiPathRetrieval` returns section items with `score = None` — scoring
   happens internally during fact filtering and passage reranking and is not
-  surfaced per section. Use `LocalRetrieval` or attach a `CosineReranker` if
-  you want a similarity floor, otherwise leave `min_score` unset and gate on
-  item count. See [Strategies](/strategies).
+  surfaced per section. Attach a `CosineReranker` (or use `LocalRetrieval`)
+  to populate `item.score` before setting `min_score`. See
+  [Strategies](/strategies).
+- **A count-only gate barely gates.** No retrieval path applies a similarity
+  floor: chunk vector search takes its top 15 hits and reranking takes the
+  top *k* of those, neither with a threshold. A populated graph therefore
+  returns *something* for almost any question, however unrelated, so
+  `min_items` alone fires only on an empty graph, a failed ingestion or a
+  retrieval error. Scores are what make the gate discriminating.
 - **Return a fixed refusal string**, rather than prose the model wrote, so
   abstentions stay machine-detectable in logs and evaluations.
 
 Tune the thresholds to your risk tolerance — for example, restrict the
 supporting sections to `"passages"` specifically if only source-text-grounded
-answers are acceptable for your use case.
+answers are acceptable for your use case. A `min_score` is corpus- and
+embedding-model-dependent: read real scores off your own questions before
+picking one.
 
 <Note>
 The gate is not free on the answered path. `completion()` retrieves again
