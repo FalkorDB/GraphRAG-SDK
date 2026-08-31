@@ -78,6 +78,15 @@ def _rag_with_context(mock_conn, embedder, items, *, answer="Alice Johnson found
 
 
 class TestAbstention:
+    async def test_negative_min_items_is_rejected_before_retrieval(self):
+        rag = MagicMock(spec=GraphRAG)
+
+        with pytest.raises(ValueError, match="min_items must be non-negative"):
+            await example.answer_or_abstain(rag, "Q?", min_items=-1)
+
+        rag.retrieve.assert_not_awaited()
+        rag.completion.assert_not_awaited()
+
     async def test_no_context_returns_evidence_insufficient(self, mock_conn, embedder):
         """No supporting context → explicit refusal, no generation."""
         rag, llm = _rag_with_context(mock_conn, embedder, items=[])
@@ -163,7 +172,46 @@ class TestGroundedAnswer:
             reranker=reranker,
             ctx=ctx,
             return_context=True,
+            rewrite_question_with_history=False,
         )
+
+    async def test_history_rewrite_is_reused_for_gate_and_completion(self):
+        item = RetrieverResultItem(content="Evidence.", metadata={"chunk_id": "c1"})
+        retriever_result = RetrieverResult(items=[item])
+        rag = MagicMock(spec=GraphRAG)
+        rag.retrieve = AsyncMock(return_value=retriever_result)
+        rag.completion = AsyncMock(
+            return_value=RagResult(answer="Grounded.", retriever_result=retriever_result)
+        )
+        rag._rewrite_question_with_history = AsyncMock(return_value="Resolved question?")
+        validated_history = [MagicMock()]
+        rag._validate_history.return_value = validated_history
+        history = [{"role": "user", "content": "Who founded Acme?"}]
+        ctx = MagicMock()
+
+        result = await example.answer_or_abstain(
+            rag,
+            "What did she build?",
+            history=history,
+            rewrite_question_with_history=True,
+            ctx=ctx,
+        )
+
+        rag._rewrite_question_with_history.assert_awaited_once_with(
+            "What did she build?",
+            validated_history,
+            ctx=ctx,
+        )
+        rag._validate_history.assert_called_once_with(history)
+        rag.retrieve.assert_awaited_once_with("Resolved question?", ctx=ctx)
+        rag.completion.assert_awaited_once_with(
+            "Resolved question?",
+            history=history,
+            ctx=ctx,
+            return_context=True,
+            rewrite_question_with_history=False,
+        )
+        assert result.question == "What did she build?"
 
     async def test_divergent_second_retrieval_still_reports_citations(self):
         """A grounded answer must never come back with empty provenance.

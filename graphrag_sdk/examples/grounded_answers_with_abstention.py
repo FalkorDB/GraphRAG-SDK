@@ -32,11 +32,13 @@ you can copy it into your own application (it is also exercised by
 Cost note: the gate retrieves once, and ``completion()`` retrieves again
 internally. Because ``MultiPathRetrieval`` runs an LLM keyword-extraction
 call on every retrieval, an *answered* question costs three LLM calls
-instead of two, and does the graph and vector work twice. An *unanswered*
-question costs zero LLM calls. That trade is worth it when a meaningful
-share of your traffic is unanswerable; if almost every question is
-answerable, gate on a cheaper signal or accept the prompt-level abstention
-in rule 6 of the default system prompt.
+instead of two (four instead of three with
+``rewrite_question_with_history=True``), and does the graph and vector work
+twice. An *unanswered* question still costs the retrieval keyword-extraction
+LLM call (plus the rewrite call when enabled), but avoids the generation call.
+That trade is worth it when a meaningful share of your traffic is unanswerable;
+if almost every question is answerable, gate on a cheaper signal or accept the
+prompt-level abstention in rule 6 of the default system prompt.
 
 Prerequisites:
     docker run -p 6379:6379 falkordb/falkordb
@@ -55,6 +57,7 @@ from typing import Any
 
 from graphrag_sdk import (
     ConnectionConfig,
+    Context,
     CosineReranker,
     GraphRAG,
     LiteLLM,
@@ -89,7 +92,7 @@ class GroundedAnswer:
     """An answer plus the provenance that justifies it.
 
     ``grounded`` is False exactly when the abstention gate fired, in which
-    case ``answer`` is the ``refusal`` string and no LLM call was made.
+    case ``answer`` is the ``refusal`` string and no generation call was made.
     """
 
     question: str
@@ -153,19 +156,38 @@ async def answer_or_abstain(
         A ``GroundedAnswer``. When ``grounded`` is False the answer is the
         refusal string and no generation happened.
     """
+    if min_items < 0:
+        raise ValueError("min_items must be non-negative")
+
+    resolved_question = question
+    rewrite_question = completion_kwargs.pop("rewrite_question_with_history", False)
+    history = completion_kwargs.get("history")
+    if rewrite_question and history:
+        ctx = completion_kwargs.get("ctx")
+        if ctx is None:
+            ctx = Context()
+            completion_kwargs["ctx"] = ctx
+        validated_history = rag._validate_history(history)
+        resolved_question = await rag._rewrite_question_with_history(
+            question,
+            validated_history,
+            ctx=ctx,
+        )
+
     retrieval_kwargs = {
         key: completion_kwargs[key]
         for key in ("strategy", "reranker", "ctx")
         if key in completion_kwargs
     }
-    retrieved = await rag.retrieve(question, **retrieval_kwargs)
+    retrieved = await rag.retrieve(resolved_question, **retrieval_kwargs)
     supporting = [item for item in retrieved.items if is_evidence(item, min_score)]
 
     if len(supporting) < min_items:
         return GroundedAnswer(question=question, answer=refusal, grounded=False)
 
     completion_kwargs["return_context"] = True
-    result = await rag.completion(question, **completion_kwargs)
+    completion_kwargs["rewrite_question_with_history"] = False
+    result = await rag.completion(resolved_question, **completion_kwargs)
 
     # ``return_context=True`` populates ``retriever_result``; fall back to the
     # gate's own retrieval if a custom pipeline leaves it unset.
