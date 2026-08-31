@@ -18,7 +18,7 @@
 
 Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers in under 5 minutes.
 
-It is designed to **reduce LLM hallucinations**: every answer is grounded in context retrieved from the knowledge graph and stays traceable to its source chunks through `MENTIONED_IN` provenance edges, so any claim can be checked against the document it came from. When the graph holds no supporting evidence, your application can abstain and say so instead of letting the model guess — see the [Reducing LLM Hallucinations guide](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) and the [grounded answers with abstention example](graphrag_sdk/examples/grounded_answers_with_abstention.py).
+It is designed to **reduce LLM hallucinations**: answers can be grounded in context retrieved from the knowledge graph, while applications inspect that context, validate generated claims, and gate generation when evidence is insufficient. `MENTIONED_IN` provenance edges trace entity mentions to their source chunks — see the [Reducing LLM Hallucinations guide](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) and the [grounded answers with abstention example](graphrag_sdk/examples/grounded_answers_with_abstention.py).
 
 ---
 
@@ -27,9 +27,9 @@ It is designed to **reduce LLM hallucinations**: every answer is grounded in con
 Hallucinations in RAG are usually a retrieval failure, not a model failure: the model is asked to answer from context that never contained the answer. A knowledge graph attacks that at the retrieval layer, and keeps the evidence attached to the answer.
 
 - **Relationship traversal retrieves the connected evidence vector similarity misses** — multi-hop facts rarely live in one chunk that happens to be similar to the question.
-- **Every answer is traceable to its source chunks** via `MENTIONED_IN` edges; pass `return_context=True` to `completion()` to get the retrieval trail back with the answer.
+- **Retrieved context is traceable to source chunks**; `MENTIONED_IN` edges trace entity mentions, and `return_context=True` returns the retrieval trail for application-level validation.
 - **The ontology constrains what can be extracted**, so the graph stores typed, checkable facts instead of free-form model output.
-- **The system can abstain when evidence is insufficient** — gate generation on retrieval and return an explicit "evidence-insufficient" response ([example](graphrag_sdk/examples/grounded_answers_with_abstention.py)).
+- **Your application can abstain when evidence is insufficient** — gate generation on retrieval and return an explicit "evidence-insufficient" response ([example](graphrag_sdk/examples/grounded_answers_with_abstention.py)).
 - **Benchmark accuracy is the measurable outcome** of all of the above — see the table below.
 
 → Full guide: [Reducing LLM hallucinations](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) · API reference: [Reliability and Grounding](https://docs.falkordb.com/graphrag/reliability-and-grounding)
@@ -224,7 +224,7 @@ guards the default.
 | Retrieval | Relationship expansion | DB |
 | Retrieval | Cosine reranking | Local |
 
-> 💡 Every answer is traceable to its source chunks via `MENTIONED_IN` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
+> 💡 Retrieved context can be traced to source chunks; `MENTIONED_IN` edges connect entity mentions to chunks. Pass `return_context=True` to `completion()` so your application can inspect the retrieval trail and validate generated claims.
 
 ---
 

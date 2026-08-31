@@ -97,6 +97,8 @@ multi-hop paths) that text search can't express
 enabled — treat it as an opt-in capability to turn on once your ontology is
 stable, not a default-on feature:
 
+Given initialized `embedder`, `llm`, and `rag` instances:
+
 ```python
 from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore, VectorStore
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval

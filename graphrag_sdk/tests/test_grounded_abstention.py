@@ -17,7 +17,7 @@ import pytest
 
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
-from graphrag_sdk.core.models import RetrieverResult, RetrieverResultItem
+from graphrag_sdk.core.models import RagResult, RetrieverResult, RetrieverResultItem
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
 from .conftest import MockLLM
@@ -29,6 +29,8 @@ _EXAMPLE_PATH = (
 
 def _load_example():
     spec = importlib.util.spec_from_file_location("grounded_answers_with_abstention", _EXAMPLE_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load example module from {_EXAMPLE_PATH}")
     module = importlib.util.module_from_spec(spec)
     # Register before exec: @dataclass resolves annotations via sys.modules.
     sys.modules[spec.name] = module
@@ -133,6 +135,36 @@ class TestAbstention:
 
 
 class TestGroundedAnswer:
+    async def test_retrieval_options_match_generation(self):
+        item = RetrieverResultItem(content="Evidence.", metadata={"chunk_id": "c1"})
+        retriever_result = RetrieverResult(items=[item])
+        rag = MagicMock(spec=GraphRAG)
+        rag.retrieve = AsyncMock(return_value=retriever_result)
+        rag.completion = AsyncMock(
+            return_value=RagResult(answer="Grounded.", retriever_result=retriever_result)
+        )
+        strategy = MagicMock()
+        reranker = MagicMock()
+        ctx = MagicMock()
+
+        await example.answer_or_abstain(
+            rag,
+            "Q?",
+            strategy=strategy,
+            reranker=reranker,
+            ctx=ctx,
+            return_context=False,
+        )
+
+        rag.retrieve.assert_awaited_once_with("Q?", strategy=strategy, reranker=reranker, ctx=ctx)
+        rag.completion.assert_awaited_once_with(
+            "Q?",
+            strategy=strategy,
+            reranker=reranker,
+            ctx=ctx,
+            return_context=True,
+        )
+
     async def test_supported_question_returns_grounded_answer_with_citations(
         self, mock_conn, embedder
     ):

@@ -124,13 +124,19 @@ async def answer_or_abstain(
         A ``GroundedAnswer``. When ``grounded`` is False the answer is the
         refusal string and no generation happened.
     """
-    retrieved = await rag.retrieve(question)
+    retrieval_kwargs = {
+        key: completion_kwargs[key]
+        for key in ("strategy", "reranker", "ctx")
+        if key in completion_kwargs
+    }
+    retrieved = await rag.retrieve(question, **retrieval_kwargs)
     supporting = [item for item in retrieved.items if is_evidence(item, min_score)]
 
     if len(supporting) < min_items:
         return GroundedAnswer(question=question, answer=refusal, grounded=False)
 
-    result = await rag.completion(question, return_context=True, **completion_kwargs)
+    completion_kwargs["return_context"] = True
+    result = await rag.completion(question, **completion_kwargs)
 
     # ``return_context=True`` populates ``retriever_result``; fall back to the
     # gate's own retrieval if a custom pipeline leaves it unset.

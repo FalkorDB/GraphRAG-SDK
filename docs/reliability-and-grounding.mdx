@@ -168,6 +168,10 @@ from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore
 
 connection = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
 graph = GraphStore(connection)
+chunk_item = next(
+    item for item in result.retriever_result.items if item.metadata.get("chunk_id")
+)
+chunk_id = chunk_item.metadata["chunk_id"]
 
 evidence = await graph.query_raw(
     "MATCH (d:Document)-[:PART_OF]->(c:Chunk {id: $chunk_id}) "
