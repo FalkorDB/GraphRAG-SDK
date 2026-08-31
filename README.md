@@ -62,9 +62,10 @@ Hallucinations in RAG are usually a retrieval failure, not a model failure: the 
 > at temperature 0.7 for both graph construction and generation, `text-embedding-3-large`
 > at 1024 dimensions, text-to-Cypher retrieval enabled, and the benchmark's own
 > `generation_eval.py` unmodified as the judge. Competitor numbers are from the
-> published leaderboard, unchanged. See [the benchmark page](https://docs.falkordb.com/graphrag/benchmark) for
-> per-category results, the full 15-system comparison, configuration and reproduction
-> instructions.
+> published leaderboard, unchanged. See [the GraphRAG accuracy benchmark page](https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark)
+> for the full FalkorDB vs vector RAG comparison, configuration, reproduction
+> instructions and limitations, and [the benchmark methodology page](https://docs.falkordb.com/graphrag/benchmark) for
+> per-category results and the full 15-system comparison.
 
 Vectors match similar chunks. The graph traverses relationships. Every answer cites its source.
 
@@ -260,6 +261,7 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 | [Providers](https://docs.falkordb.com/graphrag/providers) | LLM and embedder configuration guide |
 | [Hallucination Reduction](https://docs.falkordb.com/graphrag/hallucination-reduction) | Grounding, provenance, abstention, and how to verify answers |
 | [Benchmark](https://docs.falkordb.com/graphrag/benchmark) | Methodology, results, and reproduction instructions |
+| [Accuracy Benchmark: FalkorDB vs Vector RAG](https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark) | 71.48 vs 55.39 comparison, evaluation definition, limitations, how to cite |
 | [API Reference](https://docs.falkordb.com/graphrag/api-reference) | Full API documentation |
 
 ---
