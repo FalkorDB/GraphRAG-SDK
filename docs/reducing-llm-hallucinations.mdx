@@ -1,0 +1,329 @@
+---
+title: "Reducing LLM Hallucinations"
+description: "How grounded retrieval, source provenance, and an explicit abstention path make GraphRAG SDK answers verifiable instead of guessed."
+---
+
+FalkorDB GraphRAG helps applications reduce unsupported LLM answers by retrieving connected, source-linked facts before generation. It combines vector search, graph traversal, relationship expansion, and source provenance so developers can inspect the evidence used for an answer and define an abstention path when evidence is insufficient.
+
+<Note>
+No retrieval technique eliminates hallucinations. This page describes how to
+**reduce** unsupported answers, **ground** them in retrieved evidence, and
+**make grounding inspectable and verifiable** — not how to guarantee a
+correct answer every time.
+</Note>
+
+For the API-level reference — which class, parameter or returned field
+implements each of these concepts, and where the SDK deliberately leaves a
+decision to you — see [Reliability and Grounding](/reliability-and-grounding).
+
+## Why RAG systems produce unsupported answers
+
+A hallucination is a fluent answer the evidence does not support. In a RAG
+system it is usually a *retrieval* failure rather than a model failure: the
+model was handed context that never contained the answer, and it filled the
+gap anyway. A plain vector-search pipeline embeds the question, finds the *k*
+most similar chunks, and asks the LLM to answer from them. That fails in three
+common ways:
+
+- **Retrieval misses the connecting fact.** The answer requires combining two
+  facts from different documents (or different parts of the same document),
+  but no single chunk contains both, so similarity search never surfaces the
+  link between them. Multi-hop questions — "who manages the office that Acme
+  opened in 2026?" — are the usual casualty.
+- **Chunks are similar but not relevant.** Cosine similarity rewards
+  *topical* overlap, not *answer-bearing* content. A chunk can rank highly
+  because it shares vocabulary with the question while containing none of the
+  facts needed to answer it.
+- **The model fills the gap.** When the retrieved context is incomplete, an
+  LLM will usually still produce a fluent, confident-sounding answer rather
+  than say "I don't know" — because nothing in the pipeline checks whether
+  the context actually supports the claim before generation.
+
+GraphRAG SDK addresses the first two problems with multiple retrieval paths
+over a knowledge graph (instead of one similarity search over flat chunks),
+and gives applications the tools to address the third with an explicit
+abstention check (see [Defining an abstention path](#defining-an-abstention-path)
+below).
+
+## How each mechanism grounds an answer
+
+Retrieval is handled by `MultiPathRetrieval`
+([`multi_path.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/multi_path.py)),
+the SDK's default retrieval strategy. It runs several independent search
+mechanisms in parallel and merges their results, so a fact only needs to be
+found by *one* path to make it into the final context — see
+[Retrieval](/retrieval) for the full step-by-step breakdown. The mechanisms
+named in the opening paragraph map onto it like this:
+
+### Vector search
+
+Embedding similarity search runs in two places: over `Chunk` text (finds
+passages with similar meaning, even without shared keywords) and over
+`RELATES` edges (finds structured facts — `Entity —[REL]→ Entity` — by
+meaning). Both are implemented with FalkorDB's `db.idx.vector.queryNodes` and
+scored, so low-relevance results can be filtered before they reach the LLM
+(`search_relates_edges()` in
+[`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py),
+`retrieve_chunks()` in
+[`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)).
+
+### Full-text / keyword search
+
+A fulltext index over chunk text and entity names catches exact keyword and
+name matches that embedding similarity sometimes misses — useful for rare
+proper nouns, IDs, or terms the embedding model doesn't weight heavily. This
+runs as an independent path alongside vector search rather than as a
+fallback, so both contribute candidates every query.
+
+### Graph traversal and relationship expansion
+
+Entities discovered in the question are expanded outward through the graph:
+1-hop direct relationships and 2-hop indirect connections
+(`expand_relationships()` in
+[`relationship_expansion.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/relationship_expansion.py)),
+plus `MENTIONED_IN` traversal from an entity back to the chunks it was
+extracted from. This is what lets the pipeline answer questions that require
+*connecting* two facts — the case a single similarity search misses — because
+the connection is a graph edge, not a coincidence of vocabulary.
+
+### Ontology-guided text-to-Cypher
+
+The LLM can optionally generate a read-only Cypher query against the graph
+schema for questions that need structural answers (counts, exact lists,
+multi-hop paths) that text search can't express
+(`execute_cypher_retrieval()` in
+[`cypher_generation.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/cypher_generation.py)).
+**This path is off by default** (`enable_cypher=False`) and adds latency when
+enabled — treat it as an opt-in capability to turn on once your ontology is
+stable, not a default-on feature:
+
+```python
+from graphrag_sdk import ConnectionConfig, FalkorDBConnection, GraphStore, VectorStore
+from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
+
+connection = FalkorDBConnection(ConnectionConfig(host="localhost", graph_name="my_graph"))
+
+strategy = MultiPathRetrieval(
+    graph_store=GraphStore(connection),
+    vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
+    embedder=embedder,
+    llm=llm,
+    enable_cypher=True,  # opt-in, off by default
+)
+result = await rag.completion("How many organizations are mentioned?", strategy=strategy)
+```
+
+### Cosine reranking
+
+Passage candidates gathered from every path are pooled, then reranked by
+cosine similarity against the question using the embeddings already stored on
+each `Chunk` node at ingestion time — no extra embedding API call
+(`rerank_chunks()` in
+[`result_assembly.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/result_assembly.py)).
+Knowledge-graph facts go through a separate, higher-threshold filter
+(`filter_facts_by_relevance()`) instead, since short fact strings have higher
+similarity variance than prose passages. Only the top-ranked, above-threshold
+evidence reaches the LLM prompt.
+
+## Inspecting the evidence
+
+Every extracted entity is linked back to its source text by a
+`MENTIONED_IN` edge (`__Entity__ → Chunk`), written during ingestion
+(see the [ingestion pipeline](/ingestion)). That edge is what lets the
+retrieval pipeline trace an entity mentioned in an answer back to the exact
+passage it came from, and it's what the `MENTIONED_IN` graph traversal path
+(above) uses to fetch supporting passages for the entities discovered in a
+question. Because the chunk is the unit that `MENTIONED_IN` points at, an
+answer can always be walked back to the document text that supports it.
+
+To see this trail yourself, pass `return_context=True` to `completion()`. The
+returned `RagResult.retriever_result` then contains the full set of retrieved
+items — a list of `RetrieverResultItem` objects, each with `content`, `score`
+and a `metadata` dict — including the `passages` section with each cited
+source chunk:
+
+<CodeGroup>
+
+```python Grounded answer with citations
+result = await rag.completion("What did Professor Harmon discover?", return_context=True)
+
+print(result.answer)
+
+for item in result.retriever_result.items:
+    if item.metadata.get("section") == "passages":
+        for passage in item.content.split("\n---\n"):
+            print(passage)
+```
+
+```python Retrieval only (no generation)
+context = await rag.retrieve("What did Professor Harmon discover?")
+
+print(len(context.items), "context items")
+for item in context.items:
+    print(item.metadata.get("section"), item.content[:120])
+```
+
+</CodeGroup>
+
+Each entry in the `passages` section is prefixed with `[Source: <document
+path>]` when the source document could be resolved, so you can confirm which
+document (and, via `MENTIONED_IN`, which chunk) backs a claim in the answer —
+rather than trusting the answer at face value.
+
+<Tip>
+`result.metadata` also carries `num_context_items` and `retrieval_query` —
+useful signals to log next to every answer you serve.
+</Tip>
+
+`retrieve()` runs the same retrieval path *without* calling the LLM, which
+makes it the natural place to put a gate: you decide whether to generate
+before paying for a generation.
+
+## Defining an abstention path
+
+Grounding only helps if the application acts on it. If retrieval comes back
+empty — or with no `passages` / `facts` evidence — the model still generates a
+fluent answer unless the application checks first. The pattern is small:
+retrieve, count the supporting items, and either answer or return an explicit
+evidence-insufficient response.
+
+```python
+INSUFFICIENT_EVIDENCE = (
+    "I don't have enough evidence in the knowledge graph to answer that question."
+)
+
+#: MultiPathRetrieval emits an answer-format hint section carrying no
+#: document evidence. Ignore it when deciding whether to abstain.
+NON_EVIDENCE_SECTIONS = frozenset({"hint"})
+
+
+async def answer_or_abstain(rag, question: str, *, min_items: int = 1, min_score=None):
+    """Answer from graph context, or abstain when the evidence is too thin."""
+    retrieved = await rag.retrieve(question)
+
+    supporting = [
+        item
+        for item in retrieved.items
+        if (item.content or "").strip()
+        and item.metadata.get("section") not in NON_EVIDENCE_SECTIONS
+        and (min_score is None or (item.score is not None and item.score >= min_score))
+    ]
+
+    if len(supporting) < min_items:
+        return INSUFFICIENT_EVIDENCE, []
+
+    result = await rag.completion(question, return_context=True)
+    return result.answer, result.retriever_result.items
+```
+
+Gating on `retrieve()` **before** generation is the point: an unsupported
+question costs zero LLM calls. Three details matter in practice:
+
+- **Filter non-evidence sections.** The default `MultiPathRetrieval` strategy
+  emits an answer-format `hint` section that carries no document evidence;
+  counting it would defeat the gate.
+- **Only threshold on scores when the pipeline produces them.**
+  `MultiPathRetrieval` returns section items with `score = None` — scoring
+  happens internally during fact filtering and passage reranking and is not
+  surfaced per section. Use `LocalRetrieval` or attach a `CosineReranker` if
+  you want a similarity floor, otherwise leave `min_score` unset and gate on
+  item count. See [Strategies](/strategies).
+- **Return a fixed refusal string**, rather than prose the model wrote, so
+  abstentions stay machine-detectable in logs and evaluations.
+
+Tune the thresholds to your risk tolerance — for example, restrict the
+supporting sections to `"passages"` specifically if only source-text-grounded
+answers are acceptable for your use case.
+
+<Warning>
+A retrieval-side relevance threshold is not an abstention mechanism on its
+own: `filter_facts_by_relevance()` keeps its top `min_keep=3` facts regardless
+of score, so a weak graph still yields a non-empty context. The explicit gate
+above is what turns that into a real refusal.
+</Warning>
+
+The runnable version of this pattern — including printing the cited source
+chunks — lives in
+[`examples/grounded_answers_with_abstention.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/grounded_answers_with_abstention.py),
+and is covered by `graphrag_sdk/tests/test_grounded_abstention.py`.
+
+## Schema and ontology as a guardrail
+
+Extraction is constrained by the ontology you define: only entity labels and
+relationship patterns present in the schema are extracted and written to the
+graph (see [Graph Schema](/graph-schema) and [Extraction](/extraction)).
+Off-schema entities and relationships are pruned before the graph is written,
+so extraction output that doesn't fit is never silently promoted to a stored
+"fact":
+
+```python
+from graphrag_sdk import Entity, Ontology, Relation
+
+ontology = Ontology(
+    entities=[
+        Entity(label="Person", description="A human being"),
+        Entity(label="Organization", description="A company or institution"),
+    ],
+    relations=[
+        Relation(
+            label="WORKS_AT",
+            description="Is employed by",
+            patterns=[("Person", "Organization")],  # source -> target
+        ),
+    ],
+)
+```
+
+This matters for grounding because it constrains *what can be asserted
+later* — an ontology that only models `Person`, `Organization`, and
+`WORKS_AT` cannot retrieve (and therefore cannot ground an answer in) a
+relationship type it never captured. A narrower, well-scoped ontology
+produces fewer but more precise facts; a broad one captures more but with
+more noise for the reranker to filter. Fewer junk facts in the graph means
+fewer junk facts in the retrieved context — grounding is only as good as what
+got stored. See [Ontology Discovery](/ontology-discovery) if you would rather
+derive the schema from your corpus than write it by hand.
+
+## Verifying grounding
+
+Treat grounding as something you measure, not something you assume:
+
+1. **Check the trail.** Run `completion(question, return_context=True)` and
+   confirm the `passages` and `facts` sections contain the specific fact the
+   answer depends on — not just topically related text.
+2. **Cross-reference the source.** Compare `[Source: <document>]` tags against
+   the actual source document to confirm the passage says what the answer
+   claims.
+3. **Prefer structured evidence for high-stakes claims.** Questions
+   answerable from the `facts` section (`RELATES` edges) or a
+   `cypher_results` section beat free-text passages alone — structured graph
+   results are direct query output, not LLM-summarized prose.
+4. **Log the trail.** Store `retriever_result` items next to each served
+   answer so any claim can be re-checked later.
+5. **Test the refusal path.** Assert that a question with no supporting
+   context returns your evidence-insufficient response.
+6. **Track abstention rate.** A rate near zero usually means the gate is too
+   loose; a rate that spikes usually means ingestion or `finalize()` coverage
+   regressed.
+
+<Warning>
+The [benchmark](/benchmark) numbers measure task performance — accuracy
+against a fixed, offline question set — not hallucination rate on your data.
+A high benchmark score says the pipeline finds and uses relevant evidence
+well on that dataset. It does not say anything about how complete or
+accurate *your* source corpus is, how narrowly *you've* scoped retrieval, how
+your prompts are written, or what abstention threshold your application
+enforces. All four are yours to set, and all four affect real-world
+reliability as much as the retrieval pipeline itself.
+</Warning>
+
+## Related
+
+- [Reliability and Grounding](/reliability-and-grounding) — the API-level
+  reference behind every mechanism on this page
+- [Architecture](/architecture) — how chunks, entities and `MENTIONED_IN`
+  edges fit together
+- [Retrieval](/retrieval) — the retrieval paths that gather evidence
+- [Strategies](/strategies) — retrieval and reranking strategies, including
+  scored ones
+- [Benchmark](/benchmark) — measured accuracy and reproduction instructions

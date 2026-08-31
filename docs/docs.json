@@ -52,6 +52,7 @@
                   "index",
                   "getting-started",
                   "architecture",
+                  "reducing-llm-hallucinations",
                   "configuration"
                 ]
               },
@@ -79,6 +80,7 @@
                   "strategies",
                   "providers",
                   "api-reference",
+                  "reliability-and-grounding",
                   "graphrag-accuracy-benchmark",
                   "benchmark"
                 ]
