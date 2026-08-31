@@ -237,6 +237,16 @@ Tune the thresholds to your risk tolerance — for example, restrict the
 supporting sections to `"passages"` specifically if only source-text-grounded
 answers are acceptable for your use case.
 
+<Note>
+The gate is not free on the answered path. `completion()` retrieves again
+internally, and `MultiPathRetrieval` issues an LLM keyword-extraction call on
+every retrieval — so a question that *is* answered costs three LLM calls
+instead of two, and repeats the graph and vector work. A question that is
+refused costs zero. The pattern pays off when a meaningful share of your
+traffic is unanswerable; when almost everything is answerable, gate on a
+cheaper signal or rely on prompt-level abstention.
+</Note>
+
 <Warning>
 A retrieval-side relevance threshold is not an abstention mechanism on its
 own: `filter_facts_by_relevance()` keeps its top `min_keep=3` facts regardless

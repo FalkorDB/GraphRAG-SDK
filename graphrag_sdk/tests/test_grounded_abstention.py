@@ -165,6 +165,31 @@ class TestGroundedAnswer:
             return_context=True,
         )
 
+    async def test_divergent_second_retrieval_still_reports_citations(self):
+        """A grounded answer must never come back with empty provenance.
+
+        ``completion()`` retrieves independently of the gate, so the two
+        passes can disagree. When the second pass yields no usable evidence
+        the gate's own supporting items are cited instead.
+        """
+        supporting = RetrieverResultItem(content="Evidence.", metadata={"chunk_id": "c1"})
+        rag = MagicMock(spec=GraphRAG)
+        rag.retrieve = AsyncMock(return_value=RetrieverResult(items=[supporting]))
+        rag.completion = AsyncMock(
+            return_value=RagResult(
+                answer="Grounded.",
+                retriever_result=RetrieverResult(
+                    items=[RetrieverResultItem(content="", metadata={"chunk_id": "c9"})]
+                ),
+            )
+        )
+
+        result = await example.answer_or_abstain(rag, "Q?")
+
+        assert result.grounded is True
+        assert result.citations == ["chunk_id=c1"]
+        assert result.context == [supporting]
+
     async def test_supported_question_returns_grounded_answer_with_citations(
         self, mock_conn, embedder
     ):

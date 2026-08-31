@@ -19,6 +19,15 @@ The pattern has two halves:
 you can copy it into your own application (it is also exercised by
 ``graphrag_sdk/tests/test_grounded_abstention.py``).
 
+Cost note: the gate retrieves once, and ``completion()`` retrieves again
+internally. Because ``MultiPathRetrieval`` runs an LLM keyword-extraction
+call on every retrieval, an *answered* question costs three LLM calls
+instead of two, and does the graph and vector work twice. An *unanswered*
+question costs zero LLM calls. That trade is worth it when a meaningful
+share of your traffic is unanswerable; if almost every question is
+answerable, gate on a cheaper signal or accept the prompt-level abstention
+in rule 6 of the default system prompt.
+
 Prerequisites:
     docker run -p 6379:6379 falkordb/falkordb
     pip install graphrag-sdk[litellm]
@@ -142,6 +151,13 @@ async def answer_or_abstain(
     # gate's own retrieval if a custom pipeline leaves it unset.
     items = result.retriever_result.items if result.retriever_result else supporting
     cited = [item for item in items if is_evidence(item, min_score)]
+
+    # ``completion()`` retrieves independently of the gate above, and keyword
+    # extraction is an LLM call — the two passes can disagree. Never report a
+    # grounded answer with no provenance; fall back to the evidence the gate
+    # actually approved.
+    if not cited:
+        cited = supporting
 
     return GroundedAnswer(
         question=question,

@@ -332,7 +332,8 @@ descending.
 | `chunk_top_k` | `MultiPathRetrieval` — passages after cosine reranking | `15` |
 | `rel_top_k` | `MultiPathRetrieval` — RELATES edge vector hits | `15` |
 | `max_entities` / `max_relationships` | `MultiPathRetrieval` graph expansion caps | `30` / `20` |
-| `top_k` | `VectorStore.search_chunks()` / `search_entities()` / `search_relationships()` | `5` |
+| `top_k` | `VectorStore.search_chunks()` / `search_entities()` | `5` |
+| `top_k` | `VectorStore.search_relationships()` | `15` |
 | `top_k` | `CosineReranker` | `15` |
 
 Facts use a higher threshold than passages on purpose: short structured strings
