@@ -3787,9 +3787,17 @@ class GraphRAG:
 
         ctx_log("finalize: starting post-ingestion steps")
 
-        # Step 1: Remove NULL-name stub entities (created by legacy path-MERGE bugs)
+        # Step 1: Remove NULL-name stub entities (created by legacy path-MERGE
+        # bugs). Scoped to nodes no mapping wrote: ``is_stub`` is present only on
+        # a structured write, and a table is entitled to have no name column at
+        # all — a fact export keyed on ``reading_id`` with a sensor code and a
+        # value is a reasonable thing to declare. Unscoped, this line deleted
+        # every row of such a table during the call the docs tell you to make:
+        # measured as two Reading nodes before finalize() and none after, with
+        # the deletion reported only as a legacy-stub count.
         r = await self._graph_store.query_raw(
-            "MATCH (e:__Entity__) WHERE e.name IS NULL DETACH DELETE e RETURN count(e)"
+            "MATCH (e:__Entity__) WHERE e.name IS NULL AND e.is_stub IS NULL "
+            "DETACH DELETE e RETURN count(e)"
         )
         null_cleaned = r.result_set[0][0] if r.result_set else 0
         if null_cleaned:
@@ -3812,6 +3820,14 @@ class GraphRAG:
         index_results = await self._vector_store.ensure_indices()
         ctx_log(f"finalize: indexes = {index_results}")
 
+        near_misses = list(getattr(self._deduplicator, "near_misses", []) or [])
+        if near_misses:
+            ctx_log(
+                f"finalize: {len(near_misses)} name(s) probably denote one thing and did "
+                "not merge — reported, not merged, because merging on a guess cannot be "
+                "undone. See FinalizeResult.probable_duplicates"
+            )
+
         collisions = dict(getattr(self._deduplicator, "cross_label_names", {}) or {})
         if collisions and not dedup_count:
             ctx_log(
@@ -3825,6 +3841,7 @@ class GraphRAG:
             null_stubs_removed=null_cleaned,
             entities_deduplicated=dedup_count,
             unmerged_name_collisions=collisions,
+            probable_duplicates=[str(m) for m in near_misses],
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
             indexes=index_results,

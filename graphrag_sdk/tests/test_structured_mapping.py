@@ -206,9 +206,20 @@ class TestToOntology:
         assert "org_id" in declared
 
     def test_a_key_column_called_name_cannot_smuggle_it_back(self):
+        """`name` must not become a declared attribute, whatever the header is.
+
+        Declaring it lets the extractor answer it with a null for prose mentions
+        and blank out the display name of everything it extracts. It is still
+        never declared — but the key is no longer dropped to achieve that: a
+        header the SDK owns is published under its ``col_`` name, so the column
+        the user declared as identity stays queryable instead of vanishing from
+        the ontology without a word.
+        """
         mapping = Table("Organization", key="name")
         declared = {p.name for p in mapping.to_ontology().entities[0].properties}
-        assert declared == set()
+        assert "name" not in declared
+        assert declared == {"col_name"}
+        assert mapping.nodes[0].key_property == "col_name"
 
     def test_edge_patterns_are_declared_with_endpoint_labels(self):
         mapping = RecordMapping(

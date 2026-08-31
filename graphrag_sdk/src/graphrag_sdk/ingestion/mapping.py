@@ -49,6 +49,80 @@ RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
 # a query the caller never wrote and cannot see.
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Prefix for a source column whose own name cannot be a graph property, either
+# because the SDK owns that name or because it is not an identifier. One rule,
+# used for both the entity property a key column writes and the per-cell
+# properties of a record chunk, so ``HQ Country`` addresses the same way
+# wherever it lands.
+_SAFE_PREFIX = "col_"
+
+
+def safe_property_name(column: str, owned: frozenset[str] | None = None) -> str:
+    """The graph property name a source column is stored under.
+
+    A header is whatever the exporting system wrote — ``HQ Country``,
+    ``Revenue (M USD)``, ``id``. A graph property name is written into generated
+    Cypher as a bare name and, when it is one the SDK owns, silently overwrites a
+    system value. Measured before this existed: a header with a space reached the
+    driver inside a parameter map and surfaced as ``DatabaseError: Invalid input
+    at end of input``, from a query the caller never wrote; and ``key="id"``
+    overwrote the node's graph id, which cost every row its provenance edges.
+
+    Identifiers the SDK does not own pass through unchanged, so existing graphs
+    do not move. ``owned`` overrides which names are the SDK's, because a record
+    chunk owns different ones than an entity does.
+    """
+    reserved = RESERVED_PROPERTY_NAMES if owned is None else owned
+    if _IDENTIFIER.match(column) and column not in reserved:
+        return column
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", column.strip()).strip("_").lower()
+    return f"{_SAFE_PREFIX}{slug}" if slug else f"{_SAFE_PREFIX}unnamed"
+
+
+_GROUPED = re.compile(r"^-?\d{1,3}(,\d{3})+$")
+
+
+def _normalise_number(raw: str, integral: bool = False) -> str:
+    """Return ``raw`` with grouping separators removed and ``.`` as the decimal.
+
+    A comma means opposite things either side of the Atlantic, so stripping every
+    comma is wrong half the time and silently: measured, a German export's
+    ``880,5`` was stored as ``8805.0`` — every figure in the column out by a
+    factor of ten, with nothing to point at. The decidable cases are decided and
+    the one that is not is refused rather than guessed.
+
+    - Both separators present: the rightmost is the decimal point, so
+      ``1,234.56`` and ``1.234,56`` both read as ``1234.56``.
+    - Only commas, in more than one group of three: grouping. ``1,234,567``
+      reads as ``1234567``.
+    - One comma not followed by exactly three digits: a decimal comma. ``880,5``
+      reads as ``880.5``.
+    - One comma followed by exactly three digits: ambiguous. ``1,234`` is either
+      one thousand or one-point-two-three-four and nothing in the cell says
+      which, so it is refused — unless the column is ``INTEGER``, where a
+      fractional part is not on offer and grouping is the only reading left.
+      ``1,000`` in an INTEGER column is a thousand.
+    """
+    text = raw.strip().replace(" ", "").replace("\u00a0", "")
+    if "," not in text:
+        return text
+    if "." in text:
+        decimal = "," if text.rindex(",") > text.rindex(".") else "."
+        grouping = "." if decimal == "," else ","
+        return text.replace(grouping, "").replace(decimal, ".")
+    if text.count(",") > 1 and _GROUPED.match(text):
+        return text.replace(",", "")
+    head, _, tail = text.rpartition(",")
+    if len(tail) == 3 and head.lstrip("-").isdigit():
+        if integral:
+            return text.replace(",", "")
+        raise ValueError(
+            f"{raw!r} is ambiguous: {head + tail!r} if the comma groups thousands, "
+            f"{head + '.' + tail!r} if it is a decimal comma. Clean the column, or "
+            f"declare it STRING and convert it yourself."
+        )
+    return text.replace(",", ".")
+
 
 def _check_identifier(kind: str, value: str) -> str:
     """Reject a name that cannot safely be a graph identifier.
@@ -162,9 +236,11 @@ class Column:
             return [part.strip() for part in parts if part.strip()]
         try:
             if self.type == "INTEGER":
-                return int(raw) if not isinstance(raw, str) else int(raw.replace(",", ""))
+                if not isinstance(raw, str):
+                    return int(raw)
+                return int(_normalise_number(raw, integral=True))
             if self.type == "FLOAT":
-                value = float(raw) if not isinstance(raw, str) else float(raw.replace(",", ""))
+                value = float(raw) if not isinstance(raw, str) else float(_normalise_number(raw))
                 if not math.isfinite(value):
                     # "nan" and "inf" are valid float literals and poison every
                     # aggregate they reach: one NaN turns an avg() over the whole
@@ -187,8 +263,14 @@ class Column:
                 # ISO string sorts and compares correctly.
                 return datetime.fromisoformat(str(raw)).date().isoformat()
         except (TypeError, ValueError) as exc:
+            # Keep the cause's own words when it has any: the number and boolean
+            # paths raise messages that say which reading was ambiguous and what
+            # to do, and a bare "declares FLOAT but holds '1,234'" throws that
+            # away at the point the reader most needs it.
+            detail = str(exc).strip()
+            because = f". {detail}" if detail and not detail.startswith("invalid literal") else ""
             raise MappingError(
-                f"column {self.name!r} declares {self.type} but holds {raw!r}"
+                f"column {self.name!r} declares {self.type} but holds {raw!r}{because}"
             ) from exc
         raise MappingError(f"unhandled column type {self.type!r}")  # pragma: no cover
 
@@ -264,6 +346,19 @@ class NodeMapping:
         self.properties = normalised
         if self.alias is None:
             self.alias = self.label
+
+    @property
+    def key_property(self) -> str:
+        """The graph property the key column's value is written to.
+
+        Usually the column's own name. A header the SDK owns or cannot address —
+        ``id``, ``HQ Country`` — is stored under a ``col_`` name instead, because
+        writing it verbatim either overwrites a system value or reaches the driver
+        as something it cannot serialise. ``key="id"`` used to overwrite the
+        node's graph id, which cost every row of that table its provenance edges
+        and its ability to join to prose, and reported success.
+        """
+        return safe_property_name(self.key)
 
     @property
     def handle(self) -> str:
@@ -555,9 +650,14 @@ class RecordMapping:
             # later source can still join on it.
             attributes.append(
                 Attribute(
-                    name=node.key,
+                    # The property the value is actually written to, which is
+                    # not always the column's own name. Publishing the raw
+                    # header here put `- Org ID (STRING)` in the text-to-Cypher
+                    # schema block, inviting `WHERE o.Org ID = ...` — not valid
+                    # Cypher, on the one property every mapping declares.
+                    name=node.key_property,
                     type="STRING",
-                    description=f"key from {node.key}",
+                    description=f"key from {node.key}",  # the source header, verbatim
                     structured=True,
                 )
             )

@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from graphrag_sdk.core.providers import Embedder
+from graphrag_sdk.storage.identity import NearMiss, find_near_misses
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,39 @@ _REMAP_QUERIES = [
 ]
 
 
+def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> list[dict]:
+    """Drop candidates a mapping already said are a *different* thing.
+
+    Grouping is by display name, and two rows of the same table can share one:
+    two people called John Smith, keyed ``E-1`` and ``E-7``. Merging them deletes
+    one — measured as a five-row export arriving as four people, with the loss
+    reported as a successful dedup. A mapping that declares a key is asserting
+    identity, so two mapped nodes with different ids are two things and the name
+    they happen to share is not evidence against that.
+
+    An extracted node has no declared key, so it stays mergeable: that is the
+    join this whole path exists for.
+    """
+    if survivor.get("is_stub") is None:
+        return duplicates
+    kept: list[dict] = []
+    for dup in duplicates:
+        if dup.get("is_stub") is not None and dup.get("id") != survivor.get("id"):
+            # ``id`` for a mapped node is derived from the key the mapping
+            # declared, so two different ids are a statement that these are two
+            # things.
+            logger.info(
+                "Not merging %s into %s: both were written from a declared key, "
+                "so the shared name %r is two different rows",
+                dup.get("id"),
+                survivor.get("id"),
+                survivor.get("name"),
+            )
+            continue
+        kept.append(dup)
+    return kept
+
+
 def _survivor_rank(entity: dict) -> tuple[int, int, int]:
     """Rank candidates so the most reproducible identity survives a merge.
 
@@ -133,6 +167,8 @@ class EntityDeduplicator:
         # fingerprint of an ingest-order mistake. See _report_cross_label_names.
         self.cross_label_names: dict[str, list[str]] = {}
         self._declared_labels: set[str] = set()
+        # Pairs the last run judged probably-the-same and deliberately left alone.
+        self.near_misses: list[NearMiss] = []
 
     async def deduplicate(
         self,
@@ -154,8 +190,45 @@ class EntityDeduplicator:
         if fuzzy:
             total += await self._deduplicate_fuzzy(batch_size, similarity_threshold)
 
+        # What is left over that probably should not be. Reported, never merged.
+        await self._report_near_misses(batch_size)
+
         logger.info(f"EntityDeduplicator total: {total} duplicates merged")
         return total
+
+    async def _report_near_misses(self, batch_size: int) -> None:
+        """Record surviving entities that probably denote one thing.
+
+        The merge is exact string equality on the display name, so two sources
+        spelling a name differently leave two nodes and nothing says so: an HR
+        export's "Maya Ellison" and a board review's "M. Ellison" end up as two
+        people, one holding her age and the other what she did, and every question
+        needing both comes back wrong while looking answered.
+
+        Found here and **not** merged. Merging on a guess is destructive and
+        irreversible; two nodes are recoverable, and a user told which pairs look
+        wrong can fix the source, which fixes it for good. Deciding a pair needs
+        judgement this class does not have — it holds no LLM — so it reports.
+        """
+        try:
+            survivors = await self._fetch_all_entities(batch_size)
+            self.near_misses = find_near_misses(survivors)
+        except Exception:
+            # A report is never worth failing a finalize over.
+            logger.debug("Near-miss detection failed", exc_info=True)
+            self.near_misses = []
+            return
+
+        if not self.near_misses:
+            return
+        bridging = sum(1 for m in self.near_misses if m.bridges_a_declared_source)
+        logger.warning(
+            "%d name(s) look like one thing under a single label and did not merge%s. "
+            "Reported, not merged — merging on a guess cannot be undone. First: %s",
+            len(self.near_misses),
+            f", {bridging} joining a declared source to extracted text" if bridging else "",
+            "; ".join(str(m) for m in self.near_misses[:3]),
+        )
 
     # ── Phase 1: Exact name match ──
 
@@ -179,7 +252,7 @@ class EntityDeduplicator:
 
             group.sort(key=_survivor_rank, reverse=True)
             survivor = group[0]
-            duplicates = group[1:]
+            duplicates = _keep_declared_identities_apart(survivor, group[1:])
 
             for dup in duplicates:
                 if not await self._remap_entity_edges(dup["id"], survivor["id"]):

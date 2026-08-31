@@ -22,13 +22,21 @@ from graphrag_sdk.core.models import (
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
 from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, RecordLoaderStrategy
-from graphrag_sdk.ingestion.mapping import Column, MappingError, NodeMapping, RecordMapping
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    MappingError,
+    NodeMapping,
+    RecordMapping,
+    safe_property_name,
+)
 from graphrag_sdk.storage.graph_store import ReferenceNode
 
 logger = logging.getLogger(__name__)
 
-# Chunk properties the writer owns. A column with one of these names is stored
-# under a "col_" prefix rather than silently overwriting the chunk's identity.
+# Chunk properties the writer owns. A column named one of these, or whose header
+# is not a usable identifier, is stored under a ``col_`` name by
+# ``safe_property_name`` rather than overwriting the chunk's identity or reaching
+# the driver as something it cannot serialise.
 _CHUNK_RESERVED = frozenset({"id", "text", "index", "kind", "record_key", "embedding"})
 
 
@@ -118,7 +126,10 @@ def _unique_references(references: list[ReferenceNode]) -> list[ReferenceNode]:
 
 
 def _walk_records(
-    batch: RecordBatch, mapping: RecordMapping, document_uid: str
+    batch: RecordBatch,
+    mapping: RecordMapping,
+    document_uid: str,
+    skipped: list[int] | None = None,
 ) -> Iterator[tuple[int, dict[str, Any], str, str]]:
     """Yield ``(index, record, record_key, chunk_uid)`` for every usable row.
 
@@ -127,12 +138,19 @@ def _walk_records(
     places is how they would drift, so it is derived here and shared. Rows
     without a key are skipped by both passes for the same reason: with no key a
     row has no stable identity, so it could never be updated or deleted later.
+
+    ``skipped`` collects the 1-based source line of every row dropped that way,
+    for a caller that wants to report it. A drop used to be invisible: a four-row
+    file with one blank key cell reported ``records: 3`` and no warning, so the
+    numbers agreed with each other and with nothing else.
     """
     anchor = mapping.anchor
     occurrences: dict[str, int] = {}
     for index, record in enumerate(batch):
         record_key = str(record.get(anchor.key) or "").strip()
         if not record_key:
+            if skipped is not None:
+                skipped.append(index + 1)
             continue
         occurrence = occurrences.get(record_key, 0)
         occurrences[record_key] = occurrence + 1
@@ -150,7 +168,7 @@ def record_cells(record: dict[str, Any]) -> dict[str, Any]:
     for key, value in record.items():
         if value in (None, ""):
             continue
-        cells[f"col_{key}" if key in _CHUNK_RESERVED else key] = value
+        cells[safe_property_name(key, _CHUNK_RESERVED)] = value
     return cells
 
 
@@ -176,6 +194,8 @@ class StructuredIngestionResult:
         "entities_deleted",
         "replaced_existing",
         "no_op",
+        "rows_skipped",
+        "rows_in_source",
     )
 
     def __init__(self, document_id: str) -> None:
@@ -190,9 +210,11 @@ class StructuredIngestionResult:
         self.entities_deleted = 0
         self.replaced_existing = False
         self.no_op = False
+        self.rows_skipped = 0
+        self.rows_in_source = 0
 
     def as_dict(self) -> dict[str, Any]:
-        summary = {
+        summary: dict[str, Any] = {
             "document_id": self.document_id,
             "records": self.records,
             "chunks": self.chunks,
@@ -200,6 +222,12 @@ class StructuredIngestionResult:
             "references": self.references,
             "edges": self.edges,
         }
+        # Only when there is something to say. A caller reading a clean load
+        # should not have to check a zero, and a caller reading a lossy one
+        # should not have to know to look.
+        if self.rows_skipped:
+            summary["rows_skipped"] = self.rows_skipped
+            summary["rows_in_source"] = self.rows_in_source
         if self.replaced_existing:
             summary["replaced_existing"] = True
             summary["chunks_deleted"] = self.chunks_deleted
@@ -284,12 +312,21 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
 
         result = StructuredIngestionResult(doc_info.uid)
 
-        # Step 3. Every record becomes a Chunk, through the same writer the prose
-        # path uses, so both halves are the same shape.
+        # Steps 3 to 5, all in memory. Both passes complete before anything is
+        # written, because a declared type that does not hold raises from the
+        # second one: `column 'age' declares INTEGER but holds 'N/A'` in row
+        # 30,000 of an export. Writing as we went left the Document, a chunk for
+        # every row and the content hash committed with no entities at all — and
+        # because the document record then existed, the retry after fixing the
+        # cell routed through update() and compared hashes instead of writing,
+        # so the graph stayed broken with nothing raised. The docs promise a
+        # failure "leaves the graph untouched"; this is what makes that true.
         chunks = self._record_chunks(batch, mapping, doc_info, result)
         if not chunks.chunks:
             ctx.log(f"{source} produced no records, nothing written")
             return result
+        nodes, references, edges = self._map_records(batch, mapping, doc_info, result)
+
         await self._build_lexical_graph(
             doc_info,
             chunks,
@@ -297,9 +334,6 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
             content_hash=result.content_hash,
             link_sequential=link_sequential,
         )
-
-        # Steps 4 and 5. Declared columns become entities and edges.
-        nodes, references, edges = self._map_records(batch, mapping, doc_info, result)
         await self.graph_store.upsert_nodes(nodes)
         # One entry per row arrives here, but a foreign key repeats: 25k rows
         # pointing at 50 organizations produced 25k MERGEs for 50 nodes. They are
@@ -337,7 +371,12 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
 
         chunks: list[TextChunk] = []
         key_counts: dict[str, int] = {}
-        for index, record, record_key, chunk_uid in _walk_records(batch, mapping, doc_info.uid):
+        skipped: list[int] = []
+        rows_seen = 0
+        for index, record, record_key, chunk_uid in _walk_records(
+            batch, mapping, doc_info.uid, skipped
+        ):
+            rows_seen += 1
             key_counts[record_key] = key_counts.get(record_key, 0) + 1
             chunks.append(
                 TextChunk(
@@ -352,6 +391,30 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 )
             )
         result.records = result.chunks = len(chunks)
+        result.rows_skipped = len(skipped)
+        result.rows_in_source = rows_seen + len(skipped)
+
+        if skipped:
+            # The counts alone cannot carry this: "records: 3" for a four-row
+            # file is a true statement about what was written and a false one
+            # about what the file said, and nothing in the result distinguished
+            # the two. A dropped row is not recoverable later, because the next
+            # re-sync reads the same blank cell and drops it again.
+            shown = ", ".join(str(line) for line in skipped[:10])
+            more = f" and {len(skipped) - 10} more" if len(skipped) > 10 else ""
+            logger.warning(
+                "%s: %d of %d rows have no value in the declared key column %r "
+                "and were not loaded (row %s%s). A row without a key has no "
+                "stable identity, so it cannot be updated or deleted later. "
+                "Give those rows a key, or declare a column that is always "
+                "present.",
+                doc_info.uid,
+                len(skipped),
+                result.rows_in_source,
+                mapping.anchor.key,
+                shown,
+                more,
+            )
 
         repeated = {key: count for key, count in key_counts.items() if count > 1}
         if repeated:
@@ -426,7 +489,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                             name=fallback,
                             # The key, so the placeholder is joinable by the same
                             # column the mapping declared.
-                            properties={node.key: str(raw_key), "is_stub": True},
+                            properties={node.key_property: str(raw_key), "is_stub": True},
                         )
                     )
                     result.references += 1
@@ -484,7 +547,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         columns: dict[str, Column],
     ) -> dict[str, Any]:
         """Typed properties for one entity, plus the alias that lets it resolve."""
-        properties: dict[str, Any] = {node.key: raw_key, "is_stub": False}
+        properties: dict[str, Any] = {node.key_property: raw_key, "is_stub": False}
         if node.name:
             display = record.get(node.name)
             if display not in (None, ""):

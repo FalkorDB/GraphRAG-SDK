@@ -742,6 +742,23 @@ class FinalizeResult(DataModel):
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
+    probable_duplicates: list[str] = Field(default_factory=list)
+    """Same-label entities that probably denote one thing and did not merge.
+
+    The merge is exact string equality on the display name, so two sources that
+    spell a name differently leave two nodes: an HR export's "Maya Ellison" and a
+    board review's "M. Ellison" become two people, one holding her age and the
+    other holding what she did. Every question needing both then comes back wrong
+    while looking answered, and nothing used to say so.
+
+    Reported, never merged, and the SDK offers no merge for them on purpose:
+    merging in the graph does not hold. The next time that document is read,
+    extraction recreates the node the merge deleted and you are back to two —
+    measured. The fix is the spelling in the source, which fixes it for good.
+
+    Non-empty here is a prompt to look at your data, not a failure.
+    """
+
     unmerged_name_collisions: dict[str, list[str]] = Field(default_factory=dict)
     """Names that exist under more than one label, mapped to those labels.
 
