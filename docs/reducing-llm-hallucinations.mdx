@@ -219,7 +219,7 @@ async def answer_or_abstain(rag, question: str, *, min_items: int = 1, min_score
 ```
 
 Gating on `retrieve()` **before** generation is the point: an unsupported
-question costs zero LLM calls. Three details matter in practice:
+question never reaches the generation call. Three details matter in practice:
 
 - **Filter non-evidence sections.** The default `MultiPathRetrieval` strategy
   emits an answer-format `hint` section that carries no document evidence;
@@ -246,13 +246,14 @@ embedding-model-dependent: read real scores off your own questions before
 picking one.
 
 <Note>
-The gate is not free on the answered path. `completion()` retrieves again
-internally, and `MultiPathRetrieval` issues an LLM keyword-extraction call on
-every retrieval — so a question that *is* answered costs three LLM calls
-instead of two, and repeats the graph and vector work. A question that is
-refused costs zero. The pattern pays off when a meaningful share of your
-traffic is unanswerable; when almost everything is answerable, gate on a
-cheaper signal or rely on prompt-level abstention.
+The gate is not free, on either path. `MultiPathRetrieval` issues an LLM
+keyword-extraction call on *every* retrieval, so a refused question still
+costs one LLM call — it saves the generation call, not all of them. And
+because `completion()` retrieves again internally, an answered question costs
+three LLM calls instead of two and repeats the graph and vector work. The
+pattern pays off when a meaningful share of your traffic is unanswerable;
+when almost everything is answerable, gate on a cheaper signal or rely on
+prompt-level abstention.
 </Note>
 
 <Warning>

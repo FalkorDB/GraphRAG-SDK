@@ -167,6 +167,13 @@ async def answer_or_abstain(
         if ctx is None:
             ctx = Context()
             completion_kwargs["ctx"] = ctx
+        # CAVEAT: ``_validate_history`` and ``_rewrite_question_with_history``
+        # are private. The SDK exposes no public way to resolve a follow-up
+        # question *before* generation, and the gate needs the resolved text —
+        # retrieving on a bare "What did she build?" finds nothing useful, and
+        # ``completion()``'s own rewrite happens too late to gate on. If you
+        # copy this into an application, pin your graphrag-sdk version or
+        # rewrite the question yourself and pass the resolved text instead.
         validated_history = rag._validate_history(history)
         resolved_question = await rag._rewrite_question_with_history(
             question,
