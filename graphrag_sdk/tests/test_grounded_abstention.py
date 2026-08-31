@@ -17,6 +17,7 @@ import pytest
 
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
+from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import RagResult, RetrieverResult, RetrieverResultItem
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 
@@ -158,7 +159,9 @@ class TestGroundedAnswer:
         )
         strategy = MagicMock()
         reranker = MagicMock()
-        ctx = MagicMock()
+        ctx = MagicMock(spec=Context)
+        child_ctx = MagicMock(spec=Context)
+        ctx.child.return_value = child_ctx
 
         await example.answer_or_abstain(
             rag,
@@ -169,14 +172,59 @@ class TestGroundedAnswer:
             return_context=False,
         )
 
+        # The gate runs on the caller's ctx; generation gets a child so its
+        # deadline isn't shortened by the time the gate already spent.
         rag.retrieve.assert_awaited_once_with("Q?", strategy=strategy, reranker=reranker, ctx=ctx)
+        ctx.child.assert_called_once_with()
         rag.completion.assert_awaited_once_with(
             "Q?",
             strategy=strategy,
             reranker=reranker,
-            ctx=ctx,
+            ctx=child_ctx,
             return_context=True,
         )
+
+    async def test_generation_context_inherits_remaining_budget(self):
+        """The child context carries the remaining budget, not a fresh one.
+
+        Uses a real ``Context`` rather than a mock so the budget arithmetic
+        is exercised: generation must start its own clock but inherit only
+        what the gate left behind.
+        """
+        item = RetrieverResultItem(content="Evidence.", metadata={"chunk_id": "c1"})
+        retriever_result = RetrieverResult(items=[item])
+        rag = MagicMock(spec=GraphRAG)
+        rag.retrieve = AsyncMock(return_value=retriever_result)
+        rag.completion = AsyncMock(
+            return_value=RagResult(answer="Grounded.", retriever_result=retriever_result)
+        )
+        ctx = Context(latency_budget_ms=5_000, tenant_id="acme")
+
+        await example.answer_or_abstain(rag, "Q?", ctx=ctx)
+
+        passed_ctx = rag.completion.await_args.kwargs["ctx"]
+        assert passed_ctx is not ctx
+        assert passed_ctx.tenant_id == "acme"
+        assert passed_ctx.trace_id == ctx.trace_id
+        # Inherited the remainder, not the original 5s.
+        assert passed_ctx.latency_budget_ms <= 5_000
+        # Its own clock, so nearly the whole inherited budget is still available.
+        assert passed_ctx.remaining_budget_ms > passed_ctx.latency_budget_ms - 1_000
+
+    async def test_context_is_optional(self):
+        """No ctx supplied → nothing is invented for either call."""
+        item = RetrieverResultItem(content="Evidence.", metadata={"chunk_id": "c1"})
+        retriever_result = RetrieverResult(items=[item])
+        rag = MagicMock(spec=GraphRAG)
+        rag.retrieve = AsyncMock(return_value=retriever_result)
+        rag.completion = AsyncMock(
+            return_value=RagResult(answer="Grounded.", retriever_result=retriever_result)
+        )
+
+        await example.answer_or_abstain(rag, "Q?")
+
+        rag.retrieve.assert_awaited_once_with("Q?")
+        rag.completion.assert_awaited_once_with("Q?", return_context=True)
 
     async def test_history_rewrite_is_rejected_before_retrieval(self):
         """The gate must retrieve on a self-contained question.

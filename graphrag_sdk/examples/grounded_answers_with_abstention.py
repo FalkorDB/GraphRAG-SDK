@@ -201,6 +201,18 @@ async def answer_or_abstain(
         return GroundedAnswer(question=question, answer=refusal, grounded=False)
 
     completion_kwargs["return_context"] = True
+
+    # Don't hand the same Context to generation. ``Context`` measures its
+    # budget as time-since-construction, so a ctx already spent on the gate
+    # arrives at generation with a silently shorter deadline — and the gate is
+    # the cheap half. ``child()`` gives generation a fresh start time while
+    # carrying over only the budget that actually remains, so the two-phase
+    # sequence stays inside the caller's overall cap without the second call
+    # inheriting the first call's elapsed time.
+    gate_ctx = completion_kwargs.get("ctx")
+    if gate_ctx is not None:
+        completion_kwargs["ctx"] = gate_ctx.child()
+
     result = await rag.completion(question, **completion_kwargs)
 
     # ``completion()`` runs its own retrieval, so the two passes can disagree.

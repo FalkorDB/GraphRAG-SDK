@@ -60,12 +60,20 @@ named in the opening paragraph map onto it like this:
 Embedding similarity search runs in two places: over `Chunk` text (finds
 passages with similar meaning, even without shared keywords) and over
 `RELATES` edges (finds structured facts — `Entity —[REL]→ Entity` — by
-meaning). Both are implemented with FalkorDB's `db.idx.vector.queryNodes` and
-scored, so low-relevance results can be filtered before they reach the LLM
+meaning). They use different FalkorDB procedures: chunk and entity search call
+`db.idx.vector.queryNodes`, while edge search calls
+`db.idx.vector.queryRelationships` (FalkorDB ≥ 4.2), falling back to a
+`vec.cosineDistance` Cypher scan on older servers
 (`search_relates_edges()` in
 [`entity_discovery.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/entity_discovery.py),
 `retrieve_chunks()` in
 [`chunk_retrieval.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/retrieval/strategies/chunk_retrieval.py)).
+
+Both paths return a similarity score, but note where that score is and isn't
+used as a filter: facts are thresholded by `filter_facts_by_relevance()`,
+whereas chunk retrieval applies **no similarity floor** — it takes the top *k*
+and ranks them. Scores reach you, but low-relevance passages are not dropped
+for you.
 
 ### Full-text / keyword search
 
@@ -249,9 +257,9 @@ question never reaches the generation call. Three details matter in practice:
 - **Don't share one `Context` across both calls.** `Context` starts its clock
   when it is constructed and `remaining_budget_ms` never resets, so a `ctx`
   passed to `retrieve()` and then reused for `completion()` charges the gate's
-  latency against the generation's budget — and the double retrieval makes that
-  budget roughly twice as tight. Build a fresh `Context` for the second call, or
-  size `latency_budget_ms` for the whole two-phase sequence.
+  latency against the generation's budget — and the gate is the cheap half.
+  Pass `ctx.child()` to the second call: it inherits the tenant, trace and
+  *remaining* budget, but starts its own clock.
 
 Tune the thresholds to your risk tolerance — for example, restrict the
 supporting sections to `"passages"` specifically if only source-text-grounded
