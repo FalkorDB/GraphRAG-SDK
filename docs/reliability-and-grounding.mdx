@@ -41,10 +41,11 @@ parametric memory.
 
 `GraphRAG.completion()` retrieves first, assembles the retrieved items into a
 single context string, wraps it in a `<context>` block and sends it with a
-system prompt whose first rule is *"Answer questions using ONLY the context
-provided in the user message"*. The remaining rules require the model to
-preserve exact names, dates and negations, and — rule 6 — to state that the
-context is insufficient rather than invent details.
+system prompt that opens with *"Answer questions using ONLY the context
+provided in the user message"*. The numbered rules that follow require the model
+to base the answer strictly on that context, to preserve exact names, dates and
+negations, and — rule 6 — to state that the context is insufficient rather than
+invent details.
 
 ```python
 result = await rag.completion("Who founded Acme Corp?")
@@ -220,7 +221,8 @@ result = await rag.completion("How is Acme Corp connected to Initech?", strategy
 Measured in isolation, no single path matches the fused pipeline — see the
 per-path numbers in [Retrieval](/retrieval#isolated-path-performance). For the
 simpler alternative (vector search plus optional 1-hop entity context), use
-`LocalRetrieval`.
+`LocalRetrieval` from
+`graphrag_sdk.retrieval.strategies.local` — see [Strategies](/strategies).
 
 ---
 
