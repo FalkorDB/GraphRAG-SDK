@@ -21,24 +21,32 @@ search takes the top 15 hits and reranking takes the top *k* of those, both
 without a threshold — so a non-empty graph nearly always returns *something*,
 however unrelated. A count-only gate therefore fires only in the degenerate
 cases (empty graph, no ingestion, retrieval error). To abstain on a question
-your corpus genuinely does not cover, you need per-item scores: attach a
-``CosineReranker`` (or use ``LocalRetrieval``) and pass ``min_score``, as
-``main()`` does below.
+your corpus genuinely does not cover, you need per-item scores.
+
+``main()`` uses ``LocalRetrieval`` for that, because its items are individual
+chunks and ``score`` is a real per-chunk similarity. Under
+``MultiPathRetrieval`` each item is a whole concatenated section instead, so a
+``CosineReranker`` scores the entire blob against the question — a diluted,
+section-level number. That still works, but the threshold has to be calibrated
+against measured section scores; do not carry ``MIN_SCORE`` across.
 
 ``answer_or_abstain()`` below is deliberately small and dependency-free so
 you can copy it into your own application (it is also exercised by
 ``graphrag_sdk/tests/test_grounded_abstention.py``).
 
 Cost note: the gate retrieves once, and ``completion()`` retrieves again
-internally. Because ``MultiPathRetrieval`` runs an LLM keyword-extraction
-call on every retrieval, an *answered* question costs three LLM calls
-instead of two (four instead of three with
-``rewrite_question_with_history=True``), and does the graph and vector work
-twice. An *unanswered* question still costs the retrieval keyword-extraction
-LLM call (plus the rewrite call when enabled), but avoids the generation call.
-That trade is worth it when a meaningful share of your traffic is unanswerable;
-if almost every question is answerable, gate on a cheaper signal or accept the
-prompt-level abstention in rule 6 of the default system prompt.
+internally, so the retrieval work always happens twice. What that costs
+depends entirely on the strategy. ``LocalRetrieval``, used by ``main()``,
+makes no LLM calls at all: a refused question is genuinely free, and an
+answered one costs exactly the one generation call. ``MultiPathRetrieval``
+runs an LLM keyword-extraction call on *every* retrieval, so there the gate
+is not free — a refused question still costs one call, and an answered one
+costs three instead of two.
+
+Either way the trade is worth it when a meaningful share of your traffic is
+unanswerable; if almost every question is answerable, gate on a cheaper
+signal or accept the prompt-level abstention in rule 6 of the default system
+prompt.
 
 Prerequisites:
     docker run -p 6379:6379 falkordb/falkordb
@@ -57,12 +65,14 @@ from typing import Any
 
 from graphrag_sdk import (
     ConnectionConfig,
-    Context,
-    CosineReranker,
+    FalkorDBConnection,
     GraphRAG,
+    GraphStore,
     LiteLLM,
     LiteLLMEmbedder,
+    VectorStore,
 )
+from graphrag_sdk.retrieval.strategies.local import LocalRetrieval
 
 TEXT = (
     "Acme Corp was founded in 2015 by Alice Johnson and is headquartered in London. "
@@ -150,7 +160,12 @@ async def answer_or_abstain(
         min_score: Optional minimum retrieval score per item.
         refusal: Response returned when the gate fires.
         **completion_kwargs: Forwarded to ``rag.completion()`` (for example
-            ``history=`` or ``strategy=``).
+            ``history=`` or ``strategy=``). ``rewrite_question_with_history``
+            is rejected — pass an already-resolved question instead.
+
+    Raises:
+        ValueError: If ``min_items`` is negative, or if
+            ``rewrite_question_with_history=True`` is passed.
 
     Returns:
         A ``GroundedAnswer``. When ``grounded`` is False the answer is the
@@ -159,26 +174,19 @@ async def answer_or_abstain(
     if min_items < 0:
         raise ValueError("min_items must be non-negative")
 
-    resolved_question = question
-    rewrite_question = completion_kwargs.pop("rewrite_question_with_history", False)
-    history = completion_kwargs.get("history")
-    if rewrite_question and history:
-        ctx = completion_kwargs.get("ctx")
-        if ctx is None:
-            ctx = Context()
-            completion_kwargs["ctx"] = ctx
-        # CAVEAT: ``_validate_history`` and ``_rewrite_question_with_history``
-        # are private. The SDK exposes no public way to resolve a follow-up
-        # question *before* generation, and the gate needs the resolved text —
-        # retrieving on a bare "What did she build?" finds nothing useful, and
-        # ``completion()``'s own rewrite happens too late to gate on. If you
-        # copy this into an application, pin your graphrag-sdk version or
-        # rewrite the question yourself and pass the resolved text instead.
-        validated_history = rag._validate_history(history)
-        resolved_question = await rag._rewrite_question_with_history(
-            question,
-            validated_history,
-            ctx=ctx,
+    # A follow-up question has to be resolved *before* the gate runs —
+    # retrieving on a bare "What did she build?" finds nothing useful. But
+    # ``completion()`` rewrites internally, after its own retrieval, so there
+    # is no public hook to reuse here. Rather than reach into private methods
+    # (this file gets copied into applications), require the caller to pass
+    # text that already stands on its own.
+    if completion_kwargs.pop("rewrite_question_with_history", False):
+        raise ValueError(
+            "rewrite_question_with_history=True is not supported by this gate: "
+            "the gate must retrieve on a self-contained question, and the SDK "
+            "resolves follow-ups only inside completion(), after retrieval. "
+            "Resolve the question yourself and pass the resolved text as "
+            "`question`."
         )
 
     retrieval_kwargs = {
@@ -186,15 +194,14 @@ async def answer_or_abstain(
         for key in ("strategy", "reranker", "ctx")
         if key in completion_kwargs
     }
-    retrieved = await rag.retrieve(resolved_question, **retrieval_kwargs)
+    retrieved = await rag.retrieve(question, **retrieval_kwargs)
     supporting = [item for item in retrieved.items if is_evidence(item, min_score)]
 
     if len(supporting) < min_items:
         return GroundedAnswer(question=question, answer=refusal, grounded=False)
 
     completion_kwargs["return_context"] = True
-    completion_kwargs["rewrite_question_with_history"] = False
-    result = await rag.completion(resolved_question, **completion_kwargs)
+    result = await rag.completion(question, **completion_kwargs)
 
     # ``completion()`` runs its own retrieval, so the two passes can disagree.
     # Cite only what generation actually retrieved: substituting the gate's
@@ -231,13 +238,31 @@ async def main():
     llm = LiteLLM(model="openai/gpt-5.5")
     embedder = LiteLLMEmbedder(model="openai/text-embedding-3-large", dimensions=256)
 
-    # Scores are what make the gate discriminating. Without a reranker the
-    # default strategy leaves ``score`` unset on every item, and the gate
-    # degrades to "did retrieval return anything at all?".
-    reranker = CosineReranker(embedder=embedder, top_k=10)
+    connection = FalkorDBConnection(
+        ConnectionConfig(host="localhost", graph_name="grounded_abstention")
+    )
+
+    # Why LocalRetrieval here, and not the default MultiPathRetrieval:
+    # MultiPathRetrieval emits one item per *section*, so a reranker scores a
+    # whole concatenated markdown blob (up to 15 passages joined together)
+    # against the question. That similarity is diluted by everything else in
+    # the blob, which makes MIN_SCORE a section-level quantity no reader can
+    # predict. LocalRetrieval items are individual chunks, so a similarity
+    # floor means exactly what it says and the demo behaves the same way on
+    # your machine as it does here.
+    #
+    # The trade-off is real: you lose the graph-traversal paths. Use
+    # MultiPathRetrieval when you need them, but calibrate MIN_SCORE against
+    # measured section scores rather than reusing this value.
+    scored_strategy = LocalRetrieval(
+        graph_store=GraphStore(connection),
+        vector_store=VectorStore(connection, embedder=embedder, embedding_dimension=256),
+        embedder=embedder,
+        top_k=5,
+    )
 
     async with GraphRAG(
-        connection=ConnectionConfig(host="localhost", graph_name="grounded_abstention"),
+        connection=connection,
         llm=llm,
         embedder=embedder,
         embedding_dimension=256,
@@ -252,25 +277,25 @@ async def main():
                 rag,
                 "Who founded Acme Corp?",
                 min_score=MIN_SCORE,
-                reranker=reranker,
+                strategy=scored_strategy,
             )
         )
 
         # ── 3. A question the corpus says nothing about → abstain ──
         # The corpus covers Acme's founding, offices and staff, but says
-        # nothing about revenue. Retrieval still returns the Acme chunks —
-        # they share vocabulary with the question — so the abstention
-        # depends on those chunks scoring below MIN_SCORE, not on retrieval
-        # coming back empty. Tune MIN_SCORE against your own corpus: print
-        # the scores first (see the "Are the scores plausible?" check in the
-        # Reliability and Grounding docs), then set the floor just under the
-        # weakest answer you would still accept.
+        # nothing about revenue. Vector search still returns the Acme chunks —
+        # they share vocabulary with the question — so the abstention depends
+        # on those chunks scoring below MIN_SCORE, not on retrieval coming
+        # back empty. Because these are per-chunk similarities, that is a
+        # quantity you can inspect: print the scores first (see the "Are the
+        # scores plausible?" check in the Reliability and Grounding docs),
+        # then set the floor just under the weakest answer you would accept.
         report(
             await answer_or_abstain(
                 rag,
                 "What was Acme Corp's revenue in 2024?",
                 min_score=MIN_SCORE,
-                reranker=reranker,
+                strategy=scored_strategy,
             )
         )
 

@@ -176,10 +176,34 @@ class TestGroundedAnswer:
             reranker=reranker,
             ctx=ctx,
             return_context=True,
-            rewrite_question_with_history=False,
         )
 
-    async def test_history_rewrite_is_reused_for_gate_and_completion(self):
+    async def test_history_rewrite_is_rejected_before_retrieval(self):
+        """The gate must retrieve on a self-contained question.
+
+        ``completion()`` resolves follow-ups internally, *after* its own
+        retrieval, so the gate cannot see the resolved text. Rather than call
+        private SDK methods to rewrite early, the caller is told to resolve
+        the question themselves.
+        """
+        rag = MagicMock(spec=GraphRAG)
+        rag.retrieve = AsyncMock()
+        rag.completion = AsyncMock()
+        history = [{"role": "user", "content": "Who founded Acme?"}]
+
+        with pytest.raises(ValueError, match="rewrite_question_with_history=True"):
+            await example.answer_or_abstain(
+                rag,
+                "What did she build?",
+                history=history,
+                rewrite_question_with_history=True,
+            )
+
+        rag.retrieve.assert_not_awaited()
+        rag.completion.assert_not_awaited()
+
+    async def test_history_is_forwarded_without_rewrite(self):
+        """A resolved question still gets `history` passed to generation."""
         item = RetrieverResultItem(content="Evidence.", metadata={"chunk_id": "c1"})
         retriever_result = RetrieverResult(items=[item])
         rag = MagicMock(spec=GraphRAG)
@@ -187,35 +211,22 @@ class TestGroundedAnswer:
         rag.completion = AsyncMock(
             return_value=RagResult(answer="Grounded.", retriever_result=retriever_result)
         )
-        rag._rewrite_question_with_history = AsyncMock(return_value="Resolved question?")
-        validated_history = [MagicMock()]
-        rag._validate_history.return_value = validated_history
         history = [{"role": "user", "content": "Who founded Acme?"}]
-        ctx = MagicMock()
 
         result = await example.answer_or_abstain(
             rag,
-            "What did she build?",
+            "What did Alice Johnson build?",
             history=history,
-            rewrite_question_with_history=True,
-            ctx=ctx,
         )
 
-        rag._rewrite_question_with_history.assert_awaited_once_with(
-            "What did she build?",
-            validated_history,
-            ctx=ctx,
-        )
-        rag._validate_history.assert_called_once_with(history)
-        rag.retrieve.assert_awaited_once_with("Resolved question?", ctx=ctx)
+        rag.retrieve.assert_awaited_once_with("What did Alice Johnson build?")
         rag.completion.assert_awaited_once_with(
-            "Resolved question?",
+            "What did Alice Johnson build?",
             history=history,
-            ctx=ctx,
             return_context=True,
-            rewrite_question_with_history=False,
         )
-        assert result.question == "What did she build?"
+        assert result.question == "What did Alice Johnson build?"
+        assert result.grounded is True
 
     async def test_divergent_second_retrieval_abstains(self):
         """Gate-only evidence must never be cited for a second-pass answer.
