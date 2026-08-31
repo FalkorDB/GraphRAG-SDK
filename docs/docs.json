@@ -79,6 +79,7 @@
                   "strategies",
                   "providers",
                   "api-reference",
+                  "graphrag-accuracy-benchmark",
                   "benchmark"
                 ]
               }
