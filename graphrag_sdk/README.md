@@ -187,6 +187,7 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 - [Strategies](https://docs.falkordb.com/graphrag/strategies) -- All ABCs and built-in implementations
 - [Providers](https://docs.falkordb.com/graphrag/providers) -- LLM & embedder configuration
 - [Benchmark](https://docs.falkordb.com/graphrag/benchmark) -- Methodology and reproduction
+- [Accuracy Benchmark: FalkorDB vs Vector RAG](https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark) -- 71.48 vs 55.39, limitations, how to cite
 - [API Reference](https://docs.falkordb.com/graphrag/api-reference) -- Full API documentation
 
 ## License
