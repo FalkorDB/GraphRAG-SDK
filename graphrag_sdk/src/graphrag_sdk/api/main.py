@@ -37,6 +37,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     RagResult,
     RetrieverResult,
+    SkillResult,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
@@ -3101,6 +3102,33 @@ class GraphRAG:
     # IDE autocomplete and mypy enforcement on keyword arguments. When you
     # add a kwarg to an async method, also add it to the matching wrapper
     # below — the in-line "keep in sync with" notes mark the pairings.
+
+    async def run_skill(
+        self,
+        skill: str,
+        *,
+        ctx: Context | None = None,
+        **params: Any,
+    ) -> SkillResult:
+        """Run a high-level reasoning skill against the graph (Phase 3.4).
+
+        Args:
+            skill: Registered skill name (e.g. ``"entity_comparison"``,
+                ``"impact_analysis"``, ``"contradiction_detection"``,
+                ``"gap_analysis"``, ``"timeline_reconstruction"``).
+            ctx: Execution context.
+            **params: Skill-specific arguments.
+
+        Returns:
+            ``SkillResult`` with the skill's structured findings.
+        """
+        from graphrag_sdk.skills import build_skill
+
+        if ctx is None:
+            ctx = Context()
+        await self._ensure_ontology_initialized()
+        skill_impl = build_skill(skill, self._graph_store, self.llm)
+        return await skill_impl.run(ctx, **params)
 
     def retrieve_sync(
         self,
