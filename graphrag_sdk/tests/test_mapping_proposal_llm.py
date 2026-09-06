@@ -116,6 +116,22 @@ class TestAGoodAnswerBecomesTheMapping:
         assert "employee_id: STRING; unique, filled on every row" in prompt
         assert "Maya Ellison" in prompt, "the first rows are shown verbatim"
 
+    async def test_the_model_is_shown_what_each_label_means(self):
+        # A grants table has a title, a lead and a start date, and so does a
+        # field-experiment table; the description is how the model tells that
+        # reusing Experiment for grants would be wrong.
+        ontology = Ontology(
+            entities=[
+                Entity(label="Person"),
+                Entity(label="Organization", description="A company, university or funder"),
+            ]
+        )
+        llm = _llm(GOOD)
+        await _propose(llm, ontology=ontology)
+        prompt = llm.last_messages[1].content
+        assert "- Organization (0): no properties — A company, university or funder" in prompt
+        assert "- Person (0): no properties\n" in prompt
+
     async def test_it_is_one_call_for_the_whole_table(self):
         llm = _llm(GOOD)
         await _propose(llm)

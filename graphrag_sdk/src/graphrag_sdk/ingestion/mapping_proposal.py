@@ -401,7 +401,10 @@ def _proposal_prompt(
         for entity in entities:
             props = ", ".join(prop.name for prop in entity.properties if not prop.structured)
             count = entity_counts.get(entity.label, 0)
-            lines.append(f"- {entity.label} ({count}): {props or 'no properties'}")
+            # The description is what lets the model judge "the same kind of thing":
+            # a grants table is not an Experiment just because both have a title.
+            about = f" — {entity.description}" if entity.description else ""
+            lines.append(f"- {entity.label} ({count}): {props or 'no properties'}{about}")
     if ontology.relations:
         lines += ["", "Relationship types already in the graph:"]
         for relation in ontology.relations:

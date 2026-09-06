@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from graphrag_sdk import Column, Entity, ExactMatchResolution, Ontology, TableMapping
+from graphrag_sdk import Column, Entity, ExactMatchResolution, Link, Ontology, TableMapping
 from graphrag_sdk.storage.ontology_store import OntologyContradictionError
 
 from .conftest import MockLLM
@@ -377,6 +377,63 @@ class TestACorrectedExportArrivesUnderItsOwnName:
         second.write_text("reading_id,value\nR-1,11\n")
         with pytest.raises(ValueError, match="refusing to rebind"):
             await rag.ingest(str(second), document_id="readings")
+        await rag.close()
+
+
+class TestATableDoesNotRewriteWhatALabelMeans:
+    """Registering a table keeps the description the user gave its label.
+
+    The fragment a mapping contributes describes an existing label only by what
+    the table did ("Declared by a structured source, keyed on employee_id"), and
+    the store's coalesce took that over the declared text. Measured on a corpus
+    with twelve tables: every declared description was gone after the first
+    load, and a model asked to place an undeclared grants table chose Experiment
+    because Experiment now read "keyed on exp_id" rather than "a field experiment
+    measuring methane flux". The extractor and text-to-Cypher read the same
+    descriptions.
+    """
+
+    async def test_the_declared_description_survives_the_table(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        declared = Ontology(
+            entities=[
+                Entity(label="Person", description="A researcher or lab member"),
+                Entity(label="Organization", description="A university or funder"),
+            ],
+            tables=[
+                TableMapping(
+                    source="hr.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"age": Column("age", "INTEGER")},
+                    links=[Link("WORKS_AT", to="Organization", by="org")],
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=declared)
+        path = tmp_path / "hr.csv"
+        path.write_text("employee_id,full_name,age,org\nE-1,Maya Ellison,34,Acme\n")
+        await rag.ingest(str(path))
+
+        stored = {e.label: e.description for e in (await rag._ontology_store.load()).entities}
+        assert stored["Person"] == "A researcher or lab member", "the row's own label"
+        assert stored["Organization"] == "A university or funder", "the link's target"
+        await rag.close()
+
+    async def test_a_label_nobody_described_takes_the_tables_note(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(people("hr.csv"))
+        )
+        path = tmp_path / "hr.csv"
+        path.write_text(ONE_ROW)
+        await rag.ingest(str(path))
+
+        stored = {e.label: e.description for e in (await rag._ontology_store.load()).entities}
+        assert stored["Person"] == "Declared by a structured source, keyed on employee_id"
         await rag.close()
 
 

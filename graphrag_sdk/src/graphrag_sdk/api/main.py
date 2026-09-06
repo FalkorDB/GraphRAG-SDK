@@ -1844,10 +1844,24 @@ class GraphRAG:
         # Pass 1: declare what is genuinely new. An existing label is included
         # with no properties, which the store reads as "use the persisted
         # definition" and which relation patterns can still point at.
+        #
+        # Its description is kept too. A fragment describes a label it did not
+        # create only by what the table did — "Declared by a structured source,
+        # keyed on exp_id", "Proposed by <model> from funding" — which fills a gap
+        # but is not a correction of what the user wrote, and the store's coalesce
+        # would take it. Measured: with it through, every declared description was
+        # gone after the first table, and a model asked what an undeclared grants
+        # table was chose Experiment, because Experiment now read "keyed on
+        # exp_id" instead of "a field experiment measuring methane flux".
+        described = {entity.label: entity.description for entity in existing.entities}
         declare_entities = [
             entity
             if entity.label not in known_entity_props
-            else Entity(label=entity.label, description=entity.description, properties=[])
+            else Entity(
+                label=entity.label,
+                description=None if described.get(entity.label) else entity.description,
+                properties=[],
+            )
             for entity in incoming.entities
         ]
         declare_relations = [
