@@ -64,6 +64,7 @@ def differ_only_in_digits(name_a: str, name_b: str) -> bool:
     shape_a, shape_b = _DIGITS.sub("#", a), _DIGITS.sub("#", b)
     return shape_a == shape_b and "#" in shape_a
 
+
 _VERIFY_PROMPT = (
     "You are an entity resolution assistant. Decide whether the two entities below "
     "refer to the exact same real-world entity.\n\n"
