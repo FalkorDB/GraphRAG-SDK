@@ -42,7 +42,7 @@ A structured source produces exactly the same shapes as a document, so both halv
 
 | Label       | One per                | Notes                                                                 |
 | ----------- | ---------------------- | --------------------------------------------------------------------- |
-| `Document`  | source file            | Addressed by `document_id`, which defaults to `os.path.normpath(source)`. |
+| `Document`  | source file            | Addressed by `document_id`, which defaults to the table's name: the basename of the mapping's `source`. |
 | `Chunk`     | **record**             | `kind: "record"`, plus `record_key` and every cell of the row.        |
 | `__Entity__`| mapped node            | Typed properties from the declared columns, each signed with its source. |
 
@@ -383,45 +383,70 @@ written, `age` absent entirely, nothing raised.
 
 ### A table with no declared mapping
 
-Nothing is refused. A table nobody mapped still belongs in the graph, so it gets
-the *natural transformation*:
+Nothing is refused. A table nobody mapped still belongs in the graph, so the SDK
+**proposes a mapping** — one model call for the whole table, never one per row:
 
 ```python
-result = await rag.ingest("readings.csv")   # nothing declared for it
+result = await rag.ingest("employees.csv")   # nothing declared for it
 ```
 
-- Every column becomes a typed property, with types measured over the **whole
-  file** rather than a sample. A column holding integers for five hundred rows and
-  `"N/A"` on row five hundred and one would be declared `INTEGER` from a sample
-  and then fail the load it was meant to describe.
-- The label comes from the file name, in the file's own casing — `readings`, not
-  `Readings` — so it is obvious in the browser which labels nobody declared.
-- The key is the leftmost column that is unique and complete.
-- There is **no name column, so it joins nothing.** Which column identifies the
-  thing a row is *about* is a guess, and a wrong guess silently attaches rows to
-  the wrong entities. The rows land queryable and unreachable from any document
-  instead.
+The model is shown what was *measured* — every column with its type, fill and
+uniqueness over the whole file, the first rows — and what the graph already holds:
+the labels in use with their entity counts, the relationship types, the tables
+already mapped and their key columns. It answers the one thing measurement cannot
+settle, which is what a row is *about*: the label, the name column, the key, the
+type of every other column, and which columns are links to other entities.
 
-A WARNING says so at load, naming the label and the key it chose:
+Everything it says about the data is then held to the data. A key it picks must be
+unique and complete; a column it names must exist; a link must point at a label
+the graph knows. A claim that does not hold goes back to the model with the exact
+reason, up to two more times. A type it narrows past what the file holds — `INTEGER`
+for a column with an `"N/A"` in it — is widened back to the measured type without a
+retry, because that is a fact about the file rather than a judgement. A column it
+leaves out is kept at its measured type, so no data is silently lost.
+
+The proposal is stored in the ontology as `derived`, so every later load of the
+table uses it without asking again, and a WARNING says what was chosen:
 
 ```text
-No table mapping is declared for readings.csv, so it was read as-is: label
-'readings', keyed on 'reading_id', and with no name column it does not join
-anything the documents mention. […] Declare a TableMapping in the ontology to
-connect it.
+No table mapping is declared for employees.csv, so it was proposed by the model:
+label 'Person', name 'full_name', key 'employee_id', links WORKS_AT->Organization by
+org_id. finalize() reports it under proposed_mappings. Declare a
+TableMapping(source='employees.csv', ...) in the ontology to replace it, or
+drop_table('employees.csv') to remove it.
 ```
 
-And `finalize()` reports it, so it is visible after the fact rather than only in a
+`finalize()` reports it too, so it is visible after the fact rather than only in a
 log:
 
 ```python
 summary = await rag.finalize()
-summary.tables_without_a_mapping   # ["readings.csv"]
+summary.proposed_mappings   # ["employees.csv"]
 ```
 
-The fix is to declare a mapping. A file with no unique-and-complete column at all
-is refused, because a row with no stable identity could never be updated or
-deleted later:
+You have two moves. **Change it** by declaring a `TableMapping` for the source in
+the ontology and ingesting again — the declaration replaces the proposal, however
+the path is spelled, and the load is a re-sync of the same table. **Remove it** with
+`drop_table()`:
+
+```python
+await rag.drop_table("employees.csv")
+```
+
+which deletes the table's Document and record chunks (and any entity only those rows
+mentioned), removes every property the table signed from entities that survive, and
+takes the mapping out of the ontology, so the next `ingest()` of that filename
+proposes afresh. The label stays, because a document or another table may use it;
+`drop_entity()` removes a label nothing else does.
+
+Without a model, or when it cannot produce an acceptable proposal, the file is read
+**as-is**: every column a typed property, the label from the file name in the file's
+own casing (`readings`, not `Readings`), the key the leftmost column that is unique
+and complete, and **no name column, so it joins nothing** — a wrong guess about
+identity would attach rows to the wrong entities, and the rows land queryable and
+unreachable from any document instead. It is reported under `proposed_mappings` the
+same way. A file with no unique-and-complete column at all is refused, because a
+row with no stable identity could never be updated or deleted later:
 
 ```text
 MappingError: readings.csv has no column that is unique and complete, so no row
@@ -519,7 +544,7 @@ The re-sync short-circuits when nothing changed: an unchanged source returns `no
 
 A document remembers how it was written, and nothing may change its mind: re-reading a CSV as prose replaced its record chunks with one text chunk and took every entity with them — measured as two organizations before the call and none after, with nothing raised. A table appearing in `apply_changes(modified=[...])` therefore comes back as a per-entry error rather than being acted on. Re-ingest it with `ingest()` instead, which finds its declaration.
 
-A source is addressed by `os.path.normpath(source)` unless you pass `document_id`, matching how the text path derives a file's id. Use the same handle for `delete_document()`.
+A table is addressed by its **name** — the basename of its mapping's `source`, `employees.csv` — unless you pass `document_id`. A document is addressed by its path because the path is all there is to know about it; a table has a declaration, and exports move. Keyed on the path, `/exports/2026-02/hr.csv` was a second Document under the same label with January's left behind reading as current; keyed on the name, a new export of a known table is a re-sync of it, from wherever it arrives. Use the same handle for `update()`, `delete_document()` and `drop_table()`.
 
 <Warning>
 When one export stops listing a row that another export still describes, the
@@ -668,7 +693,34 @@ summary = await rag.finalize()
 summary.probable_duplicates   # names that look like one thing and did not merge
 ```
 
-Reported rather than merged on purpose. Merging in the graph does not hold — the next time that document is read, extraction recreates the node the merge deleted and you are back to two, measured — so the fix is the spelling in the source, which fixes it for good. Choosing join-able names is the design decision that decides whether this feature works on your data. To check what did join, count the entities reachable from more than one source:
+Reported rather than merged on a guess, because a merge in the graph cannot be undone. There are two ways to close such a pair. The first is the spelling in the source, which fixes it for good. The second is the resolver.
+
+### The resolver judges across sources
+
+Within one document, `LLMVerifiedResolution` already decides this kind of pair: it embeds the names, and for the close ones asks the model whether they denote one thing, with each entity's description and relationships as evidence. What it never got was the chance to see a table's row and a document's mention together — they arrive in different `ingest` calls. `finalize()` gives it that chance: by default it builds an `LLMVerifiedResolution` over the instance's own `llm` and `embedder` and shows it the whole graph.
+
+```python
+await rag.ingest("employees.csv")                                   # Priya Raman, 39
+await rag.ingest(text=MARKET_NOTE, document_id="market_note.txt")   # "Ms. Raman said…"
+summary = await rag.finalize()
+summary.resolved_duplicates   # ["Person 'Ms. Raman' -> 'Priya Raman'"]
+```
+
+The split of responsibilities is deliberate. The resolver decides **identity**, exactly as it does within a document. The merge follows the table's rules: the row's node survives, because its id is the one the next re-sync recomputes; every value the table signed onto it stays; the mention's description, chunks and relationships move onto it. Two rows of one table are never merged into each other whatever the resolver says — a declared key has already said they are two things — and a pair under two labels is left to the collision report. A row has no prose description, so the resolver is shown its signed values instead: `employees: employee_id E-3, age 39, title Head of Regulatory`.
+
+The default is tuned for this job. Names across sources differ more than names within one document — an honorific for a first name, a short form for a full one — and with `text-embedding-3-small` "Ms. Raman" against "Priya Raman" scores 0.70, below the within-document `soft_threshold` of 0.80, so at that setting the model would never be asked. `finalize()`'s resolver starts asking at 0.6. The threshold only changes which pairs the model is asked about; it still decides each one, and a **NO** leaves both nodes in place. To use different thresholds, a different model, or a strategy of your own, pass it: `finalize(resolver=LLMVerifiedResolution(llm, embedder, soft_threshold=0.7))`.
+
+Two things make this cheap to run every time. A pair the name rules already flag as a probable duplicate — `M. Ellison` beside `Maya Ellison`, which embeds at 0.60 — is handed to the resolver as a pair to judge whatever it scored, so the threshold is not the only way in. And a **NO** is remembered: it is written to the graph as a `DISTINCT_FROM` edge between the two nodes, listed in `summary.rejected_duplicates`, and on the next `finalize()` the pair is neither asked about again nor merged on a threshold, and it leaves `probable_duplicates` — it is decided, not a guess. The memory is an edge rather than a property so that it goes with either node: delete the document, or re-read it so the entity is extracted afresh, and the pair is judged again.
+
+```python
+summary.resolved_duplicates   # ["Person 'Ms. Raman' -> 'Priya Raman'"]   merged
+summary.rejected_duplicates   # ["Contract 'transmission agreement' | 'Nordic transmission agreement'"]
+summary.probable_duplicates   # what is left: flagged by a name rule, judged by nobody
+```
+
+Two rows of one table are never a question either: they are handed over as pairwise distinct, so a table of a thousand people costs no calls among themselves. A strategy of your own can take part in this through four `ctx.metadata` keys documented on `ResolutionStrategy` — `RESOLUTION_SKIP_PAIRS`, `RESOLUTION_DISTINCT_IDS`, `RESOLUTION_ASK_PAIRS`, `RESOLUTION_REJECTED_PAIRS` — and one that ignores them is still correct, only asked more often.
+
+`finalize(resolve=False)` switches the judgement off: spelling variants merge, everything else is reported, and no model is called. Choosing join-able names is still the design decision that decides how much of the graph joins at write time, with no model call at all. To check what did join, count the entities reachable from more than one source:
 
 ```python
 await rag.query("""

@@ -22,8 +22,6 @@ Skipped unless ``RUN_INTEGRATION=1``.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from graphrag_sdk import Column, Entity, Link, Ontology, TableMapping
@@ -134,7 +132,8 @@ class TestStructuredIngestIntoARealGraph:
             "MATCH (p:Person {name:'Alice Smith'})-[:MENTIONED_IN]->(c:Chunk)"
             "<-[:PART_OF]-(d:Document) RETURN d.id, c.kind, c.record_key",
         )
-        assert rows == [[os.path.normpath(employees_csv), "record", "E-1"]]
+        # The Document id is the table's name, not the path it was read from.
+        assert rows == [["employees.csv", "record", "E-1"]]
 
     async def test_the_row_is_recoverable_from_its_chunk(
         self, real_falkordb_rag_factory, llm, resolver, employees_csv
@@ -356,7 +355,7 @@ class TestTheTwoHalvesBecomeOneGraph:
             "<-[:PART_OF]-(d:Document) RETURN DISTINCT d.id ORDER BY d.id",
         )
         sources = [r[0] for r in rows]
-        assert os.path.normpath(orgs_csv) in sources
+        assert "orgs.csv" in sources
         assert "board_note.txt" in sources
 
     async def test_the_cross_source_question_is_answerable_in_one_query(
@@ -521,7 +520,7 @@ class TestReSyncingAStructuredSource:
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
         path = self._write(source, [self.ACME, self.GLOBEX])
         await rag.ingest(path)
-        await rag.update(path, document_id=os.path.normpath(path))
+        await rag.update(path)
         await rag.ingest(path)
 
         assert await _rows(rag, "MATCH (:Document)-[:PART_OF]->(c:Chunk) RETURN count(c)") == [[2]]
@@ -841,7 +840,7 @@ class TestADocumentRemembersHowItWasWritten:
         living only in the process that ran the ingest."""
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
         await rag.ingest(orgs_csv)
-        record = await rag._graph_store.get_document_record(os.path.normpath(orgs_csv))
+        record = await rag._graph_store.get_document_record("orgs.csv")
         assert record is not None and record.kind == "structured"
 
 

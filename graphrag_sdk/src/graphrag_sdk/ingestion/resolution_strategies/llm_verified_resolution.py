@@ -32,6 +32,10 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.resolution_strategies.base import (
+    RESOLUTION_ASK_PAIRS,
+    RESOLUTION_DISTINCT_IDS,
+    RESOLUTION_REJECTED_PAIRS,
+    RESOLUTION_SKIP_PAIRS,
     ResolutionStrategy,
     exact_match_merge,
     remap_relationships,
@@ -235,6 +239,14 @@ class LLMVerifiedResolution(ResolutionStrategy):
         total_llm = 0
 
         emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
+        # What the caller already knows. Pairs are of post-phase-1 ids, which for
+        # a caller passing graph ids is the same thing: phase 1 finds nothing
+        # left to merge in a graph the deduplicator has already been over.
+        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
+        distinct_ids: set[str] = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ())
+        ask_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_ASK_PAIRS) or ())
+        ask_pairs = {p for p in ask_pairs if p not in skip_pairs and not p <= distinct_ids}
+        rejected: set[frozenset[str]] = ctx.metadata.setdefault(RESOLUTION_REJECTED_PAIRS, set())
 
         for label, label_nodes in by_label.items():
             if len(label_nodes) < 2:
@@ -311,6 +323,35 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         hard_pairs.append((i, j))
                     elif sim_val >= self.soft_threshold:
                         ambiguous_pairs.append((i, j, sim_val))
+
+            if skip_pairs or ask_pairs or distinct_ids:
+                index_of = {node.id: k for k, node in enumerate(valid_nodes)}
+
+                def _known(gi: int, gj: int) -> frozenset[str]:
+                    return frozenset((valid_nodes[gi].id, valid_nodes[gj].id))
+
+                def _settled(gi: int, gj: int) -> bool:
+                    # Decided against on an earlier run, or two declared identities:
+                    # not asked about, and not merged however close the names embed.
+                    pair = _known(gi, gj)
+                    return pair in skip_pairs or pair <= distinct_ids
+
+                hard_pairs = [(i, j) for i, j in hard_pairs if not _settled(i, j)]
+                ambiguous_pairs = [
+                    (i, j, sim) for i, j, sim in ambiguous_pairs if not _settled(i, j)
+                ]
+                # A pair the caller wants judged goes to the model whatever it
+                # scored, at its real similarity so the prompt does not lie.
+                seen = {frozenset((i, j)) for i, j in hard_pairs}
+                seen |= {frozenset((i, j)) for i, j, _ in ambiguous_pairs}
+                for pair in sorted(ask_pairs, key=sorted):
+                    ids = [index_of[node_id] for node_id in pair if node_id in index_of]
+                    if len(ids) != 2 or frozenset(ids) in seen:
+                        continue
+                    gi, gj = sorted(ids)
+                    sim_val = float(mat_normed[gi] @ mat_normed[gj])
+                    ambiguous_pairs.append((gi, gj, sim_val))
+                    seen.add(frozenset(ids))
 
             # Hard merges — no LLM needed
             for gi, gj in hard_pairs:
@@ -428,6 +469,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     if answer.startswith("YES"):
                         union(req.idx_a, req.idx_b)
                         llm_confirmed += 1
+                    elif answer.startswith("NO"):
+                        rejected.add(frozenset((req.node_a.id, req.node_b.id)))
 
                 total_llm += llm_confirmed
                 ctx.log(

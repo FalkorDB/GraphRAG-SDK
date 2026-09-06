@@ -64,7 +64,7 @@ class TestACleanGraphReportsNothing:
         assert summary.property_conflicts == []
         assert summary.unresolved_references == {}
         assert summary.entities_without_a_name == {}
-        assert summary.tables_without_a_mapping == []
+        assert summary.proposed_mappings == []
         assert summary.mapping_changed == []
         assert summary.stale_signed_properties == []
         assert summary.probable_duplicates == []
@@ -210,22 +210,21 @@ class TestEntitiesWithoutAName:
         await rag.close()
 
 
-class TestTablesWithoutAMapping:
-    async def test_a_derived_mapping_is_reported(
+class TestProposedMappings:
+    async def test_a_proposed_mapping_is_reported(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path
     ):
-        """Read by the natural reading of the file, so unjoined by design.
-
-        Nothing declares ``employees.csv`` in the ontology, so ``ingest`` falls
-        back to the natural reading of the file — which is exactly the condition
-        this field exists to name.
+        """Nothing declares ``employees.csv`` in the ontology, so ``ingest``
+        proposes a mapping — here the model answers nothing usable, so the file
+        is read as-is — which is exactly the condition this field names. Listed
+        by the table's name, the handle ``drop_table()`` and a declaration use.
         """
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
         path = tmp_path / "employees.csv"
         await _load(rag, path, "employee_id,full_name,age\nE-1,Maya Ellison,34\n")
         summary = await rag.finalize()
 
-        assert summary.tables_without_a_mapping == [str(path)]
+        assert summary.proposed_mappings == ["employees.csv"]
         await rag.close()
 
 

@@ -651,6 +651,20 @@ class OntologyStore:
                     },
                 )
 
+    async def drop_table_mapping(self, source: str) -> None:
+        """Remove a stored table mapping and its column and link children.
+
+        The mapping only; the entity and relation types it contributed stay,
+        because another source or a document may be using them. The caller
+        decides what to do about the properties the table wrote.
+        """
+        await self._query(
+            "MATCH (t:TableMapping {source: $source}) "
+            "OPTIONAL MATCH (t)-[:MAPS_COLUMN|MAPS_LINK|MAPS_LINK_COLUMN]->(c) "
+            "DETACH DELETE c, t",
+            {"source": source},
+        )
+
     async def _upsert_relation_type(self, rt: Relation) -> None:
         """Upsert one ``:Relation`` node per declared pattern.
 

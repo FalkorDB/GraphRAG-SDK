@@ -172,6 +172,21 @@ def _format_property_for_prompt(prop: Attribute) -> str:
     return f"    - {prop.name} ({prop.type}){desc}"
 
 
+def _prose_extractable(prop: Attribute) -> bool:
+    """Whether the prose extractor should be asked to fill ``prop``.
+
+    Two kinds of attribute are declared in the schema but never extracted from
+    text. SDK-managed names (``name``, ``description``...) come from the
+    top-level entity object. ``structured`` attributes are owned by the table
+    that declared them: ``employees__age`` is what ``employees.csv`` says, and a
+    PDF stating an age must not be written under that name, because the node
+    is upserted with ``SET n += props`` and the table's value would be replaced
+    by a prose reading. A document contributes an unsigned ``age`` when the
+    schema declares one, and the two stay distinguishable on the node.
+    """
+    return prop.name not in _SDK_MANAGED_ATTRIBUTE_NAMES and not prop.structured
+
+
 def _render_attribute_block(ontology: Ontology) -> str:
     """Return the prompt block listing declared entity/relation attributes.
 
@@ -192,7 +207,7 @@ def _render_attribute_block(ontology: Ontology) -> str:
         # populated by step-1 NER, not by per-entity attribute extraction.
         # The variable name reflects what *remains* after filtering: the
         # properties the LLM should extract per entity.
-        extractable_props = [p for p in et.properties if p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES]
+        extractable_props = [p for p in et.properties if _prose_extractable(p)]
         if not extractable_props:
             continue
         ent_lines.append(f"- {et.label}:")
@@ -200,10 +215,11 @@ def _render_attribute_block(ontology: Ontology) -> str:
 
     rel_lines: list[str] = []
     for rt in ontology.relations:
-        if not rt.properties:
+        extractable_rel_props = [p for p in rt.properties if _prose_extractable(p)]
+        if not extractable_rel_props:
             continue
         rel_lines.append(f"- {rt.label}:")
-        rel_lines.extend(_format_property_for_prompt(p) for p in rt.properties)
+        rel_lines.extend(_format_property_for_prompt(p) for p in extractable_rel_props)
 
     if not ent_lines and not rel_lines:
         return ""
@@ -233,10 +249,11 @@ def _ontology_has_attributes(ontology: Ontology) -> bool:
     behave like a property-less schema for prompt-routing purposes.
     """
     has_entity_attrs = any(
-        any(p.name not in _SDK_MANAGED_ATTRIBUTE_NAMES for p in et.properties)
-        for et in ontology.entities
+        any(_prose_extractable(p) for p in et.properties) for et in ontology.entities
     )
-    has_relation_attrs = any(rt.properties for rt in ontology.relations)
+    has_relation_attrs = any(
+        any(_prose_extractable(p) for p in rt.properties) for rt in ontology.relations
+    )
     return has_entity_attrs or has_relation_attrs
 
 
@@ -706,12 +723,16 @@ class GraphExtraction(ExtractionStrategy):
         ent_props_by_label: dict[str, dict[str, Attribute]] = {}
         rel_props_by_label: dict[str, dict[str, Attribute]] = {}
         if ontology is not None:
+            # Only what the prompt asked for. A model handed the structured
+            # names anyway would otherwise have them coerced and written.
             for et in ontology.entities:
-                if et.properties:
-                    ent_props_by_label[et.label] = {p.name: p for p in et.properties}
+                declared_props = {p.name: p for p in et.properties if _prose_extractable(p)}
+                if declared_props:
+                    ent_props_by_label[et.label] = declared_props
             for rt in ontology.relations:
-                if rt.properties:
-                    rel_props_by_label[rt.label] = {p.name: p for p in rt.properties}
+                declared_props = {p.name: p for p in rt.properties if _prose_extractable(p)}
+                if declared_props:
+                    rel_props_by_label[rt.label] = declared_props
 
         # Parse entities
         entities: list[ExtractedEntity] = []

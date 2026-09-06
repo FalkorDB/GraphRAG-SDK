@@ -54,14 +54,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `finalize().property_conflicts`, and never resolved for you — neither source is
   preferred. Edge properties declared on a `Link` are signed too.
 
-- **A table with no declared mapping is read as-is** rather than refused. Every
-  column becomes a typed property, with types measured over the whole file rather
-  than a sample, the label taken from the filename and the key the leftmost
-  unique-and-complete column. It declares no name column and so joins nothing:
-  the rows are queryable but unreachable from any document, which
-  `finalize().tables_without_a_mapping` reports. A file with no
+- **A table with no declared mapping gets one proposed** rather than refused.
+  One model call for the whole table — never one per row — shown the measured
+  columns, the first rows and the ontology as it stands, and asked what a row is
+  about: label, name column, key, types, links. Everything it says about the data
+  is held to the data (the key must be unique, the columns must exist, a link
+  must point at a known label; a claim that fails goes back with the reason), and
+  a type the file cannot hold is widened to the measured one. The proposal is
+  stored in the ontology as `derived`, reused by every later load, and reported
+  by `finalize().proposed_mappings`. Declaring a `TableMapping` for the source
+  replaces it; **`drop_table(source)`** removes it with its rows and values.
+  Without a model the file is read as-is: typed columns measured over the whole
+  file, the label from the filename, the leftmost unique-and-complete column as
+  key, and no name column, so it joins nothing. A file with no
   unique-and-complete column is refused instead of keyed on the row ordinal,
   which would rebind every row the moment the export was re-sorted.
+
+- **A table is addressed by its name.** Its Document id defaults to the basename
+  of the mapping's `source` — `employees.csv` — rather than the path it was read
+  from, so a new export of a known table is a re-sync of it from wherever it
+  arrives, and `ingest("employees_2026Q3.csv", document_id="employees.csv")`
+  names which table a differently-named file is. `update()`, `delete_document()`
+  and `drop_table()` take the same handle.
+
+- **A property a table owns is not offered to the extractor.** Signed properties
+  (`employees__age`) are left out of the extraction prompt, so a document cannot
+  write a value under a table's name; prose facts land unsigned beside them.
+
+- **`finalize()` lets a resolver judge across sources, by default.** The
+  strategy that decides within one document whether two mentions are one entity
+  — `LLMVerifiedResolution`: embed, then ask the model about the close pairs — now
+  runs inside `finalize()` over every entity in the graph at once. That is the
+  only place a table's "Priya Raman" and a note's "Ms. Raman" ever meet. With no
+  argument, `finalize()` builds the strategy over the instance's own `llm` and
+  `embedder`, asking from cosine 0.6 rather than the within-document 0.80 because
+  names differ more across sources ("Ms. Raman" / "Priya Raman" scores 0.70).
+  `finalize(resolver=...)` substitutes your own; `finalize(resolve=False)` turns
+  the judgement off and calls no model — spelling variants merge, the rest is
+  reported, as before. The resolver decides identity; the merge keeps the table's
+  node and every value it signed, moves the mention's description and edges onto
+  it, and never folds two rows of one table into each other. What it decided is
+  in `finalize().resolved_duplicates`. A resolver that fails — no model reachable
+  — is logged and `finalize()` completes without it.
+
+  A **NO is remembered**: written as a `DISTINCT_FROM` edge between the two
+  nodes and listed in `finalize().rejected_duplicates`, so the next `finalize()`
+  neither asks again nor merges the pair on a threshold, and the pair leaves
+  `probable_duplicates`. The edge goes with either node, so a re-read document
+  is judged afresh. Pairs the name rules flag as probable duplicates are handed
+  to the resolver to judge whatever they scored on embeddings; two rows of one
+  table are handed over as distinct and never asked about. The hand-off is four
+  documented `ctx.metadata` keys on `ResolutionStrategy` (`RESOLUTION_SKIP_PAIRS`,
+  `RESOLUTION_DISTINCT_IDS`, `RESOLUTION_ASK_PAIRS`, `RESOLUTION_REJECTED_PAIRS`);
+  `LLMVerifiedResolution` honours them, a strategy that ignores them still works.
 
 - **A record is a Chunk** (`kind: "record"`), carrying its cells alongside the
   rendered text, so a row is retrievable and traceable to its source exactly as

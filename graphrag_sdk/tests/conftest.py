@@ -1,6 +1,7 @@
 """Shared test fixtures for GraphRAG SDK v2 tests."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -30,7 +31,14 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 
 
 class MockEmbedder(Embedder):
-    """Deterministic embedder that returns a fixed-length vector derived from text hash."""
+    """Deterministic embedder that returns a fixed-length vector derived from a text digest.
+
+    A stable digest rather than ``hash()``, which Python salts per process: the
+    same text embeds the same across runs. Bytes are centred on zero so two
+    unrelated texts are near-orthogonal rather than all-positive — with
+    ``finalize()`` judging close pairs by default, an all-positive vector space
+    made unrelated names score as duplicates on some hash seeds and not others.
+    """
 
     def __init__(self, dimension: int = 8) -> None:
         self.dimension = dimension
@@ -42,8 +50,8 @@ class MockEmbedder(Embedder):
 
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         self.call_count += 1
-        h = hash(text) % (10**9)
-        return [(h >> i & 0xFF) / 255.0 for i in range(self.dimension)]
+        digest = hashlib.blake2b(text.encode("utf-8"), digest_size=self.dimension).digest()
+        return [byte / 127.5 - 1.0 for byte in digest]
 
 
 class MockLLM(LLMInterface):

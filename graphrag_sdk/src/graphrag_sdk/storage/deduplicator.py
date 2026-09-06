@@ -1,15 +1,33 @@
 # GraphRAG SDK — Storage: Entity Deduplicator
-# Two-phase entity deduplication: exact name match + optional fuzzy embedding.
+# Entity deduplication over the whole graph: exact name match, optional fuzzy
+# embedding, and optionally the caller's resolution strategy — the one ingest()
+# runs within a document — judging pairs across documents and tables.
 # Preserves label-aware grouping to prevent cross-type merging.
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship
 from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import DEFAULT_ENTITY_TYPES
+from graphrag_sdk.ingestion.resolution_strategies.base import (
+    RESOLUTION_ASK_PAIRS,
+    RESOLUTION_DISTINCT_IDS,
+    RESOLUTION_REJECTED_PAIRS,
+    RESOLUTION_SKIP_PAIRS,
+)
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
+
+if TYPE_CHECKING:
+    from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+
+#: Edge between two entities a resolver judged to be two things. Read back on the
+#: next run so the pair is neither asked about again nor merged by a threshold,
+#: and dropped with either node, so a re-extracted entity is judged afresh.
+DISTINCT_FROM = "DISTINCT_FROM"
 
 #: Labels every extractor always has. A declared label in this set can never have
 #: been a guess the extractor was missing, so it is never a target for adoption.
@@ -120,6 +138,35 @@ def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> l
     return kept
 
 
+def _clusters(remap: dict[str, str], by_id: dict[str, dict]) -> list[list[dict]]:
+    """Groups of entities a resolver's remap says are one thing, one label each.
+
+    ``remap`` is ``duplicate id -> survivor id`` and may chain (``a -> b``,
+    ``b -> c``), so ids are followed to their root. A group is then split by
+    label: a resolver may merge "Apple" the company into "Apple" the fruit, and
+    this class never does — phase 1 reports such a pair instead. Ids the graph
+    does not hold are ignored.
+    """
+
+    def root(entity_id: str) -> str:
+        seen = {entity_id}
+        while entity_id in remap and remap[entity_id] != entity_id:
+            entity_id = remap[entity_id]
+            if entity_id in seen:
+                break
+            seen.add(entity_id)
+        return entity_id
+
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for entity_id in set(remap) | set(remap.values()):
+        entity = by_id.get(entity_id)
+        if entity is None:
+            continue
+        key = (root(entity_id), (entity.get("label") or "").strip().lower())
+        grouped.setdefault(key, []).append(entity)
+    return [members for members in grouped.values() if len(members) > 1]
+
+
 def _survivor_rank(entity: dict) -> tuple[int, int, int, int, str]:
     """Rank candidates so the most reproducible identity survives a merge.
 
@@ -161,7 +208,7 @@ def _survivor_rank(entity: dict) -> tuple[int, int, int, int, str]:
 
 
 class EntityDeduplicator:
-    """Two-phase entity deduplication engine.
+    """Entity deduplication engine over the whole graph.
 
     Phase 1 (always): Exact name match — groups entities by
     ``(canonical_name, label)`` to prevent cross-type merging,
@@ -171,6 +218,12 @@ class EntityDeduplicator:
     Phase 2 (optional): Fuzzy embedding match — embeds entity
     names, finds near-duplicates by cosine similarity, merges
     those too.
+
+    Phase 3 (optional): The caller's resolution strategy — the same
+    one ``ingest()`` runs within a document — is shown the whole graph
+    and asked which surviving entities are one thing. It decides
+    identity; the merge follows this class's rules, so a table row
+    always survives a mention of it. See :meth:`_deduplicate_with_resolver`.
 
     Args:
         graph_store: Graph data access object with ``query_raw()`` method.
@@ -186,6 +239,10 @@ class EntityDeduplicator:
         self._declared_labels: set[str] = set()
         # Pairs the last run judged probably-the-same and deliberately left alone.
         self.near_misses: list[NearMiss] = []
+        # Merges the resolver decided on the last run, as "label 'dup' -> 'survivor'".
+        self.resolved_pairs: list[str] = []
+        # Pairs the resolver judged distinct on the last run, as "label 'a' | 'b'".
+        self.rejected_pairs: list[str] = []
 
     async def deduplicate(
         self,
@@ -194,18 +251,28 @@ class EntityDeduplicator:
         similarity_threshold: float = 0.9,
         batch_size: int = 500,
         declared_labels: set[str] | None = None,
+        resolver: ResolutionStrategy | None = None,
     ) -> int:
         """Run deduplication and return total number of duplicates merged.
 
         ``declared_labels`` are labels a structured mapping declared. They are
         treated as authoritative about type, which lets the one safe kind of
         cross-label merge happen: see :meth:`_adopt_into_declared_labels`.
+
+        ``resolver`` is a resolution strategy to judge the pairs no rule can:
+        the same kind ``ingest()`` accepts, here applied across the whole graph.
+        Without one, only spelling variants merge and the rest is reported.
         """
         self._declared_labels = {label.strip().lower() for label in (declared_labels or set())}
+        self.resolved_pairs = []
+        self.rejected_pairs = []
         total = await self._deduplicate_exact(batch_size)
 
         if fuzzy:
             total += await self._deduplicate_fuzzy(batch_size, similarity_threshold)
+
+        if resolver is not None:
+            total += await self._deduplicate_with_resolver(resolver, batch_size)
 
         # What is left over that probably should not be. Reported, never merged.
         await self._report_near_misses(batch_size)
@@ -225,11 +292,18 @@ class EntityDeduplicator:
         Found here and **not** merged. Merging on a guess is destructive and
         irreversible; two nodes are recoverable, and a user told which pairs look
         wrong can fix the source, which fixes it for good. Deciding a pair needs
-        judgement this class does not have — it holds no LLM — so it reports.
+        judgement this class does not have — it holds no LLM — so it reports,
+        and a pair a resolver has already decided against is not a guess any
+        more and is left out.
         """
         try:
             survivors = await self._fetch_all_entities(batch_size)
-            self.near_misses = find_near_misses(survivors)
+            decided = await self._fetch_distinct_pairs()
+            self.near_misses = [
+                miss
+                for miss in find_near_misses(survivors)
+                if frozenset((miss.id_a, miss.id_b)) not in decided
+            ]
         except Exception:
             # A report is never worth failing a finalize over.
             logger.debug("Near-miss detection failed", exc_info=True)
@@ -401,6 +475,232 @@ class EntityDeduplicator:
             f"EntityDeduplicator phase 2 (fuzzy): merged {merged_count} additional duplicates"
         )
         return merged_count
+
+    # ── Phase 3: The caller's resolver, over the whole graph ──
+
+    async def _deduplicate_with_resolver(
+        self, resolver: ResolutionStrategy, batch_size: int
+    ) -> int:
+        """Let the ingest-time resolver judge the whole graph, then merge by our rules.
+
+        A resolution strategy sees the entities of one document at a time, so
+        the pair it was built to decide — "Ms. Raman" in a market note against
+        "Priya Raman" in the HR export — is one it never meets: the two arrive in
+        different calls, and by the time both exist nothing asks. This presents
+        every surviving entity to the same strategy as one ``GraphData``, with
+        the RELATES edges between them, so a resolver that reads neighbours reads
+        the whole graph's.
+
+        The split of responsibilities is deliberate. The resolver decides
+        *identity*: which ids denote one thing. This class decides *how to
+        merge*, with the rules that make a table's row the anchor of its entity:
+
+        - :func:`_survivor_rank` keeps the node whose id came from a declared
+          key, so the merged entity is the one the next re-sync of the table
+          finds again;
+        - :func:`_keep_declared_identities_apart` refuses to merge two rows of a
+          table into each other, whatever they are called — a mapping with a key
+          has already said they are two things;
+        - :meth:`_carry_properties` keeps every value the survivor holds, so a
+          typed value a table supplied is never overwritten by what prose said;
+        - labels never merge: the resolver's own cross-label merges are dropped,
+          as phase 1 already reports those rather than deciding them.
+
+        A structured node has no ``description``; its evidence is the typed
+        values the table signed onto it, which are rendered as one so the
+        resolver has something to judge against the document's sentence.
+        """
+        # Nothing without a name can be judged to be anything, so a nameless
+        # entity — a fact row keyed on a reading id — is not shown to the resolver.
+        entities = [e for e in await self._fetch_all_entities(batch_size) if e.get("name")]
+        if len(entities) < 2:
+            return 0
+        by_id = {entity["id"]: entity for entity in entities}
+        await self._describe_structured_entities(by_id)
+
+        nodes = []
+        for entity in entities:
+            properties: dict[str, Any] = {"name": entity["name"]}
+            if entity.get("description"):
+                properties["description"] = entity["description"]
+            label = entity["label"] or "__Entity__"
+            nodes.append(GraphNode(id=entity["id"], label=label, properties=properties))
+        relationships = await self._fetch_relates_edges(batch_size)
+        graph_data = GraphData(nodes=nodes, relationships=relationships)
+
+        # What this class knows and the resolver cannot: the pairs a previous run
+        # already decided against, and the pairs a name rule says look like one
+        # thing — "M. Ellison" beside "Maya Ellison" — which an embedding cut
+        # tuned for one document's spellings would not surface.
+        decided = await self._fetch_distinct_pairs()
+        # Two keyed nodes are two rows, and :func:`_keep_declared_identities_apart`
+        # would refuse the merge anyway; saying so up front saves the resolver a
+        # call per pair, and for a table of n rows that is most of the calls.
+        keyed = {e["id"] for e in entities if e.get("is_stub") is not None}
+        near = {
+            frozenset((miss.id_a, miss.id_b))
+            for miss in find_near_misses(entities)
+            if frozenset((miss.id_a, miss.id_b)) not in decided
+            and not {miss.id_a, miss.id_b} <= keyed
+        }
+        ctx = Context(
+            metadata={
+                RESOLUTION_SKIP_PAIRS: decided,
+                RESOLUTION_DISTINCT_IDS: keyed,
+                RESOLUTION_ASK_PAIRS: near,
+            }
+        )
+
+        try:
+            result = await resolver.resolve(graph_data, ctx)
+        except Exception as exc:
+            logger.warning("Resolver %s failed over the graph: %s", type(resolver).__name__, exc)
+            return 0
+
+        rejected = set(ctx.metadata.get(RESOLUTION_REJECTED_PAIRS) or ()) - decided
+        await self._remember_distinct(rejected, by_id, type(resolver).__name__)
+
+        if not result.remap:
+            logger.info("EntityDeduplicator phase 3 (resolver): nothing to merge")
+            return 0
+
+        merged = 0
+        for members in _clusters(result.remap, by_id):
+            members.sort(key=_survivor_rank, reverse=True)
+            survivor = members[0]
+            duplicates = _keep_declared_identities_apart(survivor, members[1:])
+            for dup in duplicates:
+                if not await self._remap_entity_edges(dup["id"], survivor["id"]):
+                    logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
+                    continue
+                await self._carry_properties(dup["id"], survivor["id"])
+                try:
+                    await self._graph.query_raw(
+                        "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
+                        {"dup_id": dup["id"]},
+                    )
+                except Exception as exc:
+                    logger.warning(f"Failed to delete duplicate entity {dup['id']}: {exc}")
+                    continue
+                merged += 1
+                pair = f"{survivor['label']} {dup['name']!r} -> {survivor['name']!r}"
+                self.resolved_pairs.append(pair)
+                logger.info("Resolver merged %s", pair)
+
+        logger.info(f"EntityDeduplicator phase 3 (resolver): merged {merged} duplicates")
+        return merged
+
+    async def _describe_structured_entities(self, by_id: dict[str, dict]) -> None:
+        """Give each structured entity a description made of its signed values.
+
+        ``employees__employee_id: E-3, employees__age: 39``
+        becomes ``employees: employee_id E-3, age 39`` — the
+        table named, because that is where the facts came from, and readable
+        enough for a resolver's prompt to set beside a sentence of prose.
+        Entities that already have a description, and every extracted entity,
+        are left as they are.
+        """
+        wanted = [
+            eid
+            for eid, entity in by_id.items()
+            if entity.get("is_stub") is not None and not entity.get("description")
+        ]
+        if not wanted:
+            return
+        try:
+            result = await self._graph.query_raw(
+                "MATCH (e:__Entity__) WHERE e.id IN $ids RETURN e.id, properties(e)",
+                {"ids": wanted},
+            )
+        except Exception:
+            logger.debug("Could not read structured entity properties", exc_info=True)
+            return
+        for row in result.result_set or []:
+            props = row[1] or {}
+            by_table: dict[str, list[str]] = {}
+            for key, value in props.items():
+                table, sep, prop = key.partition("__")
+                if not sep or not prop or value in (None, "", []):
+                    continue
+                by_table.setdefault(table, []).append(f"{prop} {value}")
+            if by_table:
+                by_id[row[0]]["description"] = "; ".join(
+                    f"{table}: {', '.join(facts)}" for table, facts in sorted(by_table.items())
+                )
+
+    async def _fetch_relates_edges(self, batch_size: int) -> list[GraphRelationship]:
+        """Every RELATES edge between entities, as the resolver's neighbourhood."""
+        offset = 0
+        edges: list[GraphRelationship] = []
+        for _ in range(_MAX_PAGINATION_ITERATIONS):
+            result = await self._graph.query_raw(
+                "MATCH (a:__Entity__)-[r:RELATES]->(b:__Entity__) "
+                "RETURN a.id, b.id, coalesce(r.rel_type, 'RELATES') "
+                "SKIP $offset LIMIT $limit",
+                {"offset": offset, "limit": batch_size},
+            )
+            if not result.result_set:
+                break
+            for start, end, rel_type in result.result_set:
+                edges.append(GraphRelationship(start_node_id=start, end_node_id=end, type=rel_type))
+            offset += batch_size
+        else:
+            logger.error(
+                "Pagination exceeded %d iterations in _fetch_relates_edges — aborting",
+                _MAX_PAGINATION_ITERATIONS,
+            )
+        return edges
+
+    async def _fetch_distinct_pairs(self) -> set[frozenset[str]]:
+        """Pairs a resolver judged to be two things on an earlier run."""
+        try:
+            result = await self._graph.query_raw(
+                f"MATCH (a:__Entity__)-[:{DISTINCT_FROM}]-(b:__Entity__) RETURN a.id, b.id"
+            )
+        except Exception:
+            logger.debug("Could not read %s edges", DISTINCT_FROM, exc_info=True)
+            return set()
+        return {frozenset((a, b)) for a, b in result.result_set or [] if a != b}
+
+    async def _remember_distinct(
+        self, pairs: set[frozenset[str]], by_id: dict[str, dict], decided_by: str
+    ) -> None:
+        """Write the resolver's NO answers to the graph, so they are not asked again.
+
+        An edge rather than a property: it goes when either node goes, which is
+        exactly when the answer stops applying — a document deleted, or re-read
+        so its entity is extracted afresh — and it is never copied onto a
+        survivor by a merge, where it would name a node that no longer exists.
+        """
+        rows = []
+        for pair in pairs:
+            ids = sorted(pair)
+            if len(ids) == 2 and all(node_id in by_id for node_id in ids):
+                rows.append({"a": ids[0], "b": ids[1]})
+                label = by_id[ids[0]].get("label") or ""
+                self.rejected_pairs.append(
+                    f"{label} {by_id[ids[0]]['name']!r} | {by_id[ids[1]]['name']!r}"
+                )
+        if not rows:
+            return
+        try:
+            await self._graph.query_raw(
+                "UNWIND $rows AS row "
+                "MATCH (a:__Entity__ {id: row.a}), (b:__Entity__ {id: row.b}) "
+                f"MERGE (a)-[d:{DISTINCT_FROM}]->(b) SET d.decided_by = $decided_by",
+                {"rows": rows, "decided_by": decided_by},
+            )
+        except Exception:
+            logger.warning(
+                "Could not record %d %s pair(s)", len(rows), DISTINCT_FROM, exc_info=True
+            )
+            self.rejected_pairs = []
+            return
+        logger.info(
+            "Resolver %s judged %d pair(s) distinct; remembered so they are not asked again",
+            decided_by,
+            len(rows),
+        )
 
     # ── Helpers ──
 

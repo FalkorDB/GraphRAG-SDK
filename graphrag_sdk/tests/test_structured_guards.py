@@ -14,10 +14,14 @@ Requires ``RUN_INTEGRATION=1``.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from graphrag_sdk import Column, Entity, ExactMatchResolution, Ontology, TableMapping
 from graphrag_sdk.storage.ontology_store import OntologyContradictionError
+
+from .conftest import MockLLM
 
 ONE_ROW = "employee_id,full_name,age\nE-1,Maya Ellison,34\n"
 
@@ -298,4 +302,303 @@ class TestDeleteAllTakesTheOntologyWithIt:
             assert companion not in listed
         finally:
             await redis.aclose()
+        await rag.close()
+
+
+class TestACorrectedExportArrivesUnderItsOwnName:
+    """``ingest("employees_v2.csv", document_id="employees.csv")`` is a re-sync.
+
+    Exports arrive as ``employees_2026Q3.csv``, not by overwriting last quarter's
+    file. The mapping is looked up by the explicit ``document_id`` before the
+    filename, and an id that names a declared table is allowed to move to the
+    new path — it is the caller saying which table this file is. Before this,
+    the only way to reload a table was to copy the new file over the old name,
+    which is what the notebook did.
+    """
+
+    async def test_the_table_is_re_synced_not_duplicated(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(people("employees.csv"))
+        )
+        first = tmp_path / "employees.csv"
+        first.write_text(ONE_ROW)
+        # No document_id: a declared table's Document is named after the table,
+        # so the later export finds it. When the id still defaulted to the path,
+        # this first call had to name the table too — measured without it, the
+        # second file was read under the label `employees_v2`, a second Document
+        # appeared, and Maya stayed 34.
+        await rag.ingest(str(first))
+
+        second = tmp_path / "employees_v2.csv"
+        second.write_text("employee_id,full_name,age\nE-1,Maya Ellison,35\nE-2,Lene Holm,29\n")
+        result = await rag.ingest(str(second), document_id="employees.csv")
+
+        assert result.replaced_existing is True
+        assert result.records == 2
+        documents = await rag.query("MATCH (d:Document) RETURN d.id, d.path ORDER BY d.id")
+        assert [row[0] for row in documents] == ["employees.csv"]
+        assert documents[0][1] == str(second)
+        # Signed with the declaration's source, not the file's name: the mapping
+        # found by document_id is the one that names the properties.
+        ages = await rag.query("MATCH (p:Person) RETURN p.name, p.employees__age ORDER BY p.name")
+        assert ages == [["Lene Holm", 29], ["Maya Ellison", 35]]
+        await rag.close()
+
+    async def test_an_unchanged_export_still_moves_the_path(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(people("employees.csv"))
+        )
+        first = tmp_path / "employees.csv"
+        first.write_text(ONE_ROW)
+        await rag.ingest(str(first))
+        second = tmp_path / "employees_v2.csv"
+        second.write_text(ONE_ROW)
+
+        result = await rag.ingest(str(second), document_id="employees.csv")
+
+        assert result.no_op is True
+        (path,) = (await rag.query("MATCH (d:Document {id: 'employees.csv'}) RETURN d.path"))[0]
+        assert path == str(second)
+        await rag.close()
+
+    async def test_an_id_with_no_declaration_behind_it_still_refuses_to_rebind(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """The prose path's guard is kept for a table nobody declared."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
+        first = tmp_path / "readings.csv"
+        first.write_text("reading_id,value\nR-1,10\n")
+        await rag.ingest(str(first), document_id="readings")
+        second = tmp_path / "readings_v2.csv"
+        second.write_text("reading_id,value\nR-1,11\n")
+        with pytest.raises(ValueError, match="refusing to rebind"):
+            await rag.ingest(str(second), document_id="readings")
+        await rag.close()
+
+
+class TestATableIsAddressedByItsName:
+    """A table's Document id is the basename of its declaration's ``source``.
+
+    A document is addressed by its path because the path is all there is to
+    know about it. A table has a declaration, and exports move: keyed on the
+    path, ``/exports/2026-02/hr.csv`` was a second Document under the same label
+    with January's left behind reading as current. Keyed on the table's name it
+    is a re-sync of the table, which is what a new export of a known table is.
+    """
+
+    async def test_the_document_is_named_after_the_table(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(people("hr.csv"))
+        )
+        path = tmp_path / "exports" / "2026-01" / "hr.csv"
+        path.parent.mkdir(parents=True)
+        path.write_text(ONE_ROW)
+        result = await rag.ingest(str(path))
+
+        assert result.document_id == "hr.csv"
+        rows = await rag.query("MATCH (d:Document) RETURN d.id, d.path")
+        assert rows == [["hr.csv", str(path)]]
+        await rag.close()
+
+    async def test_a_new_export_from_another_folder_is_a_re_sync(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(people("hr.csv"))
+        )
+        january = tmp_path / "2026-01" / "hr.csv"
+        february = tmp_path / "2026-02" / "hr.csv"
+        for path in (january, february):
+            path.parent.mkdir()
+        january.write_text(ONE_ROW)
+        february.write_text("employee_id,full_name,age\nE-1,Maya Ellison,35\n")
+        await rag.ingest(str(january))
+        result = await rag.ingest(str(february))
+
+        assert result.replaced_existing is True
+        documents = await rag.query("MATCH (d:Document) RETURN d.id, d.path")
+        assert documents == [["hr.csv", str(february)]]
+        assert (await rag.query("MATCH (p:Person) RETURN p.hr__age")) == [[35]]
+        await rag.close()
+
+    async def test_update_and_delete_use_the_same_name(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(people("hr.csv"))
+        )
+        path = tmp_path / "hr.csv"
+        path.write_text(ONE_ROW)
+        await rag.ingest(str(path))
+        path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,36\n")
+        updated = await rag.update(str(path))
+        assert updated.no_op is False
+        assert (await rag.query("MATCH (p:Person) RETURN p.hr__age")) == [[36]]
+
+        deleted = await rag.delete_document("hr.csv")
+        assert deleted.chunks_deleted == 1
+        assert (await rag.query("MATCH (d:Document) RETURN count(d)")) == [[0]]
+        await rag.close()
+
+    async def test_an_explicit_id_is_still_honoured(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(people("hr.csv"))
+        )
+        path = tmp_path / "hr.csv"
+        path.write_text(ONE_ROW)
+        result = await rag.ingest(str(path), document_id="people-2026")
+        assert result.document_id == "people-2026"
+        await rag.close()
+
+
+PROPOSAL = json.dumps(
+    {
+        "label": "Person",
+        "name": "full_name",
+        "key": "employee_id",
+        "properties": [{"column": "age", "type": "INTEGER"}],
+        "links": [],
+        "reasoning": "Each row is an employee, a person.",
+    }
+)
+
+
+class TestATableNobodyDeclaredGetsAProposedMapping:
+    """``ingest("employees.csv")`` with no declaration asks the model — once.
+
+    The proposal is checked against the file, stored in the ontology as
+    ``derived``, used by every later load, reported by ``finalize()``, and
+    replaced the moment a ``TableMapping`` is declared for the source. Refusing
+    it is ``drop_table()``.
+    """
+
+    async def test_the_rows_land_on_the_label_the_model_chose(
+        self, real_falkordb_rag_factory, resolver, tmp_path
+    ):
+        llm = MockLLM([PROPOSAL], strict=True)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
+        path = tmp_path / "employees.csv"
+        path.write_text(ONE_ROW)
+        result = await rag.ingest(str(path))
+
+        assert result.document_id == "employees.csv"
+        assert llm._call_index == 1, "one call for the whole table, none per row"
+        # Joined by name, exactly as a declared mapping would have: the id is the
+        # one a prose mention of "Maya Ellison" computes.
+        rows = await rag.query("MATCH (p:Person) RETURN p.id, p.name, p.employees__age")
+        assert rows == [["maya_ellison__person", "Maya Ellison", 34]]
+
+        stored = [m for m in (await rag._ontology_store.load()).tables]
+        assert [(m.source, m.label, m.derived) for m in stored] == [
+            ("employees.csv", "Person", True)
+        ]
+        summary = await rag.finalize()
+        assert summary.proposed_mappings == ["employees.csv"]
+        await rag.close()
+
+    async def test_a_later_load_reuses_the_proposal_without_asking_again(
+        self, real_falkordb_rag_factory, resolver, tmp_path
+    ):
+        llm = MockLLM([PROPOSAL], strict=True)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
+        path = tmp_path / "employees.csv"
+        path.write_text(ONE_ROW)
+        await rag.ingest(str(path))
+        path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,35\n")
+
+        # A fresh GraphRAG on the same graph: the proposal is in the ontology,
+        # not in this process.
+        again = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(), connection=rag._conn
+        )
+        result = await again.ingest(str(path))
+
+        assert result.replaced_existing is True
+        assert llm._call_index == 1
+        assert (await again.query("MATCH (p:Person) RETURN p.employees__age")) == [[35]]
+        await rag.close()
+        await again.close()
+
+    async def test_a_model_that_cannot_answer_falls_back_to_reading_the_file_as_is(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """The default MockLLM answers an extraction shape, never a mapping."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
+        path = tmp_path / "readings.csv"
+        path.write_text("reading_id,value\nR-1,10\n")
+        await rag.ingest(str(path))
+
+        (mapping,) = (await rag._ontology_store.load()).tables
+        assert mapping.label == "readings" and mapping.name is None and mapping.derived
+        assert (await rag.query("MATCH (r:readings) RETURN r.readings__value")) == [[10]]
+        await rag.close()
+
+    async def test_a_declaration_replaces_the_proposal(
+        self, real_falkordb_rag_factory, resolver, tmp_path
+    ):
+        """The user's own mapping wins, however the path is spelled, and the
+        stored proposal does not linger beside it as a second table."""
+        llm = MockLLM([PROPOSAL], strict=True)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
+        path = tmp_path / "employees.csv"
+        path.write_text(ONE_ROW)
+        await rag.ingest(str(path))
+
+        declared = TableMapping(
+            source=str(path),  # the full path, not the basename the proposal used
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={"age_years": Column("age", "INTEGER")},
+        )
+        again = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=ontology(declared), connection=rag._conn
+        )
+        result = await again.ingest(str(path))
+
+        assert result.replaced_existing is True, "same table, so a re-sync"
+        stored = (await again._ontology_store.load()).tables
+        assert [(m.source, m.derived) for m in stored] == [(str(path), False)]
+        rows = await again.query("MATCH (p:Person) RETURN p.employees__age_years, p.employees__age")
+        assert rows == [[34, None]], "the proposal's property left with it"
+        assert (await again.finalize()).proposed_mappings == []
+        await rag.close()
+        await again.close()
+
+    async def test_drop_table_takes_the_rows_the_values_and_the_mapping(
+        self, real_falkordb_rag_factory, resolver, tmp_path
+    ):
+        # Call 1 is the note's extraction, call 2 the table's proposal.
+        llm = MockLLM(['{"nodes": [], "relationships": []}', PROPOSAL], strict=True)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
+        # A person the documents also know, so she survives the drop.
+        await rag.ingest(text="Maya Ellison joined the board.", document_id="note.txt")
+        await rag.query(
+            "MERGE (p:Person:__Entity__ {id: 'maya_ellison__person'}) "
+            "SET p.name = 'Maya Ellison' "
+            "WITH p MATCH (c:Chunk) MERGE (p)-[:MENTIONED_IN]->(c)"
+        )
+        path = tmp_path / "employees.csv"
+        path.write_text("employee_id,full_name,age\nE-1,Maya Ellison,34\nE-2,Lene Holm,29\n")
+        await rag.ingest(str(path))
+        assert (await rag.query("MATCH (p:Person) RETURN count(p)")) == [[2]]
+
+        ontology_after = await rag.drop_table("./anywhere/employees.csv")
+
+        assert ontology_after.tables == []
+        assert (await rag.query("MATCH (d:Document) RETURN d.id")) == [["note.txt"]]
+        people_left = await rag.query("MATCH (p:Person) RETURN p.name, p.employees__age")
+        assert people_left == [["Maya Ellison", None]], "kept by the note, minus the table's value"
+        person = next(e for e in ontology_after.entities if e.label == "Person")
+        assert "employees__age" not in {prop.name for prop in person.properties}
+        with pytest.raises(ValueError, match="No table named 'employees.csv'"):
+            await rag.drop_table("employees.csv")
         await rag.close()

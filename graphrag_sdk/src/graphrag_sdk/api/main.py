@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -81,10 +82,14 @@ from graphrag_sdk.ingestion.mapping import MappingError, ontology_for, record_ma
 from graphrag_sdk.ingestion.mapping_proposal import (
     count_entities_per_label,
     natural_mapping,
+    propose_mapping,
 )
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
+    LLMVerifiedResolution,
+)
 from graphrag_sdk.ingestion.structured_pipeline import (
     StructuredIngestionPipeline,
     StructuredIngestionResult,
@@ -158,6 +163,13 @@ _RAG_PROMPT = "<context>\n{context}\n</context>\n\nQuestion: {question}\n\nAnswe
 # tolerant) so a chunk containing the closing delimiter cannot escape the
 # context block in the default template.
 _CONTEXT_CLOSE_RE = re.compile(r"</\s*context\s*>", re.IGNORECASE)
+
+# Cosine at which ``finalize()``'s default resolver starts asking the model about
+# a pair. Lower than ``LLMVerifiedResolution``'s within-document 0.80 because the
+# pairs that only meet here — a row's name against a document's — differ more.
+# Measured: "Ms. Raman" / "Priya Raman" 0.70, "transmission agreement" /
+# "Nordic transmission agreement" 0.66 (text-embedding-3-small, 256 dims).
+_CROSS_SOURCE_SOFT_THRESHOLD = 0.6
 
 
 def _neutralize_context_close_tag(text: str) -> str:
@@ -993,6 +1005,68 @@ class GraphRAG:
         )
         return await self._refresh_global_ontology()
 
+    async def drop_table(self, source: str) -> Ontology:
+        """Take a table out of the graph: its rows, its values, its mapping.
+
+        The counterpart of ingesting a table, and the way to refuse a mapping the
+        SDK proposed for a table nobody declared. Three things go, in the order
+        that leaves the graph consistent if the call is interrupted:
+
+        1. the table's Document and record chunks, through ``delete_document()``,
+           which also removes any entity that only those rows mentioned;
+        2. every property the table signed on entities that survive — an
+           ``Organization`` a document also mentions keeps its name and prose
+           facts and loses ``orgs__hq_country``;
+        3. the stored mapping, so the next ``ingest()`` of that filename proposes
+           afresh rather than reusing the old reading.
+
+        The label the table used stays in the ontology, because a document or
+        another table may be using it; ``drop_entity()`` removes a label that
+        nothing else does. ``source`` is matched the way ``ingest()`` matches it,
+        on the basename, so any spelling of the path names the same table.
+
+        Raises:
+            ValueError: No table with that name is in the ontology.
+        """
+        await self._ensure_ontology_initialized()
+        wanted = os.path.basename(os.path.normpath(source))
+        mapping = next(
+            (
+                m
+                for m in self._global_ontology.tables
+                if os.path.basename(os.path.normpath(m.source)) == wanted
+            ),
+            None,
+        )
+        if mapping is None:
+            raise ValueError(
+                f"No table named {wanted!r} is in the ontology. Tables: "
+                + (", ".join(m.source for m in self._global_ontology.tables) or "none")
+            )
+        table_id = self._table_document_id(mapping)
+        deleted = await self.delete_document(table_id, if_missing="ignore")
+        if deleted.chunks_deleted == 0 and os.path.normpath(source) != table_id:
+            # Loaded before ids were the table's name, or under an explicit id
+            # that happens to be the path the caller gave. One more place to look.
+            deleted = await self.delete_document(os.path.normpath(source), if_missing="ignore")
+        touched = 0
+        for property_name in sorted(mapping.signed_name(p) for p in mapping.typed_properties):
+            touched += await self._graph_store.drop_node_property(mapping.label, property_name)
+            await self._ontology_store.drop_entity_property(mapping.label, property_name)
+        await self._ontology_store.drop_table_mapping(mapping.source)
+        self._natural_mappings.pop(wanted, None)
+        self._mapping_changes.discard(mapping.source)
+        logger.info(
+            "drop_table %s: %d record chunk(s) and %d orphaned entit(y/ies) deleted, "
+            "signed properties removed from %d %s node(s)",
+            wanted,
+            deleted.chunks_deleted,
+            deleted.entities_deleted,
+            touched,
+            mapping.label,
+        )
+        return await self._refresh_global_ontology()
+
     # ── Group 3 internals: atomic-backfill engine ───────────────
     #
     # The previous PR exposed ``backfill_attribute`` /
@@ -1521,7 +1595,13 @@ class GraphRAG:
         - **File mode** — pass ``source`` (single path or list of paths).
           The loader reads from disk; ``document_id`` is optional and,
           when omitted, defaults to ``os.path.normpath(source)`` so the
-          path itself is the stable handle for ``update()`` later.
+          path itself is the stable handle for ``update()`` later. A
+          **table** (``.csv``, ``.tsv``, ``.psv``, ``.tab``) instead
+          defaults to its name — the basename of its mapping's ``source``
+          — so a new export of a known table is a re-sync of it wherever
+          it arrives from. A table with no mapping in the ontology gets one
+          proposed by the model, held to the file, and stored; see
+          :meth:`drop_table` to refuse it.
         - **Text mode** — pass ``text`` directly. Optionally pass
           ``document_id`` to label the document; if omitted, an
           identifier is generated. ``source`` and ``loader`` are rejected.
@@ -1546,8 +1626,9 @@ class GraphRAG:
             source: File path (or list of paths) — file mode only.
             text: Raw text — text mode only.
             document_id: Stable identifier used as the Document node's
-                ``id``. In file mode, defaults to ``os.path.normpath(source)``.
-                In text mode, defaults to a generated ``text-<8hex>`` id.
+                ``id``. In file mode, defaults to ``os.path.normpath(source)``
+                for a document and to the table's name for a table. In text
+                mode, defaults to a generated ``text-<8hex>`` id.
                 Pass an explicit value when you want a different identity
                 scheme (e.g. content-hash, repo-relative path, slug).
             loader: Custom loader strategy. File mode only.
@@ -1581,7 +1662,9 @@ class GraphRAG:
                         f"{source} is really prose that happens to live in columns, say "
                         "so by passing a loader: ingest(source, loader=TextLoader())."
                     )
-            mapping = await self._mapping_for(source, record_loader=record_loader, ctx=ctx)
+            mapping = await self._mapping_for(
+                source, document_id=document_id, record_loader=record_loader, ctx=ctx
+            )
             return await self._ingest_structured(
                 source,
                 mapping,
@@ -1714,6 +1797,22 @@ class GraphRAG:
         # pushes that to roughly 2 in 10^11 for the same volume.
         return f"text-{uuid4().hex[:16]}"
 
+    @staticmethod
+    def _table_document_id(mapping: TableMapping) -> str:
+        """The Document id a table gets when the caller does not pick one.
+
+        The basename of the mapping's ``source`` — the name the ontology knows the
+        table by, and the one ``_mapping_for`` finds it with. A document is
+        addressed by its path because the path is all there is to know about it;
+        a table has a declaration, and the declaration is the stable thing.
+        Exports move (``/exports/2026-01/hr.csv``, then ``/exports/2026-02/``),
+        and keying the Document on the path made each move a second Document
+        under the same label, with the first left behind still reading as
+        current. Keyed on the table's name, a new export of a known table is a
+        re-sync of it, which is what it is.
+        """
+        return os.path.basename(os.path.normpath(mapping.source))
+
     async def _register_structured_ontology(self, incoming: Ontology) -> Ontology:
         """Merge a mapping's ontology into the persisted one, additively.
 
@@ -1730,6 +1829,7 @@ class GraphRAG:
         rather than silently retyping a property.
         """
         existing = await self._ontology_store.load()
+        existing = await self._retire_superseded_proposals(incoming, existing)
         # Name -> declared type, not just the name set. Pass 2 needs the type to
         # notice a second source redeclaring one property as something else; with
         # names alone it silently skipped the case. See the contradiction check
@@ -1784,6 +1884,18 @@ class GraphRAG:
                 continue
             if previous.fingerprint_of_declaration != mapping.fingerprint_of_declaration:
                 self._mapping_changes.add(mapping.source)
+            if previous.label != mapping.label:
+                # The declaration moved the rows to another label. The proposal's
+                # nodes go with the re-sync that follows (their record chunks are
+                # replaced, and an entity nothing mentions is removed), so what
+                # is left to clean is the signed properties on any node under
+                # the old label that a document also mentions.
+                for property_name in sorted(
+                    previous.signed_name(declared) for declared in previous.typed_properties
+                ):
+                    await self._graph_store.drop_node_property(previous.label, property_name)
+                    await self._ontology_store.drop_entity_property(previous.label, property_name)
+                continue
             # Distinct names from pass 2's `prop`, which is an Attribute — reusing
             # the name here bound it to str first and every Attribute access below
             # became a type error.
@@ -1857,6 +1969,35 @@ class GraphRAG:
 
         return await self._ontology_store.load()
 
+    async def _retire_superseded_proposals(
+        self, incoming: Ontology, existing: Ontology
+    ) -> Ontology:
+        """A declared mapping replaces the proposal stored for the same table.
+
+        A proposal is stored under the table's basename; a user spells the same
+        table however they like (``"employees.csv"``, ``"./data/employees.csv"``).
+        Matched on the signature, which is what both reduce to, so the declaration
+        lands on the stored proposal instead of beside it — where the store would
+        rightly refuse two sources signing one namespace. The retired proposal is
+        handed back under the declaration's own source string so the
+        reconciliation that follows sees it as the previous version of the same
+        table and cleans up after it.
+        """
+        by_signature = {mapping.signature: mapping for mapping in existing.tables}
+        retired: dict[str, TableMapping] = {}
+        for mapping in incoming.tables:
+            prior = by_signature.get(mapping.signature)
+            if prior is None or prior.source == mapping.source or not prior.derived:
+                continue
+            await self._ontology_store.drop_table_mapping(prior.source)
+            retired[prior.source] = dataclasses.replace(prior, source=mapping.source)
+            logger.info("%s replaces the proposed mapping for %s", mapping.source, prior.source)
+        if not retired:
+            return existing
+        return existing.model_copy(
+            update={"tables": [retired.get(m.source, m) for m in existing.tables]}
+        )
+
     async def _ingest_structured(
         self,
         source: str,
@@ -1881,7 +2022,7 @@ class GraphRAG:
         deterministic path below.
         """
         ctx = ctx or Context()
-        resolved_id = document_id or os.path.normpath(source)
+        resolved_id = document_id or self._table_document_id(mapping)
         # Checked on the *resolved* id, so a source whose filename carries the
         # marker is caught as well as an explicit document_id. ingest() checks
         # the explicit id , but the structured branch returns before
@@ -1898,15 +2039,26 @@ class GraphRAG:
         # source no-opped on its unchanged hash while Document.path kept pointing
         # at the old, possibly deleted, file — and only some later unrelated data
         # change happened to correct it.
+        moved_from: str | None = None
         if existing_record is not None:
             existing_path = existing_record.path or ""
             if existing_path and os.path.normpath(existing_path) != os.path.normpath(source):
-                raise ValueError(
-                    f"document_id '{resolved_id}' is already bound to path "
-                    f"'{existing_path}'; refusing to rebind to '{source}'. "
-                    f"Pass a different document_id, or delete_document() first "
-                    f"if the source genuinely moved."
-                )
+                # A table is different from a document here. Its id is the
+                # ontology's name for it, so an id that names this table is the
+                # caller saying "this file is the current export of that table" —
+                # and exports arrive under new names (employees_2026Q3.csv) as a
+                # matter of course. That is a re-sync with the path moving along,
+                # not an accidental rebind. An explicit id that does *not* name
+                # the table keeps the prose path's refusal.
+                if resolved_id != self._table_document_id(mapping):
+                    raise ValueError(
+                        f"document_id '{resolved_id}' is already bound to path "
+                        f"'{existing_path}'; refusing to rebind to '{source}'. "
+                        f"Pass a different document_id, or delete_document() first "
+                        f"if the source genuinely moved."
+                    )
+                moved_from = existing_path
+                logger.info("%s is now read from %s (was %s)", resolved_id, source, existing_path)
         if existing_record is not None:
             update_result = await self.update(
                 source,
@@ -1926,6 +2078,11 @@ class GraphRAG:
             resynced.entities_deleted = update_result.entities_deleted
             resynced.replaced_existing = True
             resynced.no_op = update_result.no_op
+            if moved_from is not None and update_result.no_op:
+                # Same rows, new filename: update() short-circuited on the hash
+                # and never rewrote Document.path, which would otherwise keep
+                # pointing at the previous — possibly deleted — export.
+                await self._graph_store.set_document_path(resolved_id, source)
             return resynced
         return await self._write_structured_source(
             source,
@@ -2021,51 +2178,87 @@ class GraphRAG:
         self,
         source: str,
         *,
+        document_id: str | None = None,
         record_loader: RecordLoaderStrategy | None = None,
         ctx: Context | None = None,
     ) -> TableMapping:
-        """The mapping for ``source``: the declared one, else the natural reading.
+        """The mapping for ``source``: the declared one, else a proposed one.
 
-        Matched on the file's basename, which is also what the property signature
-        is derived from — so the name that decides how a source's properties are
-        stored is the same name that finds its declaration, and the two cannot
-        drift apart.
+        Matched on a basename — the explicit ``document_id`` first, then the
+        file's own name. The declaration's ``source`` is also what the property
+        signature is derived from, so the name that decides how a source's
+        properties are stored is the same name that finds its declaration, and
+        the two cannot drift apart.
 
-        With no declaration this returns the natural transformation rather than
-        raising. A table nobody mapped still belongs in the graph: its columns are
-        typed by measuring the whole file, and it lands queryable but unjoined,
-        which finalize() reports as ``tables_without_a_mapping``.
+        ``document_id`` first is what lets a corrected export arrive under its
+        own filename: ``ingest("employees_2026Q3.csv", document_id="employees.csv")``
+        is the table the ontology calls ``employees.csv``, and re-syncs it.
+        Without it the only way to reload a table was to copy the new file over
+        the old name.
+
+        With no declaration this proposes one rather than raising. A table nobody
+        mapped still belongs in the graph, and which entity its rows are about is
+        a judgement, so the model is asked — once per table, shown the measured
+        columns and the ontology as it stands — and held to the data: the key it
+        picks must be unique, the types must parse, the columns must exist. The
+        result is stored in the ontology as ``derived``, so it is used by every
+        later load, reported by finalize() as ``proposed_mappings``, and replaced
+        the moment a ``TableMapping`` is declared for the source. Without a
+        model, or when it cannot produce an acceptable answer, the file is read
+        as-is: typed columns, label from the filename, no name and so no join.
         """
         await self._ensure_ontology_initialized()
         wanted = os.path.basename(os.path.normpath(source))
-        for mapping in self._global_ontology.tables:
-            if os.path.basename(os.path.normpath(mapping.source)) == wanted:
-                return mapping
+        candidates = [wanted]
+        if document_id:
+            candidates.insert(0, os.path.basename(os.path.normpath(document_id)))
+        for candidate in candidates:
+            for mapping in self._global_ontology.tables:
+                if os.path.basename(os.path.normpath(mapping.source)) == candidate:
+                    return mapping
 
-        # Memoized: resolving is idempotent, but building a natural mapping reads
-        # and profiles the whole file, and the warning below should be said once
-        # per source rather than once per lookup.
+        # Memoized: resolving is idempotent, but proposing a mapping reads and
+        # profiles the whole file and asks the model, and the warning below
+        # should be said once per source rather than once per lookup.
         cached = self._natural_mappings.get(wanted)
         if cached is not None:
             return cached
 
         loader = record_loader or CsvRecordLoader()
         batch = await loader.load_records(source, ctx or Context())
-        mapping, notes = natural_mapping(batch, source)
+        mapping: TableMapping | None = None
+        notes: list[str] = []
+        if self.llm is not None:
+            try:
+                counts = await count_entities_per_label(self._global_ontology, self._graph_store)
+                mapping, notes = await propose_mapping(
+                    batch,
+                    source,
+                    llm=self.llm,
+                    ontology=self._global_ontology,
+                    entity_counts=counts,
+                )
+            except MappingError as exc:
+                logger.warning("%s; reading the file as-is instead", exc)
+        how = "proposed by the model"
+        if mapping is None:
+            mapping, notes = natural_mapping(batch, source)
+            how = "read as-is"
         self._natural_mappings[wanted] = mapping
         logger.warning(
-            "No table mapping is declared for %s, so it was read as-is: label %r, "
-            "keyed on %r, and with no name column it does not join anything the "
-            "documents mention. %s Declare a TableMapping in the ontology to connect it.",
+            "No table mapping is declared for %s, so it was %s: %s. finalize() reports "
+            "it under proposed_mappings. Declare a TableMapping(source=%r, ...) in the "
+            "ontology to replace it, or drop_table(%r) to remove it.",
             source,
-            mapping.label,
-            mapping.key,
-            " ".join(notes),
+            how,
+            "; ".join(notes),
+            wanted,
+            wanted,
         )
         # Deliberately NOT recorded in _mapping_changes: that field means a
         # *declared* mapping differs from the stored one, and this source has no
-        # declaration to differ from. finalize() reports it as
-        # tables_without_a_mapping instead, which is the accurate statement.
+        # declaration to differ from. finalize() reports it as proposed_mappings
+        # instead, which is the accurate statement.
         return mapping
 
     async def _ingest_single(
@@ -2679,7 +2872,9 @@ class GraphRAG:
                     "the cache exists to avoid re-running extraction, and nothing is "
                     "extracted here."
                 )
-            mapping = await self._mapping_for(source, record_loader=record_loader, ctx=ctx)
+            mapping = await self._mapping_for(
+                source, document_id=document_id, record_loader=record_loader, ctx=ctx
+            )
         elif record_loader is not None or strict_mapping:
             raise ValueError(
                 "'record_loader' and 'strict_mapping' only apply to a structured "
@@ -2691,6 +2886,10 @@ class GraphRAG:
         if ctx is None:
             ctx = Context()
 
+        if mapping is not None and document_id is None:
+            # Same default ingest() gives a table, so update("hr.csv") and
+            # ingest("hr.csv") address one Document rather than two.
+            document_id = self._table_document_id(mapping)
         resolved_id = self._resolve_document_id(source, text, document_id)
         self._check_no_pending_marker(resolved_id)
 
@@ -3763,6 +3962,7 @@ class GraphRAG:
         fuzzy: bool = False,
         similarity_threshold: float = 0.9,
         batch_size: int = 500,
+        resolver: ResolutionStrategy | None = None,
     ) -> int:
         """Global entity deduplication across all ingested documents.
 
@@ -3773,12 +3973,22 @@ class GraphRAG:
         Phase 2 (optional): Fuzzy embedding match — embeds entity names,
         finds near-duplicates by cosine similarity, merges those too.
 
+        Phase 3 (optional): ``resolver`` — the same kind of strategy
+        :meth:`ingest` takes — is shown every entity in the graph at once and
+        decides which are one thing, the way it does within a single document.
+        This is how a person a table wrote and a person a document mentioned
+        become one node when they are not spelled the same: the resolver judges
+        the pair, and the merge keeps the table's node and its typed values.
+
         Call after all documents are ingested.
 
         Args:
             fuzzy: If True, also perform fuzzy embedding-based dedup.
             similarity_threshold: Cosine similarity threshold for fuzzy dedup.
             batch_size: Entities per query batch.
+            resolver: Resolution strategy to judge pairs across documents and
+                tables, e.g. ``LLMVerifiedResolution(llm, embedder)``. None here
+                skips the phase; :meth:`finalize` supplies one by default.
 
         Returns:
             Total number of duplicate entities merged.
@@ -3789,6 +3999,7 @@ class GraphRAG:
             similarity_threshold=similarity_threshold,
             batch_size=batch_size,
             declared_labels=self._mapping_declared_labels(),
+            resolver=resolver,
         )
 
     def _mapping_declared_labels(self) -> set[str]:
@@ -3805,7 +4016,23 @@ class GraphRAG:
             if any(prop.structured for prop in entity.properties)
         }
 
-    async def finalize(self) -> FinalizeResult:
+    def _default_resolver(self) -> ResolutionStrategy:
+        """The strategy :meth:`finalize` judges the whole graph with when given none.
+
+        Names differ more across sources than within one document: a table's
+        "Priya Raman" against a note's "Ms. Raman" embeds at 0.70 with
+        ``text-embedding-3-small``, under the within-document default of 0.80.
+        So the model is asked about closer-than-usual pairs here. Each is asked
+        once — a NO is remembered on the graph and two rows of one table are
+        never a question — which is what makes this affordable as a default.
+        """
+        return LLMVerifiedResolution(
+            self.llm, self.embedder, soft_threshold=_CROSS_SOURCE_SOFT_THRESHOLD
+        )
+
+    async def finalize(
+        self, *, resolver: ResolutionStrategy | None = None, resolve: bool = True
+    ) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
 
         Call this **once** after the final :meth:`ingest` for any session
@@ -3814,10 +4041,22 @@ class GraphRAG:
 
         Bundles:
         1. Remove NULL-name stub entities (legacy cleanup)
-        2. ``deduplicate_entities()`` — global exact-name dedup
+        2. ``deduplicate_entities()`` — global exact-name dedup, then the
+           resolver judges the pairs across documents and tables
         3. ``backfill_entity_embeddings()`` — name-only embeddings
         4. ``embed_relationships()`` — fact text embeddings on RELATES edges
         5. ``ensure_indices()`` — all indexes
+
+        Args:
+            resolver: The strategy that judges the whole graph: a table's
+                "Priya Raman" against a document's "Ms. Raman". By default an
+                ``LLMVerifiedResolution`` over this instance's ``llm`` and
+                ``embedder``, tuned for names that differ across sources — see
+                :meth:`_default_resolver`. Pass your own to replace it.
+            resolve: ``False`` skips that judgement entirely: the graph is
+                deduplicated on exact names only, close pairs are reported in
+                ``FinalizeResult.probable_duplicates`` and left alone, and no
+                model is called.
 
         Returns:
             ``FinalizeResult`` — typed counts from each step.
@@ -3851,8 +4090,20 @@ class GraphRAG:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
         # Step 2: Global dedup
-        dedup_count = await self.deduplicate_entities()
+        if not resolve:
+            resolver = None
+        elif resolver is None:
+            resolver = self._default_resolver()
+        dedup_count = await self.deduplicate_entities(resolver=resolver)
         ctx_log(f"finalize: deduplicated {dedup_count} entities")
+        resolved = list(getattr(self._deduplicator, "resolved_pairs", []) or [])
+        rejected = list(getattr(self._deduplicator, "rejected_pairs", []) or [])
+        if resolved or rejected:
+            ctx_log(
+                f"finalize: {type(resolver).__name__} merged {len(resolved)} pair(s) across "
+                f"documents and tables and judged {len(rejected)} distinct. See "
+                "FinalizeResult.resolved_duplicates / rejected_duplicates"
+            )
 
         # Step 3: Entity embeddings (name-only)
         entity_count = await self._vector_store.backfill_entity_embeddings()
@@ -3914,9 +4165,10 @@ class GraphRAG:
         )
         if derived_sources:
             report(
-                f"finalize: {len(derived_sources)} table(s) were read without a mapping, "
-                "so their rows are not joined to anything in the documents. Declare a "
-                "mapping with name=<column> to connect them"
+                f"finalize: {len(derived_sources)} table(s) run on a mapping the SDK "
+                "proposed because none was declared. Declare a TableMapping for the "
+                "source to replace it, or drop_table() to remove it. "
+                "See FinalizeResult.proposed_mappings"
             )
 
         try:
@@ -3977,11 +4229,13 @@ class GraphRAG:
             entities_deduplicated=dedup_count,
             unmerged_name_collisions=collisions,
             probable_duplicates=[str(m) for m in near_misses],
+            resolved_duplicates=resolved,
+            rejected_duplicates=rejected,
             stale_signed_properties=stale,
             property_conflicts=property_conflicts,
             unresolved_references=unresolved,
             entities_without_a_name=nameless,
-            tables_without_a_mapping=derived_sources,
+            proposed_mappings=derived_sources,
             mapping_changed=sorted(self._mapping_changes),
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
@@ -4107,12 +4361,14 @@ class GraphRAG:
             )
         )
 
-    def finalize_sync(self) -> FinalizeResult:
+    def finalize_sync(
+        self, *, resolver: ResolutionStrategy | None = None, resolve: bool = True
+    ) -> FinalizeResult:
         """Synchronous finalize convenience method.
 
         Keep in sync with :meth:`finalize`.
         """
-        return asyncio.run(self.finalize())
+        return asyncio.run(self.finalize(resolver=resolver, resolve=resolve))
 
     def update_sync(
         self,

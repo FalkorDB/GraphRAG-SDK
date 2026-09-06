@@ -336,6 +336,29 @@ def remap_relationships(
     return deduplicated_rels
 
 
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs already judged to
+#: be two things. A strategy must not merge such a pair and should not spend a
+#: call asking about it again. Set by the caller.
+RESOLUTION_SKIP_PAIRS = "resolution_skip_pairs"
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the caller wants
+#: judged even where the strategy's own candidate search would not surface them —
+#: a table's "M. Ellison" beside a document's "Maya Ellison", which a name rule
+#: spotted and an embedding threshold did not. Set by the caller.
+RESOLUTION_ASK_PAIRS = "resolution_ask_pairs"
+
+#: ``ctx.metadata`` key: ``set[str]`` of node ids whose identity was declared, not
+#: extracted — rows of a table, each keyed. No two of them are one thing, so a
+#: strategy should not merge, or ask about, a pair drawn from this set. Set by
+#: the caller; a set rather than pairs because a table has n rows and n² pairs.
+RESOLUTION_DISTINCT_IDS = "resolution_distinct_ids"
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the strategy
+#: examined and judged to be two things. Written by the strategy, so the caller
+#: can remember the answer and pass it back as ``RESOLUTION_SKIP_PAIRS`` next time.
+RESOLUTION_REJECTED_PAIRS = "resolution_rejected_pairs"
+
+
 class ResolutionStrategy(ABC):
     """Abstract base class for entity resolution (deduplication) strategies.
 
@@ -348,6 +371,16 @@ class ResolutionStrategy(ABC):
             async def resolve(self, graph_data, ctx):
                 # Use embeddings to find near-duplicate entities
                 ...
+
+    A strategy is run within one document by ``ingest`` and, when passed to
+    ``finalize(resolver=...)``, over the whole graph. In the second setting the
+    caller knows things the strategy does not, and says so through
+    ``ctx.metadata``: :data:`RESOLUTION_SKIP_PAIRS` are pairs already decided
+    against, :data:`RESOLUTION_DISTINCT_IDS` are ids that are pairwise distinct
+    by declaration, :data:`RESOLUTION_ASK_PAIRS` are pairs it wants an answer
+    on. A strategy that judges pairs reports the ones it rejected under
+    :data:`RESOLUTION_REJECTED_PAIRS`. All four are optional; a strategy that
+    ignores them is still correct, only less economical.
     """
 
     @abstractmethod

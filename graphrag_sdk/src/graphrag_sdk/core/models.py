@@ -871,12 +871,14 @@ class FinalizeResult(DataModel):
     worth seeing either way.
     """
 
-    tables_without_a_mapping: list[str] = Field(default_factory=list)
-    """Sources loaded by the natural reading of the file, and so unjoined.
+    proposed_mappings: list[str] = Field(default_factory=list)
+    """Tables running on a mapping nobody declared.
 
-    Their rows are queryable immediately. Nothing claims to know which entity in
-    the documents each row is about, because nothing said. Declaring a mapping
-    with a name column is what connects them.
+    Loaded without a ``TableMapping`` in the ontology, so the SDK proposed one —
+    from the model, held to the measured columns, or failing that the file read
+    as-is with no name column and so no join. The proposal is in the ontology
+    and every later load uses it. Declare a ``TableMapping`` for the source to
+    replace it, or ``drop_table()`` to remove it.
     """
 
     mapping_changed: list[str] = Field(default_factory=list)
@@ -909,12 +911,33 @@ class FinalizeResult(DataModel):
     other holding what she did. Every question needing both then comes back wrong
     while looking answered, and nothing used to say so.
 
-    Reported, never merged, and the SDK offers no merge for them on purpose:
-    merging in the graph does not hold. The next time that document is read,
-    extraction recreates the node the merge deleted and you are back to two —
-    measured. The fix is the spelling in the source, which fixes it for good.
+    Not merged on a guess, because a merge in the graph cannot be undone. Two
+    ways to close them: fix the spelling in the source, which fixes it for good;
+    or pass ``finalize(resolver=...)`` the same strategy ``ingest`` takes, and
+    let it judge each pair with the document's evidence — what it decided is in
+    ``resolved_duplicates``. Either way the decision is yours or your resolver's,
+    never a threshold's. Non-empty here is a prompt to look at your data, not a
+    failure.
+    """
 
-    Non-empty here is a prompt to look at your data, not a failure.
+    resolved_duplicates: list[str] = Field(default_factory=list)
+    """Pairs the resolver passed to ``finalize()`` judged one thing, and were merged.
+
+    As ``label 'duplicate' -> 'survivor'``. The resolver decided identity, the
+    same way it does within a document; the merge kept the node a table wrote,
+    so the entity is still the one the table's next re-sync finds, and every
+    typed value the table signed onto it. What prose knew — description, mentions,
+    relationships — moved onto it. Empty when no resolver was passed.
+    """
+
+    rejected_duplicates: list[str] = Field(default_factory=list)
+    """Pairs the resolver passed to ``finalize()`` judged to be two things.
+
+    As ``label 'a' | 'b'``. Remembered on the graph as a ``DISTINCT_FROM`` edge,
+    so the next ``finalize()`` neither asks about the pair again nor merges it
+    on a threshold, and so the pair leaves ``probable_duplicates``: it is decided.
+    The memory goes with either node — delete or re-read the document and the
+    pair is judged afresh. Empty when no resolver was passed.
     """
 
     unmerged_name_collisions: dict[str, list[str]] = Field(default_factory=dict)

@@ -201,6 +201,19 @@ class GraphStore:
         logger.debug(f"Upserted {count} nodes")
         return count
 
+    async def set_document_path(self, document_id: str, path: str) -> None:
+        """Point a Document at the file it is now read from.
+
+        ``update()``'s cutover rewrites the path as part of promoting the pending
+        Document, but a no-op re-sync (same content hash) never reaches the
+        cutover — so a table re-loaded under a new filename with identical rows
+        would keep pointing at the old file.
+        """
+        await self._conn.query(
+            "MATCH (d:Document {id: $id}) SET d.path = $path",
+            {"id": document_id, "path": path},
+        )
+
     async def resolve_by_entity_key(self, label: str, keys: Sequence[str]) -> dict[str, str]:
         """``key_value -> id`` for every node under ``label`` already carrying that key.
 
