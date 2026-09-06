@@ -220,28 +220,32 @@ After ingesting multiple documents, the same real-world entity might exist as mu
 ### Phase 1: Exact Name Match (Always Runs)
 
 1. **Fetch** all `__Entity__` nodes with their primary label (the non-`__Entity__` label)
-2. **Group** by `(normalized_name.lower(), label)` — grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
-3. **For each group with duplicates:**
-   - **Survivor:** The entity with the longest description
+2. **Group** by `(normalized name, label)` — the name is lower-cased, accent- and punctuation-folded, and stripped of a leading English article, so `The University of Barcelona` and `university of barcelona` fall together. Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate). Generational suffixes are kept: `Elias Whitford, Jr.` is not `Elias Whitford`.
+3. **Fold acronyms:** a 2–6 letter name that spells the initials of exactly one same-label multi-word name (`AIHS` → `Ashford Island Historical Society`) joins that group. An acronym with two or more plausible expansions (`US` → `United States`, `Universal Studios`) is left alone.
+4. **For each group with duplicates:**
+   - **Survivor:** The entity with the longest description; the other descriptions are appended, joined with `" | "`, so nothing a duplicate said is lost
    - **Remap edges:** All RELATES and MENTIONED_IN edges from duplicates are redirected to the survivor:
      ```cypher
      -- Outgoing RELATES
      MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__)
      WHERE b.id <> $survivor_id
-     MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b)
+     MATCH (s:__Entity__ {id: $survivor_id})
+     MERGE (s)-[nr:RELATES]->(b)
      SET nr += properties(r)
      DELETE r
 
      -- Incoming RELATES
      MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id})
      WHERE a.id <> $survivor_id
-     MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id})
+     MATCH (s:__Entity__ {id: $survivor_id})
+     MERGE (a)-[nr:RELATES]->(s)
      SET nr += properties(r)
      DELETE r
 
      -- MENTIONED_IN
      MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk)
-     MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c)
+     MATCH (s:__Entity__ {id: $survivor_id})
+     MERGE (s)-[:MENTIONED_IN]->(c)
      DELETE r
      ```
    - **Delete** the duplicate node: `MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e`
@@ -253,7 +257,7 @@ Enabled via `fuzzy=True`. Catches near-duplicates that have slightly different n
 1. **Fetch** all surviving entities with their labels
 2. **Batch-embed** entity names
 3. **Normalize** vectors and compute pairwise cosine similarity in blocks (1000 entities per block to avoid OOM)
-4. **Merge** pairs above the similarity threshold (default: 0.9), but only within the same label (no cross-type merging)
+4. **Merge** pairs above the similarity threshold (default: 0.95 — at 0.90 the pass wrongly merged 2 of 33 hard-negative pairs for no added recall), but only within the same label (no cross-type merging)
 5. **Remap and delete** as in Phase 1
 
 ---

@@ -158,17 +158,17 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 **What it does:** Merges entities that refer to the same real-world thing. When the LLM extracts "Alice" from chunk 1 and "Alice" from chunk 5, this step recognizes they're the same entity and merges them.
 
-**Default: ExactMatchResolution**
-- Groups entities by ID
-- Keeps the first occurrence as the survivor
-- Merges properties from duplicates into the survivor
-- Remaps all relationship endpoints to the survivor
-- Deduplicates relationships by `(start_id, type, end_id)`
+**Default: LLMVerifiedResolution**
+- Exact-match merge by `(normalized name, label)` first — no LLM or embedder needed
+- Embeds surviving names within each label; pairs at or above `hard_threshold` (0.95) merge outright, pairs between `soft_threshold` (0.65) and 0.95 go to the LLM as batched YES/NO questions (5 pairs per call)
+- A cross-label pass then asks the LLM about same-thing/different-type pairs (`Fresnel lens` as Product and Technology)
+- Survivor keeps the merged descriptions joined with `" | "` and records absorbed labels in `merged_labels`
+- Remaps all relationship endpoints to the survivor and deduplicates relationships by `(start_id, type, end_id)`
 
-**Alternative: DescriptionMergeResolution**
-- Groups by `(normalized name, label)` — same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris")
-- Merges descriptions (concatenation or LLM summarization)
-- Useful when the same entity is described differently across documents
+**Alternative: ExactMatchResolution**
+- Groups by `(normalized name, label)` only — same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris")
+- No embeddings, no LLM calls; zero added cost
+- Pass `resolver=ExactMatchResolution()` to `ingest()` when extraction is consistent or cost matters more than recall
 
 For details on resolution strategies, see [Strategies](/strategies).
 
@@ -269,8 +269,8 @@ stats = await rag.finalize()
 
 | Strategy | When to use |
 |----------|-------------|
-| `ExactMatchResolution` (default) | Fast, deterministic. Good when extraction is consistent |
-| `DescriptionMergeResolution` | Multi-document ingestion. Used in the benchmark pipeline |
+| `LLMVerifiedResolution` (default) | Embedding + LLM verification. Catches surface variants and descriptive references |
+| `ExactMatchResolution` | Fast, deterministic, no LLM. Good when extraction is consistent or cost matters |
 
 ---
 
@@ -294,6 +294,6 @@ stats = await rag.finalize()
 | [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
 | [`extraction_strategies/graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
 | [`resolution_strategies/exact_match.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |
-| [`resolution_strategies/description_merge.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/description_merge.py) | DescriptionMergeResolution |
+| [`resolution_strategies/llm_verified_resolution.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/llm_verified_resolution.py) | LLMVerifiedResolution (default) |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Batched node/relationship writes |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Chunk embedding + indexing |

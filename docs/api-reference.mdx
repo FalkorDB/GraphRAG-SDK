@@ -613,8 +613,8 @@ class ResolutionStrategy(ABC):
 ```
 
 **Built-in:**
-- `ExactMatchResolution(resolve_property="id")`
-- `DescriptionMergeResolution(llm=None, force_summary_threshold=3, max_summary_tokens=500)`
+- `LLMVerifiedResolution(llm=None, embedder=None, hard_threshold=0.95, soft_threshold=0.65, batch_verification=True, verification_max_pairs_per_call=5, ...)` — default
+- `ExactMatchResolution(resolve_property="name")`
 
 ---
 
