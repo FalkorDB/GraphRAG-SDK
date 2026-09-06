@@ -23,32 +23,37 @@ _MAX_PAGINATION_ITERATIONS = 10_000
 _LEADING_ARTICLE = re.compile(r"^(the|a|an)\s+")
 
 # Words that carry no signal when forming an acronym.
-_ACRONYM_STOPWORDS = frozenset(
-    {"of", "the", "and", "for", "de", "la", "del", "at", "in", "on"}
-)
+_ACRONYM_STOPWORDS = frozenset({"of", "the", "and", "for", "de", "la", "del", "at", "in", "on"})
 
 
 def normalize_entity_name(name: str) -> str:
     """Fold accents, punctuation and a leading English article for grouping.
 
     Dots inside a token are removed rather than turned into spaces, so ``A.I.``
-    stays ``ai`` instead of becoming the single letter ``i``.
+    stays ``ai`` instead of becoming the single letter ``i``. A name with no
+    ASCII fold at all (non-Latin script) keeps its case-folded original form.
 
     Deliberately does NOT strip generational suffixes: ``Elias Whitford, Jr.``
     and ``Elias Whitford`` are a father and a son, and merging them is a
     correctness bug rather than a cleanup.
     """
-    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    original = re.sub(r"\s+", " ", str(name or "")).strip()
+    s = unicodedata.normalize("NFKD", original).encode("ascii", "ignore").decode()
     s = s.lower().strip()
     s = re.sub(r"(?<=\w)\.(?=\w|$)", "", s)
     s = re.sub(r"[^a-z0-9 ]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
-    return _LEADING_ARTICLE.sub("", s).strip() or s
+    cleaned = _LEADING_ARTICLE.sub("", s).strip() or s
+    if cleaned:
+        return cleaned
+    # Names written entirely in a non-Latin script (東京, القاهرة) have no ASCII
+    # fold. Returning "" would put every such name of a label in one group and
+    # merge them all; fall back to the case-folded original instead.
+    return original.casefold()
 
 
 def _initials(name: str) -> str:
-    words = [w for w in normalize_entity_name(name).split()
-             if w not in _ACRONYM_STOPWORDS]
+    words = [w for w in normalize_entity_name(name).split() if w not in _ACRONYM_STOPWORDS]
     return "".join(w[0] for w in words if w)
 
 
@@ -67,10 +72,10 @@ def is_acronym_of(short: str, long: str) -> bool:
     s = normalize_entity_name(short).replace(" ", "")
     if not (2 <= len(s) <= 6) or not s.isalpha():
         return False
-    if len([w for w in normalize_entity_name(long).split()
-            if w not in _ACRONYM_STOPWORDS]) < 2:
+    if len([w for w in normalize_entity_name(long).split() if w not in _ACRONYM_STOPWORDS]) < 2:
         return False
     return s == _initials(long)
+
 
 # Cypher queries for remapping edges from a duplicate to a survivor entity.
 #
@@ -248,9 +253,7 @@ class EntityDeduplicator:
             )
             survivor["description"] = combined
         except Exception as exc:
-            logger.warning(
-                f"Failed to merge descriptions onto {survivor['id']}: {exc}"
-            )
+            logger.warning(f"Failed to merge descriptions onto {survivor['id']}: {exc}")
 
     @staticmethod
     def _merge_acronym_groups(groups: list[list[dict]]) -> list[list[dict]]:
@@ -281,27 +284,24 @@ class EntityDeduplicator:
                 parent[rb] = ra
 
         names = [g[0]["name"] for g in groups]
-        labels = [
-            {(e.get("label") or "").strip().lower() for e in g} - {""}
-            for g in groups
+        labels = [{(e.get("label") or "").strip().lower() for e in g} - {""} for g in groups]
+        shorts = [
+            i for i, n in enumerate(names) if len(normalize_entity_name(n).replace(" ", "")) <= 6
         ]
-        shorts = [i for i, n in enumerate(names)
-                  if len(normalize_entity_name(n).replace(" ", "")) <= 6]
-        longs = [i for i, n in enumerate(names)
-                 if len(normalize_entity_name(n).split()) >= 2]
+        longs = [i for i, n in enumerate(names) if len(normalize_entity_name(n).split()) >= 2]
         for i in shorts:
             matches = [
-                j for j in longs
-                if i != j
-                and labels[i] & labels[j]
-                and is_acronym_of(names[i], names[j])
+                j
+                for j in longs
+                if i != j and labels[i] & labels[j] and is_acronym_of(names[i], names[j])
             ]
             if len(matches) == 1:
                 union(i, matches[0])
             elif len(matches) > 1:
                 logger.info(
                     "Acronym %r matches %d long forms (%s); leaving unmerged",
-                    names[i], len(matches),
+                    names[i],
+                    len(matches),
                     ", ".join(names[j] for j in matches),
                 )
 
