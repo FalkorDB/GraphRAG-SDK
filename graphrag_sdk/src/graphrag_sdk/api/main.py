@@ -299,6 +299,15 @@ class GraphRAG:
         # Deduplication engine
         self._deduplicator = EntityDeduplicator(self._graph_store, self.embedder)
 
+        # Cross-document deduplication only happens in ``finalize()`` — the
+        # ingest-time resolver sees one document at a time and can never
+        # compare "Airbus" in doc 1 against "Airbus SE" in doc 9. Nothing in
+        # the API forces ``finalize()``, so a caller who skips it silently
+        # queries a graph that was never deduplicated. Track ingests since the
+        # last dedup so the read path can say so once.
+        self._docs_since_dedup = 0
+        self._finalize_reminder_emitted = False
+
         # Persistent ontology graph (``<data_graph>__ontology``). Always-on,
         # always the anchor: ``self.ontology`` is registered into it on first
         # connection, and ``get_ontology()`` / retrieval always read from it.
@@ -1596,6 +1605,10 @@ class GraphRAG:
 
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
 
+        # Cross-document duplicates can only be resolved by finalize(); see
+        # _warn_if_dedup_pending.
+        self._docs_since_dedup += 1
+
         if not _skip_post:
             # Post-ingestion: create indices only.
             # backfill_entity_embeddings() is intentionally NOT called here —
@@ -2632,6 +2645,7 @@ class GraphRAG:
 
         ctx.log(f"Retrieve: {question[:80]}...")
         ctx.ensure_budget("graph config validation")
+        self._warn_if_dedup_pending()
 
         # Make sure the retrieval strategy sees the persisted ontology, even
         # when the user is querying an existing graph without ingesting first.
@@ -3038,10 +3052,41 @@ class GraphRAG:
         Returns:
             Total number of duplicate entities merged.
         """
-        return await self._deduplicator.deduplicate(
+        merged = await self._deduplicator.deduplicate(
             fuzzy=fuzzy,
             similarity_threshold=similarity_threshold,
             batch_size=batch_size,
+        )
+        # The graph has now been swept globally, so the pending-dedup reminder
+        # no longer applies. Reset here rather than in finalize() so a caller
+        # who runs dedup directly is also covered.
+        self._docs_since_dedup = 0
+        self._finalize_reminder_emitted = False
+        return merged
+
+    def _warn_if_dedup_pending(self) -> None:
+        """Warn once when reading a graph that was never deduplicated.
+
+        The ingest-time resolver only ever sees a single document
+        (``IngestionPipeline`` calls it with that document's extraction), so
+        cross-document duplicates — "Airbus" in one PDF and "Airbus SE" in
+        another — survive ingestion by design and are removed only by
+        :meth:`deduplicate_entities`, which runs inside :meth:`finalize`.
+
+        Nothing requires that call, so it is possible to ingest hundreds of
+        documents and query a graph full of duplicates with no indication that
+        a step was missed. Emitted once per pending batch, on the read path,
+        because that is where the consequence is felt.
+        """
+        if self._docs_since_dedup <= 0 or self._finalize_reminder_emitted:
+            return
+        self._finalize_reminder_emitted = True
+        logger.warning(
+            "%d document(s) ingested without a deduplication pass. "
+            "Cross-document duplicates (e.g. 'Airbus' and 'Airbus SE' from "
+            "different files) are still present and will affect retrieval. "
+            "Call finalize() — or deduplicate_entities() — after ingestion.",
+            self._docs_since_dedup,
         )
 
     async def finalize(self) -> FinalizeResult:
