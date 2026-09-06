@@ -333,8 +333,8 @@ class TestIngestionPipeline:
     async def test_pipeline_remaps_mentions_through_chained_resolver_remap(
         self, ctx, mock_graph_store, mock_vector_store
     ):
-        """v1.1.0 follow-up: two-stage resolvers (SemanticResolution,
-        LLMVerifiedResolution) merge per-phase remap dicts without
+        """v1.1.0 follow-up: two-stage resolvers (LLMVerifiedResolution)
+        merge per-phase remap dicts without
         flattening, so the combined dict can carry chains like
         ``{a: b, b: c}`` where ``b`` was itself merged away in a later
         phase. A single-hop ``remap.get(a)`` would point the mention at
