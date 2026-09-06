@@ -179,6 +179,10 @@ def _normalize_type_label(raw: str) -> str:
 # about.  A date that names a *period* ("the 1820s", "the Abbasid era") is a
 # thing facts get attached to, so it stays.
 #
+# This only applies when ``Date`` is not an entity type in the ontology.  An
+# ontology that declares ``Date`` (the defaults do) has asked for date nodes
+# and gets them; one that leaves it out gets no date nodes.
+#
 # Measured on the 11-document benchmark: specific dates were 63 of 274 false
 # positive entities (23%).  Removing them lifted entity precision 0.577 -> 0.642
 # with recall unchanged at 0.644 (F1 0.609 -> 0.643) and cost nothing, because
@@ -201,8 +205,9 @@ _DATE_PERIOD_RE = re.compile(r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age
 def is_specific_date(name: str) -> bool:
     """True if name pins down one moment in time rather than naming a period.
 
-    Specific dates are rejected as entity names: they belong on the relation
-    that mentions them, not as nodes of their own.  Note the deliberate gap --
+    Specific dates are rejected as entity names unless the ontology declares a
+    ``Date`` type (see ``is_valid_entity_name``): by default they belong on the
+    relation that mentions them, not as nodes of their own.  Note the deliberate gap --
     a product genuinely named for a number ("747", "1984") is indistinguishable
     from a year here and will be dropped.  That trade was worth 63 false
     positives against zero true positives on the benchmark corpus, but it is
@@ -214,8 +219,18 @@ def is_specific_date(name: str) -> bool:
     return bool(_SPECIFIC_DATE_RE.match(stripped))
 
 
-def is_valid_entity_name(name: str) -> bool:
-    """Return True if name passes quality gates for entity extraction."""
+def _ontology_has_date_type(entity_types: list[str] | None) -> bool:
+    if not entity_types:
+        return False
+    return any(_normalize_type_label(t) == "date" for t in entity_types)
+
+
+def is_valid_entity_name(name: str, entity_types: list[str] | None = None) -> bool:
+    """Return True if name passes quality gates for entity extraction.
+
+    Specific dates ("1823") are rejected unless ``entity_types`` contains
+    ``Date``: when the ontology asks for date nodes, dates are kept.
+    """
     if not name or not name.strip():
         return False
     stripped = name.strip()
@@ -226,7 +241,7 @@ def is_valid_entity_name(name: str) -> bool:
     is_acronym = len(stripped) <= 3 and stripped.isupper() and stripped.isalpha()
     if not is_acronym and stripped.lower() in _ENTITY_STOPLIST:
         return False
-    if is_specific_date(stripped):
+    if not _ontology_has_date_type(entity_types) and is_specific_date(stripped):
         return False
     # Operator and punctuation tokens (+=, ->, ==, !=). A name with no letter or
     # digit anywhere in it cannot be the name of anything.
@@ -304,7 +319,7 @@ def _parse_predictions(
         if not isinstance(pred, dict):
             continue
         name = str(pred.get("text", "")).strip()
-        if not is_valid_entity_name(name):
+        if not is_valid_entity_name(name, entity_types):
             continue
         raw_type = str(pred.get("label", "")).strip()
 
@@ -753,7 +768,7 @@ class LLMExtractor(EntityExtractor):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
-            if not is_valid_entity_name(name):
+            if not is_valid_entity_name(name, entity_types):
                 continue
             raw_type = str(item.get("type", "")).strip()
             description = str(item.get("description", "")).strip()

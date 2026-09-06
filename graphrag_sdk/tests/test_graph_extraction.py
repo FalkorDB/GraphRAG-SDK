@@ -23,6 +23,7 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     LLMExtractor,
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    DEFAULT_ENTITY_TYPES,
     is_valid_entity_name,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
@@ -660,9 +661,17 @@ class TestNoiseFiltering:
         assert is_valid_entity_name(name)
 
     @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
-    def test_specific_dates_rejected(self, name):
-        """A date pins down a moment; it is an attribute, not an entity."""
+    def test_specific_dates_rejected_without_date_type(self, name):
+        """A date pins down a moment; unless the ontology asks for Date nodes it
+        is an attribute, not an entity."""
         assert not is_valid_entity_name(name)
+        assert not is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
+    def test_specific_dates_kept_when_ontology_has_date(self, name):
+        """An ontology that declares Date (the defaults do) keeps date nodes."""
+        assert is_valid_entity_name(name, DEFAULT_ENTITY_TYPES)
+        assert is_valid_entity_name(name, ["Person", "date"])
 
     @pytest.mark.parametrize("name", ["1820s", "19th century", "Abbasid era"])
     def test_periods_kept(self, name):

@@ -1122,7 +1122,7 @@ class GraphExtraction(ExtractionStrategy):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
-            if not is_valid_entity_name(name):
+            if not is_valid_entity_name(name, entity_types):
                 continue
             raw_type = str(item.get("type", "")).strip()
             if "/" in raw_type or "(" in raw_type or ")" in raw_type:
@@ -1157,7 +1157,9 @@ class GraphExtraction(ExtractionStrategy):
             rel_type = str(item.get("type", "")).strip()
             if not source or not target or not rel_type:
                 continue
-            if not is_valid_entity_name(source) or not is_valid_entity_name(target):
+            if not is_valid_entity_name(source, entity_types) or not is_valid_entity_name(
+                target, entity_types
+            ):
                 continue
 
             description = str(item.get("description", "")).strip()
