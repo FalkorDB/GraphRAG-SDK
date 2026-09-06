@@ -8,7 +8,12 @@ import logging
 from typing import Any
 
 from graphrag_sdk.core.providers import Embedder
-from graphrag_sdk.storage.identity import NearMiss, find_near_misses
+from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import DEFAULT_ENTITY_TYPES
+from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
+
+#: Labels every extractor always has. A declared label in this set can never have
+#: been a guess the extractor was missing, so it is never a target for adoption.
+_BUILTIN_LABELS: frozenset[str] = frozenset(t.strip().lower() for t in DEFAULT_ENTITY_TYPES)
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +120,7 @@ def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> l
     return kept
 
 
-def _survivor_rank(entity: dict) -> tuple[int, int, int]:
+def _survivor_rank(entity: dict) -> tuple[int, int, int, int, str]:
     """Rank candidates so the most reproducible identity survives a merge.
 
     Ordered by:
@@ -131,6 +136,16 @@ def _survivor_rank(entity: dict) -> tuple[int, int, int]:
        only an id and a name.
     3. **Longest description**, the original rule, which still decides between
        two nodes of the same provenance.
+    4. **Longest name.** Grouping is by canonical key, so a group holds different
+       spellings of one name and the survivor's is the one the graph keeps.
+       Length picks the written-out form — "Globex Limited" over "Globex Ltd",
+       "Acme Corporation" over "Acme Corp".
+    5. **Id**, purely to make the outcome deterministic. Entities are fetched
+       with no ``ORDER BY`` and :meth:`list.sort` is stable, so without a total
+       ordering a tie resolves to whatever order the server happened to return
+       and the same data can settle on a different display name from run to run.
+       Under exact-equality grouping every name in a group was identical, so this
+       could not be observed; under canonical grouping it can.
 
     ``is_stub`` is the marker because only a mapped source writes it: ``None``
     means the node came from extraction.
@@ -140,6 +155,8 @@ def _survivor_rank(entity: dict) -> tuple[int, int, int]:
         0 if is_stub is None else 1,
         0 if is_stub else 1,
         len(entity.get("description") or ""),
+        len(entity.get("name") or ""),
+        str(entity.get("id") or ""),
     )
 
 
@@ -147,7 +164,7 @@ class EntityDeduplicator:
     """Two-phase entity deduplication engine.
 
     Phase 1 (always): Exact name match — groups entities by
-    ``(normalized_name, label)`` to prevent cross-type merging,
+    ``(canonical_name, label)`` to prevent cross-type merging,
     keeps the one with the longest description, remaps all
     RELATES and MENTIONED_IN edges, deletes duplicates.
 
@@ -238,12 +255,17 @@ class EntityDeduplicator:
             logger.info("EntityDeduplicator: fewer than 2 entities, nothing to dedup")
             return 0
 
-        # Group by (normalized name, label) to prevent cross-type merging.
+        # Group by (canonical name, label): the label keeps types from merging,
+        # the canonical key lets two spellings of one name land in one group.
+        # Exact lowercase equality was the old key, and it left "Globex Ltd" and
+        # "Globex Limited" as two organizations — one holding the address, the
+        # other the revenue. See identity.canonical_key for what it does and does
+        # not unify, and why word order is preserved.
         groups: dict[tuple[str, str], list[dict]] = {}
         for ent in entities:
-            norm = ent["name"].strip().lower()
+            key = canonical_key(ent["name"]) or ent["name"].strip().lower()
             label = ent.get("label", "").strip().lower()
-            groups.setdefault((norm, label), []).append(ent)
+            groups.setdefault((key, label), []).append(ent)
 
         merged = 0
         for (_norm_name, _label), group in groups.items():
@@ -283,7 +305,7 @@ class EntityDeduplicator:
         all_ids: list[str] = []
         all_names: list[str] = []
         all_labels: list[str] = []
-        rank_by_id: dict[str, tuple[int, int, int]] = {}
+        rank_by_id: dict[str, tuple[int, int, int, int, str]] = {}
         for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
@@ -303,6 +325,8 @@ class EntityDeduplicator:
                     {
                         "is_stub": row[3] if len(row) > 3 else None,
                         "description": row[4] if len(row) > 4 else "",
+                        "name": all_names[-1],
+                        "id": row[0],
                     }
                 )
             offset += batch_size
@@ -395,16 +419,34 @@ class EntityDeduplicator:
         declared one survives and absorbs the rest. A declared type beats an
         inferred type, the same rule that already governs declared *columns*.
 
+        The guess can only have happened for a label the extractor did not have.
+        Every built-in type — Person, Organization, Product, Location — is always
+        on the extractor's list, so a name it filed under ``Product`` while a
+        mapping declared it ``Organization`` is not a fallback: it had
+        ``Organization`` available and chose otherwise. That is Apple the fruit
+        beside Apple the company, and adopting it deleted the fruit. So adoption
+        is restricted to declared labels **outside** the built-in set — the only
+        labels an extractor could have been missing.
+
         Left alone, and reported instead:
 
         - two declared labels sharing a name, which is a real modelling conflict
           rather than a guess to correct
-        - names under only undeclared labels, which is the Apple case
+        - a declared built-in label beside any other label: two things that
+          share a name, one of which the extractor deliberately typed differently
+        - names under only undeclared labels
 
-        This is why the graph no longer depends on the order sources arrive in.
+        Residual: a *custom* declared label beside a built-in one for a genuinely
+        different thing ("Supplier" Apple beside "Product" Apple) is still adopted.
+        Distinguishing that from the ordering mistake would need to know whether
+        the label existed at extraction time, which is not recorded.
+
         Measured on the same files, prose first: 0 merged before, 5 after.
         """
         if not self._declared_labels:
+            return 0
+        adoptable = self._declared_labels - _BUILTIN_LABELS
+        if not adoptable:
             return 0
 
         by_name: dict[str, list[str]] = {}
@@ -415,7 +457,7 @@ class EntityDeduplicator:
         for norm_name, labels in by_name.items():
             if len(labels) < 2:
                 continue
-            declared = [label for label in labels if label in self._declared_labels]
+            declared = [label for label in labels if label in adoptable]
             inferred = [label for label in labels if label not in self._declared_labels]
             if len(declared) != 1 or not inferred:
                 continue
@@ -468,12 +510,30 @@ class EntityDeduplicator:
         ``entities_deduplicated=0`` and nothing else.
 
         Reporting it costs one pass over grouping that already happened.
+
+        Reported under a name the user can actually search for. The grouping key
+        is canonical — lower-cased, suffixes dropped — so keying the report on it
+        would tell someone whose file says "Acme Corp" to go looking for
+        "acme corporation", a string that appears nowhere in their data.
         """
         labels_by_name: dict[str, set[str]] = {}
-        for norm_name, label in groups:
-            labels_by_name.setdefault(norm_name, set()).add(label)
+        display_name: dict[str, str] = {}
+        for (group_key, label), members in groups.items():
+            labels_by_name.setdefault(group_key, set()).add(label)
+            for member in members:
+                name = member.get("name")
+                if not name:
+                    continue
+                # Longest spelling, then lexicographic. Group iteration order
+                # follows the unordered fetch, so picking the first would show a
+                # different spelling from one run to the next.
+                current = display_name.get(group_key)
+                if current is None or (-len(name), name) < (-len(current), current):
+                    display_name[group_key] = name
         collisions = {
-            name: sorted(labels) for name, labels in labels_by_name.items() if len(labels) > 1
+            display_name.get(group_key, group_key): sorted(labels)
+            for group_key, labels in labels_by_name.items()
+            if len(labels) > 1
         }
         self.cross_label_names = collisions
         if not collisions:
@@ -486,9 +546,9 @@ class EntityDeduplicator:
             "is usually an ingest-order problem: a document read before a mapping "
             "was declared gets its entities labelled by guesswork, and a table "
             "declaring the same name under its own label can no longer join them. "
-            "Declare mappings up front (GraphRAG(mappings=[...]) or "
-            "declare_mapping()) and the extractor uses the declared label. "
-            "Examples: %s",
+            "Put the mapping in the ontology you pass to GraphRAG("
+            "ontology=Ontology(tables=[TableMapping(...)])) so the label is "
+            "declared before anything is extracted. Examples: %s",
             len(collisions),
             sample,
         )

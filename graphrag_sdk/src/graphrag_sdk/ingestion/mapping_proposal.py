@@ -1,41 +1,34 @@
-# GraphRAG SDK — Ingestion: proposing a mapping for a structured source
+# GraphRAG SDK — Ingestion: reading a table nobody declared a mapping for
 #
-# Writing a mapping by hand means choosing a label by hand, and a label chosen
-# by hand can invent `Person` while the graph already uses `Employee`. Nothing
-# catches it, and the result is one human held as two nodes with the facts split
-# between them.
+# A mapping is written by hand, because choosing which real-world thing a row
+# describes is a judgement and getting it wrong splits one entity across two
+# labels. Nothing here guesses at that.
 #
-# So a proposal is constrained rather than free: the label must come from the
-# ontology that already exists. A genuinely new type can be requested, but it is
-# surfaced for approval instead of appearing on its own.
+# What is here is *measurement*, for the case where no mapping was declared at
+# all. A column's type and which column identifies a row are both measurable —
+# over the whole file, not a sample, because a column that holds integers for
+# five hundred rows and "N/A" on row five hundred and one would be declared
+# INTEGER from a sample and then fail the load it was meant to describe.
 #
-# The model is asked to decide as little as possible. A key column, a column's
-# type and a foreign key are all *measurable*, and measurement beats judgement
-# wherever it reaches — an LLM guessing INTEGER is strictly worse than parsing
-# the values. What is left for the model is the part no measurement answers:
-# which existing concept this table describes, and what to call its
-# relationships.
+# The result is deliberately unjoined: no name column is guessed, so the rows
+# land queryable and connected to nothing, and finalize() says so. A wrong
+# guess about identity would instead attach rows to the wrong entities and look
+# like it worked.
 
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, Field
-
-from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import Ontology
-from graphrag_sdk.core.providers import LLMInterface
-from graphrag_sdk.discovery.instructor import extract_with_retry
-from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch
 from graphrag_sdk.ingestion.mapping import (
-    COLUMN_TYPES,
-    RESERVED_PROPERTY_NAMES,
     Column,
-    Link,
-    Table,
+    MappingError,
+    TableMapping,
+    safe_property_name,
 )
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
@@ -46,16 +39,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SAMPLE_ROWS = 500
 
 # A column is only offered as a foreign key when most of its values already
-# resolve to an entity of the candidate label. Below this it is coincidence.
-_FK_MATCH_FLOOR = 0.6
 
 _TYPE_ORDER = ("INTEGER", "FLOAT", "BOOLEAN", "DATE", "STRING")
-
-# ``Table`` takes its properties as keyword arguments, so a column sharing a name
-# with one of its own parameters would collide: a source with a column literally
-# called "links" would raise TypeError rather than mapping. Such a column is left
-# unmapped and reported, so it can be given a property name by hand.
-_TABLE_PARAMETERS = frozenset({"node", "key", "name", "links", "description"})
 
 
 @dataclass
@@ -86,126 +71,6 @@ class ColumnProfile:
         shown = ", ".join(repr(value) for value in self.samples[:3])
         note = " unique, no gaps" if self.is_unique else f" {self.filled}/{self.total} filled"
         return f"{self.name} ({self.inferred_type}{note}) e.g. {shown}"
-
-
-@dataclass
-class ForeignKeyCandidate:
-    """A column whose values already resolve to entities of a known label."""
-
-    column: str
-    label: str
-    matched: int
-    checked: int
-
-    @property
-    def ratio(self) -> float:
-        return self.matched / self.checked if self.checked else 0.0
-
-    def describe(self) -> str:
-        return (
-            f"{self.column} → {self.label} "
-            f"({self.matched}/{self.checked} sampled values already exist)"
-        )
-
-
-class _ProposedLink(BaseModel):
-    """One relationship the model proposes for a foreign-key column."""
-
-    type: str = Field(description="Relationship name in CAPS_WITH_UNDERSCORES, e.g. WORKS_AT")
-    to: str = Field(description="The label being pointed at. Must be one offered.")
-    by: str = Field(description="The column holding that entity's key. Must be one offered.")
-
-
-class _ProposedMapping(BaseModel):
-    """The narrow set of choices only judgement can make."""
-
-    label: str = Field(description="Which existing ontology label this table's rows describe")
-    name_column: str | None = Field(
-        default=None, description="Column holding the display name, or null if there is none"
-    )
-    links: list[_ProposedLink] = Field(default_factory=list)
-    new_label_reason: str | None = Field(
-        default=None,
-        description=(
-            "Only set when no existing label fits. Explain what the rows are, and put the "
-            "proposed new label in `label`."
-        ),
-    )
-
-
-@dataclass
-class MappingProposal:
-    """A reviewable mapping for a structured source. Nothing is applied.
-
-    ``table`` is usable as-is, but the point of the object is the rest of it:
-    the evidence behind each mechanical choice, and whether the model had to ask
-    for a type the ontology does not have.
-
-    Attributes:
-        table: The proposed mapping.
-        source: The file it was proposed for.
-        evidence: Why each part was chosen — measured facts, not assertions.
-        warnings: Things a reviewer should look at, e.g. unmapped columns.
-        requested_new_label: Set when no existing label fitted. The mapping is
-            still returned, but applying it introduces a type to the ontology,
-            so it wants a decision rather than a nod.
-    """
-
-    table: Table
-    source: str
-    evidence: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    requested_new_label: str | None = None
-    reason_for_new_label: str | None = None
-
-    @property
-    def introduces_a_new_type(self) -> bool:
-        return self.requested_new_label is not None
-
-    def as_code(self) -> str:
-        """The mapping as Python, to commit rather than regenerate.
-
-        A proposal regenerated on every run is a model in the ingest path, and
-        the whole point of a declared mapping is that no model runs there. Commit
-        the output and the load stays deterministic.
-        """
-        anchor = self.table.anchor
-        lines = [f'Table("{anchor.label}",', f'      key="{anchor.key}",']
-        if anchor.name:
-            lines.append(f'      name="{anchor.name}",')
-        for prop, column in anchor.typed_properties.items():
-            if column.type == "STRING":
-                lines.append(f'      {prop}="{column.name}",')
-            else:
-                lines.append(f'      {prop}=Column("{column.name}", "{column.type}"),')
-        if self.table.edges:
-            rendered = ", ".join(
-                f'Link("{edge.type}", to="{target.label}", by="{target.key}")'
-                for edge in self.table.edges
-                for target in [self._node_for(edge.target)]
-                if target is not None
-            )
-            lines.append(f"      links=[{rendered}],")
-        lines.append("      )")
-        return "\n".join(lines)
-
-    def _node_for(self, handle: str) -> Any:
-        for node in self.table.nodes:
-            if node.handle == handle:
-                return node
-        return None
-
-    def summary(self) -> str:
-        """A short report for a human deciding whether to accept this."""
-        out = [f"{self.source} → {self.table.anchor.label}"]
-        out += [f"  {line}" for line in self.evidence]
-        if self.requested_new_label:
-            out.append(
-                f"  ! proposes a NEW type {self.requested_new_label!r}: "
-                f"{self.reason_for_new_label or 'no reason given'}"
-            )
-        out += [f"  ? {line}" for line in self.warnings]
-        return "\n".join(out)
 
 
 def _infer_type(values: list[str]) -> str:
@@ -260,57 +125,96 @@ def profile_columns(
     return profiles
 
 
-async def find_foreign_keys(
-    profiles: list[ColumnProfile],
-    ontology: Ontology,
-    graph_store: Any,
-    *,
-    exclude: str | None = None,
-) -> list[ForeignKeyCandidate]:
-    """Columns whose values already resolve to entities in the graph.
+def natural_mapping(batch: RecordBatch, source: str) -> tuple[TableMapping, list[str]]:
+    """The obvious reading of a table nobody declared a mapping for.
 
-    A foreign key is measurable, not a matter of opinion: an entity's id is
-    derived from its key and its label, so the expected id for a value can be
-    computed and looked up. That is an indexed point lookup rather than a guess,
-    and it distinguishes a real reference from a column that merely looks like
-    one because of its name.
+    ``ingest("employees.csv")`` with no mapping does not fail. Every column
+    becomes a typed property, the label comes from the file name, and the key is
+    the leftmost column that identifies a row. Returns the mapping and the notes
+    worth reporting about how it was arrived at.
+
+    **No name column, so no join.** The types here are *measured* — a column
+    either parses as an integer across the whole file or it does not — but which
+    column identifies the thing a row is *about* is a guess, and a wrong guess
+    silently attaches rows to the wrong entities. That is the failure class this
+    path exists to avoid, so the rows land queryable and unjoined, and the report
+    names declaring a mapping as the way to connect them.
+
+    Profiled over the **whole file**, not a sample: a column that holds integers
+    for five hundred rows and ``"N/A"`` on row five hundred and one would be
+    declared INTEGER from a sample and then fail the load it was meant to
+    describe.
     """
-    labels = [entity.label for entity in ontology.entities]
-    if not labels or graph_store is None:
-        return []
+    profiles = profile_columns(batch, sample_rows=batch.record_count or _WHOLE_FILE)
+    notes: list[str] = []
 
-    candidates: list[ForeignKeyCandidate] = []
+    label = _label_from_source(source)
+    key_profile = pick_key(profiles)
+    if key_profile is None:
+        # Nothing identifies a row, so a row cannot be updated or deleted later.
+        # Refused rather than keyed on the ordinal, which would silently rebind
+        # every row to a different entity the moment the export is re-sorted.
+        raise MappingError(
+            f"{source} has no column that is unique and complete, so no row can "
+            f"be given a stable identity. Declare a mapping naming the key, or "
+            f"add an id column to the export."
+        )
+    notes.append(
+        f"key {key_profile.name!r} — unique and complete across {key_profile.total} row(s)"
+    )
+
+    properties: dict[str, Column | str] = {}
     for profile in profiles:
-        if profile.name == exclude or profile.inferred_type != "STRING":
+        if profile.name == key_profile.name:
             continue
-        probes = [value for value in dict.fromkeys(profile.samples) if value.strip()][:5]
-        if not probes:
-            continue
-        for label in labels:
-            expected = [compute_entity_id(value, label) for value in probes]
-            expected = [candidate_id for candidate_id in expected if candidate_id]
-            if not expected:
-                continue
-            try:
-                result = await graph_store.query_raw(
-                    "UNWIND $ids AS wanted MATCH (n:__Entity__ {id: wanted}) RETURN count(n)",
-                    {"ids": expected},
-                )
-            except Exception:
-                logger.debug("foreign-key probe failed for %s → %s", profile.name, label)
-                continue
-            rows = getattr(result, "result_set", None) or []
-            matched = int(rows[0][0]) if rows and rows[0] else 0
-            if matched and matched / len(expected) >= _FK_MATCH_FLOOR:
-                candidates.append(
-                    ForeignKeyCandidate(
-                        column=profile.name,
-                        label=label,
-                        matched=matched,
-                        checked=len(expected),
-                    )
-                )
-    return candidates
+        property_name = safe_property_name(profile.name)
+        properties[property_name] = Column(profile.name, profile.inferred_type)
+        if property_name != profile.name:
+            notes.append(f"column {profile.name!r} stored as {property_name!r}")
+    typed = [
+        f"{name} {column.type}"
+        for name, column in properties.items()
+        if isinstance(column, Column) and column.type != "STRING"
+    ]
+    if typed:
+        notes.append("measured types: " + ", ".join(sorted(typed)))
+    notes.append(
+        "no name column was declared, so these rows are not joined to anything "
+        "in your documents. Declare a mapping with name=<column> to connect them."
+    )
+    return (
+        TableMapping(
+            source=source,
+            label=label,
+            key=key_profile.name,
+            properties=properties,
+            standalone=True,
+            derived=True,
+            description=f"Derived from {source}; no mapping was declared.",
+        ),
+        notes,
+    )
+
+
+def _label_from_source(source: str) -> str:
+    """A label from the file name — ``employees.csv`` becomes ``employees``.
+
+    Deliberately not title-cased into ``Employees``: that reads like a declared
+    type someone chose, and this one was derived. Keeping the file's own casing
+    makes it obvious in the browser which labels nobody declared.
+    """
+    stem = source.replace("\\", "/").rsplit("/", 1)[-1]
+    if "." in stem:
+        stem = stem[: stem.rindex(".")]
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_")
+    if not cleaned or cleaned[0].isdigit():
+        cleaned = f"t_{cleaned}" if cleaned else "table"
+    return cleaned
+
+
+#: profile_columns takes a row count; this is "all of them" for a batch that did
+#: not report one.
+_WHOLE_FILE = 10_000_000
 
 
 async def count_entities_per_label(ontology: Ontology, graph_store: Any) -> dict[str, int]:
@@ -350,193 +254,3 @@ def pick_key(profiles: list[ColumnProfile]) -> ColumnProfile | None:
         if profile.is_unique:
             return profile
     return None
-
-
-_SYSTEM_PROMPT = """You map a table onto an existing knowledge graph.
-
-You are given a table's columns with real sample values, and the labels that
-already exist in the graph's ontology. Decide only these things:
-
-1. `label` — which EXISTING label the rows describe. Choose from the offered
-   labels. Each is shown with how many entities it already holds, and a label
-   already in use almost always beats an unused one that sounds more natural: if
-   the graph already calls these things `Employee`, answer `Employee`, not
-   `Person`, even though `Person` is offered and reads better. Answering the
-   unused word creates a second set of entities for the same real-world things,
-   which is the one outcome to avoid. Prefer an unused label only when no label
-   in use plausibly describes these rows.
-2. `name_column` — the column holding a human-readable display name, or null.
-   This is what lets a row join a mention of the same thing in a document, so it
-   should be the column a document would spell out, not an internal code.
-3. `links` — for each foreign-key column offered to you, the relationship name
-   in CAPS_WITH_UNDERSCORES, read in the direction row → target.
-
-Only if NO offered label plausibly fits: put your suggested new label in
-`label` and explain in `new_label_reason`. Prefer an existing label.
-
-Do not choose the key column or any column types. Those are measured for you."""
-
-
-def _user_prompt(
-    source: str,
-    profiles: list[ColumnProfile],
-    ontology: Ontology,
-    key: ColumnProfile | None,
-    foreign_keys: list[ForeignKeyCandidate],
-    label_counts: dict[str, int] | None = None,
-) -> str:
-    counts = label_counts or {}
-    # Ordered by how much data each label holds, so the ones in use are read
-    # first and the unused defaults trail behind them.
-    ordered = sorted(ontology.entities, key=lambda e: (-counts.get(e.label, 0), e.label))
-    label_lines = []
-    for entity in ordered:
-        described = f" — {entity.description}" if entity.description else ""
-        held = counts.get(entity.label)
-        in_use = f" [{held} entities already]" if held else " [unused]" if held == 0 else ""
-        label_lines.append(f"  {entity.label}{in_use}{described}")
-
-    fk_lines = [f"  {candidate.describe()}" for candidate in foreign_keys] or ["  (none detected)"]
-    return (
-        f"Table: {source}\n\n"
-        f"Columns:\n" + "\n".join(f"  {profile.describe()}" for profile in profiles) + "\n\n"
-        f"Measured key column: {key.name if key else 'none found'}\n\n"
-        f"Foreign-key columns detected in the graph:\n" + "\n".join(fk_lines) + "\n\n"
-        "Labels already in the ontology:\n" + "\n".join(label_lines) + "\n"
-    )
-
-
-async def propose_mapping(
-    batch: RecordBatch,
-    ontology: Ontology,
-    llm: LLMInterface,
-    *,
-    graph_store: Any = None,
-    source: str | None = None,
-    sample_rows: int = _DEFAULT_SAMPLE_ROWS,
-    max_retries: int = 3,
-    ctx: Context | None = None,
-) -> MappingProposal:
-    """Propose a mapping for a structured source, against the ontology it must fit.
-
-    One model call, at authoring time. Nothing is written and nothing is applied:
-    the result is a :class:`MappingProposal` to review. Commit its ``as_code()``
-    output and the ingest itself stays free of any model.
-    """
-    ctx = ctx or Context()
-    source = source or batch.document_info.uid
-
-    profiles = profile_columns(batch, sample_rows=sample_rows)
-    key = pick_key(profiles)
-    foreign_keys = await find_foreign_keys(
-        profiles, ontology, graph_store, exclude=key.name if key else None
-    )
-    label_counts = await count_entities_per_label(ontology, graph_store)
-    known_labels = {entity.label for entity in ontology.entities}
-
-    def _check(choice: _ProposedMapping) -> list[str]:
-        """Semantic checks the model must satisfy, fed back on failure."""
-        problems: list[str] = []
-        column_names = {profile.name for profile in profiles}
-        if choice.label not in known_labels and not choice.new_label_reason:
-            problems.append(
-                f"label {choice.label!r} is not in the ontology. Choose one of "
-                f"{sorted(known_labels)}, or set new_label_reason to explain why none fit."
-            )
-        if choice.name_column and choice.name_column not in column_names:
-            problems.append(f"name_column {choice.name_column!r} is not a column of this table")
-        offered = {(candidate.column, candidate.label) for candidate in foreign_keys}
-        for link in choice.links:
-            if (link.by, link.to) not in offered:
-                problems.append(
-                    f"link {link.type!r} uses by={link.by!r} to={link.to!r}, which was not "
-                    f"offered. Offered: {sorted(offered) or 'none'}"
-                )
-        return problems
-
-    if key is None:
-        raise MappingProposalError(
-            f"{source}: no column is unique and complete across the sample, so no column "
-            "identifies a row. A structured source needs one; add an id column, or pass a "
-            "mapping by hand naming the key you intend."
-        )
-
-    ctx.log(f"Proposing a mapping for {source}: {len(profiles)} columns, key {key.name!r}")
-    choice = await extract_with_retry(
-        llm,
-        _SYSTEM_PROMPT,
-        _user_prompt(source, profiles, ontology, key, foreign_keys, label_counts),
-        _ProposedMapping,
-        extra_validate=_check,
-        max_retries=max_retries,
-    )
-
-    # Properties: every column that is not the key, the name, or a foreign key,
-    # typed from the data rather than from the model.
-    link_columns = {link.by for link in choice.links}
-    properties: dict[str, Column | str] = {}
-    warnings: list[str] = []
-    for profile in profiles:
-        if profile.name in {key.name, choice.name_column} or profile.name in link_columns:
-            continue
-        if profile.name in RESERVED_PROPERTY_NAMES or profile.name in _TABLE_PARAMETERS:
-            warnings.append(
-                f"column {profile.name!r} clashes with a name the mapping API reserves and "
-                "was left unmapped; give it a property name by hand if you need it, e.g. "
-                f'{profile.name}_value=Column("{profile.name}")'
-            )
-            continue
-        if profile.inferred_type not in COLUMN_TYPES:  # pragma: no cover - defensive
-            continue
-        properties[profile.name] = Column(profile.name, profile.inferred_type)
-
-    links = [Link(link.type, to=link.to, by=link.by) for link in choice.links]
-
-    # Assembled as one mapping rather than as keyword arguments, because the
-    # property names come from a file and only the guard above keeps them from
-    # colliding with the parameters themselves.
-    arguments: dict[str, Any] = {"key": key.name, "name": choice.name_column}
-    if links:
-        arguments["links"] = links
-    arguments.update(properties)
-    table = Table(choice.label, **arguments)
-
-    problems = table.validate_against(batch.columns)
-    if problems:  # pragma: no cover - the validator above should prevent this
-        raise MappingProposalError(
-            f"{source}: the proposed mapping does not fit the source:\n  " + "\n  ".join(problems)
-        )
-
-    evidence = [
-        f"key {key.name!r} — unique and complete across {key.total} sampled rows",
-        f"label {choice.label!r} — chosen from {len(known_labels)} in the ontology"
-        + (
-            f", which already holds {label_counts[choice.label]} entities"
-            if label_counts.get(choice.label)
-            else ", which held nothing before this"
-        ),
-    ]
-    if choice.name_column:
-        evidence.append(f"name {choice.name_column!r} — joins rows to mentions in documents")
-    for candidate in foreign_keys:
-        used = any(link.by == candidate.column and link.to == candidate.label for link in links)
-        evidence.append(f"{candidate.describe()}{'' if used else ' — offered but not linked'}")
-    for prop, column in table.anchor.typed_properties.items():
-        evidence.append(f"{prop} {column.type} — every sampled value parses")
-
-    unmapped = sorted(set(batch.columns) - table.columns)
-    if unmapped:
-        warnings.append("columns not mapped anywhere: " + ", ".join(unmapped))
-
-    return MappingProposal(
-        table=table,
-        source=source,
-        evidence=evidence,
-        warnings=warnings,
-        requested_new_label=(choice.label if choice.label not in known_labels else None),
-        reason_for_new_label=choice.new_label_reason,
-    )
-
-
-class MappingProposalError(RuntimeError):
-    """Raised when a source cannot be mapped without a human deciding something."""

@@ -11,15 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Structured ingestion — CSVs and other tabular sources by declared mapping
 
-- **`GraphRAG.ingest(source, mapping=...)`** — ingest a delimited source by
-  declaring what its columns mean, instead of sending it through the extraction
-  pipeline. No model is involved and the same input always produces the same
-  graph, because identity comes from a declared key and every property type is
-  declared rather than inferred. Run a CSV through the prose path and `age`
-  becomes the string `"34"` if it survives at all; nothing can be averaged,
-  filtered numerically, or joined on a key.
+- **`Ontology(tables=[TableMapping(...)])`** — declare what a table's columns
+  mean as part of the schema, and `ingest(source)` reads it as records instead of
+  sending it through the extraction pipeline. No model is involved and the same
+  input always produces the same graph, because identity comes from a declared
+  key and every property type is declared rather than inferred. Run a CSV through
+  the prose path and `age` becomes the string `"34"` if it survives at all;
+  nothing can be averaged, filtered numerically, or joined on a key.
 
-- **`Table()`** and **`Link()`** are the whole declaration surface. A table
+  There is no `mapping=` argument. A `.csv` routes to the record path on its
+  extension and its mapping is looked up by filename, so the call for a table is
+  the same call as for a document and the two cannot disagree about how a file
+  should be read. A file that really is prose living in columns opts out with
+  `ingest(path, loader=TextLoader())`.
+
+- **`TableMapping()`** and **`Link()`** are the whole declaration surface. A table
   describes one entity per record, and `links=[Link(...)]` turns a column that
   holds another entity's key into an actual edge. Adding a link is an argument
   rather than a rewrite, so a table that turns out to have a foreign key does not
@@ -27,6 +33,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. A mapping is validated
   against the source's real header before anything is written, so one that does
   not fit raises `MappingError` and leaves the graph untouched.
+
+- **One identity scheme for rows and prose.** An entity's id is derived from its
+  **name**, for a table row exactly as for a mention in a document, so the two
+  halves of a graph land on one node from the first write with no merge step —
+  and `key=` on a `TableMapping` is optional, defaulting to the name. The row's
+  key is carried as an unsigned `entity_key` and is what links and re-sync
+  resolve through: a foreign key to a table that has not loaded yet raises a
+  placeholder that is renamed in place onto its name-derived id when the owning
+  source arrives (edges intact), and a row whose name changes between exports
+  keeps its node and its prose description rather than being orphaned. Two rows
+  sharing a name fall back to their key and are reported, since a prose mention
+  of that name is ambiguous and should join neither. `alias_ids` is gone.
+
+- **Every structured property is signed with its source** — `age` declared by
+  `employees.csv` is stored as `employees__age`. Two tables writing one property
+  therefore cannot overwrite each other, and an extracted property (always
+  unsigned) cannot collide with a declared one at all: that is structural rather
+  than guarded. Where two sources disagree the conflict is kept, reported in
+  `finalize().property_conflicts`, and never resolved for you — neither source is
+  preferred. Edge properties declared on a `Link` are signed too.
+
+- **A table with no declared mapping is read as-is** rather than refused. Every
+  column becomes a typed property, with types measured over the whole file rather
+  than a sample, the label taken from the filename and the key the leftmost
+  unique-and-complete column. It declares no name column and so joins nothing:
+  the rows are queryable but unreachable from any document, which
+  `finalize().tables_without_a_mapping` reports. A file with no
+  unique-and-complete column is refused instead of keyed on the row ordinal,
+  which would rebind every row the moment the export was re-sorted.
 
 - **A record is a Chunk** (`kind: "record"`), carrying its cells alongside the
   rendered text, so a row is retrievable and traceable to its source exactly as
@@ -37,11 +72,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   joinable and flagged `is_stub` until the source that owns the entity arrives.
   Order between sources does not matter.
 
-- **Documents and tables land on one node.** A source holding both a key and a
-  name publishes the id an extractor would independently compute for the same
-  thing in `alias_ids`; `finalize()` folds them with the ordinary resolver and
-  carries the typed columns onto the survivor. The bridge is exact string
-  equality on computed ids, never similarity.
+- **Documents and tables land on one node.** `finalize()` groups entities by
+  `(display name, label)` and merges each group, carrying the typed columns onto
+  the survivor — the one whose id came from a declared key, because that id is
+  reproducible. The bridge is exact string equality on the name, never
+  similarity, so a table whose display names are spelled differently from the
+  prose will not join. An `alias_ids` property is also written but nothing reads
+  it; do not reason about the join in terms of it.
+
+- **Data-safety guarantees on the structured path.** Each of these was a load
+  that produced a plausible graph and reported success:
+
+  - A `Table` declared without `name=` — an ordinary fact export — kept its rows
+    through `finalize()`. Step 1's legacy NULL-name cleanup is now scoped to
+    nodes no mapping wrote, having previously deleted every row of such a table
+    during the call the docs tell you to make.
+  - `key="id"`, and any header that is not a usable identifier, are stored under
+    a `col_` property name (`col_id`, `col_hq_country`) and published to the
+    ontology under that name. `key="id"` used to overwrite the node's graph id,
+    costing every row its `MENTIONED_IN` edges and any ability to join to prose;
+    a header with a space reached the driver inside a parameter map and surfaced
+    as a raw `DatabaseError`.
+  - `INTEGER` and `FLOAT` no longer strip every comma. Both separators present
+    means the rightmost is the decimal point, so `1,234.56` and `1.234,56` both
+    read as `1234.56`; a lone comma not followed by three digits is a decimal
+    comma, so `880,5` is `880.5`. `1,234` is refused for `FLOAT` naming both
+    readings, and read as grouping for `INTEGER`. A German export's `880,5` was
+    previously stored as `8805.0`.
+  - Rows whose key cell is blank are reported: `rows_skipped` and
+    `rows_in_source` on `StructuredIngestionResult`, plus a warning naming the
+    column and the row numbers. A four-row file with one blank key reported
+    `records: 3` and nothing else.
+  - Two rows whose declared keys differ but whose display names match stay two
+    entities. Dedup merged them and deleted one, reporting the loss as a
+    successful dedup.
+  - Both passes now complete before anything is written, so a cell that fails its
+    declared type leaves the graph untouched as documented. The Document, a chunk
+    per row and the content hash were previously committed first, and because the
+    document record then existed the retry compared hashes instead of writing.
 
 - **`CsvRecordLoader`** (sniffs comma, semicolon, tab and pipe) plus
   **`RecordLoaderStrategy`** / **`RecordBatch`** for other formats. A record
@@ -55,28 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alone and another add properties to it later. A type contradiction still
   raises.
 
-- **`GraphRAG.propose_mapping(source)`** — proposes a mapping fitted to the
-  graph's existing ontology, so a table cannot invent `Person` beside an
-  `Employee` that already holds data. One model call, at authoring time, and it
-  decides as little as possible: the key column, every column's type and which
-  columns are foreign keys are *measured* (a foreign key by computing the
-  expected entity id and looking it up, so a reference is proven rather than
-  guessed from a column name), and labels are offered with how many entities each
-  already holds. What is left to the model is which existing concept the rows
-  describe and what to call the relationships; a label outside the ontology is
-  rejected and fed back. Returns a reviewable `MappingProposal` carrying the
-  evidence for each choice, `as_code()` for committing, and
-  `requested_new_label` when nothing fitted. Nothing is written or applied.
-
 - **`TextLoader` is exported**, because it is the documented escape for a table
   that really is prose.
 
-- **`GraphRAG(mappings=[...])`** and **`GraphRAG.declare_mapping()`** — register
-  a structured mapping's labels and column types without writing any data. The
-  extractor then has the real labels available while it reads a document instead
-  of guessing from a built-in list, which produces more correct labels first time
-  (9 merges instead of 4 on one corpus). No longer required for correctness, only
-  for quality.
+- **A mapping's labels are registered before anything is extracted**, because it
+  is declared in the ontology passed to `GraphRAG(ontology=...)`. The extractor
+  then has the real labels available while it reads a document instead of
+  guessing from a built-in list, which produces more correct labels first time
+  (9 merges instead of 4 on one corpus). This is what makes the order sources
+  arrive in stop mattering, so it is no longer something a caller can forget.
 
 - **`GraphRAG(enable_cypher=True)`** — turns on text-to-Cypher retrieval, which
   translates a question into a query against the ontology. This is what answers
@@ -94,22 +149,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   working ontology changes. A no-op by default, overridden by
   `MultiPathRetrieval`.
 
-- **Re-syncing a structured source.** Ingesting a table already in the graph now
-  re-syncs it rather than writing over the top, so a row **deleted** from the
-  source is removed instead of persisting forever with an orphaned chunk.
-  `update(..., mapping=...)` is the same operation with stricter semantics, and
-  both run through the existing crash-safe cutover. Cleanup is scoped: an entity
-  another source still mentions survives. `StructuredIngestionResult` reports
-  `chunks_deleted` / `entities_deleted`.
+- **Re-syncing a structured source is the same call.** A table is a snapshot, not
+  an addition, so ingesting one already in the graph re-syncs it rather than
+  writing over the top: a row **deleted** from the source is removed instead of
+  persisting forever with an orphaned chunk. There is no separate update call to
+  reach for. It runs through the existing crash-safe cutover, and cleanup is
+  scoped — an entity another source still mentions survives.
+  `StructuredIngestionResult` reports `chunks_deleted` / `entities_deleted`. The
+  content hash covers the mapping as well as the rows, so re-declaring a column's
+  type re-writes the source instead of no-opping on unchanged content and leaving
+  the old typing in place.
 
-- **`examples/12_hybrid_walkthrough.ipynb`** — a notebook that ingests two
-  synthetic PDFs and three CSVs into one graph, printing a Cypher query at each
-  step to paste into the FalkorDB browser so the graph can be watched as it
-  forms. Generates its own data, including the PDFs via a small dependency-free
-  writer, so nothing binary is committed and a re-run starts clean. Covers
-  proposal, hand-written mappings, two links from one row, the join at
-  `finalize()`, all three classes of question, a re-sync that removes a departed
-  row, and the two refusals.
+- **`examples/13_documents_and_tables.ipynb`** — a notebook that loads a PDF, a
+  CSV, another PDF and another CSV into one graph, then a corrected version of
+  the first CSV. It stops at each stage with an entity and relationship count and
+  a query to paste into the FalkorDB browser, so the reference nodes created by a
+  forward pointer can be seen before the source that names them arrives. Covers
+  the declared ontology, signed properties, the join at `finalize()`, a
+  relational question and an aggregate one, and the re-sync that promotes one
+  person, removes another and adds a third.
 
 - See `examples/11_structured_ingestion.py` and the
   [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)

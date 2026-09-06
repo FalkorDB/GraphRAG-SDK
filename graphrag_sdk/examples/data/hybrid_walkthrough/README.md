@@ -1,6 +1,6 @@
 # hybrid_walkthrough fixtures
 
-Synthetic data for `../../12_hybrid_walkthrough.ipynb`. No real company or person
+Synthetic data for `../../13_documents_and_tables.ipynb`. No real company or person
 appears here. Small enough to read in full before running anything.
 
 | file | role |
@@ -21,5 +21,8 @@ the CSVs. That is what makes the two halves merge into one entity: the match is
 exact string equality on the name, so changing a spelling on one side only will
 leave you with two nodes where the notebook expects one.
 
-Swapping in your own files is the point — keep the column names, or edit the
-`Table(...)` declarations in the notebook to match yours.
+Swapping in your own files is the point — keep the file names and the column
+names, or edit the `TableMapping(...)` declarations in the notebook's `ONTOLOGY`
+to match yours. The file name matters as well as the columns: `ingest` finds a
+mapping by the source's basename, and every property a table writes is stored
+under that name (`organizations.csv` writes `organizations__country`).

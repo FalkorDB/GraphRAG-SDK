@@ -223,6 +223,8 @@ guards the default.
 | 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
 | 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
 | 7 | [Incremental Updates](graphrag_sdk/examples/07_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |
+| 11 | [Structured Ingestion](graphrag_sdk/examples/11_structured_ingestion.py) | Declared mappings end to end, with a re-ingest that corrects a row, adds one and drops one |
+| 13 | [Documents and Tables](graphrag_sdk/examples/13_documents_and_tables.ipynb) | A notebook: a PDF, a CSV, a PDF and a CSV, then a corrected export — with a checkpoint to inspect the graph at each stage |
 
 ---
 
@@ -249,7 +251,7 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 - 2025-Q3: Sharper retrieval, deeper test coverage
 - 🎉 2026-04: Version 1.0 is released with a new set of benchmarks based on a year's worth of research and customer PoCs
   - 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`
-- 2026-Q2: Production observability; expand ingestion support — tables, structured data
+- 2026-Q2: Production observability; **tabular ingestion** — load a CSV by declaring what its columns mean, so a row and a paragraph about the same thing become one node ([docs](https://docs.falkordb.com/graphrag/structured-ingestion))
 - 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
 - 2026-Q4: Smarter retrieval — dynamic traversal, temporal graph
 

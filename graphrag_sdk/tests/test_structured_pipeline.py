@@ -16,7 +16,13 @@ import pytest
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.loaders.record_loader import CsvRecordLoader
-from graphrag_sdk.ingestion.mapping import Column, Link, MappingError, Table
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    Link,
+    MappingError,
+    TableMapping,
+    record_mapping_for,
+)
 from graphrag_sdk.ingestion.structured_pipeline import (
     StructuredIngestionPipeline,
     record_cells,
@@ -50,6 +56,14 @@ class RecordingGraphStore:
         self.queries.append((cypher, params or {}))
         return AsyncMock(result_set=[])
 
+    # Identity reconciliation reads the graph; with nothing stored there is
+    # nothing to resolve or rename, which is what a fresh write sees.
+    async def resolve_by_entity_key(self, label, keys):
+        return {}
+
+    async def reconcile_keyed_identity(self, label, rows):
+        return {"renamed": 0, "merged": 0}
+
     def __getattr__(self, name):
         # The lexical writer touches more of the store than this test needs.
         return AsyncMock(return_value=0)
@@ -69,14 +83,18 @@ class RecordingGraphStore:
         return sorted(r.properties.get("rel_type", r.type) for r in self.relationships)
 
 
-EMPLOYEES = Table(
-    "Person",
+EMPLOYEES_TABLE = TableMapping(
+    source="employees.csv",
+    label="Person",
     key="employee_id",
     name="full_name",
-    age=Column("age", "INTEGER"),
-    title=Column("job_title"),
+    properties={"age": Column("age", "INTEGER"), "title": Column("job_title")},
     links=[Link("WORKS_AT", to="Organization", by="org_id")],
 )
+# The write path wants the declaration flattened into nodes and edges, and that
+# translation is where the source's signature is stamped on: every property this
+# table writes lands as ``employees__<property>``.
+EMPLOYEES = record_mapping_for(EMPLOYEES_TABLE)
 
 
 @pytest.fixture
@@ -138,34 +156,41 @@ class TestStructuredIngest:
         averaged, not the string "34"."""
         pipe, store = pipeline
         await pipe.run(str(employees_csv), EMPLOYEES, ctx)
-        alice = store.node(compute_entity_id("E-1", "Person"))
-        assert alice.properties["age"] == 34
-        assert isinstance(alice.properties["age"], int)
-        assert alice.properties["title"] == "Engineer"
+        alice = store.node(compute_entity_id("Alice Smith", "Person"))
+        assert alice.properties["employees__age"] == 34
+        assert isinstance(alice.properties["employees__age"], int)
+        assert alice.properties["employees__title"] == "Engineer"
         assert alice.properties["name"] == "Alice Smith"
-        assert alice.properties["employee_id"] == "E-1"
+        assert alice.properties["employees__employee_id"] == "E-1"
 
-    async def test_identity_comes_from_the_declared_key(
-        self, pipeline, employees_csv, ctx: Context
-    ):
-        pipe, store = pipeline
-        await pipe.run(str(employees_csv), EMPLOYEES, ctx)
-        assert {n.id for n in store.entity_nodes()} == {
-            compute_entity_id("E-1", "Person"),
-            compute_entity_id("E-2", "Person"),
-        }
-
-    async def test_a_keyed_and_named_node_publishes_the_extracted_id_as_an_alias(
-        self, pipeline, employees_csv, ctx: Context
-    ):
-        """This is the bridge between the two halves of the graph. The node is
-        keyed E-1, but prose about "Alice Smith" resolves to a different id, so
-        the source that holds both publishes the one an extractor would compute.
+    async def test_identity_comes_from_the_name(self, pipeline, employees_csv, ctx: Context):
+        """One identity scheme for both halves. A row's id is derived from its
+        name exactly as a prose mention's is, so "Alice Smith" in a PDF and
+        ``E-1, Alice Smith`` in a CSV are the same node with no merge step.
+        The key is carried beside it as ``entity_key``, for links and re-sync.
         """
         pipe, store = pipeline
         await pipe.run(str(employees_csv), EMPLOYEES, ctx)
-        alice = store.node(compute_entity_id("E-1", "Person"))
-        assert alice.properties["alias_ids"] == [compute_entity_id("Alice Smith", "Person")]
+        assert {n.id for n in store.entity_nodes()} == {
+            compute_entity_id("Alice Smith", "Person"),
+            compute_entity_id("Bob Jones", "Person"),
+        }
+        alice = store.node(compute_entity_id("Alice Smith", "Person"))
+        assert alice.properties["entity_key"] == "E-1"
+
+    async def test_a_named_node_needs_no_alias_to_meet_its_prose_mention(
+        self, pipeline, employees_csv, ctx: Context
+    ):
+        """There used to be an ``alias_ids`` bridge: the node was keyed E-1, prose
+        about "Alice Smith" resolved to a different id, so the row published the
+        id an extractor would compute. With one identity scheme the two ids are
+        the same string, and the bridge has nothing to bridge.
+        """
+        pipe, store = pipeline
+        await pipe.run(str(employees_csv), EMPLOYEES, ctx)
+        alice = store.node(compute_entity_id("Alice Smith", "Person"))
+        assert alice.id == compute_entity_id("Alice Smith", "Person")
+        assert "alias_ids" not in alice.properties
 
     async def test_a_foreign_key_is_written_as_a_reference_not_an_entity(
         self, pipeline, employees_csv, ctx: Context
@@ -177,18 +202,21 @@ class TestStructuredIngest:
         assert result.references == 2
         assert {r.id for r in store.references} == {compute_entity_id("ORG-42", "Organization")}
         # Keyed, so a later source and a generated query can both join on it.
-        assert store.references[0].properties["org_id"] == "ORG-42"
+        assert store.references[0].properties["employees__org_id"] == "ORG-42"
         assert all(n.label != "Organization" for n in store.entity_nodes())
 
     async def test_a_reference_with_a_name_column_labels_the_stub(self, tmp_path, ctx: Context):
         """A denormalised name makes the stub "Acme Corp" instead of "ORG-42"."""
         path = tmp_path / "e.csv"
         path.write_text("employee_id,full_name,org_id,org_name\nE-1,Alice,ORG-42,Acme Corp\n")
-        mapping = Table(
-            "Person",
-            key="employee_id",
-            name="full_name",
-            links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+        mapping = record_mapping_for(
+            TableMapping(
+                source="e.csv",
+                label="Person",
+                key="employee_id",
+                name="full_name",
+                links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+            )
         )
         store = RecordingGraphStore()
         pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
@@ -276,7 +304,9 @@ class TestStructuredIngest:
         path.write_text("org_id,org_name,salary\nORG-1,Acme,100\n")
         store = RecordingGraphStore()
         pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
-        mapping = Table("Organization", key="org_id", name="org_name")
+        mapping = record_mapping_for(
+            TableMapping(source="extra.csv", label="Organization", key="org_id", name="org_name")
+        )
         with pytest.raises(MappingError, match="salary"):
             await pipe.run(str(path), mapping, ctx, strict=True)
         await pipe.run(str(path), mapping, ctx)  # permissive by default
@@ -286,7 +316,11 @@ class TestStructuredIngest:
         path.write_text("org_id,org_name\n")
         store = RecordingGraphStore()
         pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
-        mapping = Table("Organization", key="org_id", name="org_name")
+        mapping = record_mapping_for(
+            TableMapping(
+                source="headers_only.csv", label="Organization", key="org_id", name="org_name"
+            )
+        )
         result = await pipe.run(str(path), mapping, ctx)
         assert result.records == 0
         assert store.entity_nodes() == []
@@ -303,7 +337,14 @@ class TestStructuredIngest:
     ):
         path = tmp_path / "same.csv"
         path.write_text("a_id,b_id\nX-1,X-1\n")
-        mapping = Table("Thing", key="a_id", links=[Link("LINKS", to="Thing", by="b_id")])
+        mapping = record_mapping_for(
+            TableMapping(
+                source="same.csv",
+                label="Thing",
+                key="a_id",
+                links=[Link("LINKS", to="Thing", by="b_id")],
+            )
+        )
         store = RecordingGraphStore()
         pipe = StructuredIngestionPipeline(loader=CsvRecordLoader(), graph_store=store)
         result = await pipe.run(str(path), mapping, ctx)
@@ -319,7 +360,15 @@ class TestRowsSharingAKey:
     column turns out not to be unique lost rows with nothing raised or logged.
     """
 
-    MAPPING = Table("Org", key="k", name="n", v=Column("v", "INTEGER"))
+    MAPPING = record_mapping_for(
+        TableMapping(
+            source="dup.csv",
+            label="Org",
+            key="k",
+            name="n",
+            properties={"v": Column("v", "INTEGER")},
+        )
+    )
 
     @pytest.fixture
     def duplicate_csv(self, tmp_path):
@@ -335,13 +384,23 @@ class TestRowsSharingAKey:
         assert len(chunks) == 3, "no row may be dropped because another shares its key"
         assert len({c.id for c in chunks}) == 3, "and their ids must differ"
 
-    async def test_rows_sharing_a_key_are_one_entity(self, pipeline, duplicate_csv, ctx: Context):
+    async def test_rows_sharing_a_key_but_not_a_name_are_separate_entities(
+        self, pipeline, duplicate_csv, ctx: Context
+    ):
+        """``K1, First`` and ``K1, Second`` disagree about what K1 is. Identity is
+        the name, so they are two entities both carrying ``entity_key = K1`` —
+        and the repeated-key warning (next test) is what says the data is
+        contradictory. Collapsing them on the key silently kept one name and
+        lost the other; this keeps both and says so.
+        """
         pipe, store = pipeline
         await pipe.run(duplicate_csv, self.MAPPING, ctx)
         assert {n.id for n in store.entity_nodes()} == {
-            compute_entity_id("K1", "Org"),
-            compute_entity_id("K2", "Org"),
+            compute_entity_id("First", "Org"),
+            compute_entity_id("Second", "Org"),
+            compute_entity_id("Other", "Org"),
         }
+        assert {n.properties["entity_key"] for n in store.entity_nodes()} == {"K1", "K2"}
 
     async def test_a_repeated_key_is_reported(self, pipeline, duplicate_csv, ctx, caplog):
         """Silently collapsing rows onto one entity is the kind of thing that is

@@ -2,8 +2,13 @@
 
 A mapping is the whole contract between a table and the graph. Everything it
 gets wrong is wrong silently later, in a graph that looks populated, so these
-tests are mostly about rejection: the malformed declaration must fail at
-construction, where the traceback still points at the user's own code.
+tests are mostly about rejection: the malformed declaration must fail while it
+is being declared or normalised, where the traceback still points at the user's
+own code.
+
+A user writes a :class:`TableMapping` and hands it to the ontology;
+``record_mapping_for()`` is the translation into the nodes-and-edges form the
+write path consumes, and it is where a link's own faults surface.
 """
 
 from __future__ import annotations
@@ -18,7 +23,8 @@ from graphrag_sdk.ingestion.mapping import (
     MappingError,
     NodeMapping,
     RecordMapping,
-    Table,
+    TableMapping,
+    record_mapping_for,
 )
 
 
@@ -200,10 +206,15 @@ class TestToOntology:
         symptom is remote from the cause: CSVs ingest fine, then documents
         produce nameless nodes that later resolve into nothing.
         """
-        mapping = Table("Organization", key="org_id", name="org_name")
-        declared = {p.name for p in mapping.to_ontology().entities[0].properties}
+        mapping = TableMapping(
+            source="orgs.csv", label="Organization", key="org_id", name="org_name"
+        )
+        entity = record_mapping_for(mapping).to_ontology().entities[0]
+        declared = {p.name for p in entity.properties}
         assert "name" not in declared
-        assert "org_id" in declared
+        # The key is still published, under the name the write path gives it:
+        # a declared mapping signs what it writes with its source.
+        assert mapping.signed_name("org_id") in declared
 
     def test_a_key_column_called_name_cannot_smuggle_it_back(self):
         """`name` must not become a declared attribute, whatever the header is.
@@ -211,15 +222,16 @@ class TestToOntology:
         Declaring it lets the extractor answer it with a null for prose mentions
         and blank out the display name of everything it extracts. It is still
         never declared — but the key is no longer dropped to achieve that: a
-        header the SDK owns is published under its ``col_`` name, so the column
-        the user declared as identity stays queryable instead of vanishing from
-        the ontology without a word.
+        header the SDK owns is published under its signed ``col_`` name, so the
+        column the user declared as identity stays queryable instead of
+        vanishing from the ontology without a word.
         """
-        mapping = Table("Organization", key="name")
-        declared = {p.name for p in mapping.to_ontology().entities[0].properties}
+        mapping = TableMapping(source="orgs.csv", label="Organization", key="name")
+        record = record_mapping_for(mapping)
+        declared = {p.name for p in record.to_ontology().entities[0].properties}
         assert "name" not in declared
-        assert declared == {"col_name"}
-        assert mapping.nodes[0].key_property == "col_name"
+        assert declared == {mapping.signed_name("col_name")}
+        assert record.nodes[0].key_property == "col_name"
 
     def test_edge_patterns_are_declared_with_endpoint_labels(self):
         mapping = RecordMapping(
@@ -246,16 +258,19 @@ class TestToOntology:
         assert labels == {"Person", "Organization"}
 
 
-class TestTableShorthand:
+class TestTableMappingShorthand:
     def test_table_is_one_node_keyed_and_named(self):
-        mapping = Table(
-            "Organization",
+        mapping = TableMapping(
+            source="orgs.csv",
+            label="Organization",
             key="org_id",
             name="org_name",
-            hq_country="hq_country",
-            employee_count=Column("employee_count", "INTEGER"),
+            properties={
+                "hq_country": "hq_country",
+                "employee_count": Column("employee_count", "INTEGER"),
+            },
         )
-        node = mapping.anchor
+        node = record_mapping_for(mapping).anchor
         assert (node.label, node.key, node.name) == ("Organization", "org_id", "org_name")
         assert node.properties["employee_count"].type == "INTEGER"
         assert node.properties["hq_country"].type == "STRING"
@@ -319,20 +334,27 @@ class TestCastingRefusesValuesThatPoisonQueries:
         assert Column("tags", "LIST").cast("a,b, c") == ["a", "b", "c"]
 
 
-class TestTableIsTheOnlyFormYouWrite:
+class TestTableMappingIsTheOnlyFormYouWrite:
     """One declaration that grows, instead of two that you switch between.
 
     A table with a foreign key used to require rewriting the whole declaration
     into a different shape. Adding a link is now an argument, not a rewrite.
+
+    The declaration is what the user writes; ``record_mapping_for()`` is the
+    normalised nodes-and-edges form the write path reads, so that is what these
+    tests inspect.
     """
 
     def test_a_link_adds_a_reference_and_an_edge(self):
-        table = Table(
-            "Person",
-            key="employee_id",
-            name="full_name",
-            age=Column("age", "INTEGER"),
-            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        table = record_mapping_for(
+            TableMapping(
+                source="hr.csv",
+                label="Person",
+                key="employee_id",
+                name="full_name",
+                properties={"age": Column("age", "INTEGER")},
+                links=[Link("WORKS_AT", to="Organization", by="org_id")],
+            )
         )
         assert [n.label for n in table.nodes] == ["Person", "Organization"]
         assert table.anchor.label == "Person", "the subject stays the record's own entity"
@@ -345,48 +367,72 @@ class TestTableIsTheOnlyFormYouWrite:
         ]
 
     def test_a_table_without_links_is_unchanged(self):
-        table = Table("Organization", key="org_id", name="org_name", hq="hq_country")
+        table = record_mapping_for(
+            TableMapping(
+                source="orgs.csv",
+                label="Organization",
+                key="org_id",
+                name="org_name",
+                properties={"hq": "hq_country"},
+            )
+        )
         assert len(table.nodes) == 1
         assert table.edges == []
 
     def test_a_link_may_name_its_target(self):
         """A denormalised name makes the placeholder "Acme Corp" not "ORG-42"."""
-        table = Table(
-            "Person",
-            key="e",
-            links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+        table = record_mapping_for(
+            TableMapping(
+                source="hr.csv",
+                label="Person",
+                key="e",
+                links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+            )
         )
         assert table.nodes[1].name == "org_name"
 
     def test_link_properties_land_on_the_edge(self):
-        table = Table(
-            "Person",
-            key="e",
-            links=[
-                Link(
-                    "WORKS_AT",
-                    to="Organization",
-                    by="org_id",
-                    properties={"since": Column("start_date", "DATE")},
-                )
-            ],
+        table = record_mapping_for(
+            TableMapping(
+                source="hr.csv",
+                label="Person",
+                key="e",
+                links=[
+                    Link(
+                        "WORKS_AT",
+                        to="Organization",
+                        by="org_id",
+                        properties={"since": Column("start_date", "DATE")},
+                    )
+                ],
+            )
         )
         assert table.edges[0].typed_properties["since"].type == "DATE"
 
     def test_the_ontology_declares_the_relationship_pattern(self):
-        table = Table("Person", key="e", links=[Link("WORKS_AT", to="Organization", by="org_id")])
+        table = record_mapping_for(
+            TableMapping(
+                source="hr.csv",
+                label="Person",
+                key="e",
+                links=[Link("WORKS_AT", to="Organization", by="org_id")],
+            )
+        )
         relation = table.to_ontology().relations[0]
         assert relation.label == "WORKS_AT"
         assert list(relation.patterns) == [("Person", "Organization")]
 
     def test_two_links_to_the_same_label_get_distinct_handles(self):
-        table = Table(
-            "Contract",
-            key="contract_id",
-            links=[
-                Link("BUYER", to="Organization", by="buyer_id"),
-                Link("SELLER", to="Organization", by="seller_id"),
-            ],
+        table = record_mapping_for(
+            TableMapping(
+                source="contracts.csv",
+                label="Contract",
+                key="contract_id",
+                links=[
+                    Link("BUYER", to="Organization", by="buyer_id"),
+                    Link("SELLER", to="Organization", by="seller_id"),
+                ],
+            )
         )
         assert len({n.handle for n in table.nodes}) == 3, "handles must stay unique"
         assert {e.target for e in table.edges} == {n.handle for n in table.nodes[1:]}
@@ -394,11 +440,25 @@ class TestTableIsTheOnlyFormYouWrite:
     def test_a_link_on_the_records_own_key_is_rejected(self):
         """It would link the record to itself, which says nothing."""
         with pytest.raises(MappingError, match="own key"):
-            Table("Person", key="employee_id", links=[Link("KNOWS", to="Person", by="employee_id")])
+            record_mapping_for(
+                TableMapping(
+                    source="hr.csv",
+                    label="Person",
+                    key="employee_id",
+                    links=[Link("KNOWS", to="Person", by="employee_id")],
+                )
+            )
 
     def test_links_must_be_link_objects(self):
         with pytest.raises(MappingError, match="must contain Link objects"):
-            Table("Person", key="e", links=[("WORKS_AT", "Organization", "org_id")])  # type: ignore[list-item]
+            record_mapping_for(
+                TableMapping(
+                    source="hr.csv",
+                    label="Person",
+                    key="e",
+                    links=[("WORKS_AT", "Organization", "org_id")],  # type: ignore[list-item]
+                )
+            )
 
     def test_a_link_validates_its_names(self):
         with pytest.raises(MappingError, match="not a usable name"):
@@ -407,8 +467,9 @@ class TestTableIsTheOnlyFormYouWrite:
             Link("WORKS_AT", to="Org`) DELETE (n) //", by="org_id")
 
     def test_columns_include_every_column_a_link_reads(self):
-        table = Table(
-            "Person",
+        table = TableMapping(
+            source="hr.csv",
+            label="Person",
             key="employee_id",
             name="full_name",
             links=[
@@ -421,11 +482,20 @@ class TestTableIsTheOnlyFormYouWrite:
                 )
             ],
         )
-        assert table.columns == {"employee_id", "full_name", "org_id", "org_name", "start_date"}
+        expected = {"employee_id", "full_name", "org_id", "org_name", "start_date"}
+        assert table.columns == expected
+        # The declaration and the form the write path reads must agree: the
+        # header check runs against one and the rows are read through the other.
+        assert record_mapping_for(table).columns == expected
 
     def test_validation_against_a_header_covers_link_columns(self):
-        table = Table(
-            "Person", key="employee_id", links=[Link("WORKS_AT", to="Organization", by="org_id")]
+        table = record_mapping_for(
+            TableMapping(
+                source="hr.csv",
+                label="Person",
+                key="employee_id",
+                links=[Link("WORKS_AT", to="Organization", by="org_id")],
+            )
         )
         assert table.validate_against(["employee_id", "org_id"]) == []
         problems = table.validate_against(["employee_id"])
@@ -438,14 +508,17 @@ class TestTableIsTheOnlyFormYouWrite:
         one, and the failure surfaced as a complaint about "duplicate aliases" —
         a word the caller never wrote.
         """
-        table = Table(
-            "Contract",
-            key="contract_id",
-            links=[
-                Link("PARTY_TO", to="Organization", by="a_id"),
-                Link("PARTY_TO", to="Organization", by="b_id"),
-                Link("PARTY_TO", to="Organization", by="c_id"),
-            ],
+        table = record_mapping_for(
+            TableMapping(
+                source="contracts.csv",
+                label="Contract",
+                key="contract_id",
+                links=[
+                    Link("PARTY_TO", to="Organization", by="a_id"),
+                    Link("PARTY_TO", to="Organization", by="b_id"),
+                    Link("PARTY_TO", to="Organization", by="c_id"),
+                ],
+            )
         )
         assert [n.key for n in table.nodes] == ["contract_id", "a_id", "b_id", "c_id"]
         assert len({n.handle for n in table.nodes}) == 4
@@ -453,33 +526,62 @@ class TestTableIsTheOnlyFormYouWrite:
 
     def test_two_links_naming_the_same_target_twice_are_refused(self):
         with pytest.raises(MappingError, match="same target twice"):
-            Table(
-                "Contract",
-                key="contract_id",
-                links=[
-                    Link("A", to="Organization", by="a_id"),
-                    Link("B", to="Organization", by="org_id"),
-                    Link("C", to="Organization", by="org_id"),
-                ],
+            record_mapping_for(
+                TableMapping(
+                    source="contracts.csv",
+                    label="Contract",
+                    key="contract_id",
+                    links=[
+                        Link("A", to="Organization", by="a_id"),
+                        Link("B", to="Organization", by="org_id"),
+                        Link("C", to="Organization", by="org_id"),
+                    ],
+                )
             )
 
     def test_a_link_may_point_at_the_records_own_label(self):
         """A manager is a Person too. Only the record's own *key* is refused."""
-        table = Table(
-            "Person", key="employee_id", links=[Link("MANAGES", to="Person", by="manager_id")]
+        table = record_mapping_for(
+            TableMapping(
+                source="hr.csv",
+                label="Person",
+                key="employee_id",
+                links=[Link("MANAGES", to="Person", by="manager_id")],
+            )
         )
         assert [n.key for n in table.nodes] == ["employee_id", "manager_id"]
 
     def test_a_property_cannot_be_called_name(self):
-        """Structurally impossible: ``name`` binds to the display-name parameter,
-        so it can never reach the property map."""
-        table = Table("Organization", key="org_id", **{"name": "org_name"})
-        assert table.anchor.name == "org_name"
-        assert table.anchor.properties == {}
+        """``name`` can never reach the property map: it binds to the
+        display-name parameter, and the property map refuses the word outright.
+        """
+        table = TableMapping(source="orgs.csv", label="Organization", key="org_id", name="org_name")
+        assert record_mapping_for(table).anchor.name == "org_name"
+        assert record_mapping_for(table).anchor.properties == {}
+        with pytest.raises(MappingError, match="written by the SDK"):
+            TableMapping(
+                source="orgs.csv",
+                label="Organization",
+                key="org_id",
+                properties={"name": "org_name"},
+            )
 
     def test_link_order_does_not_change_the_fingerprint(self):
         """Reordering a declaration is not a change, so it must not force a
         re-sync of an unchanged source."""
-        a = Table("P", key="k", links=[Link("A", to="X", by="x"), Link("B", to="Y", by="y")])
-        b = Table("P", key="k", links=[Link("B", to="Y", by="y"), Link("A", to="X", by="x")])
-        assert a.fingerprint == b.fingerprint
+        a = TableMapping(
+            source="p.csv",
+            label="P",
+            key="k",
+            links=[Link("A", to="X", by="x"), Link("B", to="Y", by="y")],
+        )
+        b = TableMapping(
+            source="p.csv",
+            label="P",
+            key="k",
+            links=[Link("B", to="Y", by="y"), Link("A", to="X", by="x")],
+        )
+        # The digest ``update()``'s no-op short circuit folds in, ...
+        assert record_mapping_for(a).fingerprint == record_mapping_for(b).fingerprint
+        # ... and the one that tells a re-declaration from the same declaration.
+        assert a.fingerprint_of_declaration == b.fingerprint_of_declaration

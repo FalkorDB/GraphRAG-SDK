@@ -14,7 +14,14 @@ import logging
 
 import pytest
 
-from graphrag_sdk import Column, ExactMatchResolution, Link, Table
+from graphrag_sdk import (
+    Column,
+    Entity,
+    ExactMatchResolution,
+    Link,
+    Ontology,
+    TableMapping,
+)
 from graphrag_sdk.ingestion.mapping import MappingError
 
 
@@ -34,19 +41,30 @@ class TestNothingIsDeletedWithoutSaying:
         Reading nodes before the call and none after, reported only as a
         legacy-stub count.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Reading")],
+            tables=[
+                TableMapping(
+                    source="readings.csv",
+                    label="Reading",
+                    key="reading_id",
+                    properties={
+                        "sensor_code": "sensor_code",
+                        "value": Column("value", "FLOAT"),
+                    },
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "readings.csv"
         path.write_text("reading_id,sensor_code,value\nR-1,S-100,42.5\nR-2,S-101,17.25\n")
-        mapping = Table(
-            "Reading",
-            key="reading_id",
-            sensor_code="sensor_code",
-            value=Column("value", "FLOAT"),
-        )
-        await rag.ingest(str(path), mapping=mapping)
+        await rag.ingest(str(path))
         summary = await rag.finalize()
 
-        rows = await rag.query("MATCH (n:Reading) RETURN n.reading_id ORDER BY n.reading_id")
+        rows = await rag.query(
+            "MATCH (n:Reading) RETURN n.readings__reading_id ORDER BY n.readings__reading_id"
+        )
         assert [r[0] for r in rows] == ["R-1", "R-2"]
         assert summary.null_stubs_removed == 0
         await rag.close()
@@ -60,19 +78,28 @@ class TestNothingIsDeletedWithoutSaying:
         five-row export arriving as four people, reported as a successful dedup.
         A declared key is an assertion of identity and outranks a shared name.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="people.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"age": Column("age", "INTEGER")},
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "people.csv"
-        path.write_text(
-            "employee_id,full_name,age\nE-1,John Smith,34\nE-7,John Smith,52\n"
-        )
-        mapping = Table(
-            "Person", key="employee_id", name="full_name", age=Column("age", "INTEGER")
-        )
-        await rag.ingest(str(path), mapping=mapping)
+        path.write_text("employee_id,full_name,age\nE-1,John Smith,34\nE-7,John Smith,52\n")
+        await rag.ingest(str(path))
         await rag.finalize()
 
         rows = await rag.query(
-            "MATCH (p:Person) RETURN p.employee_id, p.age ORDER BY p.employee_id"
+            "MATCH (p:Person) RETURN p.people__employee_id, p.people__age "
+            "ORDER BY p.people__employee_id"
         )
         assert rows == [["E-1", 34], ["E-7", 52]]
         await rag.close()
@@ -86,19 +113,26 @@ class TestNothingIsDeletedWithoutSaying:
         was written, false about what the file said, with nothing to tell the two
         apart. On a re-sync a newly-blank key also deletes the row's entity.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="gap.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"age": Column("age", "INTEGER")},
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "gap.csv"
         path.write_text(
-            "employee_id,full_name,age\n"
-            "E-1,Maya Ellison,34\n"
-            ",Tomas Reyes,47\n"
-            "E-3,Priya Raman,39\n"
-        )
-        mapping = Table(
-            "Person", key="employee_id", name="full_name", age=Column("age", "INTEGER")
+            "employee_id,full_name,age\nE-1,Maya Ellison,34\n,Tomas Reyes,47\nE-3,Priya Raman,39\n"
         )
         with caplog.at_level(logging.WARNING):
-            result = await rag.ingest(str(path), mapping=mapping)
+            result = await rag.ingest(str(path))
 
         assert result.rows_skipped == 1
         assert result.rows_in_source == 3
@@ -120,7 +154,20 @@ class TestAFailedLoadWritesNothing:
         the retry routed through ``update()`` and compared hashes instead of
         writing. The graph stayed broken with nothing raised.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="people.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"age": Column("age", "INTEGER")},
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "people.csv"
         path.write_text(
             "employee_id,full_name,age\n"
@@ -128,11 +175,8 @@ class TestAFailedLoadWritesNothing:
             "E-2,Tomas Reyes,N/A\n"
             "E-3,Priya Raman,39\n"
         )
-        mapping = Table(
-            "Person", key="employee_id", name="full_name", age=Column("age", "INTEGER")
-        )
         with pytest.raises(MappingError, match="declares INTEGER but holds 'N/A'"):
-            await rag.ingest(str(path), mapping=mapping)
+            await rag.ingest(str(path))
 
         for label in ("Document", "Chunk", "Person"):
             count = await rag.query(f"MATCH (n:{label}) RETURN count(n)")
@@ -143,7 +187,7 @@ class TestAFailedLoadWritesNothing:
             "employee_id,full_name,age\n"
             "E-1,Maya Ellison,34\nE-2,Tomas Reyes,47\nE-3,Priya Raman,39\n"
         )
-        result = await rag.ingest(str(path), mapping=mapping)
+        result = await rag.ingest(str(path))
         assert result.records == 3
         assert not result.replaced_existing
         await rag.close()
@@ -159,18 +203,30 @@ class TestEveryDeclaredColumnIsQueryable:
         its MENTIONED_IN edges — no provenance and no way to join to prose — on a
         load that reported success.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="people.csv",
+                    label="Person",
+                    key="id",
+                    name="full_name",
+                    properties={"age": Column("age", "INTEGER")},
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "people.csv"
         path.write_text("id,full_name,age\n1,Maya Ellison,34\n2,Tomas Reyes,47\n")
-        mapping = Table("Person", key="id", name="full_name", age=Column("age", "INTEGER"))
-        await rag.ingest(str(path), mapping=mapping)
+        await rag.ingest(str(path))
 
-        mentions = await rag.query(
-            "MATCH (:Person)-[:MENTIONED_IN]->(c:Chunk) RETURN count(c)"
-        )
+        mentions = await rag.query("MATCH (:Person)-[:MENTIONED_IN]->(c:Chunk) RETURN count(c)")
         assert mentions[0][0] == 2
 
-        rows = await rag.query("MATCH (p:Person) RETURN p.id, p.col_id ORDER BY p.col_id")
+        rows = await rag.query(
+            "MATCH (p:Person) RETURN p.id, p.people__col_id ORDER BY p.people__col_id"
+        )
         assert [r[1] for r in rows] == ["1", "2"]
         assert all(r[0] not in ("1", "2") for r in rows), "graph id was overwritten"
         await rag.close()
@@ -185,15 +241,25 @@ class TestEveryDeclaredColumnIsQueryable:
         surfaced as ``DatabaseError: Invalid input at end of input``, from a query
         the caller never wrote.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Organization")],
+            tables=[
+                TableMapping(
+                    source="orgs.csv",
+                    label="Organization",
+                    key="org_id",
+                    name="org_name",
+                    properties={"detail": Column(header)},
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "orgs.csv"
         path.write_text(f"org_id,org_name,{header}\nORG-1,Northwind Energy,Norway\n")
-        mapping = Table(
-            "Organization", key="org_id", name="org_name", detail=Column(header)
-        )
-        await rag.ingest(str(path), mapping=mapping)
+        await rag.ingest(str(path))
 
-        rows = await rag.query("MATCH (o:Organization) RETURN o.name, o.detail")
+        rows = await rag.query("MATCH (o:Organization) RETURN o.name, o.orgs__detail")
         assert rows == [["Northwind Energy", "Norway"]]
         await rag.close()
 
@@ -206,20 +272,32 @@ class TestEveryDeclaredColumnIsQueryable:
         ``WHERE o.Org ID = ...`` — not valid Cypher, on the one property every
         mapping is guaranteed to declare.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Organization")],
+            tables=[
+                TableMapping(
+                    source="orgs.csv",
+                    label="Organization",
+                    key="Org ID",
+                    name="org_name",
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "orgs.csv"
         path.write_text("Org ID,org_name\nORG-42,Northwind Energy\n")
-        await rag.ingest(str(path), mapping=Table("Organization", key="Org ID", name="org_name"))
+        await rag.ingest(str(path))
 
-        ontology = await rag.get_ontology()
+        published_ontology = await rag.get_ontology()
         published = [
             attribute.name
-            for entity in ontology.entities
+            for entity in published_ontology.entities
             if entity.label == "Organization"
             for attribute in entity.properties
         ]
         assert published and all(" " not in name for name in published)
-        rows = await rag.query("MATCH (o:Organization) RETURN o.col_org_id")
+        rows = await rag.query("MATCH (o:Organization) RETURN o.orgs__col_org_id")
         assert rows == [["ORG-42"]]
         await rag.close()
 
@@ -228,11 +306,11 @@ class TestNumbersMeanWhatTheSourceSaid:
     @pytest.mark.parametrize(
         ("cell", "expected"),
         [
-            ("880,5", 880.5),        # a decimal comma
-            ("1.234,56", 1234.56),   # German
-            ("1,234.56", 1234.56),   # US
+            ("880,5", 880.5),  # a decimal comma
+            ("1.234,56", 1234.56),  # German
+            ("1,234.56", 1234.56),  # US
             ("1,234,567", 1234567),  # grouped, unambiguously
-            ("12 345,6", 12345.6),   # grouped with spaces
+            ("12 345,6", 12345.6),  # grouped with spaces
         ],
     )
     async def test_a_comma_is_not_always_a_thousands_separator(
@@ -243,17 +321,24 @@ class TestNumbersMeanWhatTheSourceSaid:
         Every figure in the column out by a factor of ten, with nothing to point
         at, on a load that raised nothing.
         """
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
+        ontology = Ontology(
+            entities=[Entity(label="Organization")],
+            tables=[
+                TableMapping(
+                    source="eu.csv",
+                    label="Organization",
+                    key="org_id",
+                    name="org_name",
+                    properties={"revenue": Column("revenue", "FLOAT")},
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
         path = tmp_path / "eu.csv"
         path.write_text(f'org_id,org_name,revenue\nORG-1,Northwind Energy,"{cell}"\n')
-        mapping = Table(
-            "Organization",
-            key="org_id",
-            name="org_name",
-            revenue=Column("revenue", "FLOAT"),
-        )
-        await rag.ingest(str(path), mapping=mapping)
-        rows = await rag.query("MATCH (o:Organization) RETURN o.revenue")
+        await rag.ingest(str(path))
+        rows = await rag.query("MATCH (o:Organization) RETURN o.eu__revenue")
         assert rows[0][0] == pytest.approx(expected)
         await rag.close()
 
@@ -286,38 +371,111 @@ class TestForwardReferencesStillWork:
         self, real_falkordb_rag_factory, llm, resolver, tmp_path
     ):
         """The employee export arrives before the org export it points at."""
-        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver)
-        employees = tmp_path / "employees.csv"
-        employees.write_text(
-            "employee_id,full_name,org_id\nE-1,Maya Ellison,ORG-NW\n"
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Organization")],
+            tables=[
+                TableMapping(
+                    source="employees.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    links=[Link("WORKS_AT", to="Organization", by="org_id")],
+                ),
+                TableMapping(
+                    source="orgs.csv",
+                    label="Organization",
+                    key="org_id",
+                    name="org_name",
+                    properties={"employee_count": Column("employee_count", "INTEGER")},
+                ),
+            ],
         )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
+        employees = tmp_path / "employees.csv"
+        employees.write_text("employee_id,full_name,org_id\nE-1,Maya Ellison,ORG-NW\n")
         orgs = tmp_path / "orgs.csv"
         orgs.write_text("org_id,org_name,employee_count\nORG-NW,Northwind Energy,1240\n")
 
-        await rag.ingest(
-            str(employees),
-            mapping=Table(
-                "Person",
-                key="employee_id",
-                name="full_name",
-                links=[Link("WORKS_AT", to="Organization", by="org_id")],
-            ),
-        )
-        await rag.ingest(
-            str(orgs),
-            mapping=Table(
-                "Organization",
-                key="org_id",
-                name="org_name",
-                employee_count=Column("employee_count", "INTEGER"),
-            ),
-        )
+        await rag.ingest(str(employees))
+        await rag.ingest(str(orgs))
         await rag.finalize()
 
         rows = await rag.query(
             "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
             "WHERE r.rel_type = 'WORKS_AT' "
-            "RETURN p.name, o.name, o.employee_count"
+            "RETURN p.name, o.name, o.orgs__employee_count"
         )
         assert rows == [["Maya Ellison", "Northwind Energy", 1240]]
+        await rag.close()
+
+
+class TestAdviceAboutAColumnTypeIsMeasuredNotSampled:
+    """The type-narrowing warning must not recommend a type that breaks the load.
+
+    ``properties={"age": "age"}`` is the documented shorthand and it means STRING,
+    so the column this whole feature exists for arrives unaggregatable from a
+    declaration that looks right. The SDK says so at ingest — but sampled, it said
+    so about a column that is clean for 500 rows and holds "N/A" on row 501, and
+    taking that advice makes the very next load raise MappingError. Advice that
+    breaks the thing it advises about is worse than silence.
+    """
+
+    @pytest.fixture
+    def resolver(self):
+        return ExactMatchResolution(resolve_property="name")
+
+    @staticmethod
+    def _ontology():
+        return Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="hr.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"age": "age"},  # the shorthand: STRING
+                )
+            ],
+        )
+
+    async def test_a_uniformly_numeric_column_is_flagged(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path, caplog
+    ):
+        path = tmp_path / "hr.csv"
+        path.write_text(
+            "employee_id,full_name,age\n"
+            + "".join(f"E-{i},Person {i},{20 + i % 40}\n" for i in range(1, 501)),
+            encoding="utf-8",
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self._ontology())
+        with caplog.at_level(logging.WARNING):
+            await rag.ingest(str(path))
+        assert any("declared STRING hold only one narrower type" in m for m in caplog.messages)
+        assert any("Column('age', 'INTEGER')" in m for m in caplog.messages), (
+            "the warning has to name the fix, not just the problem"
+        )
+        await rag.close()
+
+    async def test_one_unparseable_value_past_the_sample_silences_it(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path, caplog
+    ):
+        """Row 501 is what makes STRING the right declaration.
+
+        Profiled over a 500-row sample this warned anyway, and INTEGER would then
+        fail on the value the sample never reached.
+        """
+        path = tmp_path / "hr.csv"
+        path.write_text(
+            "employee_id,full_name,age\n"
+            + "".join(f"E-{i},Person {i},{20 + i % 40}\n" for i in range(1, 501))
+            + "E-501,Person 501,N/A\n",
+            encoding="utf-8",
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self._ontology())
+        with caplog.at_level(logging.WARNING):
+            await rag.ingest(str(path))
+        assert not any(
+            "declared STRING hold only one narrower type" in m for m in caplog.messages
+        ), "advised a type that the whole file contradicts"
         await rag.close()

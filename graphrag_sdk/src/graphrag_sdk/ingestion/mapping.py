@@ -7,286 +7,41 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import math
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
-from typing import Any
 
 from graphrag_sdk.core.models import Attribute, Entity, Ontology, Relation
-from graphrag_sdk.utils.cypher import sanitize_cypher_label
-
-# Property types a column may declare. Deliberately small, and matching the
-# uppercase convention the ontology already uses for Attribute.type.
-COLUMN_TYPES: frozenset[str] = frozenset({"STRING", "INTEGER", "FLOAT", "BOOLEAN", "DATE", "LIST"})
-
-# Keys the SDK writes on every entity node. A mapping that declared one of these
-# as a property name would shadow a system value, so they are rejected. ``name``
-# is here because it has its own slot: use ``NodeMapping(name="full_name")``.
-RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
-    {
-        "id",
-        "name",
-        "type",
-        "description",
-        "source_chunk_ids",
-        "spans",
-        "embedding",
-        "alias_ids",
-        "is_stub",
-    }
+from graphrag_sdk.core.tables import (
+    COLUMN_TYPES,
+    RESERVED_PROPERTY_NAMES,
+    Column,
+    Link,
+    MappingError,
+    TableMapping,
+    _as_columns,
+    _check_identifier,
+    _check_label,
+    safe_property_name,
+    signature_for,
 )
 
-# A graph property name and an entity label both end up in Cypher, one as a
-# parameter key and one interpolated into the query after sanitisation. Names are
-# therefore restricted to identifiers, which is both what a graph can address
-# and what keeps a declaration from reaching the driver as something it cannot
-# serialise. Measured without this: a property named with a backtick and a
-# comment marker surfaced as `DatabaseError: Invalid input at end of input`, from
-# a query the caller never wrote and cannot see.
-_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-# Prefix for a source column whose own name cannot be a graph property, either
-# because the SDK owns that name or because it is not an identifier. One rule,
-# used for both the entity property a key column writes and the per-cell
-# properties of a record chunk, so ``HQ Country`` addresses the same way
-# wherever it lands.
-_SAFE_PREFIX = "col_"
-
-
-def safe_property_name(column: str, owned: frozenset[str] | None = None) -> str:
-    """The graph property name a source column is stored under.
-
-    A header is whatever the exporting system wrote — ``HQ Country``,
-    ``Revenue (M USD)``, ``id``. A graph property name is written into generated
-    Cypher as a bare name and, when it is one the SDK owns, silently overwrites a
-    system value. Measured before this existed: a header with a space reached the
-    driver inside a parameter map and surfaced as ``DatabaseError: Invalid input
-    at end of input``, from a query the caller never wrote; and ``key="id"``
-    overwrote the node's graph id, which cost every row its provenance edges.
-
-    Identifiers the SDK does not own pass through unchanged, so existing graphs
-    do not move. ``owned`` overrides which names are the SDK's, because a record
-    chunk owns different ones than an entity does.
-    """
-    reserved = RESERVED_PROPERTY_NAMES if owned is None else owned
-    if _IDENTIFIER.match(column) and column not in reserved:
-        return column
-    slug = re.sub(r"[^A-Za-z0-9_]+", "_", column.strip()).strip("_").lower()
-    return f"{_SAFE_PREFIX}{slug}" if slug else f"{_SAFE_PREFIX}unnamed"
-
-
-_GROUPED = re.compile(r"^-?\d{1,3}(,\d{3})+$")
-
-
-def _normalise_number(raw: str, integral: bool = False) -> str:
-    """Return ``raw`` with grouping separators removed and ``.`` as the decimal.
-
-    A comma means opposite things either side of the Atlantic, so stripping every
-    comma is wrong half the time and silently: measured, a German export's
-    ``880,5`` was stored as ``8805.0`` — every figure in the column out by a
-    factor of ten, with nothing to point at. The decidable cases are decided and
-    the one that is not is refused rather than guessed.
-
-    - Both separators present: the rightmost is the decimal point, so
-      ``1,234.56`` and ``1.234,56`` both read as ``1234.56``.
-    - Only commas, in more than one group of three: grouping. ``1,234,567``
-      reads as ``1234567``.
-    - One comma not followed by exactly three digits: a decimal comma. ``880,5``
-      reads as ``880.5``.
-    - One comma followed by exactly three digits: ambiguous. ``1,234`` is either
-      one thousand or one-point-two-three-four and nothing in the cell says
-      which, so it is refused — unless the column is ``INTEGER``, where a
-      fractional part is not on offer and grouping is the only reading left.
-      ``1,000`` in an INTEGER column is a thousand.
-    """
-    text = raw.strip().replace(" ", "").replace("\u00a0", "")
-    if "," not in text:
-        return text
-    if "." in text:
-        decimal = "," if text.rindex(",") > text.rindex(".") else "."
-        grouping = "." if decimal == "," else ","
-        return text.replace(grouping, "").replace(decimal, ".")
-    if text.count(",") > 1 and _GROUPED.match(text):
-        return text.replace(",", "")
-    head, _, tail = text.rpartition(",")
-    if len(tail) == 3 and head.lstrip("-").isdigit():
-        if integral:
-            return text.replace(",", "")
-        raise ValueError(
-            f"{raw!r} is ambiguous: {head + tail!r} if the comma groups thousands, "
-            f"{head + '.' + tail!r} if it is a decimal comma. Clean the column, or "
-            f"declare it STRING and convert it yourself."
-        )
-    return text.replace(",", ".")
-
-
-def _check_identifier(kind: str, value: str) -> str:
-    """Reject a name that cannot safely be a graph identifier.
-
-    Applied to property names and relationship types, because both are written
-    into generated Cypher as bare names (``n.age``, ``rel_type``). A name that
-    would need quoting there is not usable even though a graph would store it.
-    """
-    if not _IDENTIFIER.match(value):
-        raise MappingError(
-            f"{kind} {value!r} is not a usable name: it must start with a letter "
-            "or underscore and contain only letters, digits and underscores. "
-            "Give it a usable name in the mapping and point it at the column, "
-            'e.g. properties={"hq_country": Column("HQ Country")}.'
-        )
-    return value
-
-
-def _check_label(label: str) -> str:
-    """Reject a label that would not survive being written to the graph.
-
-    Deliberately looser than :func:`_check_identifier`: ``Legal Entity``,
-    ``Org-Unit`` and ``Ünïcode`` are all fine as labels, because the write path
-    quotes them. What is not fine is a label the sanitiser has to *change*, since
-    the graph would then silently hold something other than what was declared:
-    ``Org`) DETACH DELETE (n) //`` was written as a label reading
-    ``Org) DETACH DELETE (n) //``, harmless but nonsense.
-    """
-    if sanitize_cypher_label(label) != label:
-        raise MappingError(
-            f"label {label!r} contains characters that cannot be written as a "
-            "label, so the graph would hold a different name than the one "
-            "declared. Remove them from the label."
-        )
-    return label
-
-
-_TRUE = frozenset({"1", "true", "t", "yes", "y", "on"})
-_FALSE = frozenset({"0", "false", "f", "no", "n", "off"})
-
-
-class MappingError(ValueError):
-    """A mapping is malformed, or does not fit the source it was applied to."""
-
-
-@dataclass(frozen=True)
-class Column:
-    """A property: which column it reads, and the type it becomes in the graph.
-
-    The type is required rather than inferred. Sniffing types from a sample of
-    rows makes the resulting schema depend on which rows happened to be read
-    first, which is the same reason identity is never inferred.
-
-    A bare string is accepted wherever a ``Column`` is expected and means
-    ``STRING``, so the common case stays short.
-
-    Args:
-        name: The column in the source record.
-        type: One of :data:`COLUMN_TYPES`.
-        description: Optional prose, carried into the generated ontology.
-
-    Example::
-
-        Column("age", "INTEGER")
-        Column("signed_on", "DATE", "date the contract was signed")
-    """
-
-    name: str
-    type: str = "STRING"
-    description: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.name or not self.name.strip():
-            raise MappingError("Column.name must be a non-empty column name")
-        if self.type not in COLUMN_TYPES:
-            raise MappingError(
-                f"Column({self.name!r}) declares unknown type {self.type!r}; "
-                f"expected one of {', '.join(sorted(COLUMN_TYPES))}"
-            )
-
-    def cast(self, raw: Any) -> Any:
-        """Convert a raw cell to the declared type.
-
-        An empty cell becomes ``None`` and the caller omits the property, rather
-        than writing a falsy value that a query cannot distinguish from a real
-        zero or empty string.
-
-        Raises:
-            MappingError: If the cell cannot be read as the declared type. A
-                declared type that does not hold is a fault in the declaration
-                or the data, and silently coercing it would hide both.
-        """
-        if raw is None:
-            return None
-        if isinstance(raw, str):
-            raw = raw.strip()
-            if not raw:
-                return None
-        if self.type == "STRING":
-            return str(raw)
-        if self.type == "LIST":
-            if isinstance(raw, (list, tuple)):
-                return list(raw)
-            # Parsed as one CSV row rather than split on commas, so a quoted
-            # element containing a comma survives: `"a,b",c` is two items, not
-            # three. A naive split turns one value into several silently.
-            try:
-                parts = next(csv.reader([str(raw)]))
-            except (csv.Error, StopIteration):
-                parts = str(raw).split(",")
-            return [part.strip() for part in parts if part.strip()]
-        try:
-            if self.type == "INTEGER":
-                if not isinstance(raw, str):
-                    return int(raw)
-                return int(_normalise_number(raw, integral=True))
-            if self.type == "FLOAT":
-                value = float(raw) if not isinstance(raw, str) else float(_normalise_number(raw))
-                if not math.isfinite(value):
-                    # "nan" and "inf" are valid float literals and poison every
-                    # aggregate they reach: one NaN turns an avg() over the whole
-                    # column into NaN, with nothing to point at.
-                    raise ValueError(f"not a finite number: {raw!r}")
-                return value
-            if self.type == "BOOLEAN":
-                if isinstance(raw, bool):
-                    return raw
-                lowered = str(raw).lower()
-                if lowered in _TRUE:
-                    return True
-                if lowered in _FALSE:
-                    return False
-                raise ValueError(f"not a boolean: {raw!r}")
-            if self.type == "DATE":
-                if isinstance(raw, (date, datetime)):
-                    return raw.isoformat()
-                # Stored as an ISO string: FalkorDB has no date type, and an
-                # ISO string sorts and compares correctly.
-                return datetime.fromisoformat(str(raw)).date().isoformat()
-        except (TypeError, ValueError) as exc:
-            # Keep the cause's own words when it has any: the number and boolean
-            # paths raise messages that say which reading was ambiguous and what
-            # to do, and a bare "declares FLOAT but holds '1,234'" throws that
-            # away at the point the reader most needs it.
-            detail = str(exc).strip()
-            because = f". {detail}" if detail and not detail.startswith("invalid literal") else ""
-            raise MappingError(
-                f"column {self.name!r} declares {self.type} but holds {raw!r}{because}"
-            ) from exc
-        raise MappingError(f"unhandled column type {self.type!r}")  # pragma: no cover
-
-
-def _as_columns(properties: dict[str, Column | str] | None) -> dict[str, Column]:
-    """Normalise the property map, accepting a bare string as STRING."""
-    out: dict[str, Column] = {}
-    for name, spec in (properties or {}).items():
-        if name in RESERVED_PROPERTY_NAMES:
-            raise MappingError(
-                f"property {name!r} is written by the SDK and cannot be mapped; "
-                f"reserved names are {', '.join(sorted(RESERVED_PROPERTY_NAMES))}"
-            )
-        _check_identifier("property", name)
-        out[name] = spec if isinstance(spec, Column) else Column(str(spec))
-    return out
+# The declaration value types moved to ``core.tables`` so that ``Ontology`` can
+# hold them without ``core`` importing ``ingestion``. Re-exported here because
+# this is where users and the rest of the package have always imported them from.
+__all__ = [
+    "COLUMN_TYPES",
+    "RESERVED_PROPERTY_NAMES",
+    "Column",
+    "EdgeMapping",
+    "Link",
+    "MappingError",
+    "NodeMapping",
+    "RecordMapping",
+    "TableMapping",
+    "safe_property_name",
+    "signature_for",
+]
 
 
 @dataclass
@@ -299,10 +54,10 @@ class NodeMapping:
             node id via the same derivation the extraction path uses, so a
             structured node and an extracted node can be the same node.
         name: The column carrying the display name, when the record has one.
-            A source that carries both ``key`` and ``name`` also publishes the
-            name-derived id in ``alias_ids``, which is what lets a keyed node and
-            a node extracted from prose resolve to one.
-        properties: ``{property_name: Column}``. A bare string means ``STRING``.
+            The name is the entity's **identity**: its id is derived from it the
+            same way a prose mention's is, so a row and a document describing one
+            thing land on one node with no merge step. The key is kept beside it
+            as ``entity_key`` for links and re-sync.
         reference: ``True`` when the record only points at the entity by id and
             does not describe it, as a foreign key does. Reference nodes are
             written ON CREATE only, so they can never overwrite a name or a
@@ -326,6 +81,14 @@ class NodeMapping:
     reference: bool = False
     alias: str | None = None
     description: str | None = None
+    signature: str | None = None
+    """The source that declared this, if it came from a :class:`TableMapping`.
+
+    Present whenever a source declared the mapping, which
+    is what keeps every property this writes attributable to one table: two
+    tables describing one entity write ``hr__age`` and ``finance__age`` rather
+    than racing on ``age``.
+    """
 
     def __post_init__(self) -> None:
         if not self.label or not self.label.strip():
@@ -346,6 +109,17 @@ class NodeMapping:
         self.properties = normalised
         if self.alias is None:
             self.alias = self.label
+
+    def signed(self, prop: str) -> str:
+        """``prop`` as it is written on the node.
+
+        Prefixed with the declaring source when there is one, so no two tables
+        can occupy one property name. Unsigned for SDK-owned names, and unsigned
+        throughout when no signature was supplied.
+        """
+        if not self.signature or prop in RESERVED_PROPERTY_NAMES:
+            return prop
+        return f"{self.signature}__{prop}"
 
     @property
     def key_property(self) -> str:
@@ -414,6 +188,9 @@ class EdgeMapping:
     target: str
     properties: dict[str, Column | str] = field(default_factory=dict)
     description: str | None = None
+    signature: str | None = None
+    """The table that declared this edge, recorded on it so a re-load of one
+    source can leave another source's edges alone."""
 
     def __post_init__(self) -> None:
         for label, value in (("type", self.type), ("source", self.source), ("target", self.target)):
@@ -422,6 +199,25 @@ class EdgeMapping:
         _check_identifier("relationship type", self.type)
         normalised: dict[str, Column | str] = dict(_as_columns(self.properties))
         self.properties = normalised
+
+    def signed(self, prop: str) -> str:
+        """``prop`` as it is written on the edge.
+
+        Unlike :meth:`NodeMapping.signed`, **nothing is exempt**. A node leaves
+        ``name`` and the SDK's own keys unsigned because they are the join: an
+        extracted node and a keyed node have to meet on them. An edge has no such
+        join, so every declared property is signed, which also puts the SDK's own
+        ``rel_type``, ``fact`` and ``source_chunk_ids`` permanently out of a
+        declaration's reach instead of merely discouraged.
+
+        Without this, two tables declaring the same edge property overwrote each
+        other and the loser's value was gone from the graph: hr.csv and
+        finance.csv both declaring ``WORKS_AT.since`` left whichever loaded last,
+        with nothing reported. The design keeps conflicts; this is what lets it.
+        """
+        if not self.signature:
+            return prop
+        return f"{self.signature}__{prop}"
 
     @property
     def typed_properties(self) -> dict[str, Column]:
@@ -434,52 +230,6 @@ class EdgeMapping:
     @property
     def columns(self) -> set[str]:
         return {col.name for col in self.typed_properties.values()}
-
-
-@dataclass
-class Link:
-    """A column that points at another entity, and the edge to it.
-
-    A foreign key is the whole reason a table is worth putting in a graph: the
-    ``org_id`` sitting in an employee export is not text, it is an edge. This is
-    how you say so.
-
-    Args:
-        type: The relationship, e.g. ``"WORKS_AT"``. Written onto a ``RELATES``
-            edge as its ``rel_type``, which is how every data edge is stored.
-        to: The label of the entity being pointed at.
-        by: The column holding its key.
-        name: Optional column holding the target's display name, when the row
-            denormalises it. Without one the placeholder is named by its key, so
-            a node reads as "ORG-42" until the source that owns it arrives.
-        properties: Optional columns written onto the edge itself, e.g. the date
-            an employment started.
-
-    The target is written **ON CREATE only**. This row says the organization
-    exists and gives its key; it does not claim to describe it, so it can never
-    overwrite what the source that owns the organization supplied. That is what
-    makes the order of two files irrelevant.
-
-    Example::
-
-        Table("Person", key="employee_id", name="full_name",
-              age=Column("age", "INTEGER"),
-              links=[Link("WORKS_AT", to="Organization", by="org_id")])
-    """
-
-    type: str
-    to: str
-    by: str
-    name: str | None = None
-    properties: dict[str, Column | str] = field(default_factory=dict)
-    description: str | None = None
-
-    def __post_init__(self) -> None:
-        for label, value in (("type", self.type), ("to", self.to), ("by", self.by)):
-            if not value or not str(value).strip():
-                raise MappingError(f"Link.{label} must be non-empty")
-        _check_identifier("relationship type", self.type)
-        _check_label(self.to)
 
 
 @dataclass
@@ -655,7 +405,11 @@ class RecordMapping:
                     # header here put `- Org ID (STRING)` in the text-to-Cypher
                     # schema block, inviting `WHERE o.Org ID = ...` — not valid
                     # Cypher, on the one property every mapping declares.
-                    name=node.key_property,
+                    # Signed to match what the write path actually puts on the
+                    # node. Unsigned here while the node carried hr__employee_id
+                    # meant the schema handed to text-to-Cypher named a property
+                    # that does not exist.
+                    name=node.signed(node.key_property),
                     type="STRING",
                     description=f"key from {node.key}",  # the source header, verbatim
                     structured=True,
@@ -664,9 +418,21 @@ class RecordMapping:
             for prop, col in node.typed_properties.items():
                 attributes.append(
                     Attribute(
-                        name=prop,
+                        name=node.signed(prop),
                         type=col.type,
-                        description=col.description or f"from column {col.name}",
+                        # Load bearing, not decoration. The property is named
+                        # hr__age, and this description is the only thing that
+                        # tells text-to-Cypher the word "age" means that column
+                        # and that hr.csv is where it came from. Measured: with
+                        # it, "what grade does finance say?" generates
+                        # p.finance__grade; the unsigned schema instead looked for
+                        # an entity named finance and answered wrongly.
+                        description=col.description
+                        or (
+                            f"{col.name}, from table {node.signature}"
+                            if node.signature
+                            else f"from column {col.name}"
+                        ),
                         structured=True,
                     )
                 )
@@ -695,9 +461,18 @@ class RecordMapping:
                 properties=_dedupe_attributes(
                     [
                         Attribute(
-                            name=prop,
+                            name=edge.signed(prop),
                             type=col.type,
-                            description=col.description or f"from column {col.name}",
+                            # Same job as the node-side description above: the
+                            # property is named hr__since, and this is the only
+                            # thing telling text-to-Cypher that "since" means
+                            # that column and hr.csv is where it came from.
+                            description=col.description
+                            or (
+                                f"{col.name}, from table {edge.signature}"
+                                if edge.signature
+                                else f"from column {col.name}"
+                            ),
                             structured=True,
                         )
                         for prop, col in edge.typed_properties.items()
@@ -738,106 +513,113 @@ def _merge_entities(entities: list[Entity]) -> list[Entity]:
     return list(merged.values())
 
 
-class Table(RecordMapping):
-    """How one table becomes part of the graph. The only mapping you write.
+def _normalise(
+    node: str,
+    key: str,
+    name: str | None,
+    properties: dict[str, Column | str],
+    links: Sequence[Link],
+    description: str | None,
+    signature: str | None,
+) -> tuple[list[NodeMapping], list[EdgeMapping]]:
+    """Turn a declaration into the nodes and edges the write path wants.
 
-    Each record becomes one entity, plus an edge for every column that points at
-    something else. That covers a dimension export and a fact export alike, so
-    there is nothing to switch to when a table turns out to have a foreign key in
-    it: you add a ``links`` entry rather than rewriting the declaration.
-
-    Args:
-        node: The label each record becomes, e.g. ``"Organization"``.
-        key: The column identifying the record. Its value becomes the node id, so
-            re-loading a corrected export updates in place instead of
-            duplicating.
-        name: The column holding the display name. A table with both a key and a
-            name also publishes the id an extractor would compute for the same
-            thing, which is what lets a row and a sentence become one node.
-        links: Columns that point at other entities. See :class:`Link`.
-        description: Optional prose, carried into the generated ontology.
-        **properties: ``property_name=column``. A bare string means STRING; wrap
-            it in :class:`Column` to declare a type. The property name must be a
-            usable identifier, so point an awkward column at a clean name:
-            ``hq_country=Column("HQ Country")``.
-
-    Example::
-
-        ORGS = Table("Organization", key="org_id", name="org_name",
-                     hq_country="hq_country",
-                     employee_count=Column("employee_count", "INTEGER"))
-
-        EMPLOYEES = Table("Person", key="employee_id", name="full_name",
-                          age=Column("age", "INTEGER"),
-                          title=Column("job_title"),
-                          links=[Link("WORKS_AT", to="Organization", by="org_id")])
+    Used by :func:`record_mapping_for`, so the handle
+    derivation and the two errors it can raise are stated once. ``signature``
+    is stamped onto everything produced, which is how a property written here
+    stays attributable to the table that declared it.
     """
-
-    def __init__(
-        self,
-        node: str,
-        key: str,
-        name: str | None = None,
-        *,
-        links: Sequence[Link] | None = None,
-        description: str | None = None,
-        **properties: Column | str,
-    ) -> None:
-        subject = NodeMapping(
-            label=node,
-            key=key,
-            name=name,
-            properties=dict(properties),
-            description=description,
+    subject = NodeMapping(
+        label=node,
+        key=key,
+        name=name,
+        properties=dict(properties),
+        description=description,
+        signature=signature,
+    )
+    nodes = [subject]
+    edges: list[EdgeMapping] = []
+    for link in links or ():
+        if not isinstance(link, Link):
+            raise MappingError(
+                f"links must contain Link objects, got {type(link).__name__}. "
+                'Write links=[Link("WORKS_AT", to="Organization", by="org_id")].'
+            )
+        # A target keyed by the same column as the subject would be the subject,
+        # and an edge from a thing to itself says nothing.
+        if link.by == key and link.to == node:
+            raise MappingError(
+                f"link {link.type!r} points at {link.to!r} by column {link.by!r}, "
+                "which is this record's own key, so it would link the record to "
+                "itself. Point it at the column holding the other entity's key."
+            )
+        # Handles are internal, so they are derived rather than asked for. The
+        # first link to a label takes the label; any later one is told apart by
+        # its column, which is the thing that actually differs. Disambiguating by
+        # relationship type instead would collide as soon as two links share a
+        # type, and the failure surfaced as a complaint about "duplicate aliases"
+        # — a word the caller never wrote.
+        alias = link.to if link.to != node else f"{link.to}__{link.by}"
+        if any(existing.handle == alias for existing in nodes):
+            alias = f"{link.to}__{link.by}"
+        if any(existing.handle == alias for existing in nodes):
+            raise MappingError(
+                f"two links both point at {link.to!r} by column {link.by!r}, "
+                "so they describe the same target twice. Drop one, or point "
+                "them at the different columns holding each target's key."
+            )
+        nodes.append(
+            NodeMapping(
+                label=link.to,
+                key=link.by,
+                name=link.name,
+                reference=True,
+                alias=alias,
+                description=link.description,
+                signature=signature,
+            )
         )
-        nodes = [subject]
-        edges: list[EdgeMapping] = []
-        for link in links or ():
-            if not isinstance(link, Link):
-                raise MappingError(
-                    f"links must contain Link objects, got {type(link).__name__}. "
-                    'Write links=[Link("WORKS_AT", to="Organization", by="org_id")].'
-                )
-            # A target keyed by the same column as the subject would be the
-            # subject, and an edge from a thing to itself says nothing.
-            if link.by == key and link.to == node:
-                raise MappingError(
-                    f"link {link.type!r} points at {link.to!r} by column {link.by!r}, "
-                    "which is this record's own key, so it would link the record to "
-                    "itself. Point it at the column holding the other entity's key."
-                )
-            # Handles are internal, so they are derived rather than asked for.
-            # The first link to a label takes the label; any later one is told
-            # apart by its column, which is the thing that actually differs.
-            # Disambiguating by relationship type instead would collide as soon
-            # as two links share a type, and the failure surfaced as a complaint
-            # about "duplicate aliases" — a word the caller never wrote.
-            alias = link.to if link.to != node else f"{link.to}__{link.by}"
-            if any(existing.handle == alias for existing in nodes):
-                alias = f"{link.to}__{link.by}"
-            if any(existing.handle == alias for existing in nodes):
-                raise MappingError(
-                    f"two links both point at {link.to!r} by column {link.by!r}, "
-                    "so they describe the same target twice. Drop one, or point "
-                    "them at the different columns holding each target's key."
-                )
-            nodes.append(
-                NodeMapping(
-                    label=link.to,
-                    key=link.by,
-                    name=link.name,
-                    reference=True,
-                    alias=alias,
-                    description=link.description,
-                )
+        edges.append(
+            EdgeMapping(
+                type=link.type,
+                source=subject.handle,
+                target=alias,
+                properties=dict(link.properties),
+                description=link.description,
+                signature=signature,
             )
-            edges.append(
-                EdgeMapping(
-                    type=link.type,
-                    source=subject.handle,
-                    target=alias,
-                    properties=dict(link.properties),
-                    description=link.description,
-                )
-            )
-        super().__init__(nodes=nodes, edges=edges)
+        )
+    return nodes, edges
+
+
+def ontology_for(mapping: TableMapping) -> Ontology:
+    """The ontology contribution of a declared mapping, mapping included.
+
+    ``RecordMapping.to_ontology()`` derives the entity and relation types a
+    mapping implies. This adds the mapping itself, because it belongs in the
+    schema too: without it the ontology would describe the columns and not where
+    they came from, and a second load would have nothing to reuse or diff against.
+    """
+    contribution = record_mapping_for(mapping).to_ontology()
+    return contribution.model_copy(update={"tables": [mapping]})
+
+
+def record_mapping_for(mapping: TableMapping) -> RecordMapping:
+    """The normalised write-path form of a declared mapping.
+
+    ``TableMapping`` holds the *declaration* — a label, a key, a property map and
+    a list of links — because that is the shape a user writes and the shape the
+    ontology stores. The write path wants it flattened into nodes and edges, with
+    each link's target as a reference node. This is that translation, and it is
+    where the source's signature is stamped on.
+    """
+    nodes, edges = _normalise(
+        node=mapping.label,
+        key=mapping.key_column,
+        name=mapping.name,
+        properties=mapping.properties,
+        links=mapping.links,
+        description=mapping.description,
+        signature=mapping.signature,
+    )
+    return RecordMapping(nodes=nodes, edges=edges)

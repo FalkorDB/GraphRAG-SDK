@@ -29,6 +29,7 @@ from graphrag_sdk.ingestion.mapping import (
     RecordMapping,
     safe_property_name,
 )
+from graphrag_sdk.ingestion.mapping_proposal import _WHOLE_FILE, profile_columns
 from graphrag_sdk.storage.graph_store import ReferenceNode
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,39 @@ def render_record(record: dict[str, Any]) -> str:
         if value not in (None, "")
     ]
     return ", ".join(parts) + "." if parts else ""
+
+
+def _ambiguous_names(batch: RecordBatch, mapping: RecordMapping) -> set[tuple[str, str]]:
+    """``(handle, lowercased name)`` for every name that two or more rows share.
+
+    A name is the entity's identity, so two rows sharing one would become one
+    entity — two John Smiths collapsing into a single Person. Those rows keep
+    their key as identity instead, which also means a prose mention of "John
+    Smith" joins neither, correctly: it is ambiguous. Reported, so a table with
+    many such names is noticed rather than silently half-joined.
+    """
+    counts: dict[tuple[str, str], int] = {}
+    # (handle, name column) for nodes that name their rows; the filter above the
+    # comprehension is what lets mypy see the column is a str below.
+    named = [(node.handle, node.name) for node in mapping.nodes if node.name and not node.reference]
+    if not named:
+        return set()
+    for record in batch:
+        for handle, name_column in named:
+            display = str(record.get(name_column) or "").strip().lower()
+            if display:
+                counts[(handle, display)] = counts.get((handle, display), 0) + 1
+    ambiguous = {key for key, count in counts.items() if count > 1}
+    if ambiguous:
+        sample = ", ".join(repr(name) for _, name in sorted(ambiguous)[:5])
+        logger.warning(
+            "%d name(s) appear on more than one row (e.g. %s). Entity identity is the "
+            "name, so those rows are keyed on their declared key instead and a document "
+            "mention of that name will not join any of them — it is ambiguous.",
+            len(ambiguous),
+            sample,
+        )
+    return ambiguous
 
 
 def _unique_references(references: list[ReferenceNode]) -> list[ReferenceNode]:
@@ -239,6 +273,72 @@ class StructuredIngestionResult:
         return f"StructuredIngestionResult({self.as_dict()})"
 
 
+def _warn_about_a_column_typed_narrower_than_declared(
+    batch: RecordBatch, mapping: RecordMapping, source: str
+) -> None:
+    """Say something when a column declared STRING holds only numbers or dates.
+
+    ``properties={"age": "age"}`` is the documented shorthand, and it means
+    STRING — so the column that motivated this whole feature ("run a CSV through
+    the prose path and ``age`` becomes the string 34, so nothing can be
+    averaged") lands as a string anyway, from a declaration that looks right.
+    The load succeeds, finalize reports nothing, and the truth arrives much later
+    as a Cypher type error on an aggregate.
+
+    Declared types are deliberately not inferred: a column that holds integers
+    for five hundred rows and "N/A" on the next one would be silently retyped and
+    then fail the load it was meant to describe. But the file is open right here,
+    so the mismatch is measurable, and saying so costs one sampled pass.
+    """
+    declared_strings: dict[str, str] = {}
+    for node in mapping.nodes:
+        for prop, column in node.typed_properties.items():
+            if column.type == "STRING":
+                declared_strings[column.name] = prop
+    for edge in mapping.edges:
+        for prop, column in edge.typed_properties.items():
+            if column.type == "STRING":
+                declared_strings[column.name] = prop
+    if not declared_strings:
+        return
+
+    try:
+        # The WHOLE file, not a sample -- the same reason natural_mapping does.
+        # Sampled, this recommends INTEGER for a column that is clean for 500 rows
+        # and holds "N/A" on row 501, and following that advice makes the next
+        # load raise. Advice that breaks the thing it advises about is worse than
+        # silence. The file is already walked twice here, so this costs nothing.
+        profiles = profile_columns(batch, sample_rows=batch.record_count or _WHOLE_FILE)
+    except Exception:  # a warning is never worth failing an ingest over
+        logger.debug("Column profiling for the type-narrowing check failed", exc_info=True)
+        return
+
+    narrower = [
+        (profile.name, declared_strings[profile.name], profile.inferred_type)
+        for profile in profiles
+        if profile.name in declared_strings and profile.inferred_type != "STRING"
+    ]
+    if not narrower:
+        return
+    detail = "; ".join(
+        f"{column!r} (declared as {prop!r}) reads as {measured}"
+        for column, prop, measured in narrower
+    )
+    logger.warning(
+        "%s: %d column(s) declared STRING hold only one narrower type: %s. A STRING "
+        "column cannot be averaged, compared numerically or filtered by date, and "
+        "text-to-Cypher will not try. Declare the type to get that: "
+        "properties={%r: Column(%r, %r)}. Leave it as it is if the column really is "
+        "text that happens to look numeric, such as a zero-padded code.",
+        source,
+        len(narrower),
+        detail,
+        narrower[0][1],
+        narrower[0][0],
+        narrower[0][2],
+    )
+
+
 class StructuredIngestionPipeline(LexicalGraphWriter):
     """Writes a structured source into the graph, deterministically.
 
@@ -310,6 +410,8 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         if problems:
             raise MappingError(f"mapping does not fit {source}:\n  " + "\n  ".join(problems))
 
+        _warn_about_a_column_typed_narrower_than_declared(batch, mapping, source)
+
         result = StructuredIngestionResult(doc_info.uid)
 
         # Steps 3 to 5, all in memory. Both passes complete before anything is
@@ -325,7 +427,34 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         if not chunks.chunks:
             ctx.log(f"{source} produced no records, nothing written")
             return result
-        nodes, references, edges = self._map_records(batch, mapping, doc_info, result)
+        nodes, references, edges, keyed = self._map_records(batch, mapping, doc_info, result)
+
+        # A foreign key arriving AFTER its target's source must attach to the real
+        # node, not raise a placeholder beside it. Look every reference up by its
+        # key; where the target already exists, point the edges there instead.
+        resolved: dict[str, str] = {}
+        by_label: dict[str, list[ReferenceNode]] = {}
+        for reference in references:
+            by_label.setdefault(reference.label, []).append(reference)
+        for label, refs in by_label.items():
+            found = await self.graph_store.resolve_by_entity_key(
+                label, [str(r.properties.get("entity_key", "")) for r in refs]
+            )
+            for reference in refs:
+                real = found.get(str(reference.properties.get("entity_key", "")))
+                if real and real != reference.id:
+                    resolved[reference.id] = real
+        if resolved:
+            references = [r for r in references if r.id not in resolved]
+            for edge in edges:
+                edge.start_node_id = resolved.get(edge.start_node_id, edge.start_node_id)
+                edge.end_node_id = resolved.get(edge.end_node_id, edge.end_node_id)
+
+        # The other direction: a placeholder this source's rows now name, or a row
+        # whose name changed since the last export. Both carry the key; both are
+        # moved to the id the name gives them before anything is written.
+        for label, rows in keyed.items():
+            await self.graph_store.reconcile_keyed_identity(label, rows)
 
         await self._build_lexical_graph(
             doc_info,
@@ -444,7 +573,12 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         mapping: RecordMapping,
         doc_info: DocumentInfo,
         result: StructuredIngestionResult,
-    ) -> tuple[list[GraphNode], list[ReferenceNode], list[GraphRelationship]]:
+    ) -> tuple[
+        list[GraphNode],
+        list[ReferenceNode],
+        list[GraphRelationship],
+        dict[str, list[tuple[str, str]]],
+    ]:
         """Second pass: declared columns become nodes and edges.
 
         This is why RecordBatch hands over a factory. A one-shot iterator is
@@ -459,6 +593,16 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         nodes: list[GraphNode] = []
         references: list[ReferenceNode] = []
         edges: list[GraphRelationship] = []
+        # label -> [(entity_key, node_id)] for every real node, so run() can point
+        # placeholders and renamed rows at the id the name now gives them.
+        keyed: dict[str, list[tuple[str, str]]] = {}
+
+        # An entity's id comes from its NAME — the same derivation a prose mention
+        # gets — so a row and a document describing one thing land on one node
+        # with no merge step. Two rows sharing a name would then collapse into
+        # one entity, so those fall back to the key: a mention of an ambiguous
+        # name should not auto-join either row, and this way it cannot.
+        ambiguous = _ambiguous_names(batch, mapping)
 
         for _index, record, _record_key, chunk_uid in _walk_records(batch, mapping, doc_info.uid):
             ids: dict[str, str] = {}
@@ -467,7 +611,11 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 raw_key = record.get(node.key)
                 if raw_key in (None, ""):
                     continue
-                node_id = compute_entity_id(str(raw_key), node.label)
+                display = str(record.get(node.name) or "").strip() if node.name else ""
+                if display and (node.handle, display.lower()) not in ambiguous:
+                    node_id = compute_entity_id(display, node.label)
+                else:
+                    node_id = compute_entity_id(str(raw_key), node.label)
                 if not node_id:
                     continue
                 ids[node.handle] = node_id
@@ -487,13 +635,19 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                             id=node_id,
                             label=node.label,
                             name=fallback,
-                            # The key, so the placeholder is joinable by the same
-                            # column the mapping declared.
-                            properties={node.key_property: str(raw_key), "is_stub": True},
+                            properties={
+                                node.signed(node.key_property): str(raw_key),
+                                # Unsigned and SDK-owned, like is_stub: the value
+                                # this row is keyed by, whoever wrote it. It is
+                                # how the owning source finds this placeholder.
+                                "entity_key": str(raw_key),
+                                "is_stub": True,
+                            },
                         )
                     )
                     result.references += 1
                 else:
+                    keyed.setdefault(node.label, []).append((str(raw_key), node_id))
                     nodes.append(
                         GraphNode(
                             id=node_id,
@@ -526,7 +680,10 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 for prop, column in edge_columns[(edge.type, edge.source, edge.target)].items():
                     value = column.cast(record.get(column.name))
                     if value is not None:
-                        properties[prop] = value
+                        # Signed, exactly as node properties are. Two tables
+                        # declaring one edge property used to overwrite each
+                        # other here, silently and irreversibly.
+                        properties[edge.signed(prop)] = value
                 edges.append(
                     GraphRelationship(
                         start_node_id=start,
@@ -537,7 +694,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 )
                 result.edges += 1
 
-        return nodes, references, edges
+        return nodes, references, edges, keyed
 
     @staticmethod
     def _node_properties(
@@ -547,20 +704,22 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         columns: dict[str, Column],
     ) -> dict[str, Any]:
         """Typed properties for one entity, plus the alias that lets it resolve."""
-        properties: dict[str, Any] = {node.key_property: raw_key, "is_stub": False}
+        # Signed with the declaring source, so two tables describing one entity
+        # write hr__age and finance__age rather than racing on age. `is_stub`,
+        # `entity_key` and `name` stay unsigned: the SDK owns them, and an
+        # extracted property is unsigned by construction, which is what makes a
+        # collision between prose and a table impossible rather than guarded.
+        properties: dict[str, Any] = {
+            node.signed(node.key_property): raw_key,
+            "entity_key": raw_key,
+            "is_stub": False,
+        }
         if node.name:
             display = record.get(node.name)
             if display not in (None, ""):
                 properties["name"] = str(display)
-                # This source holds the key AND the name, so it can publish the
-                # id an extractor reading prose would independently compute for
-                # the same thing. That published id is what lets a keyed node and
-                # an extracted node resolve to one, by string equality.
-                alias = compute_entity_id(str(display), node.label)
-                if alias and alias != compute_entity_id(raw_key, node.label):
-                    properties["alias_ids"] = [alias]
         for prop, column in columns.items():
             value = column.cast(record.get(column.name))
             if value is not None:
-                properties[prop] = value
+                properties[node.signed(prop)] = value
         return properties

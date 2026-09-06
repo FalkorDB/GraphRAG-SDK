@@ -109,9 +109,8 @@ from graphrag_sdk.ingestion.mapping import (
     Column,
     Link,
     MappingError,
-    Table,
+    TableMapping,
 )
-from graphrag_sdk.ingestion.mapping_proposal import MappingProposal
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
@@ -228,13 +227,12 @@ __all__ = [
     "OntologyStore",
     "VectorStore",
     "Column",
+    "TableMapping",
     "CsvRecordLoader",
     "MappingError",
-    "MappingProposal",
     "RecordBatch",
     "RecordLoaderStrategy",
     "Link",
-    "Table",
 ]
 
 

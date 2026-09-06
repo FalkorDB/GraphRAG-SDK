@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from graphrag_sdk.core.tables import TableMapping
+
 logger = logging.getLogger(__name__)
 
 # ── Base ─────────────────────────────────────────────────────────
@@ -230,12 +232,14 @@ class Attribute(DataModel):
     structured: bool = False
     """True when a structured source's mapping declared this property.
 
-    Such a property has an owner: the table the mapping describes. It is declared
-    so that generated Cypher can see its type, but declaring it also puts it in
-    front of the extractor, which will then answer it from prose. That is how a
-    job title arrives lowercased from a memo and overwrites what the HR export
-    spelled. Extraction may fill one of these when it is absent and may never
-    overwrite it.
+    Such a property has an owner: the table the mapping describes, and its name
+    carries that table's signature — ``employees__title``, not ``title``. Nothing
+    else can write that name, so a job title the extractor reads from a memo
+    cannot overwrite what the HR export spelled; it lands unsigned, under its own
+    name, and both are on the node.
+
+    Read by the prompt builders, which surface the type so generated Cypher can
+    aggregate over the column instead of treating it as prose.
     """
 
     @model_validator(mode="after")
@@ -314,6 +318,90 @@ class Ontology(DataModel):
 
     entities: list[Entity] = Field(default_factory=list)
     relations: list[Relation] = Field(default_factory=list)
+    tables: list[TableMapping] = Field(default_factory=list)
+    """How tabular sources become nodes. A mapping is part of the schema.
+
+    Kept here rather than passed per ``ingest()`` call so that a second load of
+    the same table needs no mapping argument, a changed mapping can be diffed
+    against the stored one, and ``save_ontology()`` carries one reviewable
+    object. Each mapping signs the properties it writes with its source, so two
+    tables describing one entity cannot overwrite each other.
+    """
+
+    @model_validator(mode="after")
+    def _refuse_duplicate_sources(self) -> Ontology:
+        """One source, one mapping. Two would race on the same properties."""
+        seen: set[str] = set()
+        for mapping in self.tables:
+            if mapping.source in seen:
+                raise ValueError(
+                    f"Table mapping for {mapping.source!r} is declared twice. "
+                    f"One source has one mapping; merge them."
+                )
+            seen.add(mapping.source)
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_an_unconnected_new_label(self) -> Ontology:
+        """A mapping may add a label, but then it has to say how it connects.
+
+        A mapping's rows are only reachable from the rest of the graph through
+        something: a ``Link`` to another label, or the entity type already being
+        part of the ontology. A mapping that introduces a label with neither
+        produces an island — rows that are queryable and that no document, no
+        entity and no question can ever reach.
+
+        Usually that is a typo in ``label``, and it is the expensive kind: the
+        load succeeds, the counts look right, and the rows are simply somewhere
+        nobody will look. ``standalone=True`` is how you say you meant it, so an
+        island is something declared rather than something a slip produced.
+
+        A label a sibling mapping already connected counts as declared, so a
+        second table adding properties to ``Person`` does not have to repeat how
+        ``Person`` connects.
+        """
+        known = {entity.label for entity in self.entities}
+        known |= {m.label for m in self.tables if m.links or m.standalone}
+        stranded = [
+            m for m in self.tables if m.label not in known and not m.links and not m.standalone
+        ]
+        if stranded:
+            detail = "; ".join(f"{m.source!r} declares {m.label!r}" for m in stranded)
+            raise ValueError(
+                f"A table mapping adds a label the ontology does not have and does "
+                f"not say how it connects: {detail}. Its rows would be an island "
+                f"nothing can reach. Either add the label to the ontology's "
+                f"entities, give the mapping a Link to something, or say the island "
+                f"is deliberate with standalone=True."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_colliding_signatures(self) -> Ontology:
+        """Two sources whose names reduce to one signature would overwrite.
+
+        ``signature_for`` is not injective — ``hr.csv``, ``HR.CSV`` and
+        ``hr csv.csv`` do not all reduce alike, but plenty of pairs do, and a
+        shared signature means a shared property namespace. Caught here, where
+        every mapping is visible at once, because neither mapping can see the
+        other on its own.
+        """
+        by_signature: dict[str, list[str]] = {}
+        for mapping in self.tables:
+            by_signature.setdefault(mapping.signature, []).append(mapping.source)
+        collisions = {sig: srcs for sig, srcs in by_signature.items() if len(srcs) > 1}
+        if collisions:
+            detail = "; ".join(
+                f"{sig!r} claimed by {', '.join(sorted(srcs))}"
+                for sig, srcs in sorted(collisions.items())
+            )
+            raise ValueError(
+                f"Two table mappings reduce to one property signature: {detail}. "
+                f"Every property a source writes is stored as "
+                f"'<signature>__<property>', so these would silently overwrite "
+                f"each other. Rename one of the files."
+            )
+        return self
 
     @model_validator(mode="after")
     def _warn_on_undeclared_pattern_labels(self) -> Ontology:
@@ -562,9 +650,19 @@ class Ontology(DataModel):
             else:
                 rel_by_label[r.label] = r
 
-        return Ontology(
-            entities=list(ent_by_label.values()),
-            relations=list(rel_by_label.values()),
+        # model_copy, not a fresh Ontology(...): rebuilding by listing fields is
+        # how a newly added field silently disappears. That already happened once
+        # in this codebase — GraphData rebuilt by field list lost `mentions`, and
+        # every extracted entity lost its provenance with it.
+        merged_tables = {mapping.source: mapping for mapping in self.tables}
+        for mapping in other.tables:
+            merged_tables.setdefault(mapping.source, mapping)
+        return self.model_copy(
+            update={
+                "entities": list(ent_by_label.values()),
+                "relations": list(rel_by_label.values()),
+                "tables": list(merged_tables.values()),
+            }
         )
 
 
@@ -742,6 +840,66 @@ class FinalizeResult(DataModel):
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
+    property_conflicts: list[str] = Field(default_factory=list)
+    """One logical property supplied by more than one table.
+
+    Signing keeps both values — ``hr__grade`` and ``finance__grade`` — so this is
+    not a failure and nothing was lost. It is reported because it is also the
+    thing that makes a question ambiguous: asked for "the grade", a query has to
+    pick a source, and it will pick one silently.
+
+    Under signing this is one condition, not two. Before it, a second table
+    overwriting a property was a *loss* and two tables offering the same answer
+    was an *ambiguity*; now the first cannot happen, so only the ambiguity is
+    left to report.
+    """
+
+    unresolved_references: dict[str, int] = Field(default_factory=dict)
+    """Per label, reference stubs no source ever filled in.
+
+    A ``Link`` writes its target on the promise that the table owning it will
+    arrive. A stub still flagged at the end means it did not — the export was
+    never loaded, or the keys do not match. The graph looks complete until a
+    question needs the target's columns.
+    """
+
+    entities_without_a_name: dict[str, int] = Field(default_factory=dict)
+    """Per label, mapped entities with no display name.
+
+    Legitimate for a fact export keyed on a reading id, and identical in shape to
+    a wrong ``name=`` column. Nothing without a name can join to prose, so it is
+    worth seeing either way.
+    """
+
+    tables_without_a_mapping: list[str] = Field(default_factory=list)
+    """Sources loaded by the natural reading of the file, and so unjoined.
+
+    Their rows are queryable immediately. Nothing claims to know which entity in
+    the documents each row is about, because nothing said. Declaring a mapping
+    with a name column is what connects them.
+    """
+
+    mapping_changed: list[str] = Field(default_factory=list)
+    """Sources whose declared mapping differs from the one already stored.
+
+    The stored mapping is replaced and any property it no longer declares is
+    removed from the nodes. Reported so a change made by editing code, rather
+    than deliberately, does not pass unnoticed.
+    """
+
+    stale_signed_properties: list[str] = Field(default_factory=list)
+    """Signed properties left on an entity by a source that no longer mentions it.
+
+    When one export stops listing a row that another export still describes, the
+    entity survives — correctly, it is still mentioned — but the first source's
+    values stay on it, belonging to nobody and reading as current.
+
+    Reported rather than removed: the graph cannot tell "that source dropped the
+    row" from "that source has not been reloaded yet", and guessing would delete
+    live data. Non-empty here means re-load the named source, or accept that
+    those values are historical.
+    """
+
     probable_duplicates: list[str] = Field(default_factory=list)
     """Same-label entities that probably denote one thing and did not merge.
 
@@ -769,6 +927,11 @@ class FinalizeResult(DataModel):
     under its own label can no longer join them. Non-empty here with
     ``entities_deduplicated == 0`` is the signature of that, and the fix is to
     declare mappings up front.
+
+    Keyed by the name as it is spelled in the data, so it can be searched for.
+    Entities are grouped for merging under a canonical form of the name — lower
+    cased, legal suffixes dropped — which is an internal key and never appears
+    here.
     """
 
 

@@ -1,25 +1,36 @@
 ---
 title: "Structured Ingestion"
-description: "Ingest CSVs and other tabular sources by declaring a mapping, so rows become typed entities in the same graph as your documents."
+description: "Ingest CSVs and other tabular sources by declaring a mapping in the ontology, so rows become typed entities in the same graph as your documents."
 ---
 
 The extraction pipeline is built for prose: it chunks text, asks a model what the entities are, and describes them. Send a CSV through it and every cell arrives as a described entity, which loses the two properties a table has and a document does not — a stable key per row, and a known type per column. `age` becomes the string `"34"` if it survives at all, so nothing can be averaged, filtered numerically, or joined on a key.
 
-Structured ingestion takes the other route. You declare what the columns mean, and the SDK writes the graph deterministically, with no model in the loop:
+Structured ingestion takes the other route. You declare what the columns mean — once, in the ontology, next to the entity types — and the SDK writes the graph deterministically, with no model in the loop:
 
 ```python
-from graphrag_sdk import Column, Table
+from graphrag_sdk import Column, Entity, GraphRAG, Link, Ontology, TableMapping
 
-ORGS = Table(
-    "Organization",
-    key="org_id",
-    name="org_name",
-    hq_country="hq_country",
-    employee_count=Column("employee_count", "INTEGER"),
+ONTOLOGY = Ontology(
+    entities=[Entity(label="Person"), Entity(label="Organization")],
+    tables=[
+        TableMapping(
+            source="employees.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={"age": Column("age", "INTEGER")},
+            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        ),
+    ],
 )
 
-await rag.ingest("orgs.csv", mapping=ORGS)
+async with GraphRAG(connection=..., llm=..., embedder=..., ontology=ONTOLOGY) as rag:
+    await rag.ingest("data/board_review.pdf")   # prose
+    await rag.ingest("data/employees.csv")      # a table
+    summary = await rag.finalize()
 ```
+
+There is no `mapping` argument. A `.csv` is records, its declaration is already in the ontology, and `ingest` finds it by filename — so the call for a table looks exactly like the call for a PDF, and the two cannot disagree about how a file should be read.
 
 The same input always produces the same graph, because identity comes from a declared key and every type is declared rather than inferred.
 
@@ -31,11 +42,99 @@ A structured source produces exactly the same shapes as a document, so both halv
 
 | Label       | One per                | Notes                                                                 |
 | ----------- | ---------------------- | --------------------------------------------------------------------- |
-| `Document`  | source file            | Addressed by `document_id`, which defaults to the file name.          |
+| `Document`  | source file            | Addressed by `document_id`, which defaults to `os.path.normpath(source)`. |
 | `Chunk`     | **record**             | `kind: "record"`, plus `record_key` and every cell of the row.        |
-| `__Entity__`| mapped node            | Typed properties from the declared columns.                           |
+| `__Entity__`| mapped node            | Typed properties from the declared columns, each signed with its source. |
 
 A record is a chunk. That is the whole trick: a row becomes retrievable and traceable to its source in exactly the way a paragraph is, while the typed projection lives on the entity where aggregation reads it.
+
+### What it looks like on the graph
+
+Two sources describing one person — `employees.csv` and a board-review PDF — produce this shape. Every node and edge below is real: it is the graph `examples/13_documents_and_tables.ipynb` builds, read back from FalkorDB.
+
+```mermaid
+flowchart LR
+    subgraph csv["employees.csv"]
+        D1[":Document<br/>employees.csv"]
+        C1[":Chunk kind=record<br/>record_key=E-1<br/>full_name, age, job_title, org_id"]
+    end
+    subgraph pdf["board_review.pdf"]
+        D2[":Document<br/>board_review.pdf"]
+        C2[":Chunk<br/>'…Maya Ellison, an engineer<br/>at Northwind Energy, led…'"]
+    end
+    P[":Person<br/><b>Maya Ellison</b><br/>employees__age = 34<br/>employees__title = Principal Engineer<br/>description = from the PDF"]
+    O[":Organization<br/><b>Northwind Energy</b><br/>organizations__country = Norway"]
+
+    C1 -->|PART_OF| D1
+    C2 -->|PART_OF| D2
+    P -->|MENTIONED_IN| C1
+    P -->|MENTIONED_IN| C2
+    O -->|MENTIONED_IN| C2
+    P -->|"RELATES rel_type=WORKS_AT"| O
+
+    style P fill:#dcefe4,stroke:#2a7a58,color:#1b222b
+    style O fill:#dcefe4,stroke:#2a7a58,color:#1b222b
+    style C1 fill:#dfe8f6,stroke:#2b5fa8,color:#1b222b
+    style D1 fill:#dfe8f6,stroke:#2b5fa8,color:#1b222b
+    style C2 fill:#f5e3d6,stroke:#b0501c,color:#1b222b
+    style D2 fill:#f5e3d6,stroke:#b0501c,color:#1b222b
+```
+
+One `:Person`, mentioned by a record chunk **and** a prose chunk. The row's cells live on the chunk under their own column names; the typed, signed projection lives on the entity. The `WORKS_AT` edge came from the CSV's `Link`; nothing in the PDF had to say it.
+
+#### One node, as the FalkorDB browser shows it
+
+Click `Maya Ellison` in the browser at `http://localhost:3000` and this is the property panel. Annotations on the right are not in the graph; everything else is verbatim.
+
+| Property | Value | Written by |
+| --- | --- | --- |
+| `id` | `maya_ellison__person` | the SDK, from the **name** — the same derivation a prose mention gets, so the two halves share an id outright |
+| `name` | `Maya Ellison` | `employees.csv`, from `name="full_name"` |
+| `employees__employee_id` | `E-1` | `employees.csv` — the key, **signed** |
+| `employees__age` | `34` | `employees.csv` — typed `INTEGER`, **signed** |
+| `employees__title` | `Principal Engineer` | `employees.csv`, **signed** |
+| `is_stub` | `false` | the SDK: this row's own source has arrived |
+| `entity_key` | `E-1` | the SDK: the value this row is keyed by, unsigned — what links and re-sync resolve through |
+| `description` | `Maya Ellison is an engineer at Northwind Energy who led the preparation of the remediation plan…` | **the PDF** — unsigned, so it can never collide with a column |
+| `source_chunk_ids`, `spans` | `[…]` | the SDK: which chunks mention her and where |
+| `embedding` | `<256 floats>` | `finalize()` |
+
+Read the signatures and the provenance is on the node itself. Anything `employees__` came from that file and only that file. Anything unsigned came from prose or from the SDK. There is no third possibility, which is why a table and a document cannot overwrite each other.
+
+#### The node a foreign key created before its source arrived
+
+`employees.csv` pointed at `ORG-NW` two steps before `organizations.csv` named it. This is that organization afterwards:
+
+| Property | Value | Written by |
+| --- | --- | --- |
+| `id` | `northwind_energy__organization` | the SDK, from the name. The placeholder was created at `org-nw__organization` (the name was not known yet) and **renamed in place** when `organizations.csv` arrived — its edges came with it |
+| `employees__org_id` | `ORG-NW` | `employees.csv` — the **pointer's** signed key, written when the placeholder was created |
+| `organizations__org_id` | `ORG-NW` | `organizations.csv` — the **owner's** signed key, written when it arrived |
+| `organizations__country` | `Norway` | `organizations.csv` |
+| `name` | `Northwind Energy` | `organizations.csv` — the placeholder was named `ORG-NW` until then |
+| `entity_key` | `ORG-NW` | the SDK: how `organizations.csv` found the placeholder `employees.csv` had raised |
+| `is_stub` | `false` | flipped when the owning source landed |
+| `description` | `Northwind Energy is an organization that…` | the PDFs |
+
+Both signed keys on one node is the proof that the forward pointer and the owning source met, rather than producing two organizations. It is also the exact assertion the regression test for this makes.
+
+#### See it yourself
+
+```cypher
+// every entity, with where its properties came from
+MATCH (e:__Entity__)
+RETURN e.name, [k IN keys(e) WHERE k CONTAINS '__'] AS signed, coalesce(e.description, '') <> '' AS from_prose
+ORDER BY e.name
+
+// a person, the row that produced her, and the page that mentions her
+MATCH (p:Person {name: 'Maya Ellison'})-[:MENTIONED_IN]->(c:Chunk)<-[:PART_OF]-(d:Document)
+RETURN d.id, c.kind, c.record_key
+
+// the edges a CSV Link created, with the signed value they carry
+MATCH (p:Person)-[r:RELATES]->(o:Organization)
+WHERE r.rel_type = 'WORKS_AT'
+RETURN p.name, p.employees__age, o.name, o.organizations__country
+```
 
 <Note>
 Records are **not** chained with `NEXT_CHUNK`. Rows have no reading order, and text-to-Cypher is told `NEXT_CHUNK` means "the next sequential chunk", so chaining unrelated rows would assert a sequence that does not exist.
@@ -49,25 +148,36 @@ Record chunks are **not embedded**, so a row is not reachable by chunk vector se
 
 ## Declaring a Mapping
 
-One form, `Table`. Each record becomes one entity, plus an edge for every column
-that points at something else.
+One form, `TableMapping`, and it lives in `Ontology.tables` rather than at a call
+site. A mapping is part of the schema: the labels and column types it declares
+have to be registered *before* any prose is extracted, or the extractor guesses a
+label from a built-in list and the table's rows can never join what it produced.
+
+Each record becomes one entity, plus an edge for every column that points at
+something else.
 
 ### A table that describes one thing
 
-Every keyword beyond `key` and `name` is a property. A bare string means
-`STRING`; wrap it in `Column` to declare a type.
+`source` is the file name, which is what `ingest` matches on. Everything in
+`properties` becomes a graph property: a bare string means `STRING`, wrap it in
+`Column` to declare a type.
 
 ```python
-from graphrag_sdk import Column, Table
+from graphrag_sdk import Column, TableMapping
 
-ORGS = Table(
-    "Organization",     # what each record becomes
-    key="org_id",       # the column identifying it
-    name="org_name",    # the column holding its display name
-    hq_country="hq_country",
-    employee_count=Column("employee_count", "INTEGER"),
+ORGS = TableMapping(
+    source="orgs.csv",       # the file this maps, matched on its basename
+    label="Organization",    # what each record becomes
+    key="org_id",            # the column identifying it
+    name="org_name",         # the column holding its display name
+    properties={
+        "hq_country": "hq_country",
+        "employee_count": Column("employee_count", "INTEGER"),
+    },
 )
 ```
+
+`key` is optional. It is declared here because the next table links into organizations by `org_id`, so the pointer column has to match something. A table nothing links into, whose names are unique, needs only `name=` — the name is then the identity, and the node id is exactly the one prose extraction computes for the same name.
 
 ### A table with a foreign key
 
@@ -78,18 +188,29 @@ the employment between them. The `org_id` column is not text, it is an edge, and
 ```python
 from graphrag_sdk import Link
 
-EMPLOYEES = Table(
-    "Person",
+EMPLOYEES = TableMapping(
+    source="employees.csv",
+    label="Person",
     key="employee_id",
     name="full_name",
-    age=Column("age", "INTEGER"),
-    title=Column("job_title"),
+    properties={
+        "age": Column("age", "INTEGER"),
+        "title": Column("job_title"),
+    },
     links=[Link("WORKS_AT", to="Organization", by="org_id")],
 )
 ```
 
 Note what did **not** happen: adding a link is an extra argument, not a rewrite.
-The declaration you started with is still there.
+The declaration you started with is still there. Both mappings then go in one
+place:
+
+```python
+ONTOLOGY = Ontology(
+    entities=[Entity(label="Person"), Entity(label="Organization")],
+    tables=[ORGS, EMPLOYEES],
+)
+```
 
 A `Link` can also carry the target's name, when the row denormalises it, and
 properties of its own:
@@ -104,11 +225,13 @@ Link("WORKS_AT", to="Organization", by="org_id",
 
 | Field       | Meaning                                                                                                                                                 |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key`       | The column that identifies the entity. Its value becomes the node id, so re-ingesting a corrected export updates in place instead of duplicating. Should be unique per row: see below.        |
-| `name`      | The display name column. A source holding both `key` and `name` also publishes `alias_ids` — see [Bridging](#bridging-the-two-halves).                   |
-| `properties`| `{property_name: Column}`. Declared types are enforced at ingest, so a bad cell fails the ingest instead of writing a wrong type.                        |
-| a link's target | Written **ON CREATE** only, so a pointer can never overwrite real data. That is what makes the order of two files irrelevant.                        |
-| `links`     | Columns that point at other entities. Each becomes a reference node plus an edge. Two links to the same label are kept apart automatically.               |
+| `source`    | The file this mapping describes, matched on its basename. It is also the property **signature** — see [Who Owns a Column](#who-owns-a-column).            |
+| `label`     | The label each record becomes.                                                                                                                          |
+| `name`      | The display name column — what a person, and a document, calls this thing. It is what joins a row to a mention in prose (see [Bridging](#bridging-the-two-halves)), and, unless `key` is given, it is also the row's identity. |
+| `key`       | **Optional.** The column that identifies the row when that is *not* the name. Defaults to `name`, and for most tables that is right: the node id is then exactly what prose extraction computes for the same name, so the two halves share an id outright. Declare a separate key when names can repeat (two John Smiths), when a name can change while the row persists (a rename), or when other tables `Link` into this one by an id column rather than by name. Must be unique per row either way: see below. |
+| `properties`| `{property_name: Column}`, or a bare string for `STRING`. Declared types are enforced at ingest, so a bad cell fails the ingest instead of writing a wrong type. |
+| `links`     | Columns that point at other entities. Each becomes a reference node plus an edge, written **ON CREATE only**, so a pointer can never overwrite real data. That is what makes the order of two files irrelevant. Two links to the same label are kept apart automatically. |
+| `standalone`| Says out loud that a new label genuinely relates to nothing, so an unconnected island is something you declared rather than something a typo produced. Only meaningful when the label is new and there are no links. |
 
 Column types: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`.
 
@@ -117,6 +240,34 @@ it fails the ingest instead of writing a wrong type. `FLOAT` also rejects `nan`
 and `inf`: they are valid float literals and one of them turns an `avg()` over the
 whole column into `NaN` with nothing in the result to point at the cause. `LIST`
 is parsed as a CSV row, so a quoted element may contain a comma.
+
+<Note>
+A mapping can name any label it likes. If it declares one the ontology does not
+have while other labels already hold entities, the SDK logs which ones and how
+many — a new label is ordinary on a fresh graph, but a second label for a kind of
+thing that already exists cannot be joined by resolution, so one real person ends
+up held as two nodes with the facts split between them.
+</Note>
+
+### Numbers, and the comma
+
+A comma means opposite things either side of the Atlantic, so `INTEGER` and
+`FLOAT` decide the cases that are decidable and refuse the one that is not:
+
+| Cell | Read as | Why |
+| ---- | ------- | --- |
+| `1,234.56` | `1234.56` | both separators, so the rightmost is the decimal point |
+| `1.234,56` | `1234.56` | same rule, German convention |
+| `880,5` | `880.5` | one comma, not followed by three digits: a decimal comma |
+| `1,234,567` | `1234567` | more than one group of exactly three: grouping |
+| `12 345,6` | `12345.6` | spaces and non-breaking spaces are grouping |
+| `1,234` | **refused** | `FLOAT` only: one thousand, or one-point-two-three-four? Nothing says |
+| `1,234` | `1234` | `INTEGER`: no fractional part is on offer, so grouping is the only reading |
+
+The refusal names both readings. If your export uses that form, clean the column
+or declare it `STRING` and convert it yourself. Earlier versions stripped every
+comma, so a German export's `880,5` was stored as `8805.0` — every figure in the
+column out by a factor of ten, with nothing raised.
 
 Property names and relationship types must be identifiers — letters, digits and
 underscores, not starting with a digit — because generated Cypher writes them as
@@ -129,8 +280,38 @@ properties={"hq_country": Column("HQ Country")}
 
 Labels are quoted on write, so `Legal Entity` and `Org-Unit` are fine.
 
+### Columns the SDK renames
+
+A *property* name you declare must be an identifier, as above. A *column* name is
+whatever the exporting system wrote, and two kinds cannot be used verbatim as a
+graph property: names the SDK owns (`id`, `name`, `description`, …) and names that
+are not identifiers (`HQ Country`, `Revenue (M USD)`). Those are stored under a
+`col_` name instead:
+
+| Column | Stored as |
+| ------ | --------- |
+| `employee_id` | `employee_id` — an identifier the SDK does not own, unchanged |
+| `HQ Country` | `col_hq_country` |
+| `Revenue (M USD)` | `col_revenue_m_usd` |
+| `id` | `col_id` |
+
+This applies to the `key=` column and to the per-cell properties of a record
+chunk, so `key="id"` is safe to declare — the value lands on `col_id` and the
+node keeps its own `id`. It reaches the ontology under the stored name too, with
+the original header in the description, so generated Cypher can address it. On an
+entity the stored name is then signed like any other, so `HQ Country` from
+`orgs.csv` is `orgs__col_hq_country`.
+
+<Note>
+`key="id"` used to overwrite the node's graph id, which cost every row of that
+table its `MENTIONED_IN` edges — no provenance and no way to join to prose — on a
+load that reported success. A header containing a space reached the driver inside
+a parameter map and surfaced as `DatabaseError: Invalid input at end of input`,
+from a query the caller never wrote.
+</Note>
+
 <Warning>
-`name` is not a mappable property — it has its own `name=` slot. Declaring it as an ontology attribute lets the extractor answer it with a null for prose mentions and blank out the display name of everything it extracts. The same applies to `id`, `type`, `description`, `source_chunk_ids`, `spans`, `embedding`, `alias_ids`, and `is_stub`, all of which the SDK writes itself.
+`name` is not a mappable property — it has its own `name=` slot. Declaring it as an ontology attribute lets the extractor answer it with a null for prose mentions and blank out the display name of everything it extracts. The same applies to `id`, `type`, `description`, `source_chunk_ids`, `spans`, `embedding`, `entity_key`, and `is_stub`, all of which the SDK writes itself.
 </Warning>
 
 ### When the key is not unique
@@ -141,6 +322,30 @@ row's values end up on it. Which one is not defined. That usually means the wron
 column was declared as the key, so it is logged as a warning naming the column and
 the repeated values.
 
+### When a row has no key
+
+A row whose key cell is blank has no stable identity, so it could never be updated
+or deleted later, and it is not loaded. The result says so:
+
+```python
+result = await rag.ingest("employees.csv")
+result.rows_in_source   # 4  — what the file held
+result.rows_skipped     # 1  — what had no key
+result.records          # 3  — what was written
+```
+
+`rows_skipped` and `rows_in_source` appear in `as_dict()` only when something was
+skipped, and a skip is also logged as a warning naming the column and the row
+numbers. This matters more on a re-sync than a first load: a key cell that goes
+blank in a regenerated export makes the row vanish from the new snapshot, so the
+update deletes its chunk and its entity.
+
+<Note>
+This used to be invisible. A four-row file with one blank key reported
+`records: 3` — a true statement about what was written and a false one about what
+the file said, with nothing in the result to tell the two apart.
+</Note>
+
 ### What a link writes
 
 A row in `employees.csv` says the organization exists and gives its key. It does not know the organization's name or headcount, and a `Link` writes that honestly:
@@ -149,103 +354,87 @@ A row in `employees.csv` says the organization exists and gives its key. It does
 - It carries its key, so it is joinable by the same column the mapping declared.
 - It is flagged `is_stub: true` until the source that owns the entity arrives and fills it in.
 - The edge is a `RELATES` edge carrying the link's `type` as its `rel_type`, which is how every data edge is stored.
+- The edge's own declared properties are signed with the declaring source, with no exemptions at all — `since` on `WORKS_AT` from `employees.csv` is `employees__since`.
 
-Order does not matter. Whichever source arrives first creates the node.
-
----
-
-## Letting the SDK propose the mapping
-
-Writing a mapping by hand means choosing a label by hand, and a label chosen by
-hand can invent `Person` while the graph already holds `Employee`. Both then
-exist, one real person is kept as two nodes, and the facts split between them.
-
-`propose_mapping()` cannot do that, because it must choose a label the ontology
-already has:
-
-```python
-proposal = await rag.propose_mapping("people.csv")
-print(proposal.summary())
-```
-
-```text
-people.csv → Employee
-  key 'person_id' — unique and complete across 500 sampled rows
-  label 'Employee' — chosen from 12 in the ontology, which already holds 40 entities
-  name 'full_name' — joins rows to mentions in documents
-  org_id → Organization (5/5 sampled values already exist)
-  age INTEGER — every sampled value parses
-  hire_date DATE — every sampled value parses
-  ? columns not mapped anywhere: internal_notes
-```
-
-One model call, at authoring time, and it decides as little as possible.
-Everything a reading of the data settles is measured:
-
-| Decided by measurement | How |
-| --- | --- |
-| the key column | the column that is unique and complete across the sample |
-| every column's type | tried against the actual values; one unparseable value widens it |
-| which columns are foreign keys | the expected entity id is computed and looked up, so a reference is proven rather than guessed from a column name |
-| which labels are worth reusing | how many entities each already holds |
-
-What is left for the model is the part no measurement answers: which existing
-concept the rows describe, and what to call the relationships. A label outside
-the ontology is rejected and fed back, so it cannot drift.
-
-### Review it, then commit it
-
-```python
-print(proposal.as_code())        # valid Python, ready to paste
-proposal.table                   # or use it directly
-proposal.introduces_a_new_type   # True when no existing label fitted
-```
-
-Committing the code is preferable to regenerating the proposal on every run: a
-proposal in the ingest path is a model in the ingest path, and a declared mapping
-exists precisely so that no model runs there.
-
-When nothing in the ontology fits, the proposal still comes back but
-`requested_new_label` is set. Applying it then adds a type to the ontology, which
-is a decision rather than a nod.
+Order does not matter. Whichever source arrives first creates the node, and a
+`Link` to a label that has not arrived yet is not a problem to be sequenced
+around.
 
 <Note>
-Writing the mapping yourself is unchanged and needs no model. If it declares a
-label the ontology does not have while other labels already hold entities, the
-SDK logs which ones — a new label is ordinary on a fresh graph, but a second
-label for a kind of thing that already exists cannot be joined by resolution.
+A stub nothing ever filled in is reported by `finalize()` as
+`unresolved_references`, per label. The graph looks complete until a question
+needs the target's columns, so it is worth reading: either the owning export was
+never loaded, or the keys do not match.
 </Note>
 
 ---
 
 ## A table is never read as prose by accident
 
-Without a mapping, a `.csv` would take the text path: the whole file becomes one
+Dispatch is by **file extension**, not by an argument. `.csv`, `.tsv`, `.psv` and
+`.tab` take the deterministic record path; everything else takes the text path.
+Nothing about the call site can change that, so a table cannot be sent through the
+extractor by forgetting something.
+
+What the text path would do to a table is the reason: the whole file becomes one
 chunk with its commas intact, an extractor pulls out whatever it happens to
 notice, and no column keeps its type. Measured on a two-row export: one entity
 written, `age` absent entirely, nothing raised.
 
-So it is refused instead:
+### A table with no declared mapping
+
+Nothing is refused. A table nobody mapped still belongs in the graph, so it gets
+the *natural transformation*:
 
 ```python
-await rag.ingest("employees.csv")
+result = await rag.ingest("readings.csv")   # nothing declared for it
 ```
+
+- Every column becomes a typed property, with types measured over the **whole
+  file** rather than a sample. A column holding integers for five hundred rows and
+  `"N/A"` on row five hundred and one would be declared `INTEGER` from a sample
+  and then fail the load it was meant to describe.
+- The label comes from the file name, in the file's own casing — `readings`, not
+  `Readings` — so it is obvious in the browser which labels nobody declared.
+- The key is the leftmost column that is unique and complete.
+- There is **no name column, so it joins nothing.** Which column identifies the
+  thing a row is *about* is a guess, and a wrong guess silently attaches rows to
+  the wrong entities. The rows land queryable and unreachable from any document
+  instead.
+
+A WARNING says so at load, naming the label and the key it chose:
 
 ```text
-ValueError: employees.csv looks like a table but no 'mapping' was given, so it
-would be read as prose: the whole file becomes one text chunk and no column keeps
-its type. Either pass a mapping — ingest(source, mapping=Table(...)) — or ask for
-one with await rag.propose_mapping(source). If the file really is prose that
-happens to live in columns, say so explicitly by passing a loader:
-ingest(source, loader=TextLoader()).
+No table mapping is declared for readings.csv, so it was read as-is: label
+'readings', keyed on 'reading_id', and with no name column it does not join
+anything the documents mention. […] Declare a TableMapping in the ontology to
+connect it.
 ```
 
-An exception rather than a warning, because the graph looks populated afterwards
-and a log line would not save anyone.
+And `finalize()` reports it, so it is visible after the fact rather than only in a
+log:
+
+```python
+summary = await rag.finalize()
+summary.tables_without_a_mapping   # ["readings.csv"]
+```
+
+The fix is to declare a mapping. A file with no unique-and-complete column at all
+is refused, because a row with no stable identity could never be updated or
+deleted later:
+
+```text
+MappingError: readings.csv has no column that is unique and complete, so no row
+can be given a stable identity. Declare a mapping naming the key, or add an id
+column to the export.
+```
+
+### Prose that happens to live in columns
 
 The escape is real and worth knowing: a table of support tickets, survey answers
 or meeting notes is prose that happens to live in columns, and its text should be
-chunked and extracted.
+chunked and extracted. Passing a loader says so, and takes the file off the record
+path:
 
 ```python
 from graphrag_sdk import TextLoader
@@ -260,18 +449,27 @@ loses whatever `body` mentions, or gets the entities from `body` and loses the
 identity and the link. Marking a column as prose within a mapping is not built.
 </Warning>
 
+<Note>
+`chunker` and `extractor` do not apply to a record source and are refused rather
+than ignored, since neither has anything to do on a path that calls no model. A
+table inside a list passed to `ingest([...])` is refused too: each structured
+source is written on its own so that one bad row cannot fail the batch, so ingest
+them one at a time.
+</Note>
+
 ---
 
 ## Validation
 
 The mapping is checked against the source's real header **before anything is written**, so a mapping that does not fit raises `MappingError` and leaves the graph untouched:
 
-```python
-problems = EMPLOYEES.validate_against(["employee_id", "full_name"])
-# ["node 'Person': property 'age' reads missing column 'age'", ...]
+```text
+MappingError: mapping does not fit employees.csv:
+  node 'Person': property 'age' reads missing column 'age'
+  node 'Organization': key column 'org_id' is not in the source
 ```
 
-Pass `strict=True` to also reject a source with a column the mapping never reads. It is off by default because ignoring a column is a legitimate choice; turn it on when a model authored the mapping, where a dropped column is usually a mistake.
+Pass `strict_mapping=True` to `ingest` to also reject a source with a column the mapping never reads. It is off by default because ignoring a column is a legitimate choice; turn it on where a dropped column would be a mistake rather than an omission.
 
 ---
 
@@ -281,24 +479,27 @@ A mapping projects into the ontology, and this is what makes the columns queryab
 
 ```python
 ontology = await rag.get_ontology()
-# Person: employee_id:STRING, age:INTEGER, title:STRING, start_date:DATE
+# Person: employees__employee_id:STRING, employees__age:INTEGER,
+#         employees__title:STRING, employees__start_date:DATE
 # WORKS_AT: [('Person', 'Organization')]
 ```
 
 Without it, generated Cypher cannot see that `age` is a number and falls back to guessing that everything is a described entity. With it, aggregation questions become answerable.
 
-Registration is **additive**. A label a previous source already declared is extended through the ontology-evolution primitives rather than redeclared, so `employees.csv` can declare `Organization` by key alone and `orgs.csv` can later add `employee_count` to the same label. A contradiction — the same property declared with two types — still raises.
+Registration is **additive**. A label a previous source already declared is extended through the ontology-evolution primitives rather than redeclared, so prose can create `Organization` with only a name and a description and `orgs.csv` can later add `employee_count` as an `INTEGER` to the same label. Because each source signs its own properties, two tables describing one label cannot contradict each other at all. What still raises is a source contradicting *itself*: re-declaring one of its own columns with a different type is refused, and names `drop_attribute()` then `add_attribute()` as the deliberate way to change it.
+
+A mapping is also authoritative about its own shape, so a property it stops declaring leaves the nodes as well as the schema — otherwise last week's value sits there looking current. Signed names make that drop exactly right: only `orgs.csv` can ever have written `orgs__hq_country`, so removing it cannot touch another source's data. `finalize()` reports the sources whose stored declaration changed in `mapping_changed`, so an edit made carelessly does not pass unnoticed.
 
 ---
 
 ## Keeping a Table in Sync
 
-A table is a snapshot, not an addition, so ingesting a source that is already in the graph re-syncs it rather than writing over the top:
+A table is a snapshot, not an addition, so ingesting a source that is already in the graph re-syncs it rather than writing over the top. There is no separate call — it is the same `ingest`:
 
 ```python
-await rag.ingest("employees.csv", mapping=EMPLOYEES)   # first write
+await rag.ingest("employees.csv")   # first write
 # ... the export is regenerated, with one row corrected, one added, one gone ...
-result = await rag.ingest("employees.csv", mapping=EMPLOYEES)   # re-sync
+result = await rag.ingest("employees.csv")   # re-sync
 result.entities_deleted   # 1 — the row that disappeared took its entity with it
 ```
 
@@ -312,20 +513,23 @@ Three kinds of change, and only one of them needs machinery:
 
 The third case is why this path exists. The new records are written under a pending Document and swapped in atomically, so a departed row has no new chunk, the cutover deletes its old one, and its entity goes too **unless another source still mentions it**. Cleanup is scoped, never global: if `employees.csv` still points at `ORG-7`, dropping that organization from `orgs.csv` leaves the node alone.
 
-A document remembers how it was written, and an update may not change its mind. Updating a table without its mapping would re-read the CSV as prose, replace its records with a single text chunk and delete its entities, so it is refused. The same applies in reverse: a document written from text cannot be updated with a mapping. `apply_changes()` surfaces this as a per-entry error rather than acting on it.
-
-`update()` is the same operation with stricter semantics, raising if the source was never ingested:
-
-```python
-await rag.update("employees.csv", mapping=EMPLOYEES)                     # must exist
-await rag.update("new.csv", mapping=EMPLOYEES, if_missing="ingest")      # or upsert
-```
-
 <Note>
-The re-sync short-circuits when nothing changed: an unchanged source returns `no_op=True` without writing. The content hash covers the **mapping** as well as the rows, so adding a column to a declaration is never mistaken for unchanged data.
+The re-sync short-circuits when nothing changed: an unchanged source returns `no_op=True` without writing. The content hash covers the **mapping** as well as the rows, so changing a declared type or adding a column re-writes the source instead of being mistaken for unchanged data.
 </Note>
 
+A document remembers how it was written, and nothing may change its mind: re-reading a CSV as prose replaced its record chunks with one text chunk and took every entity with them — measured as two organizations before the call and none after, with nothing raised. A table appearing in `apply_changes(modified=[...])` therefore comes back as a per-entry error rather than being acted on. Re-ingest it with `ingest()` instead, which finds its declaration.
+
 A source is addressed by `os.path.normpath(source)` unless you pass `document_id`, matching how the text path derives a file's id. Use the same handle for `delete_document()`.
+
+<Warning>
+When one export stops listing a row that another export still describes, the
+entity survives — correctly, it is still mentioned — but the first source's values
+stay on it, belonging to nobody and reading as current. `finalize()` reports those
+as `stale_signed_properties` rather than removing them: the graph cannot tell "that
+source dropped the row" from "that source has not been reloaded yet", and guessing
+would delete live data. Non-empty means re-load the named source, or accept that
+those values are historical.
+</Warning>
 
 ---
 
@@ -342,10 +546,12 @@ columns, each row producing a `Person`, a reference to an `Organization`, a
 | 25,000 | 14.4s | ~1,700 rows/s | 248 MB | 0.11s |
 | 50,000 | 38.5s | ~1,300 rows/s | 408 MB | 0.20s |
 
-Memory is flat in the row count because records are streamed, never held. Growth
-in time is close to linear but not quite, so a very large table is slower per row
-than a small one. Re-syncing a source whose rows have not changed is a hash
-comparison, independent of size.
+Memory grows with the row count: the whole file's chunks, nodes and edges are
+held before anything is written, which is what makes a failed load leave the graph
+untouched. The measured cost is roughly 6.5 KB per row. Growth in time is close to
+linear but not quite, so a very large table is slower per row than a small one.
+Re-syncing a source whose rows have not changed is a hash comparison, independent
+of size.
 
 No model is called at any point on this path, so the cost is graph writes and
 nothing else. A prose document of the same size would be dominated by extraction.
@@ -354,21 +560,83 @@ nothing else. A prose document of the same size would be dominated by extraction
 
 ## Who Owns a Column
 
-A mapping declares its columns into the ontology so that generated Cypher can see their types. That also puts them in front of the extractor, which will then answer them from prose. Measured: a job title arrived as `"engineer"` from a memo and overwrote the `"Engineer"` the HR export spelled.
-
-So a declared column has an owner. **Extraction may not write a property that a mapping declared.** Everything else a document knows is unaffected: the entity, its name, its description, and every property no mapping claims.
+Every source does, and the property name says which. A mapping's `source` is also
+its **signature** — the file name with the directory and one extension removed —
+and every property it writes is stored as `<signature>__<property>`:
 
 ```
-employees.csv declares Person.title   →  "Engineer"   (kept)
-board_note.txt calls Alice an engineer →  "engineer"   (ignored, and logged)
+employees.csv   age              →  Person.employees__age
+organizations.csv   country      →  Organization.organizations__country
+employees.csv   WORKS_AT.since   →  employees__since   (on the edge)
 ```
 
-Ownership is persisted with the ontology, so it holds across processes, and it is sticky: a later declaration that omits the flag cannot hand the column back to the extractor.
+`id`, `name`, `entity_key` and `is_stub` stay unsigned, because the SDK owns them
+and they are the join: an extracted node and a keyed node have to meet on the
+name. Edge properties have no such join, so **nothing on an edge is exempt** —
+which also puts `rel_type`, `fact` and `source_chunk_ids` permanently out of a
+declaration's reach rather than merely discouraging them.
 
-<Note>
-If this is the wrong policy for your data, it is one guard in the ingest pipeline
-(`_drop_structured_properties`) rather than a rule spread through the write path.
-</Note>
+Two things follow, and they are the point:
+
+**Two tables writing one property cannot overwrite each other.** `hr.csv` and
+`finance.csv` both declaring `grade` write `hr__grade` and `finance__grade`.
+Before signing, whichever loaded last won and the loser's value was gone from the
+graph with nothing reported — measured on edge properties too, where both tables
+declared `WORKS_AT.since`.
+
+**A prose-extracted property cannot collide with a declared one at all.** Anything
+the extractor decides is unsigned by construction, so it lands under its own name
+beside the signed one. That is structural, not a guard: a job title arriving
+lowercased from a memo has nowhere to overwrite the `"Engineer"` the HR export
+spelled.
+
+The cost is that hand-written Cypher has to say `p.employees__age`:
+
+```python
+rows = await rag.query(
+    "MATCH (p:Person) RETURN avg(p.employees__age) AS mean_age"
+)
+```
+
+Text-to-Cypher handles it without being told, because each `Attribute`'s
+description names the source column and the table it came from — `age, from table
+employees` — so "what is the average age" still generates the right property.
+Unsigned schema handed to the same path instead looked for an entity named
+`finance` and answered wrongly.
+
+### A conflict is kept, never resolved
+
+Two sources disagreeing about one thing is not a failure and nothing is lost.
+Both values stay on the node under their own signatures, neither source is
+preferred, and there is deliberately no precedence rule. `finalize()` reports it,
+because it is also the thing that makes a question ambiguous — asked for "the
+grade", a query has to pick a source, and it will pick one silently:
+
+```python
+summary = await rag.finalize()
+summary.property_conflicts
+# ["Person.grade — supplied by finance.csv, hr.csv"]
+```
+
+That is how you find out there is a disagreement to go and settle at the source.
+
+### Two files, one signature, refused
+
+The signature is derived, and deliberately not injective: `hr.csv`, `HR.CSV` and
+`hr csv.csv` all reduce to `hr`. Two sources that reduce alike would share one
+property namespace and silently overwrite each other, so the collision is refused
+where every mapping is visible at once, naming both paths:
+
+```text
+'/exports/2026-02/hr.csv' and the already-registered '/exports/2026-01/hr.csv'
+both reduce to the property signature 'hr'. […] The signature is the file's
+basename, so give one of them a distinct filename (for example hr_2026_02.csv).
+```
+
+This holds across sessions as well as within one ontology: the check runs against
+what is already stored, before the first write, so the graph stays loadable and
+the caller gets the error instead of a `GraphRAG` that cannot start on that graph
+at all. One of the two files has to be renamed.
 
 ---
 
@@ -376,22 +644,54 @@ If this is the wrong policy for your data, it is one guard in the ingest pipelin
 
 Documents and tables describing the same thing must land on one node, or neither half can answer a question that needs the other's facts.
 
-The bridge is exact string equality on computed ids, not similarity. A source that carries **both** a key and a name publishes the id an extractor would independently compute for the same thing:
+The bridge is the **name**. An entity's id is derived from its name in exactly the same way whether it came from a row or a sentence, so two sources that spell a name identically produce the **same id** and are one node from the first write — no merge step involved:
 
 ```
-employees.csv row  →  id: e-1__person          alias_ids: [alice_smith__person]
-board_note.txt     →  id: alice_smith__person
+employees.csv row  →  Person  name: "Alice Smith"   id: alice_smith__person
+board_note.txt     →  Person  name: "Alice Smith"   id: alice_smith__person
+                                                        ^^^^^^^^^^^^^^^^^^^ the same node
 ```
 
-`finalize()` then folds them together with the ordinary resolver and carries the table's typed columns onto the survivor:
+The row's key is not the identity. It is carried as `entity_key`, and it is what two things resolve through: a `Link` whose target has not loaded yet (a placeholder is created and later **renamed in place** onto the name-derived id when the owning source arrives), and a re-sync in which a row's name changed (the node written last time is moved to its new id rather than orphaned with its prose description). Two rows sharing a name would collapse into one entity, so those fall back to the key and are reported — and a prose mention of that name joins neither, correctly, because it is ambiguous.
+
+What `finalize()` still does is handle **spelling variants**: `NORTHWIND ENERGY` from a NER model and `Northwind Energy` from a CSV are different strings and so different ids. It groups every entity by `(canonical name, label)` and merges each group. The canonical form is reduced independently on both sides — lower-cased,
+punctuation split, `Surname, Given` un-inverted, abbreviations expanded, one
+trailing legal form dropped — so the join is an equality rather than a pairwise
+comparison and the order two sources arrive in does not change what merges. Word
+order is deliberately preserved: sorting the tokens would wrongly merge `Stanley
+Morgan` with `Morgan Stanley`, a person and a bank, and a merge is not reversible.
+
+Because the match is on the name, a table whose display names are spelled differently from the prose will not join: `Maya Ellison` and `M. Ellison` stay two nodes, one holding her age and the other holding what she did. No canonical form can unify an initial with a full given name without also merging every other M-surname person, so those are **reported, never merged**:
 
 ```python
-await rag.ingest("employees.csv", mapping=EMPLOYEES)
+summary = await rag.finalize()
+summary.probable_duplicates   # names that look like one thing and did not merge
+```
+
+Reported rather than merged on purpose. Merging in the graph does not hold — the next time that document is read, extraction recreates the node the merge deleted and you are back to two, measured — so the fix is the spelling in the source, which fixes it for good. Choosing join-able names is the design decision that decides whether this feature works on your data. To check what did join, count the entities reachable from more than one source:
+
+```python
+await rag.query("""
+    MATCH (e:__Entity__)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(d:Document)
+    WITH e, collect(DISTINCT d.id) AS sources
+    WHERE size(sources) > 1
+    RETURN e.name, sources ORDER BY e.name
+""")
+```
+
+An empty result means nothing joined.
+
+`finalize()` folds each group with the ordinary resolver and carries the table's typed columns onto the survivor:
+
+```python
+await rag.ingest("employees.csv")
 await rag.ingest(text=BOARD_NOTE, document_id="board_note.txt")
 await rag.finalize()
 ```
 
-The survivor is the node whose id came from a declared key, because that id is reproducible: the next ingest of the same table recomputes it. Keeping the prose-derived id instead would make re-ingest create a second node for the same row.
+The survivor is the node whose id came from a declared key, because that id is reproducible: the next ingest of the same table recomputes it. Keeping the prose-derived id instead would make re-ingest create a second node for the same row. Nothing has to be dropped to make room for anything: the export's title is `employees__title`, whatever the extractor decided from prose is unsigned, and both sit on the one node.
+
+A table with **no** name column joins nothing at all, by construction — that is the case a mapping-less load lands in, and why declaring `name=` is what connects it.
 
 ### Order does not matter
 
@@ -407,33 +707,33 @@ and the two never join. Measured on one corpus with only the order changed:
 prose first merged 0 entities, tables first merged 5, and nothing was raised
 either way.
 
-A declared type now beats a guessed one, the same rule that governs declared
-[columns](#who-owns-a-column). When a name exists under one label a mapping
-declared and one or more labels nothing declared, the declared label survives and
-absorbs the rest, keeping the document's description and mentions. Two *declared*
-labels sharing a name are left alone and reported, because that is a real
-modelling conflict rather than a guess to correct — as is a name under only
+A declared type now beats a guessed one. When a name exists under one label a
+mapping declared and one or more labels nothing declared, the declared label
+survives and absorbs the rest, keeping the document's description and mentions.
+Two *declared* labels sharing a name are left alone and reported, because that is
+a real modelling conflict rather than a guess to correct — as is a name under only
 undeclared labels, which is the Apple case.
 
 Anything left unmerged is reported rather than silent:
 
 ```python
 result = await rag.finalize()
-result.unmerged_name_collisions   # {"apple": ["organization", "product"]}
+result.unmerged_name_collisions   # {"Apple": ["organization", "product"]}
 ```
 
-Declaring mappings up front is still worth doing, because then the extractor has
-the real labels available while it reads and gets more of them right first time
-(on the same corpus, 9 merges instead of 4):
-
-```python
-rag = GraphRAG(..., mappings=[EMPLOYEES, ORGS])
-# or later, writing no data:
-await rag.declare_mapping(EMPLOYEES)
-```
+Declaring the mappings in the ontology you hand to `GraphRAG(...)` is what makes
+this a non-issue rather than a thing to get right: they are registered before the
+first ingest of anything, so the extractor has the real labels available while it
+reads and gets more of them right first time (on the same corpus, 9 merges instead
+of 4).
 
 <Note>
-Variant names still do not bridge. `A. Smith` and `Alice Smith` compute different ids, so they remain separate nodes. Exact equality is a deliberate floor: it never merges two different people, and anything fuzzier belongs in the semantic resolution pass.
+The same applies within a label. `A. Smith` and `Alice Smith` reduce to different
+canonical names, so they remain separate nodes. That floor is deliberate: it never
+merges two different people, and anything fuzzier belongs in the semantic
+resolution pass. Embeddings were measured on this question and cannot decide it —
+over realistic pairs, "same" scored 0.601–0.980 and "different" 0.706–0.930, so
+the ranges overlap and no threshold exists.
 </Note>
 
 ---
@@ -447,21 +747,22 @@ rag = GraphRAG(
     connection=ConnectionConfig(host="localhost", graph_name="my_graph"),
     llm=llm,
     embedder=embedder,
+    ontology=ONTOLOGY,
     enable_cypher=True,
 )
 
 answer = await rag.completion("What is the average age of employees at Acme Corp?")
 ```
 
-It is off by default because it costs an extra LLM call per question and needs an ontology with real property types to be worth it. A structured source is exactly that ontology, so this is the setting that makes declaring column types pay off. The strategy is kept in step with the ontology as ingests evolve it, so a mapping registered after the client was built is still visible to generated queries.
+It is off by default because it costs an extra LLM call per question and needs an ontology with real property types to be worth it. A structured source is exactly that ontology, so this is the setting that makes declaring column types pay off. Ingesting a table with it off logs a line saying so once, because declaring column types and then never reading them is the quiet way for this whole path to under-deliver. The strategy is kept in step with the ontology as ingests evolve it, so a mapping registered after the client was built is still visible to generated queries.
 
-To aggregate yourself instead, `rag.query()` runs Cypher directly:
+To aggregate yourself instead, `rag.query()` runs Cypher directly — with the signed property names:
 
 ```python
 rows = await rag.query(
     "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
     "WHERE r.rel_type = 'WORKS_AT' AND o.name = $company "
-    "RETURN avg(p.age) AS mean_age",
+    "RETURN avg(p.employees__age) AS mean_age",
     {"company": "Acme Corp"},
 )
 ```
@@ -479,10 +780,10 @@ The employment edges and ages come from the CSV. The revenue miss comes from the
 
 ## Custom Sources
 
-`CsvRecordLoader` handles delimited text, sniffing comma, semicolon, tab, and pipe. Anything else is a `RecordLoaderStrategy`:
+`CsvRecordLoader` handles delimited text, sniffing comma, semicolon, tab, and pipe from the first kilobyte. Anything else is a `RecordLoaderStrategy`, passed as `record_loader`:
 
 ```python
-from graphrag_sdk import RecordBatch, RecordLoaderStrategy
+from graphrag_sdk import DocumentInfo, RecordBatch, RecordLoaderStrategy
 
 class ParquetRecordLoader(RecordLoaderStrategy):
     async def load_records(self, source: str, ctx) -> RecordBatch:
@@ -492,8 +793,15 @@ class ParquetRecordLoader(RecordLoaderStrategy):
             document_info=DocumentInfo(uid=source, path=source),
         )
 
-await rag.ingest("data.parquet", mapping=MAPPING, record_loader=ParquetRecordLoader())
+await rag.ingest("exports/readings.csv", record_loader=ParquetRecordLoader())
 ```
+
+<Note>
+The extension is still what routes the call, so a custom loader reads a source
+whose name ends in `.csv`, `.tsv`, `.psv` or `.tab`. A path ending in something
+else takes the text path no matter what loader is passed, which is the same rule
+stated once rather than two ways of choosing a path that could disagree.
+</Note>
 
 <Warning>
 `open_records` is a **factory**, not an iterable, and that is load bearing. The write path walks the records twice, once to build a chunk per record and once to apply the mapping. A one-shot iterator is silently empty the second time, which ingests zero rows and raises nothing. A loader that genuinely cannot reopen its source should spool once and close over the buffer, so the memory cost sits where it is visible.
@@ -501,6 +809,11 @@ await rag.ingest("data.parquet", mapping=MAPPING, record_loader=ParquetRecordLoa
 
 ---
 
-## Full Example
+## Examples
 
-`examples/11_structured_ingestion.py` runs the whole path: two CSVs, a document, resolution, the declared ontology, all three classes of question, and a re-ingest.
+Two, shortest first. Both run against a local FalkorDB.
+
+| | |
+| --- | --- |
+| `examples/13_documents_and_tables.ipynb` | **Start here.** Two mappings in one ontology, then a document, a table, a document and a table, in that order, and finally a corrected version of the first table. It stops after each stage so the graph can be inspected: the employee export arrives before the organizations it points at, so you can watch the reference nodes get filled in rather than duplicated. |
+| `examples/11_structured_ingestion.py` | The whole path: two CSVs, a document, resolution, the declared ontology, all three classes of question, and a re-ingest that corrects a row, adds one and drops one. |

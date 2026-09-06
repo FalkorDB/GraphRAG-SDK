@@ -3,8 +3,8 @@ GraphRAG SDK -- Structured Ingestion
 =======================================
 Tables and documents in one graph, end to end:
 
-  - declare a mapping          — which columns are entities, keys, properties
-  - rag.ingest(csv, mapping=)  — deterministic, no model involved
+  - declare a mapping          — in the ontology, alongside the entity types
+  - rag.ingest(csv)            — deterministic, no model involved
   - rag.ingest(text=...)       — the ordinary extraction path, unchanged
   - rag.finalize()             — where the two halves resolve into one node
   - retrieval                  — including aggregation over typed columns
@@ -34,11 +34,13 @@ from pathlib import Path
 from graphrag_sdk import (
     Column,
     ConnectionConfig,
+    Entity,
     GraphRAG,
     Link,
     LiteLLM,
     LiteLLMEmbedder,
-    Table,
+    Ontology,
+    TableMapping,
 )
 
 # ── The tables ──────────────────────────────────────────────────
@@ -82,15 +84,24 @@ BOARD_NOTE = (
     "would not affect the supply agreement with Globex."
 )
 
-# ── The mappings ────────────────────────────────────────────────
+# ── The mappings, declared in the ontology ──────────────────────
+# A mapping belongs to the schema, not to the call site: the labels and column
+# types it declares have to be registered before any prose is extracted, or the
+# extractor guesses a label and the table's rows can never join what it wrote.
+# `source` is the filename `ingest` matches on, and it is also where each
+# property's signature comes from — `age` from employees.csv is stored as
+# `employees__age`, which is why no other source can overwrite it.
 
 # One record is one organization: a key, a name, and two typed columns.
-ORGS = Table(
-    "Organization",
+ORGS = TableMapping(
+    source="orgs.csv",
+    label="Organization",
     key="org_id",
     name="org_name",
-    hq_country="hq_country",
-    employee_count=Column("employee_count", "INTEGER"),
+    properties={
+        "hq_country": Column("hq_country"),
+        "employee_count": Column("employee_count", "INTEGER"),
+    },
 )
 
 # One record is a person, plus a link to the organization it points at. The link
@@ -104,14 +115,22 @@ ORGS = Table(
 #   links  a column pointing at another entity. The target is written ON CREATE
 #          only, so a pointer can never overwrite the name orgs.csv supplied,
 #          and the two files can arrive in either order.
-EMPLOYEES = Table(
-    "Person",
+EMPLOYEES = TableMapping(
+    source="employees.csv",
+    label="Person",
     key="employee_id",
     name="full_name",
-    age=Column("age", "INTEGER"),
-    title=Column("job_title"),
-    start_date=Column("start_date", "DATE"),
+    properties={
+        "age": Column("age", "INTEGER"),
+        "title": Column("job_title"),
+        "start_date": Column("start_date", "DATE"),
+    },
     links=[Link("WORKS_AT", to="Organization", by="org_id")],
+)
+
+ONTOLOGY = Ontology(
+    entities=[Entity(label="Person"), Entity(label="Organization")],
+    tables=[ORGS, EMPLOYEES],
 )
 
 
@@ -134,6 +153,7 @@ async def main():
         llm=llm,
         embedder=embedder,
         embedding_dimension=256,
+        ontology=ONTOLOGY,
         # The reason to declare column types at all. Without it, a question like
         # "what is the average age" has no passage to retrieve and cannot be
         # answered; with it, the question becomes a query against the ontology
@@ -146,8 +166,10 @@ async def main():
         employees_csv = write_csv(workdir, "employees.csv", EMPLOYEE_ROWS)
 
         print("── structured")
-        for source, mapping in ((orgs_csv, ORGS), (employees_csv, EMPLOYEES)):
-            result = await rag.ingest(source, mapping=mapping)
+        for source in (orgs_csv, employees_csv):
+            # No mapping argument: a .csv is records, and its declaration is
+            # already in the ontology above.
+            result = await rag.ingest(source)
             print(f"   {Path(source).name}: {result}")
 
         # Every record is a Chunk, so a row is retrievable and traceable back to
@@ -211,20 +233,22 @@ async def main():
                 "org_id": "ORG-42",
             }
         )
-        result = await rag.ingest(
-            write_csv(workdir, "employees.csv", EMPLOYEE_ROWS), mapping=EMPLOYEES
-        )
+        result = await rag.ingest(write_csv(workdir, "employees.csv", EMPLOYEE_ROWS))
         print(f"\n── re-sync: {result}")
 
         for employee_id, name, title in await rag.query(
-            "MATCH (p:Person) RETURN p.employee_id, p.name, p.title ORDER BY p.employee_id"
+            "MATCH (p:Person) "
+            "RETURN p.employees__employee_id, p.name, p.employees__title "
+            "ORDER BY p.employees__employee_id"
         ):
             print(f"   {employee_id}  {name}  {title}")
         print("   Carol White is gone, Dana Reed is new, and E-1 kept its identity.")
 
-        # And the note still owns what it legitimately knows. It called Alice an
-        # engineer in prose, but `title` is a column employees.csv declared, so
-        # the export's spelling is what the graph holds.
+        # And the note still owns what it legitimately knows, without either
+        # source having to win. The export's title is `employees__title`; anything
+        # the extractor decided from prose is unsigned and lands under its own
+        # name. Both are on the node, so neither had to be dropped to make room
+        # for the other.
 
 
 if __name__ == "__main__":

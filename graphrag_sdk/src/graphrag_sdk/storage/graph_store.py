@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import unicodedata
 from collections.abc import Sequence
 from typing import Any, NamedTuple
@@ -21,7 +22,10 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
 )
+from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ReferenceNode(NamedTuple):
@@ -196,6 +200,109 @@ class GraphStore:
 
         logger.debug(f"Upserted {count} nodes")
         return count
+
+    async def resolve_by_entity_key(self, label: str, keys: Sequence[str]) -> dict[str, str]:
+        """``key_value -> id`` for every node under ``label`` already carrying that key.
+
+        Every structured node — real or placeholder — carries ``entity_key``, the
+        value its row is keyed by, whoever wrote it. A foreign key arriving
+        *after* its target's source must find the real node rather than create a
+        placeholder beside it; this is that lookup. One batched query.
+        """
+        if not keys:
+            return {}
+        safe_label = sanitize_cypher_label(label)
+        found = await self.query_raw(
+            f"UNWIND $keys AS k MATCH (n:`{safe_label}` {{entity_key: k}}) RETURN k, n.id",
+            {"keys": list(dict.fromkeys(keys))},
+        )
+        return {row[0]: row[1] for row in getattr(found, "result_set", None) or [] if row[1]}
+
+    async def reconcile_keyed_identity(
+        self, label: str, rows: Sequence[tuple[str, str]]
+    ) -> dict[str, int]:
+        """Point every node carrying one of these keys at the id its name now gives it.
+
+        An entity's id comes from its **name**, for a table row exactly as for a
+        prose mention, so the two halves land on one node without a merge step.
+        The row's key is an attribute — ``entity_key`` — and it is what two
+        cases resolve through:
+
+        - a **placeholder** a foreign key created before this source arrived,
+          whose id was derived from the key because the name was not yet known;
+        - a **rename** between exports — the row still says ``E-1`` but the name,
+          and so the id, changed; the node written last time must follow rather
+          than be orphaned with its prose description.
+
+        ``rows`` are ``(entity_key, new_id)``. A node under ``label`` with that key
+        and a different id is **renamed in place** when nothing is at ``new_id``
+        (edges stay on the node), or **merged** into what is (edges remapped,
+        properties carried, old node deleted). One batched lookup.
+        """
+        if not rows:
+            return {"renamed": 0, "merged": 0}
+        safe_label = sanitize_cypher_label(label)
+        found = await self.query_raw(
+            f"UNWIND $rows AS it "
+            f"MATCH (n:`{safe_label}` {{entity_key: it.k}}) WHERE n.id <> it.new_id "
+            f"RETURN it.new_id AS new_id, collect(DISTINCT n.id) AS old_ids",
+            {"rows": [{"k": key, "new_id": new_id} for key, new_id in rows]},
+        )
+        counts = {"renamed": 0, "merged": 0}
+        for new_id, old_ids in getattr(found, "result_set", None) or []:
+            for old_id in old_ids:
+                exists = await self.query_raw(
+                    "MATCH (n:__Entity__ {id: $id}) RETURN count(n)", {"id": new_id}
+                )
+                if not (exists.result_set and exists.result_set[0][0]):
+                    await self.query_raw(
+                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $new",
+                        {"old": old_id, "new": new_id},
+                    )
+                    counts["renamed"] += 1
+                    continue
+                # Something already sits at new_id — a prose mention of the same
+                # name, typically. Fold the old node into it.
+                for query in _REMAP_QUERIES:
+                    await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
+                await self._carry_then_delete(old_id, new_id)
+                counts["merged"] += 1
+        if counts["renamed"] or counts["merged"]:
+            logger.info(
+                "%s: %d node(s) renamed to their name-derived id, %d merged into an "
+                "existing node of that name",
+                label,
+                counts["renamed"],
+                counts["merged"],
+            )
+        return counts
+
+    async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
+        """Copy what only the old node knew onto the new one, then delete the old.
+
+        A value already on the survivor wins; empty strings and lists count as
+        absent. ``id``, ``embedding`` and the stub bookkeeping never travel.
+        """
+        res = await self.query_raw(
+            "MATCH (k:__Entity__ {id: $new}), (d:__Entity__ {id: $old}) "
+            "RETURN properties(k), properties(d)",
+            {"new": new_id, "old": old_id},
+        )
+        if res.result_set:
+            keep, dup = res.result_set[0][0] or {}, res.result_set[0][1] or {}
+            carry = {
+                key: value
+                for key, value in dup.items()
+                if key not in ("id", "embedding", "is_stub")
+                and value is not None
+                and keep.get(key) in (None, "", [])
+            }
+            if carry:
+                await self.query_raw(
+                    "MATCH (k:__Entity__ {id: $new}) SET k += $carry",
+                    {"new": new_id, "carry": carry},
+                )
+        await self.query_raw("MATCH (d:__Entity__ {id: $old}) DETACH DELETE d", {"old": old_id})
 
     async def upsert_reference_nodes(self, references: Sequence[ReferenceNode]) -> int:
         """Write foreign-key reference nodes, ON CREATE only.
@@ -1189,6 +1296,104 @@ class GraphStore:
             f"RETURN count(n) AS n",
         )
         return r.result_set[0][0] if r.result_set else 0
+
+    async def count_unresolved_references(self) -> dict[str, int]:
+        """Per label, reference stubs no source ever filled in.
+
+        A ``Link`` writes its target ON CREATE with ``is_stub: True``, on the
+        promise that the table owning that entity will arrive and describe it. A
+        stub still flagged at the end means the promise was not kept: either the
+        owning export was never loaded, or the key it is joined on does not match
+        the one that table declares. Both look like a working graph until a
+        question needs the target's columns.
+        """
+        result = await self._conn.query(
+            "MATCH (e:__Entity__) WHERE e.is_stub = true "
+            "RETURN head([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+            "count(e) AS n"
+        )
+        rows = getattr(result, "result_set", None) or []
+        return {
+            row[0]: int(row[1])
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0]
+        }
+
+    async def count_entities_without_a_name(self) -> dict[str, int]:
+        """Per label, mapped entities carrying no display name.
+
+        A table is entitled to have no name column — a fact export keyed on a
+        reading id is a reasonable thing to declare — so this is a report and not
+        an error. But it is also exactly what a wrong ``name=`` column looks like,
+        and without a name nothing can ever join to a mention in prose.
+
+        Scoped to ``is_stub IS NOT NULL``: only a mapped source writes that, so an
+        extracted entity that happens to lack a name is not counted here.
+        """
+        result = await self._conn.query(
+            "MATCH (e:__Entity__) WHERE e.name IS NULL AND e.is_stub IS NOT NULL "
+            "RETURN head([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+            "count(e) AS n"
+        )
+        rows = getattr(result, "result_set", None) or []
+        return {
+            row[0]: int(row[1])
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0]
+        }
+
+    async def find_stale_signed_properties(
+        self, label: str, signature: str, source: str
+    ) -> list[tuple[str, list[str]]]:
+        """Entities carrying a source's signed properties that it no longer mentions.
+
+        When a row disappears from one export but another source still describes
+        the same entity, the entity correctly survives — the orphan predicate is
+        global, so a remaining mention from any source keeps it. What is left
+        behind is the *first* source's signed properties, belonging to nobody and
+        looking current.
+
+        Not fixed automatically: the difference between "this source dropped the
+        row" and "this source has not been reloaded yet" is not visible from the
+        graph, and guessing would delete live data. Reported instead.
+
+        Returns ``(entity_id, [orphaned property names])`` pairs.
+        """
+        safe_label = sanitize_cypher_label(label)
+        # Resolve the source to concrete Document ids first. The id is the source
+        # once ingest() looks a mapping up by name, but a caller may still pass a
+        # path — so accept the id itself or a path ending in it, with the
+        # separator required so `my_hr.csv` cannot masquerade as `hr.csv`.
+        doc_result = await self._conn.query(
+            "MATCH (d:Document) WHERE d.id = $source OR d.id ENDS WITH $suffix "
+            "RETURN collect(d.id) AS ids",
+            {"source": source, "suffix": f"/{source}"},
+        )
+        doc_rows = getattr(doc_result, "result_set", None) or []
+        document_ids = list(doc_rows[0][0]) if doc_rows and doc_rows[0] and doc_rows[0][0] else []
+        if not document_ids:
+            # The source was never loaded into this graph, so nothing it wrote can
+            # be stale — there is nothing to compare against.
+            return []
+
+        # A pattern comprehension collects the documents that do mention the
+        # entity, and the filter happens in the WITH. Neither `EXISTS(pattern)`
+        # nor a WHERE inside the comprehension is supported here — both fail with
+        # "Unable to resolve filtered alias".
+        result = await self._conn.query(
+            f"MATCH (e:`{safe_label}`) "
+            f"WHERE any(k IN keys(e) WHERE k STARTS WITH $prefix) "
+            f"WITH e, [(e)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(d:Document) | d.id] AS docs "
+            f"WHERE none(x IN docs WHERE x IN $ids) "
+            f"RETURN e.id AS id, [k IN keys(e) WHERE k STARTS WITH $prefix] AS orphaned",
+            {"prefix": f"{signature}__", "ids": document_ids},
+        )
+        rows = getattr(result, "result_set", None) or []
+        return [
+            (row[0], list(row[1]))
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0]
+        ]
 
     async def drop_node_property(self, label: str, prop: str) -> int:
         """Remove ``prop`` from every node carrying ``label``.
