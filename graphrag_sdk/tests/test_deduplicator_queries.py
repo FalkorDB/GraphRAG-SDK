@@ -73,7 +73,6 @@ def test_relates_remaps_preserve_provenance() -> None:
 # ── Name grouping ───────────────────────────────────────────────
 
 from graphrag_sdk.storage.deduplicator import (  # noqa: E402
-    EntityDeduplicator,
     is_acronym_of,
     normalize_entity_name,
 )
@@ -96,6 +95,23 @@ class TestNormalizeEntityName:
 
     def test_an_all_article_name_does_not_normalize_to_empty(self) -> None:
         assert normalize_entity_name("The") != ""
+
+    @pytest.mark.parametrize("a,b", [
+        ("東京", "大阪"),
+        ("القاهرة", "بغداد"),
+        ("東京", "Tokyo"),
+    ])
+    def test_non_latin_names_do_not_collapse_together(self, a: str, b: str) -> None:
+        """ASCII folding leaves nothing of a CJK or Arabic name.
+
+        An empty key would put every such entity of a label in one group and
+        merge them all at finalize.
+        """
+        assert normalize_entity_name(a) != ""
+        assert normalize_entity_name(a) != normalize_entity_name(b)
+
+    def test_non_latin_name_still_folds_case_and_whitespace(self) -> None:
+        assert normalize_entity_name("  東京  ") == normalize_entity_name("東京")
 
 
 class TestIsAcronymOf:

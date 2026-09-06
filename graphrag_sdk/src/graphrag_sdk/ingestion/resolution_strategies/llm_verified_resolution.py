@@ -131,7 +131,7 @@ _RULES = (
     "5. A name is not the only way an entity is referred to. One side may be a "
     "DESCRIPTIVE or ROLE reference rather than a proper name \u2014 a job title, a "
     "role in an organisation, a translated or shortened form, or a definite "
-    "phrase such as \"the physicist\" or \"the ship's master\". When the two "
+    'phrase such as "the physicist" or "the ship\'s master". When the two '
     "names share little or no text, do NOT answer NO on that basis alone: read "
     "both descriptions and decide whether they describe one and the same "
     "real-world entity. If the descriptions agree on the specific identifying "
@@ -153,7 +153,6 @@ _VERIFY_PROMPT_ANSWER = (
     "Answer:"
 )
 
-_VERIFY_PROMPT = _VERIFY_PROMPT_INTRO + _PAIR_BLOCK + "\n\n" + _RULES + _VERIFY_PROMPT_ANSWER
 
 # "--- Pair 12 ---" plus the blank line that follows each block.
 _PAIR_WRAPPER_TOKENS = 12
