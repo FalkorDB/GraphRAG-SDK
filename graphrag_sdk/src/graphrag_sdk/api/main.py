@@ -74,7 +74,9 @@ from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
 from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
+from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
+    LLMVerifiedResolution,
+)
 from graphrag_sdk.retrieval.reranking_strategies.base import RerankingStrategy
 from graphrag_sdk.retrieval.strategies.base import RetrievalStrategy
 from graphrag_sdk.retrieval.strategies.multi_path import MultiPathRetrieval
@@ -1374,7 +1376,12 @@ class GraphRAG:
           Override with ``chunker=FixedSizeChunking(...)`` if you need
           character-window chunking.
         - Extractor: GraphExtraction with configured LLM
-        - Resolver: ExactMatchResolution
+        - Resolver: LLMVerifiedResolution with the configured LLM and
+          embedder. Replaces ExactMatchResolution, which could not merge
+          anything: the extractor already collapses entities by
+          ``(name.lower(), type.lower())`` and node ids are
+          ``compute_entity_id(name, type)``, so exact match on ``(label, id)``
+          re-applies a key that has already been applied.
 
         Args:
             source: File path (or list of paths) — file mode only.
@@ -1588,7 +1595,7 @@ class GraphRAG:
             loader=loader or TextLoader(),
             chunker=chunker or SentenceTokenCapChunking(),
             extractor=extractor or self._default_extractor(),
-            resolver=resolver or ExactMatchResolution(),
+            resolver=resolver or self._default_resolver(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             ontology=self._global_ontology,
@@ -1759,6 +1766,34 @@ class GraphRAG:
         return GraphExtraction(
             llm=self.llm,
             entity_types=entity_types,
+        )
+
+    def _default_resolver(self) -> ResolutionStrategy:
+        """Return the default ingest-time resolver.
+
+        ``LLMVerifiedResolution``, not ``ExactMatchResolution``. Exact match only
+        merges entities whose names already agree, so it cannot catch the surface
+        variants and descriptive references that make up most real duplicates.
+
+        ``batch_verification`` is **on**, at 5 pairs per call. Measured on 174
+        real candidate pairs against a 73-pair gold set, 3 runs each:
+
+            batched 30/call, old prompt     6 calls  11.3s  51.3 correct  0 wrong
+            batched 5/call (shipped)       35 calls   7.9s  58.7 correct  0 wrong
+            one pair per call             174 calls  20.6s  61.0 correct  1 wrong
+
+        5 pairs per call is 5x fewer calls and 2.6x less wall time than one pair
+        per call, for 2.3 fewer merges and no wrong merge in any run. Callers who
+        want those merges back pass ``batch_verification=False``.
+
+        The earlier justification for batching *off* (``27 -> 17`` on a business
+        corpus) was a single unrepeated run of an experiment later shown to be
+        bimodal; the collapse it recorded was caused by packing up to 155 pairs
+        into one call, which the per-call cap now prevents.
+        """
+        return LLMVerifiedResolution(
+            llm=self.llm,
+            embedder=self.embedder,
         )
 
     @staticmethod
@@ -2188,7 +2223,7 @@ class GraphRAG:
             loader=loader or TextLoader(),  # unused (text is provided below)
             chunker=chunker or SentenceTokenCapChunking(),
             extractor=active_extractor,
-            resolver=resolver or ExactMatchResolution(),
+            resolver=resolver or self._default_resolver(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             ontology=self._global_ontology,
@@ -3013,7 +3048,10 @@ class GraphRAG:
         self,
         *,
         fuzzy: bool = False,
-        similarity_threshold: float = 0.9,
+        # Kept in step with EntityDeduplicator.deduplicate: at 0.90 the
+        # name-embedding tier merges 2 of 33 hard-negative pairs and drops
+        # precision to 0.739, buying no recall the exact tiers miss.
+        similarity_threshold: float = 0.95,
         batch_size: int = 500,
     ) -> int:
         """Global entity deduplication across all ingested documents.
