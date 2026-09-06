@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from typing import Any
 
 from graphrag_sdk.core.providers import Embedder
@@ -16,6 +18,60 @@ logger = logging.getLogger(__name__)
 # server bug that keeps returning the same page.
 _MAX_PAGINATION_ITERATIONS = 10_000
 
+# Only English articles. Stripping foreign ones turned ``Los Angeles`` into
+# ``angeles`` and ``Le Mans`` into ``mans`` -- collisions, not variants.
+_LEADING_ARTICLE = re.compile(r"^(the|a|an)\s+")
+
+# Words that carry no signal when forming an acronym.
+_ACRONYM_STOPWORDS = frozenset(
+    {"of", "the", "and", "for", "de", "la", "del", "at", "in", "on"}
+)
+
+
+def normalize_entity_name(name: str) -> str:
+    """Fold accents, punctuation and a leading English article for grouping.
+
+    Dots inside a token are removed rather than turned into spaces, so ``A.I.``
+    stays ``ai`` instead of becoming the single letter ``i``.
+
+    Deliberately does NOT strip generational suffixes: ``Elias Whitford, Jr.``
+    and ``Elias Whitford`` are a father and a son, and merging them is a
+    correctness bug rather than a cleanup.
+    """
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    s = s.lower().strip()
+    s = re.sub(r"(?<=\w)\.(?=\w|$)", "", s)
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return _LEADING_ARTICLE.sub("", s).strip() or s
+
+
+def _initials(name: str) -> str:
+    words = [w for w in normalize_entity_name(name).split()
+             if w not in _ACRONYM_STOPWORDS]
+    return "".join(w[0] for w in words if w)
+
+
+def is_acronym_of(short: str, long: str) -> bool:
+    """Is ``short`` a plausible acronym of the multi-word ``long``?
+
+    This is the only rule that can see ``AIHS`` = ``Ashford Island Historical
+    Society``: their character similarity is 0.11 and their embedding similarity
+    sits below every threshold worth using, so neither fuzzy matching nor
+    vectors recover that pair.
+
+    Kept strict on purpose (2-6 alphabetic characters; the long form must have
+    at least two significant words). A looser version merges arbitrary
+    unrelated short strings.
+    """
+    s = normalize_entity_name(short).replace(" ", "")
+    if not (2 <= len(s) <= 6) or not s.isalpha():
+        return False
+    if len([w for w in normalize_entity_name(long).split()
+            if w not in _ACRONYM_STOPWORDS]) < 2:
+        return False
+    return s == _initials(long)
+
 # Cypher queries for remapping edges from a duplicate to a survivor entity.
 #
 # The RELATES variants union ``source_chunk_ids`` rather than letting
@@ -26,11 +82,21 @@ _MAX_PAGINATION_ITERATIONS = 10_000
 # survivor would look unrooted and could be wrongly deleted (or, more
 # commonly, wrongly retained because their list shrank to the dup's
 # contribution alone).
+# The survivor is bound with its own MATCH before every MERGE. This is a
+# correctness requirement, not a style choice. Cypher MERGE on a *path* is
+# all-or-nothing: with ``MERGE (s:__Entity__ {id: $survivor_id})-[nr]->(b)``
+# the variable ``s`` is unbound, so when that relationship does not yet exist
+# FalkorDB creates the whole pattern -- including a brand new, nameless
+# ``__Entity__`` node carrying only ``id``. The remapped edge then attaches to
+# that empty duplicate instead of the real survivor, so a "deduplication" run
+# both invents entities and silently loses relationships. Reproduced minimally:
+# 3 entities in, 4 out, "Nodes created: 1", two nodes sharing one id.
 _REMAP_QUERIES = [
     # Outgoing RELATES from duplicate.
     "MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__) "
     "WHERE b.id <> $survivor_id "
-    "MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b) "
+    "MATCH (s:__Entity__ {id: $survivor_id}) "
+    "MERGE (s)-[nr:RELATES]->(b) "
     "WITH r, nr, "
     "     coalesce(nr.source_chunk_ids, []) AS old, "
     "     coalesce(r.source_chunk_ids, []) AS contrib "
@@ -38,9 +104,22 @@ _REMAP_QUERIES = [
     "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old] "
     "DELETE r",
     # Incoming RELATES to duplicate.
-    "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
+    #
+    # The ``MATCH (dup) WITH dup`` prefix is load-bearing, not style. Written
+    # as a single pattern starting from ``(a:__Entity__)``, FalkorDB's planner
+    # anchors on ``a`` and produces "Node By Label Scan | (a:__Entity__)" —
+    # a full scan of every entity in the graph, once per merged duplicate.
+    # That is why merge throughput fell 61.9 -> 10.3 merges/s between a 1K and
+    # a 50K-node graph. The WITH barrier forces "Node By Index Scan |
+    # (dup:__Entity__)" and the incoming remap gets ~7.5x faster at 20K nodes.
+    # Reversing the arrow instead (``(dup)<-[r]-(a)``) does NOT help; the
+    # planner still chooses the label scan.
+    "MATCH (dup:__Entity__ {id: $dup_id}) "
+    "WITH dup "
+    "MATCH (a:__Entity__)-[r:RELATES]->(dup) "
     "WHERE a.id <> $survivor_id "
-    "MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id}) "
+    "MATCH (s:__Entity__ {id: $survivor_id}) "
+    "MERGE (a)-[nr:RELATES]->(s) "
     "WITH r, nr, "
     "     coalesce(nr.source_chunk_ids, []) AS old, "
     "     coalesce(r.source_chunk_ids, []) AS contrib "
@@ -49,7 +128,8 @@ _REMAP_QUERIES = [
     "DELETE r",
     # MENTIONED_IN edges — no source_chunk_ids on these, plain remap.
     "MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk) "
-    "MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c) "
+    "MATCH (s:__Entity__ {id: $survivor_id}) "
+    "MERGE (s)-[:MENTIONED_IN]->(c) "
     "DELETE r",
 ]
 
@@ -79,7 +159,13 @@ class EntityDeduplicator:
         self,
         *,
         fuzzy: bool = False,
-        similarity_threshold: float = 0.9,
+        # 0.95, not 0.9. Measured on the benchmark corpus: at 0.90 name-embedding
+        # matching drops precision to 0.739 and wrongly merges 2 of 33
+        # deliberate hard-negative pairs, for no recall the cheap tiers do not
+        # already reach. At 0.95 precision is 0.938 with zero hard negatives
+        # merged. The old 0.9 was an unswept guess, and it also disagreed with
+        # the 0.95 used by LLMVerifiedResolution for the same job.
+        similarity_threshold: float = 0.95,
         batch_size: int = 500,
     ) -> int:
         """Run deduplication and return total number of duplicates merged."""
@@ -102,12 +188,14 @@ class EntityDeduplicator:
         # Group by (normalized name, label) to prevent cross-type merging.
         groups: dict[tuple[str, str], list[dict]] = {}
         for ent in entities:
-            norm = ent["name"].strip().lower()
+            norm = normalize_entity_name(ent["name"])
             label = ent.get("label", "").strip().lower()
             groups.setdefault((norm, label), []).append(ent)
 
+        merged_groups = self._merge_acronym_groups(list(groups.values()))
+
         merged = 0
-        for (_norm_name, _label), group in groups.items():
+        for group in merged_groups:
             if len(group) < 2:
                 continue
 
@@ -115,6 +203,8 @@ class EntityDeduplicator:
             group.sort(key=lambda e: len(e["description"]), reverse=True)
             survivor = group[0]
             duplicates = group[1:]
+
+            absorbed: list[dict] = []
 
             for dup in duplicates:
                 if not await self._remap_entity_edges(dup["id"], survivor["id"]):
@@ -126,11 +216,99 @@ class EntityDeduplicator:
                         {"dup_id": dup["id"]},
                     )
                     merged += 1
+                    absorbed.append(dup)
                 except Exception as exc:
                     logger.warning(f"Failed to delete duplicate entity {dup['id']}: {exc}")
 
+            # The duplicate's description dies with the node, so anything it
+            # said that the survivor did not is lost outright. Concatenated
+            # with " | ", matching LLMVerifiedResolution's survivor rule, so
+            # both mechanisms leave the same shape behind. Only descriptions of
+            # duplicates actually deleted are absorbed — a failed remap leaves
+            # its node in place.
+            await self._merge_descriptions(survivor, absorbed)
+
         logger.info(f"EntityDeduplicator phase 1 (exact): merged {merged} duplicates")
         return merged
+
+    async def _merge_descriptions(self, survivor: dict, absorbed: list[dict]) -> None:
+        """Fold the absorbed duplicates' descriptions into the survivor."""
+        descriptions: list[str] = []
+        for ent in [survivor, *absorbed]:
+            desc = str(ent.get("description") or "").strip()
+            if desc and desc not in descriptions:
+                descriptions.append(desc)
+        if len(descriptions) < 2:
+            return
+        combined = " | ".join(descriptions)
+        try:
+            await self._graph.query_raw(
+                "MATCH (e:__Entity__ {id: $sid}) SET e.description = $desc",
+                {"sid": survivor["id"], "desc": combined},
+            )
+            survivor["description"] = combined
+        except Exception as exc:
+            logger.warning(
+                f"Failed to merge descriptions onto {survivor['id']}: {exc}"
+            )
+
+    @staticmethod
+    def _merge_acronym_groups(groups: list[list[dict]]) -> list[list[dict]]:
+        """Union groups where one name is an acronym of another.
+
+        Runs on the ``(normalised name, label)`` groups so an acronym attaches to
+        an already-complete group. Uses union-find rather than pairwise merging
+        so the result does not depend on iteration order.
+
+        Two guards, because this fold deletes nodes without an LLM looking:
+        the short and long form must share at least one label, and a short form
+        that spells the initials of two or more long forms (``US`` = ``United
+        States`` = ``Universal Studios``) is left alone rather than used as a
+        hub that collapses unrelated entities. Ambiguous cases are the LLM
+        judge's job.
+        """
+        parent = list(range(len(groups)))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        names = [g[0]["name"] for g in groups]
+        labels = [
+            {(e.get("label") or "").strip().lower() for e in g} - {""}
+            for g in groups
+        ]
+        shorts = [i for i, n in enumerate(names)
+                  if len(normalize_entity_name(n).replace(" ", "")) <= 6]
+        longs = [i for i, n in enumerate(names)
+                 if len(normalize_entity_name(n).split()) >= 2]
+        for i in shorts:
+            matches = [
+                j for j in longs
+                if i != j
+                and labels[i] & labels[j]
+                and is_acronym_of(names[i], names[j])
+            ]
+            if len(matches) == 1:
+                union(i, matches[0])
+            elif len(matches) > 1:
+                logger.info(
+                    "Acronym %r matches %d long forms (%s); leaving unmerged",
+                    names[i], len(matches),
+                    ", ".join(names[j] for j in matches),
+                )
+
+        combined: dict[int, list[dict]] = {}
+        for i, g in enumerate(groups):
+            combined.setdefault(find(i), []).extend(g)
+        return list(combined.values())
 
     # ── Phase 2: Fuzzy embedding match ──
 
