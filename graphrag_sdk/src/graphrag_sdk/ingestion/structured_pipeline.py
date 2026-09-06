@@ -159,6 +159,53 @@ def _unique_references(references: list[ReferenceNode]) -> list[ReferenceNode]:
     return unique
 
 
+def _reference_key(reference: ReferenceNode) -> tuple[str, str]:
+    return reference.label, str(reference.properties.get("entity_key", ""))
+
+
+def _collapse_same_key_references(
+    references: list[ReferenceNode],
+    edges: list[GraphRelationship],
+    keyed: dict[str, list[tuple[str, str]]],
+) -> list[ReferenceNode]:
+    """One node per ``(label, key)`` within a batch, however each row named it.
+
+    A reference's id comes from the name the row supplies for it, or from the
+    key when it supplies none. So a citations table whose ``citing`` column
+    carries only an id while its ``cited`` column carries id plus title derives
+    two different ids for the same paper — and a self-referential table
+    (``manager_id`` pointing at rows of the same file) derives one for the row
+    and another for the reference. The lookup against the graph cannot catch
+    either: nothing has been written yet. Without this, a single file raised
+    two placeholders for one key, which the design rules out.
+
+    The row wins when this batch declares the entity, otherwise the reference
+    that names it, otherwise the first bare one. Edges follow the survivor.
+    """
+    canonical: dict[tuple[str, str], str] = {}
+    for label, rows in keyed.items():
+        for entity_key, node_id in rows:
+            canonical.setdefault((label, entity_key), node_id)
+    for reference in references:
+        key = _reference_key(reference)
+        if reference.name != key[1]:
+            canonical.setdefault(key, reference.id)
+    for reference in references:
+        canonical.setdefault(_reference_key(reference), reference.id)
+
+    remap = {
+        reference.id: canonical[_reference_key(reference)]
+        for reference in references
+        if canonical[_reference_key(reference)] != reference.id
+    }
+    if not remap:
+        return references
+    for edge in edges:
+        edge.start_node_id = remap.get(edge.start_node_id, edge.start_node_id)
+        edge.end_node_id = remap.get(edge.end_node_id, edge.end_node_id)
+    return [reference for reference in references if reference.id not in remap]
+
+
 def _walk_records(
     batch: RecordBatch,
     mapping: RecordMapping,
@@ -608,14 +655,19 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
             ids: dict[str, str] = {}
 
             for node in mapping.nodes:
-                raw_key = record.get(node.key)
-                if raw_key in (None, ""):
+                cell = record.get(node.key)
+                # Stripped, as the row key already is in _walk_records: the id
+                # derivation ignores surrounding whitespace, so a key stored
+                # with it would derive the same node as one stored without yet
+                # never match it by entity_key.
+                raw_key = "" if cell is None else str(cell).strip()
+                if not raw_key:
                     continue
                 display = str(record.get(node.name) or "").strip() if node.name else ""
                 if display and (node.handle, display.lower()) not in ambiguous:
                     node_id = compute_entity_id(display, node.label)
                 else:
-                    node_id = compute_entity_id(str(raw_key), node.label)
+                    node_id = compute_entity_id(raw_key, node.label)
                 if not node_id:
                     continue
                 ids[node.handle] = node_id
@@ -625,7 +677,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                     # Falling back to the raw key would name a node "ORG-42",
                     # which then resolves against nothing and reads as a real
                     # name to whoever queries it.
-                    fallback = str(raw_key)
+                    fallback = raw_key
                     if node.name:
                         declared_name = str(record.get(node.name) or "").strip()
                         if declared_name:
@@ -636,24 +688,24 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                             label=node.label,
                             name=fallback,
                             properties={
-                                node.signed(node.key_property): str(raw_key),
+                                node.signed(node.key_property): raw_key,
                                 # Unsigned and SDK-owned, like is_stub: the value
                                 # this row is keyed by, whoever wrote it. It is
                                 # how the owning source finds this placeholder.
-                                "entity_key": str(raw_key),
+                                "entity_key": raw_key,
                                 "is_stub": True,
                             },
                         )
                     )
                     result.references += 1
                 else:
-                    keyed.setdefault(node.label, []).append((str(raw_key), node_id))
+                    keyed.setdefault(node.label, []).append((raw_key, node_id))
                     nodes.append(
                         GraphNode(
                             id=node_id,
                             label=node.label,
                             properties=self._node_properties(
-                                node, record, str(raw_key), node_columns[node.handle]
+                                node, record, raw_key, node_columns[node.handle]
                             ),
                         )
                     )
@@ -694,6 +746,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 )
                 result.edges += 1
 
+        references = _collapse_same_key_references(references, edges, keyed)
         return nodes, references, edges, keyed
 
     @staticmethod

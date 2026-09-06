@@ -220,6 +220,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One placeholder per key inside a file.** A reference's id comes from the name
+  the row gives it, or from the key when it gives none. A `citations.csv` whose
+  `citing` column carried an arXiv id and whose `cited` column carried the id plus
+  a title therefore raised two `Paper` placeholders for one paper — one named by
+  the title, one named `1801.02681` — and the lookup against the graph could not
+  catch it because nothing had been written yet. References to one key within a
+  batch now collapse onto the row that declares it, else the reference that names
+  it, and edges follow. The same collapse puts a `manager_id` that points at rows
+  of its own file on those rows. Keys are also stripped of surrounding whitespace
+  before they are stored as `entity_key`, matching the id derivation that already
+  ignored it; `inst-10 ` and `INST-10` previously derived one id but could not
+  find each other by key.
+
+- **Names that differ only in digits are never merged.** A JSON export read as
+  prose yielded `Person` entities named by their ids, and `P-021` was merged into
+  `P-011`: codes, versions and periods embed almost identically, so such pairs
+  score above the hard-merge threshold, and a model asked about them was not
+  consistent. `LLMVerifiedResolution` now leaves any pair apart whose names are
+  equal once digits are removed and different with them — `GPT-3` / `GPT-4`,
+  `Q1 2024` / `Q2 2024`, `P-011` / `P-021` — without asking.
+
 - **Merging two prose entities keeps the better-connected one.** When the
   resolver judged `Austria` and `Republik Österreich` to be one country, the
   survivor was chosen by description length — so the hub the tables pointed at

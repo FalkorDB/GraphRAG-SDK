@@ -7,7 +7,10 @@ import pytest
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship
 from graphrag_sdk.core.providers import Embedder
-from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import LLMVerifiedResolution
+from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
+    LLMVerifiedResolution,
+    differ_only_in_digits,
+)
 
 from .conftest import MockEmbedder, MockLLM
 
@@ -471,3 +474,58 @@ class TestEdgeCases:
         assert len(result.nodes) == 3
         labels = {n.label for n in result.nodes}
         assert labels == {"Person", "Location", "Organization"}
+
+
+# ── Names that differ only in digits ──────────────────────────────────────────
+
+
+class TestCodesStayApart:
+    """Measured on a graph where a JSON export was read as text: the Person
+    names it yielded were ids, and ``P-021`` merged into ``P-011`` because the
+    two embed almost identically. Digits are how such names differ, so a pair
+    that is equal without them is not one thing, however close it embeds."""
+
+    @pytest.mark.parametrize(
+        "a, b",
+        [
+            ("P-011", "P-021"),
+            ("GPT-3", "GPT-4"),
+            ("Q1 2024", "Q2 2024"),
+            ("Windows 10", "windows 11"),
+            ("1801.02681", "1912.03771"),
+        ],
+    )
+    def test_differ_only_in_digits(self, a, b):
+        assert differ_only_in_digits(a, b)
+
+    @pytest.mark.parametrize(
+        "a, b",
+        [
+            ("P-011", "P-011"),  # the same name is phase 1's business, not a code pair
+            ("P-011", "p-011 "),
+            ("Tolkien", "J.R.R. Tolkien"),
+            ("COVID-19", "COVID 19"),
+            ("Acme", "Acme Corp"),
+        ],
+    )
+    def test_other_pairs_are_left_to_the_usual_rules(self, a, b):
+        assert not differ_only_in_digits(a, b)
+
+    async def test_identical_vectors_do_not_merge_codes(self, ctx):
+        vec = _unit([1.0, 0.0, 0.0, 0.0])
+        embedder = ControlledEmbedder({"P-011": vec, "P-021": vec})
+        llm = MockLLM(responses=["YES"])
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="p11", label="Person", properties={"name": "P-011"}),
+                GraphNode(id="p21", label="Person", properties={"name": "P-021"}),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(
+            llm=llm, embedder=embedder, hard_threshold=0.95, soft_threshold=0.80
+        )
+        result = await resolver.resolve(gd, ctx)
+        assert result.merged_count == 0
+        assert len(result.nodes) == 2
+        assert llm._call_index == 0, "not asked either: the model is inconsistent on codes"

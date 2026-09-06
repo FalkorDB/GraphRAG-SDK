@@ -423,3 +423,116 @@ class TestRowsSharingAKey:
 
         assert record_chunk_uid("d", "K1") == record_chunk_uid("d", "K1", 0)
         assert record_chunk_uid("d", "K1", 1) != record_chunk_uid("d", "K1", 0)
+
+
+class TestOneNodePerKeyWithinABatch:
+    """A reference's id comes from the name a row supplies, else from the key.
+
+    Two columns of one file referencing the same entity — one bare, one with a
+    name — derived two ids for one key, and the lookup against the graph could
+    not catch it because nothing had been written yet. Measured on a citations
+    table: two ``Paper`` placeholders both carrying ``entity_key = 2603.20674``,
+    one named by its title and one named by its id.
+    """
+
+    CITATIONS = record_mapping_for(
+        TableMapping(
+            source="citations.csv",
+            label="Citation",
+            key="citation_id",
+            links=[
+                Link("CITING", to="Paper", by="citing"),
+                Link("CITES", to="Paper", by="cited", name="cited_title"),
+            ],
+        )
+    )
+
+    @pytest.fixture
+    def citations_csv(self, tmp_path):
+        path = tmp_path / "citations.csv"
+        # Row 2 cites the paper row 1 was citing from, and supplies its title.
+        path.write_text(
+            "citation_id,citing,cited,cited_title\n"
+            "C-1,1801.02681,1712.01815,Mastering chess\n"
+            "C-2,2603.20674,1801.02681,Diversification and exports\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    async def test_a_key_referenced_bare_and_by_name_is_one_placeholder(
+        self, pipeline, citations_csv, ctx: Context
+    ):
+        pipe, store = pipeline
+        await pipe.run(citations_csv, self.CITATIONS, ctx)
+        papers = [r for r in store.references if r.label == "Paper"]
+        by_key: dict[str, list[str]] = {}
+        for ref in papers:
+            by_key.setdefault(ref.properties["entity_key"], []).append(ref.id)
+        assert all(len(ids) == 1 for ids in by_key.values()), by_key
+        # The named reference is the survivor: a placeholder called by its title
+        # is findable, one called "1801.02681" is not.
+        assert by_key["1801.02681"] == [compute_entity_id("Diversification and exports", "Paper")]
+
+    async def test_edges_follow_the_surviving_placeholder(
+        self, pipeline, citations_csv, ctx: Context
+    ):
+        pipe, store = pipeline
+        await pipe.run(citations_csv, self.CITATIONS, ctx)
+        bare = compute_entity_id("1801.02681", "Paper")
+        touched = {r.start_node_id for r in store.relationships} | {
+            r.end_node_id for r in store.relationships
+        }
+        assert bare not in touched, "no edge may point at a placeholder that was never written"
+        citing = [
+            r for r in store.relationships if r.properties.get("rel_type") == "CITING"
+        ]
+        assert compute_entity_id("Diversification and exports", "Paper") in {
+            r.end_node_id for r in citing
+        }
+
+    async def test_a_self_reference_lands_on_the_row(self, pipeline, tmp_path, ctx: Context):
+        """``manager_id`` points at rows of the same file. The row derives its id
+        from its name, the reference from the key; without the collapse a
+        placeholder "E-1" was raised beside Alice."""
+        path = tmp_path / "staff.csv"
+        path.write_text(
+            "employee_id,full_name,manager_id\nE-1,Alice Smith,\nE-2,Bob Jones,E-1\n",
+            encoding="utf-8",
+        )
+        mapping = record_mapping_for(
+            TableMapping(
+                source="staff.csv",
+                label="Person",
+                key="employee_id",
+                name="full_name",
+                links=[Link("REPORTS_TO", to="Person", by="manager_id")],
+            )
+        )
+        pipe, store = pipeline
+        await pipe.run(str(path), mapping, ctx)
+        assert store.references == [], "every referenced key is a row of this file"
+        reports_to = [
+            r for r in store.relationships if r.properties.get("rel_type") == "REPORTS_TO"
+        ]
+        assert [(r.start_node_id, r.end_node_id) for r in reports_to] == [
+            (compute_entity_id("Bob Jones", "Person"), compute_entity_id("Alice Smith", "Person"))
+        ]
+
+
+class TestKeyWhitespace:
+    async def test_a_key_with_surrounding_whitespace_is_stored_stripped(
+        self, pipeline, tmp_path, ctx: Context
+    ):
+        """The id derivation strips, so ``ORG-42 `` already landed on the ORG-42
+        node's id; the stored ``entity_key`` did not, so the owning source could
+        never find the placeholder by key. Both now agree."""
+        path = tmp_path / "employees.csv"
+        path.write_text(
+            "employee_id,full_name,age,job_title,org_id\nE-1 ,Alice Smith,34,Engineer, ORG-42 \n",
+            encoding="utf-8",
+        )
+        pipe, store = pipeline
+        await pipe.run(str(path), EMPLOYEES, ctx)
+        alice = store.node(compute_entity_id("Alice Smith", "Person"))
+        assert alice.properties["entity_key"] == "E-1"
+        assert [r.properties["entity_key"] for r in store.references] == ["ORG-42"]

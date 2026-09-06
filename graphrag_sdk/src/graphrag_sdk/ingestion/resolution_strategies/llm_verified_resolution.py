@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -42,6 +43,26 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DIGITS = re.compile(r"\d+")
+
+
+def differ_only_in_digits(name_a: str, name_b: str) -> bool:
+    """``P-011`` / ``P-021``, ``GPT-3`` / ``GPT-4``, ``Q1 2024`` / ``Q2 2024``.
+
+    Codes, versions and periods embed almost identically — the letters carry the
+    vector and the digits barely move it — so pairs like these score above the
+    hard threshold and merge with no one asked, and a model that is asked is not
+    consistent about them (measured: ``P-021`` merged into ``P-011`` while
+    ``P-001`` / ``P-011`` was refused, in one run). Two names that are equal once
+    their digits are removed, and not equal with them, denote different things
+    in practice, so they are neither merged nor asked about.
+    """
+    a, b = name_a.strip().lower(), name_b.strip().lower()
+    if a == b:
+        return False
+    shape_a, shape_b = _DIGITS.sub("#", a), _DIGITS.sub("#", b)
+    return shape_a == shape_b and "#" in shape_a
 
 _VERIFY_PROMPT = (
     "You are an entity resolution assistant. Decide whether the two entities below "
@@ -323,6 +344,15 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         hard_pairs.append((i, j))
                     elif sim_val >= self.soft_threshold:
                         ambiguous_pairs.append((i, j, sim_val))
+
+            def _codes_apart(gi: int, gj: int) -> bool:
+                return differ_only_in_digits(
+                    str(valid_nodes[gi].properties.get("name", "")),
+                    str(valid_nodes[gj].properties.get("name", "")),
+                )
+
+            hard_pairs = [(i, j) for i, j in hard_pairs if not _codes_apart(i, j)]
+            ambiguous_pairs = [(i, j, s) for i, j, s in ambiguous_pairs if not _codes_apart(i, j)]
 
             if skip_pairs or ask_pairs or distinct_ids:
                 index_of = {node.id: k for k, node in enumerate(valid_nodes)}

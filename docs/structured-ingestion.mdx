@@ -355,6 +355,8 @@ A row in `employees.csv` says the organization exists and gives its key. It does
 - It is flagged `is_stub: true` until the source that owns the entity arrives and fills it in.
 - The edge is a `RELATES` edge carrying the link's `type` as its `rel_type`, which is how every data edge is stored.
 - The edge's own declared properties are signed with the declaring source, with no exemptions at all — `since` on `WORKS_AT` from `employees.csv` is `employees__since`.
+- One key is one node, however many columns of the file point at it. A citations table whose `citing` column carries an arXiv id and whose `cited` column carries the id plus a `name="title"` raises **one** placeholder for a paper both columns mention, named by the title; a `manager_id` pointing at rows of the same file lands on those rows, not on a placeholder beside them.
+- Keys are compared stripped of surrounding whitespace. `ORG-NW ` in one export and `ORG-NW` in another are the same key; case is kept as written.
 
 Order does not matter. Whichever source arrives first creates the node, and a
 `Link` to a label that has not arrived yet is not a problem to be sequenced
