@@ -1,6 +1,7 @@
 """Tests for api/main.py — the GraphRAG Facade."""
 from __future__ import annotations
 
+import logging
 import os
 from unittest.mock import AsyncMock, MagicMock
 
@@ -2219,6 +2220,71 @@ class TestGraphRAGUpdateSyncWrapper:
             f"{sync_name} signature drifted from {async_name}.\n"
             f"  async: {async_params}\n  sync:  {sync_params}"
         )
+
+
+class TestFinalizeReminder:
+    """Ingesting without a dedup pass must not be silent.
+
+    The ingest-time resolver only ever sees one document, so cross-document
+    duplicates survive by design and are removed only by
+    ``deduplicate_entities()`` / ``finalize()``. Nothing in the API requires
+    that call, so the read path warns once when it was skipped.
+    """
+
+    async def test_retrieve_warns_when_dedup_never_ran(self, graphrag, caplog):
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        await graphrag.ingest(text="Airbus builds aircraft.")
+        assert graphrag._docs_since_dedup == 1
+
+        graphrag._validate_graph_config = AsyncMock()
+        graphrag._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("who builds aircraft?")
+        assert "without a deduplication pass" in caplog.text
+
+    async def test_reminder_is_emitted_only_once(self, graphrag, caplog):
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        await graphrag.ingest(text="Airbus builds aircraft.")
+
+        graphrag._validate_graph_config = AsyncMock()
+        graphrag._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("q1")
+            await graphrag.retrieve("q2")
+        assert caplog.text.count("without a deduplication pass") == 1
+
+    async def test_no_warning_before_any_ingest(self, graphrag, caplog):
+        graphrag._validate_graph_config = AsyncMock()
+        graphrag._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("querying an existing graph")
+        assert "without a deduplication pass" not in caplog.text
+
+    async def test_dedup_clears_the_reminder(self, mock_conn, embedder, llm, caplog):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._docs_since_dedup = 3
+
+        empty_result = MagicMock()
+        empty_result.result_set = []
+        g._graph_store.query_raw = AsyncMock(return_value=empty_result)
+        await g.deduplicate_entities()
+        assert g._docs_since_dedup == 0
+
+        g._validate_graph_config = AsyncMock()
+        g._ensure_ontology_initialized = AsyncMock()
+        g._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await g.retrieve("after dedup")
+        assert "without a deduplication pass" not in caplog.text
+
 
 class TestDefaultResolver:
     """``ingest()`` resolves with ``LLMVerifiedResolution`` unless told otherwise.
