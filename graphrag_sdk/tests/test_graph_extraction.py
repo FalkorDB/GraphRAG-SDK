@@ -4,31 +4,34 @@ from __future__ import annotations
 
 import json
 
-
 import pytest
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
+    Entity,
     ExtractedEntity,
     Ontology,
-    Entity,
     Relation,
     TextChunk,
     TextChunks,
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    DEFAULT_ENTITY_TYPES,
     EntityExtractor,
     LLMExtractor,
+    is_valid_entity_name,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
-    GraphExtraction,
     VERIFY_EXTRACT_RELS_PROMPT,
+    GraphExtraction,
     _format_entity_types,
     _format_relation_patterns,
+    _reject_reserved_labels,
 )
+from graphrag_sdk.storage.graph_store import GraphStore
 
 from .conftest import MockLLM, MockLLMWithGraphExtraction
-
 
 # ── Helpers ────────────────────────────────────────────────────
 
@@ -574,6 +577,68 @@ class TestSpansMerging:
         assert "chunk-1" in merged[0].spans
 
 
+class TestNoiseFiltering:
+    """Bug 4: operator/abbreviation/short-token noise must be filtered out.
+
+    These rules used to live as instructions inside VERIFY_EXTRACT_RELS_PROMPT
+    and were asserted by checking the prompt's wording. They now live in
+    ``is_valid_entity_name`` instead, after measurement showed the LLM does not
+    reliably act on verification instructions (RESULTS.md P2.10). Asserting the
+    behaviour rather than the prompt text is also what these tests should have
+    done in the first place: the old version passed whether or not anything was
+    actually filtered.
+    """
+
+    @pytest.mark.parametrize("name", ["+=", "->", "++", "==", "!="])
+    def test_operator_tokens_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["sh", "cd", "ls", "rm", "cp", "mv"])
+    def test_shell_abbreviations_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["dt", "bg", "fn"])
+    def test_generic_short_tokens_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["AI", "US", "UK", "Go", "EU", "UN"])
+    def test_real_acronyms_kept(self, name):
+        """The filter must not take widely-recognised acronyms with it."""
+        assert is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
+    def test_specific_dates_rejected_without_date_type(self, name):
+        """A date pins down a moment; unless the ontology asks for Date nodes it
+        is an attribute, not an entity."""
+        assert not is_valid_entity_name(name)
+        assert not is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
+    def test_specific_dates_kept_when_ontology_has_date(self, name):
+        """An ontology that declares Date (the defaults do) keeps date nodes."""
+        assert is_valid_entity_name(name, DEFAULT_ENTITY_TYPES)
+        assert is_valid_entity_name(name, ["Person", "date"])
+
+    @pytest.mark.parametrize("name", ["1820s", "19th century", "Abbasid era"])
+    def test_periods_kept(self, name):
+        """A period is something facts attach to, so it stays a node."""
+        assert is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["Boeing 747", "COVID-19"])
+    def test_numeric_names_not_mistaken_for_dates(self, name):
+        assert is_valid_entity_name(name)
+
+    def test_prompt_still_asks_the_llm_to_verify(self):
+        """Removing this instruction was tried and reverted (RESULTS.md P2.12).
+
+        Without it the LLM emitted 813 entities instead of 719 and entity
+        precision fell 0.645 -> 0.551. The code-side rules above are a floor,
+        not a replacement.
+        """
+        assert "REMOVE any entity" in VERIFY_EXTRACT_RELS_PROMPT
+        assert "VERIFY the entities" in VERIFY_EXTRACT_RELS_PROMPT
+
+
 class TestEntityTypeDescriptions:
     """Bug 3: _format_entity_types should include descriptions when available."""
 
@@ -927,14 +992,49 @@ class TestFailedChunkReporting:
         assert result.extraction_failed is False
 
 
-class TestNoiseFilteringPrompt:
-    """Bug 4: VERIFY_EXTRACT_RELS_PROMPT should contain noise-filtering instructions."""
+class TestReservedNodeLabels:
+    """`Document`/`Chunk` are the graph store's bookkeeping labels.
 
-    def test_prompt_contains_operator_filtering(self):
-        assert "symbolic" in VERIFY_EXTRACT_RELS_PROMPT.lower()
+    Reusing one as an entity type used to corrupt the graph silently: document
+    counts picked up extracted entities (an 11-document corpus reported 106),
+    and `GraphStore._write_nodes` skips `__Entity__` for structural labels, so
+    the entity vanished from dedup and retrieval without any error.
+    """
 
-    def test_prompt_contains_abbreviation_filtering(self):
-        assert "non-domain-specific" in VERIFY_EXTRACT_RELS_PROMPT
+    @pytest.mark.parametrize("bad", ["Document", "Chunk", "document", "cHuNk"])
+    def test_reserved_entity_type_is_rejected(self, bad):
+        llm = MockLLM()
+        with pytest.raises(ValueError, match="reserved label"):
+            GraphExtraction(
+                llm=llm,
+                entity_extractor=LLMExtractor(llm),
+                entity_types=["Person", bad],
+            )
 
-    def test_prompt_contains_short_token_filtering(self):
-        assert "1-2 characters" in VERIFY_EXTRACT_RELS_PROMPT
+    def test_error_names_the_offending_label(self):
+        llm = MockLLM()
+        with pytest.raises(ValueError, match="Document"):
+            GraphExtraction(
+                llm=llm,
+                entity_extractor=LLMExtractor(llm),
+                entity_types=["Document"],
+            )
+
+    def test_non_reserved_types_still_allowed(self):
+        llm = MockLLM()
+        extractor = GraphExtraction(
+            llm=llm,
+            entity_extractor=LLMExtractor(llm),
+            entity_types=["Publication", "TextSegment"],
+        )
+        assert extractor.entity_types == ["Publication", "TextSegment"]
+
+    def test_ontology_labels_are_checked_too(self):
+        """The ontology path assigns entity types without going through
+        __init__, so it needs its own guard or the fix is bypassable."""
+        with pytest.raises(ValueError, match="reserved label"):
+            _reject_reserved_labels(["Person", "Document"])
+
+    def test_store_and_extractor_share_one_definition(self):
+        """Two hardcoded copies would drift; the bug returns when they do."""
+        assert GraphStore._STRUCTURAL_LABELS is RESERVED_NODE_LABELS
