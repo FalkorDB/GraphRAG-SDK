@@ -167,7 +167,7 @@ def _clusters(remap: dict[str, str], by_id: dict[str, dict]) -> list[list[dict]]
     return [members for members in grouped.values() if len(members) > 1]
 
 
-def _survivor_rank(entity: dict) -> tuple[int, int, int, int, str]:
+def _survivor_rank(entity: dict) -> tuple[int, int, int, int, int, str]:
     """Rank candidates so the most reproducible identity survives a merge.
 
     Ordered by:
@@ -181,13 +181,21 @@ def _survivor_rank(entity: dict) -> tuple[int, int, int, int, str]:
        reproducible id is what makes re-ingest idempotent after resolution.
     2. **Real over placeholder.** A stub was created by a foreign key and knows
        only an id and a name.
-    3. **Longest description**, the original rule, which still decides between
-       two nodes of the same provenance.
-    4. **Longest name.** Grouping is by canonical key, so a group holds different
+    3. **Best connected.** Between two nodes of the same provenance, the one the
+       rest of the graph points at keeps its name. Measured: a resolver judged
+       ``Austria`` and ``Republik Österreich`` one country — correctly, from a
+       single legislative citation — and the longer-description rule below then
+       renamed the node fifty-six table rows and seventy passages pointed at
+       after the one nobody did. Every later ``WHERE c.name CONTAINS 'Austria'``
+       found nothing. Degree is ``RELATES`` plus ``MENTIONED_IN``; a node fetched
+       without one ranks as if it had none.
+    4. **Longest description**, the original rule, which still decides between
+       two nodes nothing else separates.
+    5. **Longest name.** Grouping is by canonical key, so a group holds different
        spellings of one name and the survivor's is the one the graph keeps.
        Length picks the written-out form — "Globex Limited" over "Globex Ltd",
        "Acme Corporation" over "Acme Corp".
-    5. **Id**, purely to make the outcome deterministic. Entities are fetched
+    6. **Id**, purely to make the outcome deterministic. Entities are fetched
        with no ``ORDER BY`` and :meth:`list.sort` is stable, so without a total
        ordering a tie resolves to whatever order the server happened to return
        and the same data can settle on a different display name from run to run.
@@ -201,10 +209,16 @@ def _survivor_rank(entity: dict) -> tuple[int, int, int, int, str]:
     return (
         0 if is_stub is None else 1,
         0 if is_stub else 1,
+        int(entity.get("degree") or 0),
         len(entity.get("description") or ""),
         len(entity.get("name") or ""),
         str(entity.get("id") or ""),
     )
+
+
+# Edges that count toward a node's degree when picking a merge survivor: the
+# ones a question can reach it by. ``DISTINCT_FROM`` is bookkeeping, not reach.
+_DEGREE_EXPR = "size((e)-[:RELATES]-()) + size((e)-[:MENTIONED_IN]->())"
 
 
 class EntityDeduplicator:
@@ -379,13 +393,13 @@ class EntityDeduplicator:
         all_ids: list[str] = []
         all_names: list[str] = []
         all_labels: list[str] = []
-        rank_by_id: dict[str, tuple[int, int, int, int, str]] = {}
+        rank_by_id: dict[str, tuple[int, int, int, int, int, str]] = {}
         for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, "
                 "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
-                "e.is_stub AS is_stub, e.description AS desc "
+                f"e.is_stub AS is_stub, e.description AS desc, {_DEGREE_EXPR} AS degree "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -399,6 +413,7 @@ class EntityDeduplicator:
                     {
                         "is_stub": row[3] if len(row) > 3 else None,
                         "description": row[4] if len(row) > 4 else "",
+                        "degree": row[5] if len(row) > 5 else 0,
                         "name": all_names[-1],
                         "id": row[0],
                     }
@@ -862,7 +877,7 @@ class EntityDeduplicator:
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, e.description AS desc, "
                 "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
-                "e.is_stub AS is_stub "
+                f"e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -878,6 +893,7 @@ class EntityDeduplicator:
                         # Only a mapped source writes is_stub, so its presence
                         # marks an id derived from a declared key.
                         "is_stub": row[4] if len(row) > 4 else None,
+                        "degree": row[5] if len(row) > 5 else 0,
                     }
                 )
             offset += batch_size

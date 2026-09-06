@@ -589,7 +589,7 @@ merged_count = await rag.deduplicate_entities(
 | `similarity_threshold` | `float` | `0.9`   | Cosine similarity threshold for fuzzy matching.                     |
 | `batch_size`           | `int`   | `500`   | Entities per query batch.                                           |
 
-**Phase 1 (always runs): Exact name match.** Groups entities by normalized name (lowercase, stripped) and label to prevent cross-type merging. Keeps the entity with the longest description as the survivor. Remaps all RELATES and MENTIONED_IN edges from duplicates to the survivor, then deletes the duplicate nodes.
+**Phase 1 (always runs): Exact name match.** Groups entities by normalized name (lowercase, stripped) and label to prevent cross-type merging. Keeps the best-connected entity (most RELATES and MENTIONED_IN edges) as the survivor, falling back to the longest description on a tie; a node whose id came from a declared table key always outranks one extracted from prose. Remaps all RELATES and MENTIONED_IN edges from duplicates to the survivor, then deletes the duplicate nodes.
 
 **Phase 2 (optional, `fuzzy=True`): Embedding-based match.** Re-fetches all surviving entities, batch-embeds their names, computes pairwise cosine similarity in memory-efficient blocks (1000 entities per block), and merges near-duplicates above the threshold.
 

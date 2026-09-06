@@ -380,10 +380,42 @@ class TestSurvivorRank:
         assert stub > prose
 
     def test_between_two_prose_nodes_the_longest_description_wins(self):
-        """The original rule, unchanged when no structured node is involved."""
+        """The original rule, unchanged when nothing else separates the two."""
         rich = self._rank(is_stub=None, description="a long, detailed description")
         thin = self._rank(is_stub=None, description="short")
         assert rich > thin
+
+    def test_between_two_prose_nodes_the_better_connected_one_outranks_the_richer(self):
+        """The name the graph points at is the one it keeps.
+
+        Measured: a resolver judged 'Austria' and 'Republik Österreich' one
+        country from a single citation, and the description rule then renamed
+        the node fifty-six rows pointed at. Every query by name missed after.
+        """
+        hub = self._rank(is_stub=None, description="a country", degree=126)
+        citation = self._rank(
+            is_stub=None,
+            description="Republik Österreich is referenced in the legislative materials",
+            degree=1,
+        )
+        assert hub > citation
+
+    def test_a_keyed_node_still_outranks_a_well_connected_prose_node(self):
+        """Degree is a tiebreak among equals in provenance, not a promotion."""
+        keyed = self._rank(is_stub=False, description="", degree=0)
+        prose = self._rank(is_stub=None, description="long description", degree=500)
+        assert keyed > prose
+
+    def test_a_placeholder_still_outranks_a_well_connected_prose_node(self):
+        stub = self._rank(is_stub=True, description="", degree=0)
+        prose = self._rank(is_stub=None, description="long description", degree=500)
+        assert stub > prose
+
+    def test_a_missing_degree_ranks_as_none(self):
+        """Callers that never fetched a degree keep the old ordering."""
+        assert self._rank(is_stub=None, description="x") == self._rank(
+            is_stub=None, description="x", degree=0
+        )
 
     def test_a_missing_description_is_treated_as_empty(self):
         """An entity with no description at all must still rank, not raise."""

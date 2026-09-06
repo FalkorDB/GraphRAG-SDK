@@ -220,6 +220,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Merging two prose entities keeps the better-connected one.** When the
+  resolver judged `Austria` and `Republik Österreich` to be one country, the
+  survivor was chosen by description length — so the hub the tables pointed at
+  (five rows, four mentions) was renamed to the one-mention citation, and a
+  text-to-Cypher query on `c.name CONTAINS 'Austria'` came back empty. Degree
+  (`RELATES` in either direction plus `MENTIONED_IN`) now ranks before
+  description length; a row or placeholder still outranks any prose node, so
+  table-declared names are untouched. Measured on three papers and three tables:
+  the merge still happens, the hub keeps its name.
+
 - **A table is no longer read as prose by accident.** Ingesting a `.csv` without
   a mapping took the text path: the whole file became one chunk with its commas
   intact and no column kept its type. Measured on a two-row export — one entity

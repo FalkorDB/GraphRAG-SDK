@@ -486,6 +486,95 @@ class TestFinalizeJudgesByDefault:
         await rag.close()
 
 
+class NearPairEmbedder(Embedder):
+    """One pair embeds close enough to ask about; every other name is orthogonal."""
+
+    def __init__(self, close: set[str]) -> None:
+        self.close = sorted(close)
+        self.seen: dict[str, int] = {}
+
+    @property
+    def model_name(self) -> str:
+        return "near-pair-embedder"
+
+    def embed_query(self, text: str, **kwargs) -> list[float]:
+        vector = [0.0] * 16
+        if text in self.close:
+            vector[0], vector[1] = ((1.0, 0.0) if text == self.close[0] else (0.9, 0.436))
+        else:
+            vector[2 + self.seen.setdefault(text, len(self.seen)) % 14] = 1.0
+        return vector
+
+
+class TestTheBetterConnectedProseNodeKeepsItsName:
+    """Two prose nodes the resolver joins: the one the graph points at survives.
+
+    Measured with three papers and 1 500 rows: the resolver said 'Austria' and
+    'Republik Österreich' were one country — correctly, from one legislative
+    citation — and the longer-description rule then kept the citation's name on
+    the node fifty-six scenario rows and seventy passages pointed at. Text-to-
+    Cypher's ``WHERE c.name CONTAINS 'Austria'`` found nothing afterwards.
+    """
+
+    async def test_the_hub_survives_and_the_citation_folds_into_it(
+        self, real_falkordb_rag_factory
+    ):
+        llm = MockLLM(["YES — Republik Österreich is Austria's official name"], strict=True)
+        rag = real_falkordb_rag_factory(
+            llm=llm,
+            resolver=ExactMatchResolution(resolve_property="name"),
+            ontology=Ontology(entities=[Entity(label="Country"), Entity(label="Scenario")]),
+        )
+        await rag.query(
+            "CREATE (a:__Entity__:Country {id: 'austria__country', name: 'Austria', "
+            "description: 'A country'}), "
+            "(r:__Entity__:Country {id: 'republik_österreich__country', "
+            "name: 'Republik Österreich', description: 'Republik Österreich is referenced "
+            "in the legislative materials on the Austrian electricity market'}) "
+            "WITH a, r UNWIND ['Baseline', 'Ramp', 'Threshold', 'Settlement', 'Cap', 'Floor'] AS s "
+            "CREATE (:__Entity__:Scenario {id: toLower(s) + '__scenario', name: s})"
+            "-[:RELATES {rel_type: 'APPLIES_TO'}]->(a)"
+        )
+        judge = LLMVerifiedResolution(
+            llm=llm, embedder=NearPairEmbedder({"Austria", "Republik Österreich"})
+        )
+
+        result = await rag.finalize(resolver=judge)
+
+        assert result.resolved_duplicates == ["Country 'Republik Österreich' -> 'Austria'"]
+        rows = await rag.query(
+            "MATCH (c:Country) RETURN c.id, c.name, size((c)<-[:RELATES]-()) ORDER BY c.id"
+        )
+        assert rows == [["austria__country", "Austria", 6]]
+        await rag.close()
+
+    async def test_with_nothing_pointing_at_either_the_longer_description_still_wins(
+        self, real_falkordb_rag_factory
+    ):
+        """The original rule is what is left when degree does not separate them."""
+        llm = MockLLM(["YES"], strict=True)
+        rag = real_falkordb_rag_factory(
+            llm=llm,
+            resolver=ExactMatchResolution(resolve_property="name"),
+            ontology=Ontology(entities=[Entity(label="Country")]),
+        )
+        await rag.query(
+            "CREATE (:__Entity__:Country {id: 'austria__country', name: 'Austria', "
+            "description: 'A country'}), "
+            "(:__Entity__:Country {id: 'republik_österreich__country', "
+            "name: 'Republik Österreich', description: 'The official name of Austria, "
+            "used in legislative materials'})"
+        )
+        judge = LLMVerifiedResolution(
+            llm=llm, embedder=NearEmbedder({"Austria", "Republik Österreich"})
+        )
+
+        result = await rag.finalize(resolver=judge)
+
+        assert result.resolved_duplicates == ["Country 'Austria' -> 'Republik Österreich'"]
+        await rag.close()
+
+
 class TestClusters:
     def test_chains_are_followed_and_labels_kept_apart(self):
         by_id = {
