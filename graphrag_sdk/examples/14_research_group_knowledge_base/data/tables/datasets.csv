@@ -1,0 +1,7 @@
+dataset_id,name,url,license,size_gb,used_in
+DS-01,IRRI AWD flux panel,https://example.org/irri-awd,CC-BY-4.0,2.4,2006.02840v1.pdf
+DS-02,China customs firm-product exports 2000-2006,,restricted,18.0,2603.23825v1.pdf;1801.02681v2.pdf
+DS-03,ENTSO-E day-ahead prices 2025,https://transparency.entsoe.eu,open,0.9,2603.25874v1.pdf
+DS-04,Boomitra soil carbon samples,,proprietary,,2603.20674v1.pdf
+DS-05,DrugBank + DisGeNET merged KG,https://go.drugbank.com,academic,6.1,2606.01394v1.pdf
+DS-06,Lab weather station feed,,internal,0.05,

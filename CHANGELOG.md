@@ -214,11 +214,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relational question and an aggregate one, and the re-sync that promotes one
   person, removes another and adds a third.
 
+- **`examples/14_research_group_knowledge_base/`** — a reproducible, realistic
+  corpus: twelve CSVs with inconsistent keys, a junction table and an undeclared
+  file, six arXiv PDFs (two connected only by prose, one unrelated), two notes
+  and a JSON dump. `ingest.py` builds the graph, `verify.py` checks 29
+  CSV-derived expectations with Cypher, `ask.py` runs 18 questions and prints
+  which sources each answer used, `dirty_files.py` loads six single-fault files.
+  The README lists the limitations the corpus exposes.
+
 - See `examples/11_structured_ingestion.py` and the
   [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)
   docs page.
 
 ### Fixed
+
+- **A table no longer rewrites what a label means.** The ontology fragment a
+  mapping contributes describes a label it did not create only by what the table
+  did — `Declared by a structured source, keyed on exp_id`, `Referenced by key
+  from a structured source` — and the store's `coalesce` took that text over the
+  description the user declared. Measured on twelve tables: every declared
+  description was gone after the first load, and `propose_mapping()` asked to
+  place an undeclared grants table chose `Experiment` three times out of three,
+  because `Experiment` now read "keyed on exp_id" instead of "a field experiment
+  measuring methane flux". The extractor and text-to-Cypher read the same
+  descriptions. An existing label's description is now kept; a label nothing has
+  described still takes the table's note. The proposal prompt also shows each
+  label's description next to its properties, which it did not before. With
+  both, the same table is placed under a new `Funding` label three times out of
+  three.
 
 - **One placeholder per key inside a file.** A reference's id comes from the name
   the row gives it, or from the key when it gives none. A `citations.csv` whose

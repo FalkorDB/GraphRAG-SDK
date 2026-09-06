@@ -225,6 +225,7 @@ guards the default.
 | 7 | [Incremental Updates](graphrag_sdk/examples/07_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |
 | 11 | [Structured Ingestion](graphrag_sdk/examples/11_structured_ingestion.py) | Declared mappings end to end, with a re-ingest that corrects a row, adds one and drops one |
 | 13 | [Documents and Tables](graphrag_sdk/examples/13_documents_and_tables.ipynb) | A notebook: a PDF, a CSV, a PDF and a CSV, then a corrected export — with a checkpoint to inspect the graph at each stage |
+| 14 | [Research Group Knowledge Base](graphrag_sdk/examples/14_research_group_knowledge_base/) | Twelve messy CSVs, six arXiv PDFs, two notes and a JSON file in one graph — with scripts that verify the graph against the CSVs, ask 18 questions and load six faulty files |
 
 ---
 

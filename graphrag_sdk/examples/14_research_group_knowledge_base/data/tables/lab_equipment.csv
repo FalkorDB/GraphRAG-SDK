@@ -1,0 +1,9 @@
+equipment_id,name,vendor,purchase_year,cost_usd
+EQ-01,Picarro G2508 gas analyzer,Picarro,2022,98500
+EQ-02,LI-COR LI-7810 CH4/CO2 analyzer,LI-COR,2023,61200
+EQ-03,Eddy covariance tower,Campbell Scientific,2021,142000
+EQ-04,Static flux chambers (set of 24),in-house,2020,4800
+EQ-05,GC-FID Agilent 8890,Agilent,2019,72000
+EQ-06,Soil moisture sensor array,METER,2024,15300
+EQ-07,Field drone DJI M300,DJI,2023,13900
+EQ-08,GPU workstation (4x A6000),Lambda,2024,38700

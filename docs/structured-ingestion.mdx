@@ -394,10 +394,14 @@ result = await rag.ingest("employees.csv")   # nothing declared for it
 
 The model is shown what was *measured* — every column with its type, fill and
 uniqueness over the whole file, the first rows — and what the graph already holds:
-the labels in use with their entity counts, the relationship types, the tables
-already mapped and their key columns. It answers the one thing measurement cannot
+the labels in use with their entity counts and descriptions, the relationship
+types, the tables already mapped and their key columns. It answers the one thing
+measurement cannot
 settle, which is what a row is *about*: the label, the name column, the key, the
-type of every other column, and which columns are links to other entities.
+type of every other column, and which columns are links to other entities. The
+descriptions are what let it tell a grants table from an experiments table when
+both have a title, a lead and a start date — so a label you declare is worth
+describing.
 
 Everything it says about the data is then held to the data. A key it picks must be
 unique and complete; a column it names must exist; a link must point at a label
@@ -865,9 +869,10 @@ stated once rather than two ways of choosing a path that could disagree.
 
 ## Examples
 
-Two, shortest first. Both run against a local FalkorDB.
+Three, shortest first. All run against a local FalkorDB.
 
 | | |
 | --- | --- |
 | `examples/13_documents_and_tables.ipynb` | **Start here.** Two mappings in one ontology, then a document, a table, a document and a table, in that order, and finally a corrected version of the first table. It stops after each stage so the graph can be inspected: the employee export arrives before the organizations it points at, so you can watch the reference nodes get filled in rather than duplicated. |
 | `examples/11_structured_ingestion.py` | The whole path: two CSVs, a document, resolution, the declared ontology, all three classes of question, and a re-ingest that corrects a row, adds one and drops one. |
+| `examples/14_research_group_knowledge_base/` | A realistic corpus that fits the design about 80%: twelve CSVs written by different people (inconsistent keys, a bare junction table, an undeclared file), six arXiv PDFs of which two connect only through prose and one must stay an island, two notes and a JSON dump. Separate scripts build the graph, verify it against the CSVs with Cypher, ask 18 aggregate/hybrid/lookup questions and load six deliberately faulty files. Its README records what the SDK does and does not do with such data. |

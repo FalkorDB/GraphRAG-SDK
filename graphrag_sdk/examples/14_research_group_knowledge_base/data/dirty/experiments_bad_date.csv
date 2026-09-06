@@ -1,0 +1,3 @@
+exp_id,name,practice_id,site_country,season,ch4_flux_kg_ha,yield_t_ha,start_date,notes
+EXP-X01,baseline,PR-AWD,India,2024 wet,120.0,5.1,2024-06-03,
+EXP-X02,AWD trial,PR-AWD,India,2024 wet,88.0,5.0,21/03/2024,day-first export

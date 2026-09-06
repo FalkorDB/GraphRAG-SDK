@@ -1,0 +1,181 @@
+exp_id,name,practice_id,site_country,season,ch4_flux_kg_ha,yield_t_ha,start_date,notes
+EXP-001,residue trial,PR-SYN-0260,India,2024 dry,306.1,5.30,2025-09-13,
+EXP-002,baseline,PR-SYN-0202,Philippines,2025 wet,,3.95,2024-10-02,
+EXP-003,deep placement,PR-SYN-0183,Vietnam,2024 dry,,4.93,2025-05-12,
+EXP-004,AWD trial,PR-CF,India,2023 dry,318.1,3.60,2023-12-11,replicated 3x
+EXP-005,baseline,PR-GCTB,Netherlands,2024 wet,81.0,,2025-05-21,replicated 3x
+EXP-006,AWD trial,PR-SRI,Italy,2023 dry,139.6,5.51,2025-04-20,flooded control
+EXP-007,AWD trial,PR-SYN-0113,Netherlands,2025 wet,96.0,7.75,2024-08-09,irrigation schedule adjusted
+EXP-008,control plot,PR-GCTB,India,2025 wet,307.4,4.24,2023-06-07,
+EXP-009,AWD trial,PR-SYN-0331,India,2023 dry,136.3,3.75,2024-12-25,flooded control
+EXP-010,baseline,PR-SYN-0167,Bangladesh,2023 dry,64.3,5.33,2025-02-24,
+EXP-011,control plot,PR-CF,India,2023 dry,265.8,7.71,2025-06-05,
+EXP-012,AWD trial,PR-AWD,Vietnam,2025 wet,187.4,7.21,2023-01-09,
+EXP-013,deep placement,PR-SYN-0163,Italy,2025 wet,112.6,,2025-06-15,flooded control
+EXP-014,baseline,PR-SYN-0253,Bangladesh,2023 dry,76.6,7.21,2023-10-01,flooded control
+EXP-015,AWD trial,PR-SYN-0058,Bangladesh,2024 wet,195.8,5.76,2023-09-02,
+EXP-016,deep placement,PR-SYN-0256,India,2023 dry,,3.49,2024-10-17,irrigation schedule adjusted
+EXP-017,control plot,PR-SYN-0270,Bangladesh,2024 dry,266.1,5.61,2024-09-07,
+EXP-018,baseline,PR-GCTB,Italy,2023 dry,60.3,,2025-05-26,irrigation schedule adjusted
+EXP-019,AWD trial,PR-SRI,Bangladesh,2024 dry,310.9,5.03,2024-03-22,replicated 3x
+EXP-020,baseline,PR-CF,India,2024 wet,94.8,3.29,2025-08-15,replicated 3x
+EXP-021,AWD trial,PR-SYN-0259,Philippines,2023 dry,309.0,4.25,2023-02-09,irrigation schedule adjusted
+EXP-022,control plot,PR-SYN-0213,Netherlands,2024 wet,277.9,5.07,2025-09-19,
+EXP-023,AWD trial,PR-SRI,Philippines,2024 wet,,6.12,2024-02-20,
+EXP-024,AWD trial,PR-SYN-0170,Philippines,2023 dry,318.4,6.06,2023-09-23,irrigation schedule adjusted
+EXP-025,baseline,PR-SRI,Vietnam,2024 wet,301.0,4.15,2024-09-22,
+EXP-026,baseline,PR-SYN-0015,Netherlands,2024 dry,44.3,4.07,2024-04-15,flooded control
+EXP-027,baseline,PR-SYN-0198,India,2024 wet,311.7,4.26,2023-12-24,
+EXP-028,residue trial,PR-SYN-0004,Italy,2025 wet,59.8,3.95,2023-11-27,irrigation schedule adjusted
+EXP-029,control plot,PR-SYN-0351,Vietnam,2023 dry,122.1,5.25,2024-06-11,
+EXP-030,AWD trial,PR-SYN-0155,Bangladesh,2025 wet,101.0,3.59,2024-09-21,
+EXP-031,deep placement,PR-AWD,India,2023 dry,80.3,4.58,2025-04-03,replicated 3x
+EXP-032,control plot,PR-GCTB,Netherlands,2024 dry,241.8,6.05,2023-01-27,replicated 3x
+EXP-033,baseline,PR-AWD,Philippines,2023 wet,271.4,6.34,2025-11-08,
+EXP-034,AWD trial,PR-SYN-0050,India,2024 wet,145.5,,2023-11-18,
+EXP-035,control plot,PR-SYN-0032,Vietnam,2023 wet,249.5,6.23,2023-12-24,irrigation schedule adjusted
+EXP-036,AWD trial,PR-SRI,Italy,2023 wet,104.6,7.09,2023-08-22,replicated 3x
+EXP-037,baseline,PR-SYN-0098,Philippines,2024 dry,61.7,6.62,2024-10-19,
+EXP-038,control plot,PR-SYN-0341,Italy,2023 wet,67.9,6.46,2024-08-15,replicated 3x
+EXP-039,AWD trial,PR-AWD,Bangladesh,2023 wet,,6.97,2024-05-13,replicated 3x
+EXP-040,AWD trial,PR-GCTB,India,2024 dry,306.8,5.54,2023-12-12,flooded control
+EXP-041,SRI trial,PR-AWD,Philippines,2024 wet,306.0,6.55,2024-06-13,
+EXP-042,SRI trial,PR-GCTB,Philippines,2024 dry,275.0,6.48,2025-05-09,flooded control
+EXP-043,AWD trial,PR-SYN-0298,Netherlands,2023 dry,61.4,7.13,2024-02-02,
+EXP-044,control plot,PR-SYN-0220,India,2023 dry,183.1,7.60,2023-11-13,
+EXP-045,baseline,PR-CF,India,2024 dry,166.2,4.52,2023-09-05,irrigation schedule adjusted
+EXP-046,residue trial,PR-GCTB,Philippines,2023 dry,246.9,6.22,2024-08-18,
+EXP-047,AWD trial,PR-CF,Bangladesh,2023 wet,194.1,6.69,2024-03-18,
+EXP-048,residue trial,PR-AWD,India,2024 dry,129.4,4.13,2023-12-28,replicated 3x
+EXP-049,control plot,PR-GCTB,Netherlands,2023 dry,,7.65,2023-11-17,
+EXP-050,residue trial,PR-SRI,Netherlands,2024 dry,147.7,4.64,2023-03-02,replicated 3x
+EXP-051,baseline,PR-SYN-0034,Bangladesh,2023 dry,149.6,7.14,2024-04-26,
+EXP-052,baseline,PR-SYN-0346,Philippines,2023 dry,70.5,7.09,2024-02-18,
+EXP-053,residue trial,PR-SYN-0016,Netherlands,2023 wet,220.7,,2024-09-21,
+EXP-054,SRI trial,PR-SRI,Netherlands,2023 dry,148.7,3.25,2024-08-09,flooded control
+EXP-055,residue trial,PR-SYN-0277,Philippines,2024 wet,109.2,4.61,2023-04-16,
+EXP-056,baseline,PR-SYN-0186,Italy,2024 wet,,5.13,2025-07-07,replicated 3x
+EXP-057,AWD trial,PR-CF,Philippines,2025 wet,311.6,4.26,2023-05-25,flooded control
+EXP-058,baseline,PR-SYN-0111,Bangladesh,2023 wet,175.8,,2025-03-13,replicated 3x
+EXP-059,baseline,PR-AWD,Bangladesh,2024 wet,238.8,6.48,2024-12-04,
+EXP-060,baseline,PR-CF,Philippines,2023 wet,48.9,4.92,2024-08-06,irrigation schedule adjusted
+EXP-061,residue trial,PR-CF,Philippines,2023 wet,307.5,4.15,2024-05-27,flooded control
+EXP-062,residue trial,PR-CF,Philippines,2024 dry,94.0,3.34,2024-04-26,
+EXP-063,baseline,PR-SYN-0028,Vietnam,2024 wet,112.0,4.76,2024-06-20,irrigation schedule adjusted
+EXP-064,control plot,PR-AWD,Bangladesh,2024 dry,46.8,7.60,2024-05-14,
+EXP-065,deep placement,PR-GCTB,Philippines,2025 wet,270.4,4.71,2024-08-12,
+EXP-066,baseline,PR-SRI,India,2023 wet,,,2025-09-11,
+EXP-067,residue trial,PR-AWD,India,2025 wet,98.3,7.67,2023-04-05,
+EXP-068,AWD trial,PR-SYN-0393,Netherlands,2024 wet,226.0,4.55,2025-05-12,
+EXP-069,AWD trial,PR-SRI,Bangladesh,2025 wet,108.7,5.86,2024-02-13,replicated 3x
+EXP-070,control plot,PR-AWD,Vietnam,2023 wet,222.9,,2024-04-27,irrigation schedule adjusted
+EXP-071,baseline,PR-AWD,India,2025 wet,93.1,7.48,2024-09-28,irrigation schedule adjusted
+EXP-072,SRI trial,PR-SYN-0337,Bangladesh,2023 wet,304.8,6.05,2023-01-12,
+EXP-073,SRI trial,PR-SYN-0016,Bangladesh,2025 wet,207.8,3.25,2024-07-22,irrigation schedule adjusted
+EXP-074,control plot,PR-AWD,Bangladesh,2025 wet,262.7,,2023-07-22,
+EXP-075,deep placement,PR-SYN-0200,Vietnam,2024 dry,234.7,4.61,2023-05-24,flooded control
+EXP-076,baseline,PR-GCTB,Italy,2023 wet,220.5,7.53,2024-03-14,flooded control
+EXP-077,residue trial,PR-SYN-0183,Philippines,2025 wet,169.1,,2025-03-21,replicated 3x
+EXP-078,control plot,PR-SYN-0374,Italy,2023 dry,181.2,5.60,2023-02-13,irrigation schedule adjusted
+EXP-079,deep placement,PR-AWD,Netherlands,2023 dry,313.2,,2025-07-03,
+EXP-080,residue trial,PR-SYN-0311,Vietnam,2023 wet,277.0,4.20,2024-09-06,
+EXP-081,deep placement,PR-SRI,India,2025 wet,51.5,3.38,2024-02-13,irrigation schedule adjusted
+EXP-082,baseline,PR-SYN-0154,India,2024 dry,203.1,5.26,2024-03-01,flooded control
+EXP-083,baseline,PR-CF,Italy,2024 dry,274.2,3.51,2024-07-12,replicated 3x
+EXP-084,baseline,PR-SYN-0017,Italy,2025 wet,51.4,4.64,2025-09-03,flooded control
+EXP-085,control plot,PR-SYN-0066,Vietnam,2023 dry,,6.39,2023-04-05,
+EXP-086,control plot,PR-GCTB,India,2023 dry,210.9,6.02,2024-03-09,replicated 3x
+EXP-087,residue trial,PR-SRI,Bangladesh,2024 wet,,3.94,2024-11-11,
+EXP-088,AWD trial,PR-SYN-0021,India,2024 dry,218.2,5.75,2025-12-04,irrigation schedule adjusted
+EXP-089,baseline,PR-GCTB,Vietnam,2025 wet,201.7,5.23,2023-10-24,irrigation schedule adjusted
+EXP-090,control plot,PR-GCTB,Vietnam,2023 wet,245.3,4.54,2025-07-14,
+EXP-091,control plot,PR-SYN-0310,Vietnam,2025 wet,,,2024-05-04,
+EXP-092,AWD trial,PR-GCTB,Netherlands,2023 dry,204.9,5.38,2023-01-26,flooded control
+EXP-093,control plot,PR-SRI,Vietnam,2025 wet,284.0,4.42,2023-01-21,replicated 3x
+EXP-094,baseline,PR-CF,Bangladesh,2023 dry,109.6,,2025-01-13,
+EXP-095,control plot,PR-SYN-0050,Netherlands,2024 dry,43.5,3.85,2023-09-20,replicated 3x
+EXP-096,baseline,PR-GCTB,India,2024 dry,57.9,6.53,2024-12-18,flooded control
+EXP-097,AWD trial,PR-CF,Netherlands,2023 wet,89.1,6.16,2023-06-24,irrigation schedule adjusted
+EXP-098,control plot,PR-SYN-0344,Philippines,2023 dry,162.1,4.42,2025-04-03,irrigation schedule adjusted
+EXP-099,AWD trial,PR-SYN-0377,India,2025 wet,96.8,4.08,2024-06-20,flooded control
+EXP-100,AWD trial,PR-SYN-0268,India,2025 wet,235.3,6.53,2025-05-26,replicated 3x
+EXP-101,baseline,PR-SRI,Philippines,2023 wet,,,2023-06-05,
+EXP-102,control plot,PR-SYN-0321,Netherlands,2023 wet,,,2025-06-07,flooded control
+EXP-103,AWD trial,PR-SRI,India,2023 wet,,7.39,2025-02-27,
+EXP-104,SRI trial,PR-SRI,Vietnam,2025 wet,122.4,4.81,2024-01-23,replicated 3x
+EXP-105,baseline,PR-SYN-0144,India,2025 wet,,5.21,2023-06-16,
+EXP-106,SRI trial,PR-SYN-0043,India,2023 wet,200.9,5.61,2024-01-01,flooded control
+EXP-107,AWD trial,PR-SYN-0091,Netherlands,2023 dry,310.8,5.57,2025-03-10,flooded control
+EXP-108,residue trial,PR-AWD,India,2023 wet,177.3,3.68,2024-06-04,flooded control
+EXP-109,AWD trial,PR-SYN-0009,India,2023 dry,144.1,5.71,2023-07-21,replicated 3x
+EXP-110,control plot,PR-SYN-0349,Netherlands,2024 wet,250.8,4.70,2023-08-22,
+EXP-111,AWD trial,PR-SYN-0349,India,2023 dry,256.6,,2024-11-23,irrigation schedule adjusted
+EXP-112,SRI trial,PR-SRI,Bangladesh,2024 wet,242.5,5.97,2024-03-08,
+EXP-113,residue trial,PR-AWD,Vietnam,2023 dry,94.7,,2024-12-10,
+EXP-114,control plot,PR-SYN-0051,Netherlands,2024 wet,118.6,3.26,2024-12-08,flooded control
+EXP-115,deep placement,PR-GCTB,Netherlands,2024 dry,209.0,7.38,2024-12-19,
+EXP-116,baseline,PR-SYN-0331,India,2024 dry,286.4,7.12,2025-03-21,irrigation schedule adjusted
+EXP-117,residue trial,PR-AWD,India,2024 dry,290.5,6.48,2023-05-28,
+EXP-118,control plot,PR-SYN-0206,Philippines,2023 wet,185.1,7.31,2024-01-13,irrigation schedule adjusted
+EXP-119,AWD trial,PR-SYN-0079,Netherlands,2024 dry,240.5,4.80,2025-08-18,replicated 3x
+EXP-120,control plot,PR-GCTB,Italy,2023 wet,186.1,4.17,2025-03-13,replicated 3x
+EXP-121,SRI trial,PR-AWD,India,2024 wet,110.7,,2023-07-14,
+EXP-122,baseline,PR-CF,Bangladesh,2023 wet,303.2,6.89,2024-08-07,
+EXP-123,residue trial,PR-SYN-0284,India,2024 wet,241.8,,2025-11-27,replicated 3x
+EXP-124,residue trial,PR-SYN-0396,Netherlands,2023 dry,273.4,4.43,2024-11-09,flooded control
+EXP-125,SRI trial,PR-GCTB,Bangladesh,2024 wet,140.2,5.43,2025-11-03,flooded control
+EXP-126,AWD trial,PR-GCTB,Philippines,2024 wet,259.5,6.11,2023-11-01,irrigation schedule adjusted
+EXP-127,control plot,PR-SYN-0293,Bangladesh,2025 wet,80.0,4.79,2023-04-13,replicated 3x
+EXP-128,AWD trial,PR-SYN-0043,India,2023 wet,227.2,7.06,2023-08-23,flooded control
+EXP-129,control plot,PR-SYN-0056,India,2023 dry,195.4,3.84,2024-09-02,flooded control
+EXP-130,deep placement,PR-SRI,India,2024 wet,191.1,,2024-08-23,flooded control
+EXP-131,deep placement,PR-CF,Philippines,2024 wet,320.0,4.86,2025-01-01,
+EXP-132,SRI trial,PR-SYN-0245,Vietnam,2024 dry,252.0,5.11,2023-06-04,replicated 3x
+EXP-133,control plot,PR-SYN-0104,India,2024 wet,119.6,3.44,2024-05-12,replicated 3x
+EXP-134,AWD trial,PR-SYN-0256,Bangladesh,2025 wet,136.5,3.74,2023-06-23,
+EXP-135,baseline,PR-SYN-0017,Philippines,2023 dry,151.7,5.84,2024-05-04,flooded control
+EXP-136,deep placement,PR-SYN-0333,Netherlands,2023 wet,56.8,4.93,2023-11-22,
+EXP-137,baseline,PR-CF,Vietnam,2023 dry,215.1,7.20,2024-02-21,irrigation schedule adjusted
+EXP-138,deep placement,PR-SYN-0129,Philippines,2024 dry,281.5,,2023-07-19,replicated 3x
+EXP-139,residue trial,PR-SYN-0057,India,2025 wet,256.7,5.06,2023-01-22,
+EXP-140,baseline,PR-SYN-0208,Philippines,2023 wet,,7.32,2025-01-14,
+EXP-141,baseline,PR-AWD,Vietnam,2023 dry,,4.31,2025-12-06,
+EXP-142,baseline,PR-CF,Philippines,2025 wet,169.0,7.64,2025-01-01,
+EXP-143,deep placement,PR-GCTB,Netherlands,2024 dry,244.2,5.44,2023-06-12,flooded control
+EXP-144,control plot,PR-SYN-0071,Vietnam,2025 wet,310.6,3.95,2024-08-13,irrigation schedule adjusted
+EXP-145,baseline,PR-AWD,India,2024 wet,214.1,5.96,2025-12-01,replicated 3x
+EXP-146,baseline,PR-SRI,Vietnam,2024 wet,145.5,7.32,2024-05-23,irrigation schedule adjusted
+EXP-147,control plot,PR-AWD,Netherlands,2024 dry,120.8,7.77,2023-05-28,irrigation schedule adjusted
+EXP-148,baseline,PR-SYN-0273,Netherlands,2024 dry,195.0,6.65,2023-05-20,flooded control
+EXP-149,baseline,PR-SYN-0127,Bangladesh,2024 dry,,5.69,2025-06-25,replicated 3x
+EXP-150,baseline,PR-SYN-0129,Bangladesh,2024 wet,287.8,5.91,2023-04-07,irrigation schedule adjusted
+EXP-151,baseline,PR-SYN-0180,Vietnam,2024 dry,152.7,,2023-08-12,
+EXP-152,deep placement,PR-AWD,India,2025 wet,136.6,,2023-04-28,replicated 3x
+EXP-153,baseline,PR-GCTB,Vietnam,2023 dry,159.3,6.97,2023-05-27,
+EXP-154,residue trial,PR-AWD,Philippines,2023 wet,54.3,5.31,2023-10-21,irrigation schedule adjusted
+EXP-155,AWD trial,PR-SRI,Netherlands,2023 dry,219.4,5.01,2024-03-12,
+EXP-156,control plot,PR-GCTB,Netherlands,2024 dry,,3.33,2023-05-26,
+EXP-157,baseline,PR-GCTB,India,2024 wet,251.4,4.57,2025-08-25,irrigation schedule adjusted
+EXP-158,AWD trial,PR-AWD,Italy,2023 wet,145.0,6.91,2025-01-15,
+EXP-159,baseline,PR-SYN-0109,Netherlands,2023 wet,61.8,6.65,2024-02-13,flooded control
+EXP-160,baseline,PR-SYN-0162,Netherlands,2024 dry,270.5,3.86,2023-12-02,replicated 3x
+EXP-161,AWD trial,PR-SYN-0221,Vietnam,2023 dry,283.8,3.92,2024-10-27,irrigation schedule adjusted
+EXP-162,control plot,PR-SYN-0159,India,2024 wet,167.7,5.56,2025-11-07,
+EXP-163,AWD trial,PR-SRI,India,2023 dry,311.8,4.30,2023-02-13,
+EXP-164,baseline,PR-SYN-0147,Italy,2025 wet,80.4,5.54,2025-03-15,irrigation schedule adjusted
+EXP-165,AWD trial,PR-CF,Netherlands,2023 dry,51.4,4.03,2023-09-25,
+EXP-166,AWD trial,PR-SYN-0041,India,2024 wet,289.0,4.01,2023-10-22,
+EXP-167,control plot,PR-CF,Philippines,2023 wet,275.5,4.80,2024-11-28,flooded control
+EXP-168,SRI trial,PR-SYN-0241,India,2025 wet,77.3,5.79,2024-01-06,
+EXP-169,residue trial,PR-CF,India,2023 wet,,4.33,2024-12-28,irrigation schedule adjusted
+EXP-170,AWD trial,PR-SYN-0371,India,2023 dry,178.5,5.67,2023-04-03,
+EXP-171,AWD trial,PR-GCTB,Philippines,2025 wet,195.5,,2025-12-07,replicated 3x
+EXP-172,control plot,PR-SYN-0119,India,2025 wet,236.7,6.50,2023-05-04,replicated 3x
+EXP-173,AWD trial,PR-SYN-0053,Bangladesh,2025 wet,74.2,,2025-04-28,flooded control
+EXP-174,baseline,PR-SYN-0081,India,2023 wet,,6.39,2025-10-17,irrigation schedule adjusted
+EXP-175,control plot,PR-SRI,Philippines,2024 wet,274.8,5.80,2024-07-28,replicated 3x
+EXP-176,SRI trial,PR-GCTB,India,2023 dry,109.8,4.88,2025-03-03,replicated 3x
+EXP-177,baseline,PR-SYN-0112,Philippines,2025 wet,79.0,7.51,2025-01-26,irrigation schedule adjusted
+EXP-178,baseline,PR-SYN-0316,India,2023 dry,116.6,6.06,2024-02-17,
+EXP-179,control plot,PR-GCTB,India,2025 wet,137.3,,2025-05-03,
+EXP-180,control plot,PR-SRI,Vietnam,2024 dry,287.9,4.46,2025-02-24,replicated 3x

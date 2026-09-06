@@ -1,0 +1,49 @@
+person_id,full_name,institution_id,role,orcid,h_index
+P-001,"V, Priyanka",INST-01,phd student,,
+P-002,Geetha Charan,INST-01,researcher,,4
+P-003,Rohit P Suresh,INST-01,researcher,,
+P-004,Y. Narahari,INST-01,professor,0000-0002-3600-1000,38
+P-005,Aashman Trivedi,INST-02,student,,
+P-006,Soumya K,INST-03,engineer,,
+P-007,Ravi Trivedi,INST-04,director,,
+P-008,"Sun, Sizhong",INST-05,professor,0000-0001-6820-1000,17
+P-009,Simon Finster,INST-99,researcher,,6
+P-010,Bernhard Kasberger,INST-99,researcher,,5
+P-011,Simon Rütten,inst-10 ,phd student,,
+P-012,Syed Faiz-ul Islam,INST-06,postdoc,0000-0003-0000-1000,9
+P-013,Andreas de Neergaard,INST-07,professor,,24
+P-014,Bjoern Ole Sander,INST-08,scientist,,15
+P-015,Lars Stoumann Jensen,INST-07,professor,,41
+P-016,Reiner Wassmann,INST-08,scientist,,44
+P-017,Jan Willem van Groenigen,INST-06,professor,,52
+P-018,Mercedes Campi,INST-13,researcher,,11
+P-019,Marco Dueñas,INST-13,researcher,,8
+P-020,Qianqian Song,INST-12,professor,,22
+P-021,Maya Mizrahi,INST-10,intern,,1
+P-022,Amir Azulay,INST-11,intern,,
+P-023,Yuval Levi,INST-14,postdoc,,1
+P-024,Amir Dahan,INST-10,intern,,
+P-025,Amir Peretz,INST-06,intern,,0
+P-026,Eitan Friedman,INST-14,intern,,0
+P-027,Dana Biton,INST-10,phd student,,
+P-028,Eitan Biton,INST-11,phd student,,2
+P-029,Eitan Shapira,INST-06,phd student,,
+P-030,Tal Cohen,INST-11,postdoc,,
+P-031,Shira Dahan,INST-10,intern,,7
+P-032,Shira Azulay,INST-14,postdoc,,
+P-033,Gal Peretz,INST-14,researcher,,8
+P-034,Maya Katz,INST-14,phd student,,1
+P-035,Tal Friedman,INST-14,researcher,,2
+P-036,Omer Levi,INST-06,intern,,
+P-037,Eitan Azulay,INST-14,researcher,,9
+P-038,Eitan Katz,INST-14,researcher,,4
+P-039,Gal Cohen,INST-14,intern,,4
+P-040,Roni Katz,INST-14,engineer,,10
+P-041,Noa Katz,INST-14,phd student,,
+P-042,Shira Levi,INST-14,postdoc,,2
+P-043,Omer Friedman,INST-10,researcher,,
+P-044,Omer Dahan,INST-14,intern,,6
+P-045,Lior Friedman,INST-14,postdoc,,6
+P-046,Dana Cohen,INST-14,postdoc,,
+P-047,Eitan Mizrahi,INST-14,postdoc,,
+P-048,Maya Shapira,INST-11,postdoc,,

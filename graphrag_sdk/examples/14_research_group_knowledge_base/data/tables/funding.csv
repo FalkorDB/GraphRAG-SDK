@@ -1,0 +1,6 @@
+grant_id,title,funder,amount,currency,pi,start,end
+GR-2023-01,Methane MRV for smallholder rice,Gates Foundation,1250000,USD,Priyanka V,2023-09-01,2026-08-31
+GR-2024-02,Carbon-electricity coupling in EU markets,FWF,480000,EUR,Simon Finster,2024-03-01,2027-02-28
+GR-2024-03,Trade shocks and firm innovation,ARC Discovery,310000,AUD,Sizhong Sun,2024-01-01,2026-12-31
+GR-2025-01,Graph-native RAG for agronomy,Israel Innovation Authority,900000,ILS,Gal Shubeli,2025-06-01,2027-05-31
+GR-2025-02,AWD scaling in the Mekong,IRRI core,220000,USD,Reiner Wassmann,2025-01-01,

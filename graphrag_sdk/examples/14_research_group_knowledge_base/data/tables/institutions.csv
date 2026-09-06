@@ -1,0 +1,15 @@
+inst_id,name,country,city,kind
+INST-01,Indian Institute of Science,India,Bangalore,university
+INST-02,University of Chicago,United States,Chicago,university
+INST-03,Boomitra,India,Bangalore,company
+INST-04,Piramal Foundation,India,Bangalore,foundation
+INST-05,James Cook University,Australia,Townsville,university
+INST-06,Wageningen University,Netherlands,Wageningen,university
+INST-07,University of Copenhagen,Denmark,Copenhagen,university
+INST-08,International Rice Research Institute,Philippines,Los Baños,institute
+INST-09,Karlsruhe Institute of Technology,Germany,Karlsruhe,university
+INST-10,TU Wien,austria,Vienna,university
+INST-11,Austrian Institute of Technology,Austria ,Vienna,institute
+INST-12,University of Florida,USA,Gainesville,university
+INST-13,Universidad de Buenos Aires,Argentina,Buenos Aires,university
+INST-14,FalkorDB,Israel,Tel Aviv,company

@@ -1,0 +1,4 @@
+practice_id,practice_name,crop_system,ch4_reduction_min_pct,ch4_reduction_max_pct,water_saving_min_pct,water_saving_max_pct,soil_carbon_benefit,mrv_intensity,source_doc
+PR-AWD,Alternate Wetting and Drying (AWD),rice,30.0,50.0,20.0,30.0,,high,2603.20674v1.pdf
+PR-AWD,Alternate Wetting and Drying (AWD),rice,30.0,55.0,20.0,30.0,,high,2603.20674v1.pdf
+PR-SRI,System of Rice Intensification (SRI),rice,40.0,60.0,25.0,50.0,,high,2603.20674v1.pdf

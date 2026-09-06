@@ -1,0 +1,3 @@
+metric_id,metric_name,policy_event,geography,value_num,value_unit,sample_note,source_doc
+TM-X1,"Iceberg cost, percent-sign export",China WTO accession,China,13%,percent,,2603.23825v1.pdf
+TM-X2,Second row is fine,China WTO accession,China,13.5,percent,,2603.23825v1.pdf

@@ -1,0 +1,601 @@
+metric_id,metric_name,policy_event,geography,value_num,value_unit,sample_note,source_doc
+TM-ICEBERG,Iceberg trade cost reduction from China WTO accession,China WTO accession,China,13.0,percent,Baseline estimate that WTO accession reduces iceberg trade cost by around 13 percent,2603.23825v1.pdf
+TM-ICEBERG-ALT,Iceberg trade cost reduction robustness estimate,China WTO accession,China,13.5,percent,Alternate reported decrease of iceberg trade cost near 13.5 percent in robustness discussion,2603.23825v1.pdf
+TM-CES-DOM,CES preference parameter domestic market,China WTO accession,China,4.0,elasticity,Estimated CES preference parameter for the domestic market,2603.23825v1.pdf
+TM-CES-EXP,CES preference parameter export market,China WTO accession,China,2.5,elasticity,Estimated CES preference parameter for the export market,2603.23825v1.pdf
+TM-EXIT,Firm exit probability in sample,China WTO accession,China,0.08,probability,Estimated firm exit probability reported for the empirical sample,2603.23825v1.pdf
+TM-PROC-ROBUST,Processing-trade exclusion robustness,China WTO accession,China,1.0,flag,Robustness test excludes processing-trade firms; main cost-pattern result remains,2603.23825v1.pdf
+TM-SYN-0001,Synthetic trade metric 0001 (elasticity),Regional trade agreement wave,India,1.0,elasticity,Synthetic sample note 0001 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0002,Synthetic trade metric 0002 (probability),Export rebate reform,Vietnam,0.097,probability,Synthetic sample note 0002 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0003,Synthetic trade metric 0003 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0003 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0004,Synthetic trade metric 0004 (index),Customs facilitation program,Brazil,18.98,index,Synthetic sample note 0004 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0005,Synthetic trade metric 0005 (percent),China WTO accession,Germany,5.08,percent,Synthetic sample note 0005 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0006,Synthetic trade metric 0006 (elasticity),Regional trade agreement wave,USA,0.93,elasticity,Synthetic sample note 0006 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0007,Synthetic trade metric 0007 (probability),Export rebate reform,Japan,0.116,probability,Synthetic sample note 0007 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0008,Synthetic trade metric 0008 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0008 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0009,Synthetic trade metric 0009 (index),Customs facilitation program,India,30.27,index,Synthetic sample note 0009 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0010,Synthetic trade metric 0010 (percent),China WTO accession,Vietnam,28.2,percent,Synthetic sample note 0010 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0011,Synthetic trade metric 0011 (elasticity),Regional trade agreement wave,Mexico,1.64,elasticity,Synthetic sample note 0011 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0012,Synthetic trade metric 0012 (probability),Export rebate reform,Brazil,0.013,probability,Synthetic sample note 0012 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0013,Synthetic trade metric 0013 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0013 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0014,Synthetic trade metric 0014 (index),Customs facilitation program,USA,3.23,index,Synthetic sample note 0014 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0015,Synthetic trade metric 0015 (percent),China WTO accession,Japan,18.05,percent,Synthetic sample note 0015 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0016,Synthetic trade metric 0016 (elasticity),Regional trade agreement wave,China,0.79,elasticity,Synthetic sample note 0016 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0017,Synthetic trade metric 0017 (probability),Export rebate reform,India,0.193,probability,Synthetic sample note 0017 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0018,Synthetic trade metric 0018 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0018 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0019,Synthetic trade metric 0019 (index),Customs facilitation program,Mexico,1.61,index,Synthetic sample note 0019 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0020,Synthetic trade metric 0020 (percent),China WTO accession,Brazil,12.12,percent,Synthetic sample note 0020 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0021,Synthetic trade metric 0021 (elasticity),Regional trade agreement wave,Germany,1.82,elasticity,Synthetic sample note 0021 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0022,Synthetic trade metric 0022 (probability),Export rebate reform,USA,0.067,probability,Synthetic sample note 0022 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0023,Synthetic trade metric 0023 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0023 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0024,Synthetic trade metric 0024 (index),Customs facilitation program,China,16.55,index,Synthetic sample note 0024 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0025,Synthetic trade metric 0025 (percent),China WTO accession,India,12.79,percent,Synthetic sample note 0025 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0026,Synthetic trade metric 0026 (elasticity),Regional trade agreement wave,Vietnam,2.41,elasticity,Synthetic sample note 0026 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0027,Synthetic trade metric 0027 (probability),Export rebate reform,Mexico,0.223,probability,Synthetic sample note 0027 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0028,Synthetic trade metric 0028 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0028 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0029,Synthetic trade metric 0029 (index),Customs facilitation program,Germany,11.64,index,Synthetic sample note 0029 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0030,Synthetic trade metric 0030 (percent),China WTO accession,USA,24.59,percent,Synthetic sample note 0030 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0031,Synthetic trade metric 0031 (elasticity),Regional trade agreement wave,Japan,5.37,elasticity,Synthetic sample note 0031 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0032,Synthetic trade metric 0032 (probability),Export rebate reform,China,0.038,probability,Synthetic sample note 0032 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0033,Synthetic trade metric 0033 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0033 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0034,Synthetic trade metric 0034 (index),Customs facilitation program,Vietnam,31.71,index,Synthetic sample note 0034 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0035,Synthetic trade metric 0035 (percent),China WTO accession,Mexico,16.98,percent,Synthetic sample note 0035 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0036,Synthetic trade metric 0036 (elasticity),Regional trade agreement wave,Brazil,2.91,elasticity,Synthetic sample note 0036 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0037,Synthetic trade metric 0037 (probability),Export rebate reform,Germany,0.195,probability,Synthetic sample note 0037 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0038,Synthetic trade metric 0038 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0038 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0039,Synthetic trade metric 0039 (index),Customs facilitation program,Japan,23.59,index,Synthetic sample note 0039 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0040,Synthetic trade metric 0040 (percent),China WTO accession,China,23.61,percent,Synthetic sample note 0040 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0041,Synthetic trade metric 0041 (elasticity),Regional trade agreement wave,India,4.01,elasticity,Synthetic sample note 0041 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0042,Synthetic trade metric 0042 (probability),Export rebate reform,Vietnam,0.019,probability,Synthetic sample note 0042 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0043,Synthetic trade metric 0043 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0043 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0044,Synthetic trade metric 0044 (index),Customs facilitation program,Brazil,36.19,index,Synthetic sample note 0044 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0045,Synthetic trade metric 0045 (percent),China WTO accession,Germany,32.31,percent,Synthetic sample note 0045 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0046,Synthetic trade metric 0046 (elasticity),Regional trade agreement wave,USA,5.81,elasticity,Synthetic sample note 0046 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0047,Synthetic trade metric 0047 (probability),Export rebate reform,Japan,0.139,probability,Synthetic sample note 0047 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0048,Synthetic trade metric 0048 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0048 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0049,Synthetic trade metric 0049 (index),Customs facilitation program,India,4.52,index,Synthetic sample note 0049 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0050,Synthetic trade metric 0050 (percent),China WTO accession,Vietnam,28.45,percent,Synthetic sample note 0050 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0051,Synthetic trade metric 0051 (elasticity),Regional trade agreement wave,Mexico,2.18,elasticity,Synthetic sample note 0051 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0052,Synthetic trade metric 0052 (probability),Export rebate reform,Brazil,0.04,probability,Synthetic sample note 0052 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0053,Synthetic trade metric 0053 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0053 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0054,Synthetic trade metric 0054 (index),Customs facilitation program,USA,2.44,index,Synthetic sample note 0054 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0055,Synthetic trade metric 0055 (percent),China WTO accession,Japan,10.09,percent,Synthetic sample note 0055 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0056,Synthetic trade metric 0056 (elasticity),Regional trade agreement wave,China,0.58,elasticity,Synthetic sample note 0056 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0057,Synthetic trade metric 0057 (probability),Export rebate reform,India,0.227,probability,Synthetic sample note 0057 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0058,Synthetic trade metric 0058 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0058 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0059,Synthetic trade metric 0059 (index),Customs facilitation program,Mexico,23.57,index,Synthetic sample note 0059 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0060,Synthetic trade metric 0060 (percent),China WTO accession,Brazil,28.26,percent,Synthetic sample note 0060 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0061,Synthetic trade metric 0061 (elasticity),Regional trade agreement wave,Germany,3.01,elasticity,Synthetic sample note 0061 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0062,Synthetic trade metric 0062 (probability),Export rebate reform,USA,0.165,probability,Synthetic sample note 0062 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0063,Synthetic trade metric 0063 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0063 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0064,Synthetic trade metric 0064 (index),Customs facilitation program,China,13.2,index,Synthetic sample note 0064 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0065,Synthetic trade metric 0065 (percent),China WTO accession,India,28.46,percent,Synthetic sample note 0065 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0066,Synthetic trade metric 0066 (elasticity),Regional trade agreement wave,Vietnam,6.88,elasticity,Synthetic sample note 0066 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0067,Synthetic trade metric 0067 (probability),Export rebate reform,Mexico,0.048,probability,Synthetic sample note 0067 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0068,Synthetic trade metric 0068 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0068 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0069,Synthetic trade metric 0069 (index),Customs facilitation program,Germany,26.09,index,Synthetic sample note 0069 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0070,Synthetic trade metric 0070 (percent),China WTO accession,USA,28.59,percent,Synthetic sample note 0070 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0071,Synthetic trade metric 0071 (elasticity),Regional trade agreement wave,Japan,1.72,elasticity,Synthetic sample note 0071 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0072,Synthetic trade metric 0072 (probability),Export rebate reform,China,0.104,probability,Synthetic sample note 0072 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0073,Synthetic trade metric 0073 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0073 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0074,Synthetic trade metric 0074 (index),Customs facilitation program,Vietnam,17.52,index,Synthetic sample note 0074 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0075,Synthetic trade metric 0075 (percent),China WTO accession,Mexico,8.02,percent,Synthetic sample note 0075 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0076,Synthetic trade metric 0076 (elasticity),Regional trade agreement wave,Brazil,2.85,elasticity,Synthetic sample note 0076 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0077,Synthetic trade metric 0077 (probability),Export rebate reform,Germany,0.118,probability,Synthetic sample note 0077 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0078,Synthetic trade metric 0078 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0078 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0079,Synthetic trade metric 0079 (index),Customs facilitation program,Japan,11.01,index,Synthetic sample note 0079 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0080,Synthetic trade metric 0080 (percent),China WTO accession,China,4.53,percent,Synthetic sample note 0080 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0081,Synthetic trade metric 0081 (elasticity),Regional trade agreement wave,India,2.76,elasticity,Synthetic sample note 0081 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0082,Synthetic trade metric 0082 (probability),Export rebate reform,Vietnam,0.073,probability,Synthetic sample note 0082 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0083,Synthetic trade metric 0083 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0083 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0084,Synthetic trade metric 0084 (index),Customs facilitation program,Brazil,7.71,index,Synthetic sample note 0084 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0085,Synthetic trade metric 0085 (percent),China WTO accession,Germany,14.36,percent,Synthetic sample note 0085 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0086,Synthetic trade metric 0086 (elasticity),Regional trade agreement wave,USA,2.45,elasticity,Synthetic sample note 0086 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0087,Synthetic trade metric 0087 (probability),Export rebate reform,Japan,0.101,probability,Synthetic sample note 0087 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0088,Synthetic trade metric 0088 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0088 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0089,Synthetic trade metric 0089 (index),Customs facilitation program,India,30.06,index,Synthetic sample note 0089 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0090,Synthetic trade metric 0090 (percent),China WTO accession,Vietnam,39.4,percent,Synthetic sample note 0090 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0091,Synthetic trade metric 0091 (elasticity),Regional trade agreement wave,Mexico,7.06,elasticity,Synthetic sample note 0091 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0092,Synthetic trade metric 0092 (probability),Export rebate reform,Brazil,0.157,probability,Synthetic sample note 0092 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0093,Synthetic trade metric 0093 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0093 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0094,Synthetic trade metric 0094 (index),Customs facilitation program,USA,36.79,index,Synthetic sample note 0094 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0095,Synthetic trade metric 0095 (percent),China WTO accession,Japan,7.08,percent,Synthetic sample note 0095 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0096,Synthetic trade metric 0096 (elasticity),Regional trade agreement wave,China,1.46,elasticity,Synthetic sample note 0096 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0097,Synthetic trade metric 0097 (probability),Export rebate reform,India,0.089,probability,Synthetic sample note 0097 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0098,Synthetic trade metric 0098 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0098 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0099,Synthetic trade metric 0099 (index),Customs facilitation program,Mexico,33.93,index,Synthetic sample note 0099 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0100,Synthetic trade metric 0100 (percent),China WTO accession,Brazil,23.51,percent,Synthetic sample note 0100 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0101,Synthetic trade metric 0101 (elasticity),Regional trade agreement wave,Germany,4.81,elasticity,Synthetic sample note 0101 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0102,Synthetic trade metric 0102 (probability),Export rebate reform,USA,0.075,probability,Synthetic sample note 0102 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0103,Synthetic trade metric 0103 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0103 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0104,Synthetic trade metric 0104 (index),Customs facilitation program,China,11.56,index,Synthetic sample note 0104 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0105,Synthetic trade metric 0105 (percent),China WTO accession,India,11.46,percent,Synthetic sample note 0105 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0106,Synthetic trade metric 0106 (elasticity),Regional trade agreement wave,Vietnam,3.74,elasticity,Synthetic sample note 0106 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0107,Synthetic trade metric 0107 (probability),Export rebate reform,Mexico,0.051,probability,Synthetic sample note 0107 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0108,Synthetic trade metric 0108 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0108 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0109,Synthetic trade metric 0109 (index),Customs facilitation program,Germany,26.55,index,Synthetic sample note 0109 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0110,Synthetic trade metric 0110 (percent),China WTO accession,USA,30.44,percent,Synthetic sample note 0110 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0111,Synthetic trade metric 0111 (elasticity),Regional trade agreement wave,Japan,0.61,elasticity,Synthetic sample note 0111 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0112,Synthetic trade metric 0112 (probability),Export rebate reform,China,0.132,probability,Synthetic sample note 0112 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0113,Synthetic trade metric 0113 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0113 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0114,Synthetic trade metric 0114 (index),Customs facilitation program,Vietnam,32.41,index,Synthetic sample note 0114 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0115,Synthetic trade metric 0115 (percent),China WTO accession,Mexico,35.92,percent,Synthetic sample note 0115 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0116,Synthetic trade metric 0116 (elasticity),Regional trade agreement wave,Brazil,5.06,elasticity,Synthetic sample note 0116 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0117,Synthetic trade metric 0117 (probability),Export rebate reform,Germany,0.128,probability,Synthetic sample note 0117 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0118,Synthetic trade metric 0118 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0118 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0119,Synthetic trade metric 0119 (index),Customs facilitation program,Japan,12.79,index,Synthetic sample note 0119 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0120,Synthetic trade metric 0120 (percent),China WTO accession,China,32.63,percent,Synthetic sample note 0120 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0121,Synthetic trade metric 0121 (elasticity),Regional trade agreement wave,India,5.77,elasticity,Synthetic sample note 0121 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0122,Synthetic trade metric 0122 (probability),Export rebate reform,Vietnam,0.083,probability,Synthetic sample note 0122 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0123,Synthetic trade metric 0123 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0123 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0124,Synthetic trade metric 0124 (index),Customs facilitation program,Brazil,23.93,index,Synthetic sample note 0124 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0125,Synthetic trade metric 0125 (percent),China WTO accession,Germany,4.15,percent,Synthetic sample note 0125 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0126,Synthetic trade metric 0126 (elasticity),Regional trade agreement wave,USA,1.52,elasticity,Synthetic sample note 0126 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0127,Synthetic trade metric 0127 (probability),Export rebate reform,Japan,0.101,probability,Synthetic sample note 0127 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0128,Synthetic trade metric 0128 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0128 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0129,Synthetic trade metric 0129 (index),Customs facilitation program,India,1.27,index,Synthetic sample note 0129 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0130,Synthetic trade metric 0130 (percent),China WTO accession,Vietnam,11.36,percent,Synthetic sample note 0130 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0131,Synthetic trade metric 0131 (elasticity),Regional trade agreement wave,Mexico,4.77,elasticity,Synthetic sample note 0131 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0132,Synthetic trade metric 0132 (probability),Export rebate reform,Brazil,0.107,probability,Synthetic sample note 0132 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0133,Synthetic trade metric 0133 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0133 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0134,Synthetic trade metric 0134 (index),Customs facilitation program,USA,0.6,index,Synthetic sample note 0134 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0135,Synthetic trade metric 0135 (percent),China WTO accession,Japan,13.84,percent,Synthetic sample note 0135 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0136,Synthetic trade metric 0136 (elasticity),Regional trade agreement wave,China,1.0,elasticity,Synthetic sample note 0136 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0137,Synthetic trade metric 0137 (probability),Export rebate reform,India,0.177,probability,Synthetic sample note 0137 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0138,Synthetic trade metric 0138 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0138 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0139,Synthetic trade metric 0139 (index),Customs facilitation program,Mexico,31.94,index,Synthetic sample note 0139 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0140,Synthetic trade metric 0140 (percent),China WTO accession,Brazil,17.27,percent,Synthetic sample note 0140 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0141,Synthetic trade metric 0141 (elasticity),Regional trade agreement wave,Germany,6.61,elasticity,Synthetic sample note 0141 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0142,Synthetic trade metric 0142 (probability),Export rebate reform,USA,0.144,probability,Synthetic sample note 0142 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0143,Synthetic trade metric 0143 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0143 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0144,Synthetic trade metric 0144 (index),Customs facilitation program,China,30.9,index,Synthetic sample note 0144 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0145,Synthetic trade metric 0145 (percent),China WTO accession,India,19.02,percent,Synthetic sample note 0145 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0146,Synthetic trade metric 0146 (elasticity),Regional trade agreement wave,Vietnam,6.22,elasticity,Synthetic sample note 0146 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0147,Synthetic trade metric 0147 (probability),Export rebate reform,Mexico,0.236,probability,Synthetic sample note 0147 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0148,Synthetic trade metric 0148 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0148 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0149,Synthetic trade metric 0149 (index),Customs facilitation program,Germany,2.78,index,Synthetic sample note 0149 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0150,Synthetic trade metric 0150 (percent),China WTO accession,USA,12.95,percent,Synthetic sample note 0150 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0151,Synthetic trade metric 0151 (elasticity),Regional trade agreement wave,Japan,2.69,elasticity,Synthetic sample note 0151 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0152,Synthetic trade metric 0152 (probability),Export rebate reform,China,0.069,probability,Synthetic sample note 0152 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0153,Synthetic trade metric 0153 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0153 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0154,Synthetic trade metric 0154 (index),Customs facilitation program,Vietnam,25.55,index,Synthetic sample note 0154 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0155,Synthetic trade metric 0155 (percent),China WTO accession,Mexico,31.94,percent,Synthetic sample note 0155 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0156,Synthetic trade metric 0156 (elasticity),Regional trade agreement wave,Brazil,7.33,elasticity,Synthetic sample note 0156 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0157,Synthetic trade metric 0157 (probability),Export rebate reform,Germany,0.242,probability,Synthetic sample note 0157 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0158,Synthetic trade metric 0158 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0158 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0159,Synthetic trade metric 0159 (index),Customs facilitation program,Japan,28.36,index,Synthetic sample note 0159 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0160,Synthetic trade metric 0160 (percent),China WTO accession,China,9.09,percent,Synthetic sample note 0160 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0161,Synthetic trade metric 0161 (elasticity),Regional trade agreement wave,India,7.09,elasticity,Synthetic sample note 0161 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0162,Synthetic trade metric 0162 (probability),Export rebate reform,Vietnam,0.1,probability,Synthetic sample note 0162 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0163,Synthetic trade metric 0163 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0163 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0164,Synthetic trade metric 0164 (index),Customs facilitation program,Brazil,28.42,index,Synthetic sample note 0164 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0165,Synthetic trade metric 0165 (percent),China WTO accession,Germany,23.18,percent,Synthetic sample note 0165 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0166,Synthetic trade metric 0166 (elasticity),Regional trade agreement wave,USA,6.74,elasticity,Synthetic sample note 0166 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0167,Synthetic trade metric 0167 (probability),Export rebate reform,Japan,0.162,probability,Synthetic sample note 0167 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0168,Synthetic trade metric 0168 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0168 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0169,Synthetic trade metric 0169 (index),Customs facilitation program,India,28.74,index,Synthetic sample note 0169 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0170,Synthetic trade metric 0170 (percent),China WTO accession,Vietnam,22.17,percent,Synthetic sample note 0170 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0171,Synthetic trade metric 0171 (elasticity),Regional trade agreement wave,Mexico,4.35,elasticity,Synthetic sample note 0171 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0172,Synthetic trade metric 0172 (probability),Export rebate reform,Brazil,0.168,probability,Synthetic sample note 0172 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0173,Synthetic trade metric 0173 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0173 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0174,Synthetic trade metric 0174 (index),Customs facilitation program,USA,2.23,index,Synthetic sample note 0174 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0175,Synthetic trade metric 0175 (percent),China WTO accession,Japan,2.29,percent,Synthetic sample note 0175 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0176,Synthetic trade metric 0176 (elasticity),Regional trade agreement wave,China,4.52,elasticity,Synthetic sample note 0176 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0177,Synthetic trade metric 0177 (probability),Export rebate reform,India,0.037,probability,Synthetic sample note 0177 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0178,Synthetic trade metric 0178 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0178 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0179,Synthetic trade metric 0179 (index),Customs facilitation program,Mexico,18.6,index,Synthetic sample note 0179 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0180,Synthetic trade metric 0180 (percent),China WTO accession,Brazil,36.25,percent,Synthetic sample note 0180 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0181,Synthetic trade metric 0181 (elasticity),Regional trade agreement wave,Germany,1.36,elasticity,Synthetic sample note 0181 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0182,Synthetic trade metric 0182 (probability),Export rebate reform,USA,0.021,probability,Synthetic sample note 0182 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0183,Synthetic trade metric 0183 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0183 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0184,Synthetic trade metric 0184 (index),Customs facilitation program,China,32.24,index,Synthetic sample note 0184 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0185,Synthetic trade metric 0185 (percent),China WTO accession,India,6.65,percent,Synthetic sample note 0185 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0186,Synthetic trade metric 0186 (elasticity),Regional trade agreement wave,Vietnam,5.68,elasticity,Synthetic sample note 0186 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0187,Synthetic trade metric 0187 (probability),Export rebate reform,Mexico,0.045,probability,Synthetic sample note 0187 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0188,Synthetic trade metric 0188 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0188 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0189,Synthetic trade metric 0189 (index),Customs facilitation program,Germany,21.62,index,Synthetic sample note 0189 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0190,Synthetic trade metric 0190 (percent),China WTO accession,USA,33.93,percent,Synthetic sample note 0190 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0191,Synthetic trade metric 0191 (elasticity),Regional trade agreement wave,Japan,2.45,elasticity,Synthetic sample note 0191 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0192,Synthetic trade metric 0192 (probability),Export rebate reform,China,0.039,probability,Synthetic sample note 0192 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0193,Synthetic trade metric 0193 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0193 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0194,Synthetic trade metric 0194 (index),Customs facilitation program,Vietnam,1.53,index,Synthetic sample note 0194 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0195,Synthetic trade metric 0195 (percent),China WTO accession,Mexico,29.77,percent,Synthetic sample note 0195 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0196,Synthetic trade metric 0196 (elasticity),Regional trade agreement wave,Brazil,2.78,elasticity,Synthetic sample note 0196 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0197,Synthetic trade metric 0197 (probability),Export rebate reform,Germany,0.085,probability,Synthetic sample note 0197 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0198,Synthetic trade metric 0198 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0198 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0199,Synthetic trade metric 0199 (index),Customs facilitation program,Japan,25.6,index,Synthetic sample note 0199 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0200,Synthetic trade metric 0200 (percent),China WTO accession,China,6.12,percent,Synthetic sample note 0200 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0201,Synthetic trade metric 0201 (elasticity),Regional trade agreement wave,India,7.18,elasticity,Synthetic sample note 0201 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0202,Synthetic trade metric 0202 (probability),Export rebate reform,Vietnam,0.237,probability,Synthetic sample note 0202 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0203,Synthetic trade metric 0203 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0203 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0204,Synthetic trade metric 0204 (index),Customs facilitation program,Brazil,25.5,index,Synthetic sample note 0204 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0205,Synthetic trade metric 0205 (percent),China WTO accession,Germany,24.44,percent,Synthetic sample note 0205 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0206,Synthetic trade metric 0206 (elasticity),Regional trade agreement wave,USA,7.75,elasticity,Synthetic sample note 0206 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0207,Synthetic trade metric 0207 (probability),Export rebate reform,Japan,0.155,probability,Synthetic sample note 0207 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0208,Synthetic trade metric 0208 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0208 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0209,Synthetic trade metric 0209 (index),Customs facilitation program,India,28.54,index,Synthetic sample note 0209 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0210,Synthetic trade metric 0210 (percent),China WTO accession,Vietnam,14.31,percent,Synthetic sample note 0210 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0211,Synthetic trade metric 0211 (elasticity),Regional trade agreement wave,Mexico,1.14,elasticity,Synthetic sample note 0211 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0212,Synthetic trade metric 0212 (probability),Export rebate reform,Brazil,0.035,probability,Synthetic sample note 0212 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0213,Synthetic trade metric 0213 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0213 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0214,Synthetic trade metric 0214 (index),Customs facilitation program,USA,15.12,index,Synthetic sample note 0214 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0215,Synthetic trade metric 0215 (percent),China WTO accession,Japan,31.23,percent,Synthetic sample note 0215 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0216,Synthetic trade metric 0216 (elasticity),Regional trade agreement wave,China,2.24,elasticity,Synthetic sample note 0216 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0217,Synthetic trade metric 0217 (probability),Export rebate reform,India,0.233,probability,Synthetic sample note 0217 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0218,Synthetic trade metric 0218 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0218 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0219,Synthetic trade metric 0219 (index),Customs facilitation program,Mexico,3.65,index,Synthetic sample note 0219 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0220,Synthetic trade metric 0220 (percent),China WTO accession,Brazil,31.73,percent,Synthetic sample note 0220 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0221,Synthetic trade metric 0221 (elasticity),Regional trade agreement wave,Germany,6.26,elasticity,Synthetic sample note 0221 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0222,Synthetic trade metric 0222 (probability),Export rebate reform,USA,0.145,probability,Synthetic sample note 0222 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0223,Synthetic trade metric 0223 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0223 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0224,Synthetic trade metric 0224 (index),Customs facilitation program,China,11.05,index,Synthetic sample note 0224 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0225,Synthetic trade metric 0225 (percent),China WTO accession,India,37.27,percent,Synthetic sample note 0225 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0226,Synthetic trade metric 0226 (elasticity),Regional trade agreement wave,Vietnam,2.36,elasticity,Synthetic sample note 0226 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0227,Synthetic trade metric 0227 (probability),Export rebate reform,Mexico,0.057,probability,Synthetic sample note 0227 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0228,Synthetic trade metric 0228 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0228 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0229,Synthetic trade metric 0229 (index),Customs facilitation program,Germany,15.54,index,Synthetic sample note 0229 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0230,Synthetic trade metric 0230 (percent),China WTO accession,USA,37.12,percent,Synthetic sample note 0230 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0231,Synthetic trade metric 0231 (elasticity),Regional trade agreement wave,Japan,1.29,elasticity,Synthetic sample note 0231 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0232,Synthetic trade metric 0232 (probability),Export rebate reform,China,0.106,probability,Synthetic sample note 0232 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0233,Synthetic trade metric 0233 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0233 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0234,Synthetic trade metric 0234 (index),Customs facilitation program,Vietnam,8.67,index,Synthetic sample note 0234 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0235,Synthetic trade metric 0235 (percent),China WTO accession,Mexico,8.39,percent,Synthetic sample note 0235 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0236,Synthetic trade metric 0236 (elasticity),Regional trade agreement wave,Brazil,1.9,elasticity,Synthetic sample note 0236 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0237,Synthetic trade metric 0237 (probability),Export rebate reform,Germany,0.104,probability,Synthetic sample note 0237 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0238,Synthetic trade metric 0238 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0238 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0239,Synthetic trade metric 0239 (index),Customs facilitation program,Japan,9.64,index,Synthetic sample note 0239 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0240,Synthetic trade metric 0240 (percent),China WTO accession,China,37.8,percent,Synthetic sample note 0240 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0241,Synthetic trade metric 0241 (elasticity),Regional trade agreement wave,India,4.91,elasticity,Synthetic sample note 0241 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0242,Synthetic trade metric 0242 (probability),Export rebate reform,Vietnam,0.102,probability,Synthetic sample note 0242 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0243,Synthetic trade metric 0243 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0243 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0244,Synthetic trade metric 0244 (index),Customs facilitation program,Brazil,4.58,index,Synthetic sample note 0244 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0245,Synthetic trade metric 0245 (percent),China WTO accession,Germany,33.97,percent,Synthetic sample note 0245 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0246,Synthetic trade metric 0246 (elasticity),Regional trade agreement wave,USA,2.95,elasticity,Synthetic sample note 0246 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0247,Synthetic trade metric 0247 (probability),Export rebate reform,Japan,0.167,probability,Synthetic sample note 0247 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0248,Synthetic trade metric 0248 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0248 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0249,Synthetic trade metric 0249 (index),Customs facilitation program,India,38.73,index,Synthetic sample note 0249 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0250,Synthetic trade metric 0250 (percent),China WTO accession,Vietnam,22.73,percent,Synthetic sample note 0250 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0251,Synthetic trade metric 0251 (elasticity),Regional trade agreement wave,Mexico,5.74,elasticity,Synthetic sample note 0251 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0252,Synthetic trade metric 0252 (probability),Export rebate reform,Brazil,0.182,probability,Synthetic sample note 0252 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0253,Synthetic trade metric 0253 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0253 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0254,Synthetic trade metric 0254 (index),Customs facilitation program,USA,2.18,index,Synthetic sample note 0254 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0255,Synthetic trade metric 0255 (percent),China WTO accession,Japan,5.12,percent,Synthetic sample note 0255 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0256,Synthetic trade metric 0256 (elasticity),Regional trade agreement wave,China,4.7,elasticity,Synthetic sample note 0256 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0257,Synthetic trade metric 0257 (probability),Export rebate reform,India,0.023,probability,Synthetic sample note 0257 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0258,Synthetic trade metric 0258 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0258 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0259,Synthetic trade metric 0259 (index),Customs facilitation program,Mexico,23.43,index,Synthetic sample note 0259 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0260,Synthetic trade metric 0260 (percent),China WTO accession,Brazil,10.26,percent,Synthetic sample note 0260 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0261,Synthetic trade metric 0261 (elasticity),Regional trade agreement wave,Germany,1.56,elasticity,Synthetic sample note 0261 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0262,Synthetic trade metric 0262 (probability),Export rebate reform,USA,0.082,probability,Synthetic sample note 0262 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0263,Synthetic trade metric 0263 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0263 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0264,Synthetic trade metric 0264 (index),Customs facilitation program,China,38.12,index,Synthetic sample note 0264 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0265,Synthetic trade metric 0265 (percent),China WTO accession,India,16.01,percent,Synthetic sample note 0265 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0266,Synthetic trade metric 0266 (elasticity),Regional trade agreement wave,Vietnam,6.21,elasticity,Synthetic sample note 0266 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0267,Synthetic trade metric 0267 (probability),Export rebate reform,Mexico,0.155,probability,Synthetic sample note 0267 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0268,Synthetic trade metric 0268 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0268 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0269,Synthetic trade metric 0269 (index),Customs facilitation program,Germany,39.95,index,Synthetic sample note 0269 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0270,Synthetic trade metric 0270 (percent),China WTO accession,USA,22.84,percent,Synthetic sample note 0270 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0271,Synthetic trade metric 0271 (elasticity),Regional trade agreement wave,Japan,1.3,elasticity,Synthetic sample note 0271 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0272,Synthetic trade metric 0272 (probability),Export rebate reform,China,0.094,probability,Synthetic sample note 0272 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0273,Synthetic trade metric 0273 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0273 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0274,Synthetic trade metric 0274 (index),Customs facilitation program,Vietnam,3.91,index,Synthetic sample note 0274 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0275,Synthetic trade metric 0275 (percent),China WTO accession,Mexico,34.42,percent,Synthetic sample note 0275 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0276,Synthetic trade metric 0276 (elasticity),Regional trade agreement wave,Brazil,6.72,elasticity,Synthetic sample note 0276 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0277,Synthetic trade metric 0277 (probability),Export rebate reform,Germany,0.019,probability,Synthetic sample note 0277 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0278,Synthetic trade metric 0278 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0278 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0279,Synthetic trade metric 0279 (index),Customs facilitation program,Japan,28.45,index,Synthetic sample note 0279 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0280,Synthetic trade metric 0280 (percent),China WTO accession,China,6.67,percent,Synthetic sample note 0280 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0281,Synthetic trade metric 0281 (elasticity),Regional trade agreement wave,India,5.45,elasticity,Synthetic sample note 0281 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0282,Synthetic trade metric 0282 (probability),Export rebate reform,Vietnam,0.222,probability,Synthetic sample note 0282 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0283,Synthetic trade metric 0283 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0283 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0284,Synthetic trade metric 0284 (index),Customs facilitation program,Brazil,5.33,index,Synthetic sample note 0284 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0285,Synthetic trade metric 0285 (percent),China WTO accession,Germany,37.14,percent,Synthetic sample note 0285 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0286,Synthetic trade metric 0286 (elasticity),Regional trade agreement wave,USA,3.0,elasticity,Synthetic sample note 0286 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0287,Synthetic trade metric 0287 (probability),Export rebate reform,Japan,0.187,probability,Synthetic sample note 0287 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0288,Synthetic trade metric 0288 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0288 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0289,Synthetic trade metric 0289 (index),Customs facilitation program,India,9.76,index,Synthetic sample note 0289 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0290,Synthetic trade metric 0290 (percent),China WTO accession,Vietnam,20.82,percent,Synthetic sample note 0290 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0291,Synthetic trade metric 0291 (elasticity),Regional trade agreement wave,Mexico,5.72,elasticity,Synthetic sample note 0291 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0292,Synthetic trade metric 0292 (probability),Export rebate reform,Brazil,0.17,probability,Synthetic sample note 0292 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0293,Synthetic trade metric 0293 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0293 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0294,Synthetic trade metric 0294 (index),Customs facilitation program,USA,30.6,index,Synthetic sample note 0294 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0295,Synthetic trade metric 0295 (percent),China WTO accession,Japan,32.18,percent,Synthetic sample note 0295 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0296,Synthetic trade metric 0296 (elasticity),Regional trade agreement wave,China,3.71,elasticity,Synthetic sample note 0296 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0297,Synthetic trade metric 0297 (probability),Export rebate reform,India,0.202,probability,Synthetic sample note 0297 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0298,Synthetic trade metric 0298 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0298 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0299,Synthetic trade metric 0299 (index),Customs facilitation program,Mexico,10.43,index,Synthetic sample note 0299 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0300,Synthetic trade metric 0300 (percent),China WTO accession,Brazil,14.25,percent,Synthetic sample note 0300 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0301,Synthetic trade metric 0301 (elasticity),Regional trade agreement wave,Germany,6.05,elasticity,Synthetic sample note 0301 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0302,Synthetic trade metric 0302 (probability),Export rebate reform,USA,0.154,probability,Synthetic sample note 0302 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0303,Synthetic trade metric 0303 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0303 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0304,Synthetic trade metric 0304 (index),Customs facilitation program,China,26.31,index,Synthetic sample note 0304 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0305,Synthetic trade metric 0305 (percent),China WTO accession,India,29.53,percent,Synthetic sample note 0305 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0306,Synthetic trade metric 0306 (elasticity),Regional trade agreement wave,Vietnam,2.14,elasticity,Synthetic sample note 0306 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0307,Synthetic trade metric 0307 (probability),Export rebate reform,Mexico,0.184,probability,Synthetic sample note 0307 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0308,Synthetic trade metric 0308 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0308 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0309,Synthetic trade metric 0309 (index),Customs facilitation program,Germany,8.32,index,Synthetic sample note 0309 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0310,Synthetic trade metric 0310 (percent),China WTO accession,USA,3.44,percent,Synthetic sample note 0310 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0311,Synthetic trade metric 0311 (elasticity),Regional trade agreement wave,Japan,5.11,elasticity,Synthetic sample note 0311 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0312,Synthetic trade metric 0312 (probability),Export rebate reform,China,0.09,probability,Synthetic sample note 0312 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0313,Synthetic trade metric 0313 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0313 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0314,Synthetic trade metric 0314 (index),Customs facilitation program,Vietnam,33.06,index,Synthetic sample note 0314 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0315,Synthetic trade metric 0315 (percent),China WTO accession,Mexico,5.61,percent,Synthetic sample note 0315 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0316,Synthetic trade metric 0316 (elasticity),Regional trade agreement wave,Brazil,3.68,elasticity,Synthetic sample note 0316 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0317,Synthetic trade metric 0317 (probability),Export rebate reform,Germany,0.063,probability,Synthetic sample note 0317 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0318,Synthetic trade metric 0318 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0318 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0319,Synthetic trade metric 0319 (index),Customs facilitation program,Japan,9.36,index,Synthetic sample note 0319 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0320,Synthetic trade metric 0320 (percent),China WTO accession,China,15.43,percent,Synthetic sample note 0320 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0321,Synthetic trade metric 0321 (elasticity),Regional trade agreement wave,India,2.63,elasticity,Synthetic sample note 0321 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0322,Synthetic trade metric 0322 (probability),Export rebate reform,Vietnam,0.107,probability,Synthetic sample note 0322 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0323,Synthetic trade metric 0323 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0323 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0324,Synthetic trade metric 0324 (index),Customs facilitation program,Brazil,34.47,index,Synthetic sample note 0324 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0325,Synthetic trade metric 0325 (percent),China WTO accession,Germany,19.51,percent,Synthetic sample note 0325 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0326,Synthetic trade metric 0326 (elasticity),Regional trade agreement wave,USA,7.95,elasticity,Synthetic sample note 0326 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0327,Synthetic trade metric 0327 (probability),Export rebate reform,Japan,0.203,probability,Synthetic sample note 0327 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0328,Synthetic trade metric 0328 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0328 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0329,Synthetic trade metric 0329 (index),Customs facilitation program,India,31.71,index,Synthetic sample note 0329 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0330,Synthetic trade metric 0330 (percent),China WTO accession,Vietnam,4.51,percent,Synthetic sample note 0330 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0331,Synthetic trade metric 0331 (elasticity),Regional trade agreement wave,Mexico,3.85,elasticity,Synthetic sample note 0331 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0332,Synthetic trade metric 0332 (probability),Export rebate reform,Brazil,0.138,probability,Synthetic sample note 0332 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0333,Synthetic trade metric 0333 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0333 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0334,Synthetic trade metric 0334 (index),Customs facilitation program,USA,37.68,index,Synthetic sample note 0334 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0335,Synthetic trade metric 0335 (percent),China WTO accession,Japan,32.67,percent,Synthetic sample note 0335 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0336,Synthetic trade metric 0336 (elasticity),Regional trade agreement wave,China,6.12,elasticity,Synthetic sample note 0336 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0337,Synthetic trade metric 0337 (probability),Export rebate reform,India,0.063,probability,Synthetic sample note 0337 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0338,Synthetic trade metric 0338 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0338 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0339,Synthetic trade metric 0339 (index),Customs facilitation program,Mexico,7.48,index,Synthetic sample note 0339 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0340,Synthetic trade metric 0340 (percent),China WTO accession,Brazil,13.3,percent,Synthetic sample note 0340 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0341,Synthetic trade metric 0341 (elasticity),Regional trade agreement wave,Germany,4.58,elasticity,Synthetic sample note 0341 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0342,Synthetic trade metric 0342 (probability),Export rebate reform,USA,0.194,probability,Synthetic sample note 0342 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0343,Synthetic trade metric 0343 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0343 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0344,Synthetic trade metric 0344 (index),Customs facilitation program,China,8.12,index,Synthetic sample note 0344 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0345,Synthetic trade metric 0345 (percent),China WTO accession,India,19.93,percent,Synthetic sample note 0345 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0346,Synthetic trade metric 0346 (elasticity),Regional trade agreement wave,Vietnam,4.32,elasticity,Synthetic sample note 0346 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0347,Synthetic trade metric 0347 (probability),Export rebate reform,Mexico,0.213,probability,Synthetic sample note 0347 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0348,Synthetic trade metric 0348 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0348 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0349,Synthetic trade metric 0349 (index),Customs facilitation program,Germany,34.91,index,Synthetic sample note 0349 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0350,Synthetic trade metric 0350 (percent),China WTO accession,USA,36.47,percent,Synthetic sample note 0350 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0351,Synthetic trade metric 0351 (elasticity),Regional trade agreement wave,Japan,1.26,elasticity,Synthetic sample note 0351 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0352,Synthetic trade metric 0352 (probability),Export rebate reform,China,0.206,probability,Synthetic sample note 0352 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0353,Synthetic trade metric 0353 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0353 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0354,Synthetic trade metric 0354 (index),Customs facilitation program,Vietnam,10.33,index,Synthetic sample note 0354 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0355,Synthetic trade metric 0355 (percent),China WTO accession,Mexico,31.73,percent,Synthetic sample note 0355 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0356,Synthetic trade metric 0356 (elasticity),Regional trade agreement wave,Brazil,7.56,elasticity,Synthetic sample note 0356 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0357,Synthetic trade metric 0357 (probability),Export rebate reform,Germany,0.218,probability,Synthetic sample note 0357 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0358,Synthetic trade metric 0358 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0358 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0359,Synthetic trade metric 0359 (index),Customs facilitation program,Japan,20.29,index,Synthetic sample note 0359 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0360,Synthetic trade metric 0360 (percent),China WTO accession,China,31.37,percent,Synthetic sample note 0360 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0361,Synthetic trade metric 0361 (elasticity),Regional trade agreement wave,India,3.51,elasticity,Synthetic sample note 0361 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0362,Synthetic trade metric 0362 (probability),Export rebate reform,Vietnam,0.061,probability,Synthetic sample note 0362 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0363,Synthetic trade metric 0363 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0363 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0364,Synthetic trade metric 0364 (index),Customs facilitation program,Brazil,27.76,index,Synthetic sample note 0364 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0365,Synthetic trade metric 0365 (percent),China WTO accession,Germany,31.46,percent,Synthetic sample note 0365 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0366,Synthetic trade metric 0366 (elasticity),Regional trade agreement wave,USA,4.23,elasticity,Synthetic sample note 0366 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0367,Synthetic trade metric 0367 (probability),Export rebate reform,Japan,0.125,probability,Synthetic sample note 0367 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0368,Synthetic trade metric 0368 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0368 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0369,Synthetic trade metric 0369 (index),Customs facilitation program,India,37.43,index,Synthetic sample note 0369 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0370,Synthetic trade metric 0370 (percent),China WTO accession,Vietnam,0.98,percent,Synthetic sample note 0370 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0371,Synthetic trade metric 0371 (elasticity),Regional trade agreement wave,Mexico,3.68,elasticity,Synthetic sample note 0371 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0372,Synthetic trade metric 0372 (probability),Export rebate reform,Brazil,0.074,probability,Synthetic sample note 0372 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0373,Synthetic trade metric 0373 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0373 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0374,Synthetic trade metric 0374 (index),Customs facilitation program,USA,39.64,index,Synthetic sample note 0374 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0375,Synthetic trade metric 0375 (percent),China WTO accession,Japan,15.93,percent,Synthetic sample note 0375 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0376,Synthetic trade metric 0376 (elasticity),Regional trade agreement wave,China,3.94,elasticity,Synthetic sample note 0376 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0377,Synthetic trade metric 0377 (probability),Export rebate reform,India,0.132,probability,Synthetic sample note 0377 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0378,Synthetic trade metric 0378 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0378 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0379,Synthetic trade metric 0379 (index),Customs facilitation program,Mexico,7.99,index,Synthetic sample note 0379 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0380,Synthetic trade metric 0380 (percent),China WTO accession,Brazil,31.83,percent,Synthetic sample note 0380 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0381,Synthetic trade metric 0381 (elasticity),Regional trade agreement wave,Germany,4.76,elasticity,Synthetic sample note 0381 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0382,Synthetic trade metric 0382 (probability),Export rebate reform,USA,0.069,probability,Synthetic sample note 0382 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0383,Synthetic trade metric 0383 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0383 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0384,Synthetic trade metric 0384 (index),Customs facilitation program,China,26.69,index,Synthetic sample note 0384 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0385,Synthetic trade metric 0385 (percent),China WTO accession,India,24.47,percent,Synthetic sample note 0385 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0386,Synthetic trade metric 0386 (elasticity),Regional trade agreement wave,Vietnam,6.48,elasticity,Synthetic sample note 0386 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0387,Synthetic trade metric 0387 (probability),Export rebate reform,Mexico,0.114,probability,Synthetic sample note 0387 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0388,Synthetic trade metric 0388 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0388 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0389,Synthetic trade metric 0389 (index),Customs facilitation program,Germany,22.01,index,Synthetic sample note 0389 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0390,Synthetic trade metric 0390 (percent),China WTO accession,USA,7.09,percent,Synthetic sample note 0390 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0391,Synthetic trade metric 0391 (elasticity),Regional trade agreement wave,Japan,0.73,elasticity,Synthetic sample note 0391 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0392,Synthetic trade metric 0392 (probability),Export rebate reform,China,0.088,probability,Synthetic sample note 0392 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0393,Synthetic trade metric 0393 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0393 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0394,Synthetic trade metric 0394 (index),Customs facilitation program,Vietnam,25.4,index,Synthetic sample note 0394 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0395,Synthetic trade metric 0395 (percent),China WTO accession,Mexico,31.44,percent,Synthetic sample note 0395 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0396,Synthetic trade metric 0396 (elasticity),Regional trade agreement wave,Brazil,1.73,elasticity,Synthetic sample note 0396 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0397,Synthetic trade metric 0397 (probability),Export rebate reform,Germany,0.076,probability,Synthetic sample note 0397 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0398,Synthetic trade metric 0398 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0398 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0399,Synthetic trade metric 0399 (index),Customs facilitation program,Japan,37.71,index,Synthetic sample note 0399 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0400,Synthetic trade metric 0400 (percent),China WTO accession,China,8.56,percent,Synthetic sample note 0400 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0401,Synthetic trade metric 0401 (elasticity),Regional trade agreement wave,India,1.58,elasticity,Synthetic sample note 0401 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0402,Synthetic trade metric 0402 (probability),Export rebate reform,Vietnam,0.168,probability,Synthetic sample note 0402 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0403,Synthetic trade metric 0403 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0403 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0404,Synthetic trade metric 0404 (index),Customs facilitation program,Brazil,39.76,index,Synthetic sample note 0404 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0405,Synthetic trade metric 0405 (percent),China WTO accession,Germany,8.9,percent,Synthetic sample note 0405 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0406,Synthetic trade metric 0406 (elasticity),Regional trade agreement wave,USA,4.5,elasticity,Synthetic sample note 0406 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0407,Synthetic trade metric 0407 (probability),Export rebate reform,Japan,0.016,probability,Synthetic sample note 0407 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0408,Synthetic trade metric 0408 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0408 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0409,Synthetic trade metric 0409 (index),Customs facilitation program,India,16.39,index,Synthetic sample note 0409 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0410,Synthetic trade metric 0410 (percent),China WTO accession,Vietnam,16.53,percent,Synthetic sample note 0410 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0411,Synthetic trade metric 0411 (elasticity),Regional trade agreement wave,Mexico,5.16,elasticity,Synthetic sample note 0411 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0412,Synthetic trade metric 0412 (probability),Export rebate reform,Brazil,0.019,probability,Synthetic sample note 0412 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0413,Synthetic trade metric 0413 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0413 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0414,Synthetic trade metric 0414 (index),Customs facilitation program,USA,10.02,index,Synthetic sample note 0414 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0415,Synthetic trade metric 0415 (percent),China WTO accession,Japan,7.54,percent,Synthetic sample note 0415 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0416,Synthetic trade metric 0416 (elasticity),Regional trade agreement wave,China,7.67,elasticity,Synthetic sample note 0416 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0417,Synthetic trade metric 0417 (probability),Export rebate reform,India,0.133,probability,Synthetic sample note 0417 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0418,Synthetic trade metric 0418 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0418 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0419,Synthetic trade metric 0419 (index),Customs facilitation program,Mexico,11.13,index,Synthetic sample note 0419 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0420,Synthetic trade metric 0420 (percent),China WTO accession,Brazil,23.26,percent,Synthetic sample note 0420 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0421,Synthetic trade metric 0421 (elasticity),Regional trade agreement wave,Germany,1.32,elasticity,Synthetic sample note 0421 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0422,Synthetic trade metric 0422 (probability),Export rebate reform,USA,0.182,probability,Synthetic sample note 0422 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0423,Synthetic trade metric 0423 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0423 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0424,Synthetic trade metric 0424 (index),Customs facilitation program,China,6.72,index,Synthetic sample note 0424 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0425,Synthetic trade metric 0425 (percent),China WTO accession,India,30.51,percent,Synthetic sample note 0425 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0426,Synthetic trade metric 0426 (elasticity),Regional trade agreement wave,Vietnam,0.6,elasticity,Synthetic sample note 0426 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0427,Synthetic trade metric 0427 (probability),Export rebate reform,Mexico,0.01,probability,Synthetic sample note 0427 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0428,Synthetic trade metric 0428 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0428 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0429,Synthetic trade metric 0429 (index),Customs facilitation program,Germany,30.48,index,Synthetic sample note 0429 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0430,Synthetic trade metric 0430 (percent),China WTO accession,USA,22.95,percent,Synthetic sample note 0430 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0431,Synthetic trade metric 0431 (elasticity),Regional trade agreement wave,Japan,6.82,elasticity,Synthetic sample note 0431 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0432,Synthetic trade metric 0432 (probability),Export rebate reform,China,0.207,probability,Synthetic sample note 0432 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0433,Synthetic trade metric 0433 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0433 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0434,Synthetic trade metric 0434 (index),Customs facilitation program,Vietnam,18.39,index,Synthetic sample note 0434 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0435,Synthetic trade metric 0435 (percent),China WTO accession,Mexico,4.3,percent,Synthetic sample note 0435 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0436,Synthetic trade metric 0436 (elasticity),Regional trade agreement wave,Brazil,6.66,elasticity,Synthetic sample note 0436 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0437,Synthetic trade metric 0437 (probability),Export rebate reform,Germany,0.029,probability,Synthetic sample note 0437 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0438,Synthetic trade metric 0438 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0438 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0439,Synthetic trade metric 0439 (index),Customs facilitation program,Japan,23.85,index,Synthetic sample note 0439 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0440,Synthetic trade metric 0440 (percent),China WTO accession,China,26.89,percent,Synthetic sample note 0440 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0441,Synthetic trade metric 0441 (elasticity),Regional trade agreement wave,India,0.8,elasticity,Synthetic sample note 0441 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0442,Synthetic trade metric 0442 (probability),Export rebate reform,Vietnam,0.042,probability,Synthetic sample note 0442 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0443,Synthetic trade metric 0443 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0443 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0444,Synthetic trade metric 0444 (index),Customs facilitation program,Brazil,28.16,index,Synthetic sample note 0444 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0445,Synthetic trade metric 0445 (percent),China WTO accession,Germany,14.76,percent,Synthetic sample note 0445 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0446,Synthetic trade metric 0446 (elasticity),Regional trade agreement wave,USA,4.74,elasticity,Synthetic sample note 0446 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0447,Synthetic trade metric 0447 (probability),Export rebate reform,Japan,0.06,probability,Synthetic sample note 0447 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0448,Synthetic trade metric 0448 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0448 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0449,Synthetic trade metric 0449 (index),Customs facilitation program,India,37.39,index,Synthetic sample note 0449 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0450,Synthetic trade metric 0450 (percent),China WTO accession,Vietnam,16.27,percent,Synthetic sample note 0450 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0451,Synthetic trade metric 0451 (elasticity),Regional trade agreement wave,Mexico,5.66,elasticity,Synthetic sample note 0451 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0452,Synthetic trade metric 0452 (probability),Export rebate reform,Brazil,0.245,probability,Synthetic sample note 0452 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0453,Synthetic trade metric 0453 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0453 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0454,Synthetic trade metric 0454 (index),Customs facilitation program,USA,17.28,index,Synthetic sample note 0454 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0455,Synthetic trade metric 0455 (percent),China WTO accession,Japan,23.5,percent,Synthetic sample note 0455 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0456,Synthetic trade metric 0456 (elasticity),Regional trade agreement wave,China,2.84,elasticity,Synthetic sample note 0456 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0457,Synthetic trade metric 0457 (probability),Export rebate reform,India,0.096,probability,Synthetic sample note 0457 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0458,Synthetic trade metric 0458 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0458 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0459,Synthetic trade metric 0459 (index),Customs facilitation program,Mexico,8.17,index,Synthetic sample note 0459 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0460,Synthetic trade metric 0460 (percent),China WTO accession,Brazil,9.27,percent,Synthetic sample note 0460 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0461,Synthetic trade metric 0461 (elasticity),Regional trade agreement wave,Germany,5.3,elasticity,Synthetic sample note 0461 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0462,Synthetic trade metric 0462 (probability),Export rebate reform,USA,0.103,probability,Synthetic sample note 0462 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0463,Synthetic trade metric 0463 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0463 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0464,Synthetic trade metric 0464 (index),Customs facilitation program,China,11.04,index,Synthetic sample note 0464 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0465,Synthetic trade metric 0465 (percent),China WTO accession,India,1.77,percent,Synthetic sample note 0465 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0466,Synthetic trade metric 0466 (elasticity),Regional trade agreement wave,Vietnam,5.14,elasticity,Synthetic sample note 0466 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0467,Synthetic trade metric 0467 (probability),Export rebate reform,Mexico,0.064,probability,Synthetic sample note 0467 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0468,Synthetic trade metric 0468 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0468 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0469,Synthetic trade metric 0469 (index),Customs facilitation program,Germany,34.77,index,Synthetic sample note 0469 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0470,Synthetic trade metric 0470 (percent),China WTO accession,USA,26.64,percent,Synthetic sample note 0470 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0471,Synthetic trade metric 0471 (elasticity),Regional trade agreement wave,Japan,6.81,elasticity,Synthetic sample note 0471 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0472,Synthetic trade metric 0472 (probability),Export rebate reform,China,0.067,probability,Synthetic sample note 0472 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0473,Synthetic trade metric 0473 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0473 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0474,Synthetic trade metric 0474 (index),Customs facilitation program,Vietnam,26.44,index,Synthetic sample note 0474 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0475,Synthetic trade metric 0475 (percent),China WTO accession,Mexico,9.36,percent,Synthetic sample note 0475 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0476,Synthetic trade metric 0476 (elasticity),Regional trade agreement wave,Brazil,7.52,elasticity,Synthetic sample note 0476 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0477,Synthetic trade metric 0477 (probability),Export rebate reform,Germany,0.023,probability,Synthetic sample note 0477 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0478,Synthetic trade metric 0478 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0478 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0479,Synthetic trade metric 0479 (index),Customs facilitation program,Japan,29.16,index,Synthetic sample note 0479 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0480,Synthetic trade metric 0480 (percent),China WTO accession,China,22.37,percent,Synthetic sample note 0480 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0481,Synthetic trade metric 0481 (elasticity),Regional trade agreement wave,India,6.28,elasticity,Synthetic sample note 0481 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0482,Synthetic trade metric 0482 (probability),Export rebate reform,Vietnam,0.109,probability,Synthetic sample note 0482 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0483,Synthetic trade metric 0483 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0483 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0484,Synthetic trade metric 0484 (index),Customs facilitation program,Brazil,26.31,index,Synthetic sample note 0484 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0485,Synthetic trade metric 0485 (percent),China WTO accession,Germany,15.29,percent,Synthetic sample note 0485 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0486,Synthetic trade metric 0486 (elasticity),Regional trade agreement wave,USA,2.84,elasticity,Synthetic sample note 0486 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0487,Synthetic trade metric 0487 (probability),Export rebate reform,Japan,0.069,probability,Synthetic sample note 0487 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0488,Synthetic trade metric 0488 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0488 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0489,Synthetic trade metric 0489 (index),Customs facilitation program,India,16.38,index,Synthetic sample note 0489 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0490,Synthetic trade metric 0490 (percent),China WTO accession,Vietnam,8.83,percent,Synthetic sample note 0490 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0491,Synthetic trade metric 0491 (elasticity),Regional trade agreement wave,Mexico,5.09,elasticity,Synthetic sample note 0491 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0492,Synthetic trade metric 0492 (probability),Export rebate reform,Brazil,0.051,probability,Synthetic sample note 0492 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0493,Synthetic trade metric 0493 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0493 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0494,Synthetic trade metric 0494 (index),Customs facilitation program,USA,10.19,index,Synthetic sample note 0494 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0495,Synthetic trade metric 0495 (percent),China WTO accession,Japan,18.01,percent,Synthetic sample note 0495 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0496,Synthetic trade metric 0496 (elasticity),Regional trade agreement wave,China,2.34,elasticity,Synthetic sample note 0496 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0497,Synthetic trade metric 0497 (probability),Export rebate reform,India,0.166,probability,Synthetic sample note 0497 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0498,Synthetic trade metric 0498 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0498 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0499,Synthetic trade metric 0499 (index),Customs facilitation program,Mexico,12.76,index,Synthetic sample note 0499 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0500,Synthetic trade metric 0500 (percent),China WTO accession,Brazil,35.76,percent,Synthetic sample note 0500 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0501,Synthetic trade metric 0501 (elasticity),Regional trade agreement wave,Germany,3.24,elasticity,Synthetic sample note 0501 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0502,Synthetic trade metric 0502 (probability),Export rebate reform,USA,0.126,probability,Synthetic sample note 0502 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0503,Synthetic trade metric 0503 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0503 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0504,Synthetic trade metric 0504 (index),Customs facilitation program,China,5.02,index,Synthetic sample note 0504 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0505,Synthetic trade metric 0505 (percent),China WTO accession,India,33.93,percent,Synthetic sample note 0505 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0506,Synthetic trade metric 0506 (elasticity),Regional trade agreement wave,Vietnam,7.36,elasticity,Synthetic sample note 0506 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0507,Synthetic trade metric 0507 (probability),Export rebate reform,Mexico,0.013,probability,Synthetic sample note 0507 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0508,Synthetic trade metric 0508 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0508 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0509,Synthetic trade metric 0509 (index),Customs facilitation program,Germany,36.96,index,Synthetic sample note 0509 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0510,Synthetic trade metric 0510 (percent),China WTO accession,USA,5.19,percent,Synthetic sample note 0510 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0511,Synthetic trade metric 0511 (elasticity),Regional trade agreement wave,Japan,2.05,elasticity,Synthetic sample note 0511 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0512,Synthetic trade metric 0512 (probability),Export rebate reform,China,0.197,probability,Synthetic sample note 0512 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0513,Synthetic trade metric 0513 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0513 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0514,Synthetic trade metric 0514 (index),Customs facilitation program,Vietnam,1.55,index,Synthetic sample note 0514 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0515,Synthetic trade metric 0515 (percent),China WTO accession,Mexico,37.2,percent,Synthetic sample note 0515 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0516,Synthetic trade metric 0516 (elasticity),Regional trade agreement wave,Brazil,5.31,elasticity,Synthetic sample note 0516 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0517,Synthetic trade metric 0517 (probability),Export rebate reform,Germany,0.034,probability,Synthetic sample note 0517 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0518,Synthetic trade metric 0518 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0518 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0519,Synthetic trade metric 0519 (index),Customs facilitation program,Japan,12.99,index,Synthetic sample note 0519 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0520,Synthetic trade metric 0520 (percent),China WTO accession,China,2.23,percent,Synthetic sample note 0520 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0521,Synthetic trade metric 0521 (elasticity),Regional trade agreement wave,India,5.77,elasticity,Synthetic sample note 0521 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0522,Synthetic trade metric 0522 (probability),Export rebate reform,Vietnam,0.157,probability,Synthetic sample note 0522 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0523,Synthetic trade metric 0523 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0523 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0524,Synthetic trade metric 0524 (index),Customs facilitation program,Brazil,0.67,index,Synthetic sample note 0524 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0525,Synthetic trade metric 0525 (percent),China WTO accession,Germany,10.48,percent,Synthetic sample note 0525 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0526,Synthetic trade metric 0526 (elasticity),Regional trade agreement wave,USA,6.34,elasticity,Synthetic sample note 0526 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0527,Synthetic trade metric 0527 (probability),Export rebate reform,Japan,0.029,probability,Synthetic sample note 0527 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0528,Synthetic trade metric 0528 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0528 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0529,Synthetic trade metric 0529 (index),Customs facilitation program,India,12.21,index,Synthetic sample note 0529 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0530,Synthetic trade metric 0530 (percent),China WTO accession,Vietnam,32.6,percent,Synthetic sample note 0530 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0531,Synthetic trade metric 0531 (elasticity),Regional trade agreement wave,Mexico,3.46,elasticity,Synthetic sample note 0531 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0532,Synthetic trade metric 0532 (probability),Export rebate reform,Brazil,0.145,probability,Synthetic sample note 0532 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0533,Synthetic trade metric 0533 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0533 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0534,Synthetic trade metric 0534 (index),Customs facilitation program,USA,7.74,index,Synthetic sample note 0534 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0535,Synthetic trade metric 0535 (percent),China WTO accession,Japan,26.73,percent,Synthetic sample note 0535 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0536,Synthetic trade metric 0536 (elasticity),Regional trade agreement wave,China,0.55,elasticity,Synthetic sample note 0536 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0537,Synthetic trade metric 0537 (probability),Export rebate reform,India,0.173,probability,Synthetic sample note 0537 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0538,Synthetic trade metric 0538 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0538 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0539,Synthetic trade metric 0539 (index),Customs facilitation program,Mexico,7.92,index,Synthetic sample note 0539 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0540,Synthetic trade metric 0540 (percent),China WTO accession,Brazil,38.49,percent,Synthetic sample note 0540 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0541,Synthetic trade metric 0541 (elasticity),Regional trade agreement wave,Germany,0.93,elasticity,Synthetic sample note 0541 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0542,Synthetic trade metric 0542 (probability),Export rebate reform,USA,0.053,probability,Synthetic sample note 0542 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0543,Synthetic trade metric 0543 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0543 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0544,Synthetic trade metric 0544 (index),Customs facilitation program,China,2.55,index,Synthetic sample note 0544 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0545,Synthetic trade metric 0545 (percent),China WTO accession,India,0.58,percent,Synthetic sample note 0545 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0546,Synthetic trade metric 0546 (elasticity),Regional trade agreement wave,Vietnam,2.11,elasticity,Synthetic sample note 0546 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0547,Synthetic trade metric 0547 (probability),Export rebate reform,Mexico,0.234,probability,Synthetic sample note 0547 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0548,Synthetic trade metric 0548 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0548 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0549,Synthetic trade metric 0549 (index),Customs facilitation program,Germany,7.45,index,Synthetic sample note 0549 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0550,Synthetic trade metric 0550 (percent),China WTO accession,USA,14.74,percent,Synthetic sample note 0550 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0551,Synthetic trade metric 0551 (elasticity),Regional trade agreement wave,Japan,1.94,elasticity,Synthetic sample note 0551 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0552,Synthetic trade metric 0552 (probability),Export rebate reform,China,0.244,probability,Synthetic sample note 0552 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0553,Synthetic trade metric 0553 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0553 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0554,Synthetic trade metric 0554 (index),Customs facilitation program,Vietnam,28.4,index,Synthetic sample note 0554 for Customs facilitation program in Vietnam,2603.23825v1.pdf
+TM-SYN-0555,Synthetic trade metric 0555 (percent),China WTO accession,Mexico,16.32,percent,Synthetic sample note 0555 for China WTO accession in Mexico,2603.23825v1.pdf
+TM-SYN-0556,Synthetic trade metric 0556 (elasticity),Regional trade agreement wave,Brazil,2.79,elasticity,Synthetic sample note 0556 for Regional trade agreement wave in Brazil,2603.23825v1.pdf
+TM-SYN-0557,Synthetic trade metric 0557 (probability),Export rebate reform,Germany,0.181,probability,Synthetic sample note 0557 for Export rebate reform in Germany,2603.23825v1.pdf
+TM-SYN-0558,Synthetic trade metric 0558 (flag),Tariff cut package,USA,1.0,flag,Synthetic sample note 0558 for Tariff cut package in USA,2603.23825v1.pdf
+TM-SYN-0559,Synthetic trade metric 0559 (index),Customs facilitation program,Japan,20.41,index,Synthetic sample note 0559 for Customs facilitation program in Japan,2603.23825v1.pdf
+TM-SYN-0560,Synthetic trade metric 0560 (percent),China WTO accession,China,30.36,percent,Synthetic sample note 0560 for China WTO accession in China,2603.23825v1.pdf
+TM-SYN-0561,Synthetic trade metric 0561 (elasticity),Regional trade agreement wave,India,3.6,elasticity,Synthetic sample note 0561 for Regional trade agreement wave in India,2603.23825v1.pdf
+TM-SYN-0562,Synthetic trade metric 0562 (probability),Export rebate reform,Vietnam,0.014,probability,Synthetic sample note 0562 for Export rebate reform in Vietnam,2603.23825v1.pdf
+TM-SYN-0563,Synthetic trade metric 0563 (flag),Tariff cut package,Mexico,0.0,flag,Synthetic sample note 0563 for Tariff cut package in Mexico,2603.23825v1.pdf
+TM-SYN-0564,Synthetic trade metric 0564 (index),Customs facilitation program,Brazil,18.98,index,Synthetic sample note 0564 for Customs facilitation program in Brazil,2603.23825v1.pdf
+TM-SYN-0565,Synthetic trade metric 0565 (percent),China WTO accession,Germany,17.26,percent,Synthetic sample note 0565 for China WTO accession in Germany,2603.23825v1.pdf
+TM-SYN-0566,Synthetic trade metric 0566 (elasticity),Regional trade agreement wave,USA,0.61,elasticity,Synthetic sample note 0566 for Regional trade agreement wave in USA,2603.23825v1.pdf
+TM-SYN-0567,Synthetic trade metric 0567 (probability),Export rebate reform,Japan,0.02,probability,Synthetic sample note 0567 for Export rebate reform in Japan,2603.23825v1.pdf
+TM-SYN-0568,Synthetic trade metric 0568 (flag),Tariff cut package,China,1.0,flag,Synthetic sample note 0568 for Tariff cut package in China,2603.23825v1.pdf
+TM-SYN-0569,Synthetic trade metric 0569 (index),Customs facilitation program,India,10.99,index,Synthetic sample note 0569 for Customs facilitation program in India,2603.23825v1.pdf
+TM-SYN-0570,Synthetic trade metric 0570 (percent),China WTO accession,Vietnam,4.79,percent,Synthetic sample note 0570 for China WTO accession in Vietnam,2603.23825v1.pdf
+TM-SYN-0571,Synthetic trade metric 0571 (elasticity),Regional trade agreement wave,Mexico,6.47,elasticity,Synthetic sample note 0571 for Regional trade agreement wave in Mexico,2603.23825v1.pdf
+TM-SYN-0572,Synthetic trade metric 0572 (probability),Export rebate reform,Brazil,0.181,probability,Synthetic sample note 0572 for Export rebate reform in Brazil,2603.23825v1.pdf
+TM-SYN-0573,Synthetic trade metric 0573 (flag),Tariff cut package,Germany,0.0,flag,Synthetic sample note 0573 for Tariff cut package in Germany,2603.23825v1.pdf
+TM-SYN-0574,Synthetic trade metric 0574 (index),Customs facilitation program,USA,14.24,index,Synthetic sample note 0574 for Customs facilitation program in USA,2603.23825v1.pdf
+TM-SYN-0575,Synthetic trade metric 0575 (percent),China WTO accession,Japan,37.26,percent,Synthetic sample note 0575 for China WTO accession in Japan,2603.23825v1.pdf
+TM-SYN-0576,Synthetic trade metric 0576 (elasticity),Regional trade agreement wave,China,3.31,elasticity,Synthetic sample note 0576 for Regional trade agreement wave in China,2603.23825v1.pdf
+TM-SYN-0577,Synthetic trade metric 0577 (probability),Export rebate reform,India,0.046,probability,Synthetic sample note 0577 for Export rebate reform in India,2603.23825v1.pdf
+TM-SYN-0578,Synthetic trade metric 0578 (flag),Tariff cut package,Vietnam,1.0,flag,Synthetic sample note 0578 for Tariff cut package in Vietnam,2603.23825v1.pdf
+TM-SYN-0579,Synthetic trade metric 0579 (index),Customs facilitation program,Mexico,5.24,index,Synthetic sample note 0579 for Customs facilitation program in Mexico,2603.23825v1.pdf
+TM-SYN-0580,Synthetic trade metric 0580 (percent),China WTO accession,Brazil,1.16,percent,Synthetic sample note 0580 for China WTO accession in Brazil,2603.23825v1.pdf
+TM-SYN-0581,Synthetic trade metric 0581 (elasticity),Regional trade agreement wave,Germany,5.07,elasticity,Synthetic sample note 0581 for Regional trade agreement wave in Germany,2603.23825v1.pdf
+TM-SYN-0582,Synthetic trade metric 0582 (probability),Export rebate reform,USA,0.076,probability,Synthetic sample note 0582 for Export rebate reform in USA,2603.23825v1.pdf
+TM-SYN-0583,Synthetic trade metric 0583 (flag),Tariff cut package,Japan,0.0,flag,Synthetic sample note 0583 for Tariff cut package in Japan,2603.23825v1.pdf
+TM-SYN-0584,Synthetic trade metric 0584 (index),Customs facilitation program,China,10.65,index,Synthetic sample note 0584 for Customs facilitation program in China,2603.23825v1.pdf
+TM-SYN-0585,Synthetic trade metric 0585 (percent),China WTO accession,India,37.43,percent,Synthetic sample note 0585 for China WTO accession in India,2603.23825v1.pdf
+TM-SYN-0586,Synthetic trade metric 0586 (elasticity),Regional trade agreement wave,Vietnam,5.7,elasticity,Synthetic sample note 0586 for Regional trade agreement wave in Vietnam,2603.23825v1.pdf
+TM-SYN-0587,Synthetic trade metric 0587 (probability),Export rebate reform,Mexico,0.1,probability,Synthetic sample note 0587 for Export rebate reform in Mexico,2603.23825v1.pdf
+TM-SYN-0588,Synthetic trade metric 0588 (flag),Tariff cut package,Brazil,1.0,flag,Synthetic sample note 0588 for Tariff cut package in Brazil,2603.23825v1.pdf
+TM-SYN-0589,Synthetic trade metric 0589 (index),Customs facilitation program,Germany,12.12,index,Synthetic sample note 0589 for Customs facilitation program in Germany,2603.23825v1.pdf
+TM-SYN-0590,Synthetic trade metric 0590 (percent),China WTO accession,USA,21.05,percent,Synthetic sample note 0590 for China WTO accession in USA,2603.23825v1.pdf
+TM-SYN-0591,Synthetic trade metric 0591 (elasticity),Regional trade agreement wave,Japan,1.63,elasticity,Synthetic sample note 0591 for Regional trade agreement wave in Japan,2603.23825v1.pdf
+TM-SYN-0592,Synthetic trade metric 0592 (probability),Export rebate reform,China,0.101,probability,Synthetic sample note 0592 for Export rebate reform in China,2603.23825v1.pdf
+TM-SYN-0593,Synthetic trade metric 0593 (flag),Tariff cut package,India,0.0,flag,Synthetic sample note 0593 for Tariff cut package in India,2603.23825v1.pdf
+TM-SYN-0594,Synthetic trade metric 0594 (index),Customs facilitation program,Vietnam,8.58,index,Synthetic sample note 0594 for Customs facilitation program in Vietnam,2603.23825v1.pdf
