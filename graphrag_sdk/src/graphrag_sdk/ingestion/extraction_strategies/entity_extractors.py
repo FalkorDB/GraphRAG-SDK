@@ -475,10 +475,15 @@ class GLiNERExtractor(EntityExtractor):
     # share the window with the text.
     _WINDOW_MARGIN = 34
 
-    #: Default model. Measured against ``gliner_medium-v2.1`` on an 11-document
-    #: benchmark: ceiling recall 0.805 vs 0.709, 432MB vs 781MB on disk, 1004MB
-    #: vs 1532MB resident, ~14s vs ~29s, and a 2048-word window vs 384.
-    DEFAULT_MODEL = "knowledgator/gliner-bi-small-v2.0"
+    #: Default model. ``gliner-bi-small-v2.0`` measured better on an 11-document
+    #: benchmark (ceiling recall 0.805 vs 0.709, 432MB vs 781MB on disk, 1004MB
+    #: vs 1532MB resident, ~14s vs ~29s, 2048-word window vs 384) but its score
+    #: calibration collapsed to <= 0.03 for every span under gliner 0.2.27 /
+    #: transformers 5.6 / torch 2.13 (a ``resize_embeddings`` warning on load),
+    #: returning zero entities at its 0.5 threshold with no error. The
+    #: uni-encoder ``gliner_medium-v2.1`` is unaffected and stays the default
+    #: until the bi-encoder path is stable across library versions.
+    DEFAULT_MODEL = "urchade/gliner_medium-v2.1"
 
     #: Confidence thresholds are on different scales per model and MUST be
     #: re-tuned when the model changes. Each value below is the measured best
