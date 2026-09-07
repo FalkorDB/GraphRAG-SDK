@@ -373,8 +373,7 @@ class GLiNERExtractor(EntityExtractor):
                     from gliner import GLiNER
                 except ImportError:
                     raise ImportError(
-                        "GLiNER is required for GLiNERExtractor. "
-                        "Install with: pip install gliner"
+                        "GLiNER is required for GLiNERExtractor. Install with: pip install gliner"
                     )
                 cached = GLiNER.from_pretrained(model_name)
                 cls._MODEL_CACHE[model_name] = cached

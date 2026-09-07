@@ -232,9 +232,7 @@ class GraphStore:
                 )
             if not cleaned_group:
                 continue
-            hint_src, hint_tgt = self._REL_LABEL_HINTS.get(
-                rel_type, ("__Entity__", "__Entity__")
-            )
+            hint_src, hint_tgt = self._REL_LABEL_HINTS.get(rel_type, ("__Entity__", "__Entity__"))
             await self._ensure_id_index(sanitize_cypher_label(hint_src))
             await self._ensure_id_index(sanitize_cypher_label(hint_tgt))
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):
