@@ -22,6 +22,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     _RULES,
     LLMVerifiedResolution,
+    labels_compatible,
     _pair_distance,
     _is_acronym,
     _name_tokens,
@@ -1529,7 +1530,8 @@ class TestUnifiedStage:
         llm = PairScriptedLLM({frozenset({"Ada Lovelace", "A. Lovelace"}): True})
         resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, cross_label_merge=False)
         result = await resolver.resolve(GraphData(nodes=self._nodes(), relationships=[]), ctx)
-        assert llm.asked == [frozenset({"Ada Lovelace", "A. Lovelace"})]
+        # Asked twice: the cross-label vote re-asks every cross-label YES.
+        assert llm.asked == [frozenset({"Ada Lovelace", "A. Lovelace"})] * 2
         assert len(result.nodes) == 1
 
     async def test_identical_vectors_across_labels_never_merge_without_an_llm(self, ctx):
@@ -2174,3 +2176,144 @@ class TestUnansweredPairsAreRetried:
         out = await res._verify_batched(["b1", "b2"])
 
         assert out == {0: True}
+
+
+class TestLabelFamilyGate:
+    """Cross-family pairs never reach the LLM; the LLM cannot merge them.
+
+    Measured on the benchmark, 3 full runs of the unified stage: 54 of 55
+    merges across gold types were wrong (Person | Institution 12, Person |
+    Organization 7, Institution | Place 6, Person | Place 5 ...). The gate
+    removes them before any call is made.
+    """
+
+    @staticmethod
+    def _pair(label_a: str, label_b: str):
+        desc = "Founded the Whitford Archive and ran the lighthouse."
+        vectors = {
+            f"Eleanor Whitford: {desc}": _angle(0.0),
+            f"Whitford Archive: {desc}": _angle(0.3),
+        }
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="n1", label=label_a,
+                          properties={"name": "Eleanor Whitford", "description": desc}),
+                GraphNode(id="n2", label=label_b,
+                          properties={"name": "Whitford Archive", "description": desc}),
+            ],
+            relationships=[],
+        )
+        return gd, ControlledEmbedder(vectors)
+
+    @pytest.mark.parametrize("a,b,expected", [
+        ("Person", "Organization", False),
+        ("Person", "Location", False),
+        ("Organization", "Location", False),
+        ("Person", "Person", True),
+        ("Organization", "Company", True),
+        ("Location", "City", True),
+        ("Person", "Engineer", True),      # unknown label -> LLM decides
+        ("Person", "__Entity__", True),    # generic label -> wildcard
+        ("Product", "Technology", True),   # same family (work)
+    ])
+    def test_labels_compatible(self, a: str, b: str, expected: bool) -> None:
+        assert labels_compatible(a, b) is expected
+        assert labels_compatible(b, a) is expected
+
+    async def test_cross_family_pair_is_never_asked_or_merged(self, ctx):
+        gd, embedder = self._pair("Person", "Organization")
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Archive"}): True})
+        result = await LLMVerifiedResolution(llm=llm, embedder=embedder).resolve(gd, ctx)
+        assert len(result.nodes) == 2
+        assert llm.asked == []
+
+    async def test_gate_can_be_disabled(self, ctx):
+        gd, embedder = self._pair("Person", "Organization")
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Archive"}): True})
+        resolver = LLMVerifiedResolution(
+            llm=llm, embedder=embedder, label_family_gate=False, cross_label_vote=False
+        )
+        result = await resolver.resolve(gd, ctx)
+        assert len(result.nodes) == 1
+
+    async def test_unknown_label_still_reaches_the_llm(self, ctx):
+        gd, embedder = self._pair("Person", "Engineer")
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Archive"}): True})
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, cross_label_vote=False)
+        result = await resolver.resolve(gd, ctx)
+        assert len(result.nodes) == 1
+        assert llm.asked
+
+
+class FlipFlopLLM(PairScriptedLLM):
+    """Says YES the first time a pair is asked and NO the second time."""
+
+    def __init__(self, names: frozenset[str]) -> None:
+        super().__init__({names: True})
+        self._seen = 0
+
+    def invoke(self, prompt: str, **kwargs):
+        for names in self._verdicts:
+            if all(f"Name: {n}\n" in prompt for n in names):
+                self.asked.append(names)
+                self._seen += 1
+                return LLMResponse(content="YES\nsame" if self._seen == 1 else "NO\ndifferent")
+        return LLMResponse(content="NO\nunscripted")
+
+
+class TestCrossLabelVote:
+    """A cross-label YES must be repeatable to count.
+
+    Wrong merges on the benchmark flipped 8 / 26 / 31 between identical runs;
+    the flips were single-call YESes on cross-label pairs.
+    """
+
+    @staticmethod
+    def _pair():
+        desc = "Engineer who built the Fresnel apparatus."
+        vectors = {
+            f"Ada Lovelace: {desc}": _angle(0.0),
+            f"A. Lovelace: {desc}": _angle(0.3),
+        }
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="n1", label="Person",
+                          properties={"name": "Ada Lovelace", "description": desc}),
+                GraphNode(id="n2", label="Engineer",
+                          properties={"name": "A. Lovelace", "description": desc}),
+            ],
+            relationships=[],
+        )
+        return gd, ControlledEmbedder(vectors)
+
+    async def test_disagreement_blocks_the_merge(self, ctx):
+        gd, embedder = self._pair()
+        llm = FlipFlopLLM(frozenset({"Ada Lovelace", "A. Lovelace"}))
+        result = await LLMVerifiedResolution(llm=llm, embedder=embedder).resolve(gd, ctx)
+        assert len(llm.asked) == 2, "cross-label YES must be asked a second time"
+        assert len(result.nodes) == 2
+
+    async def test_agreement_merges(self, ctx):
+        gd, embedder = self._pair()
+        llm = PairScriptedLLM({frozenset({"Ada Lovelace", "A. Lovelace"}): True})
+        result = await LLMVerifiedResolution(llm=llm, embedder=embedder).resolve(gd, ctx)
+        assert len(llm.asked) == 2
+        assert len(result.nodes) == 1
+
+    async def test_same_label_pair_is_asked_once(self, ctx):
+        gd, embedder = self._pair()
+        gd.nodes[1].label = "Person"
+        # Below hard_threshold so the pair goes to the LLM rather than auto-merging.
+        embedder._vectors["A. Lovelace: Engineer who built the Fresnel apparatus."] = _angle(0.6)
+        llm = PairScriptedLLM({frozenset({"Ada Lovelace", "A. Lovelace"}): True})
+        result = await LLMVerifiedResolution(llm=llm, embedder=embedder).resolve(gd, ctx)
+        assert len(llm.asked) == 1
+        assert len(result.nodes) == 1
+
+    async def test_vote_can_be_disabled(self, ctx):
+        gd, embedder = self._pair()
+        llm = FlipFlopLLM(frozenset({"Ada Lovelace", "A. Lovelace"}))
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, cross_label_vote=False)
+        result = await resolver.resolve(gd, ctx)
+        assert len(llm.asked) == 1
+        assert len(result.nodes) == 1
