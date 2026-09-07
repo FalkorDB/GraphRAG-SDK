@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import logging
 from typing import Any
 
@@ -65,10 +66,23 @@ def _assign_deterministic_chunk_uids(doc_info: DocumentInfo, chunks: TextChunks)
     Chunkers that deliberately assign their own meaningful UIDs are not
     special-cased: this runs after chunking and overwrites unconditionally, so
     identity is decided in exactly one place.
+
+    Chunkers that enrich the text (``ContextualChunking`` prepends an
+    LLM-written summary) record the untouched source in
+    ``metadata["original_chunk"]``; that is what is hashed, so a differently
+    worded summary on the next run does not mint a new id for the same text.
+
+    Because ``index`` is part of the key, inserting a paragraph early in an
+    edited document re-ids every chunk after it. That is deliberate — it keeps
+    ``doc:index`` a true position — but it means an *edited* file grows the
+    lexical layer under plain ``ingest()``; only a byte-identical file is a
+    no-op (see the unchanged-document short-circuit in ``run``).
     """
     doc_key = doc_info.uid or doc_info.path or ""
     for chunk in chunks.chunks:
-        digest = hashlib.sha256(f"{doc_key}\x00{chunk.index}\x00{chunk.text}".encode()).hexdigest()
+        base = chunk.metadata.get("original_chunk")
+        text = base if isinstance(base, str) and base else chunk.text
+        digest = hashlib.sha256(f"{doc_key}\x00{chunk.index}\x00{text}".encode()).hexdigest()
         chunk.uid = f"chunk-{digest[:32]}"
 
 
@@ -187,9 +201,34 @@ class IngestionPipeline:
                     document_info=document_info or DocumentInfo(path=source),
                 )
                 ctx.log("Using provided text (loader skipped)")
+                if document_info is None:
+                    # Text mode with no caller-supplied identity: derive the
+                    # Document id from the text so the same text ingested
+                    # twice is the same document (and the chunk ids below,
+                    # which include the document id, are stable too).
+                    document.document_info = DocumentInfo(
+                        uid=f"text-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}",
+                        path=source,
+                        metadata=document.document_info.metadata,
+                    )
             else:
                 ctx.log("Step 1/9: Loading source")
                 document = await self.loader.load(source, ctx)
+                # Loaders leave ``uid`` at its ``uuid4()`` default, so
+                # without a caller-supplied ``document_info`` every run of
+                # the same file was a new Document — and, since the chunk
+                # ids include the document id, a new set of chunks. Derive
+                # the id from the normalised source path, the same rule
+                # ``GraphRAG._resolve_document_id`` applies, so the
+                # pipeline is idempotent on its own and not only through
+                # the facade. ``update()`` always passes an explicit
+                # pending id and is unaffected.
+                if document_info is None:
+                    document.document_info = DocumentInfo(
+                        uid=os.path.normpath(source),
+                        path=document.document_info.path or source,
+                        metadata=document.document_info.metadata,
+                    )
                 # When the caller supplies a ``document_info`` (e.g. for
                 # stable-id ingestion or update()), prefer its uid/path
                 # over whatever the loader produced. The loader-side
@@ -207,6 +246,46 @@ class IngestionPipeline:
                         },
                     )
 
+            # Hash the loaded text. Written to the Document node at the END of
+            # a successful run (step 9b) so ``GraphRAG.update()`` and the
+            # short-circuit below can recognise unchanged content. SHA-256
+            # hex; cost is negligible next to extraction.
+            #
+            # Assumes the loader returns deterministic text for the same
+            # source. Loaders that inject non-deterministic content
+            # (timestamps, randomized ordering, run-id watermarks, etc.)
+            # will produce a different hash on every run and the no-op
+            # short-circuit will never fire — correct, just not optimal.
+            content_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
+
+            # Unchanged re-ingest short-circuit — before chunking, so a
+            # no-op costs one graph lookup and nothing else (contextual and
+            # semantic chunkers make provider calls per chunk). Stable chunk
+            # UIDs made the lexical layer idempotent, but extraction still
+            # re-ran and, being LLM work, named a few entities differently
+            # each time: measured +3 to +16 entity nodes, +18 to +50 RELATES
+            # and +30 MENTIONED_IN per re-ingest of one unchanged document.
+            # Same rule update() uses for its no-op: a stored Document whose
+            # content_hash matches means every chunk, entity and edge is
+            # already there — the hash is only written once a run has
+            # completed, so a half-finished ingest is never mistaken for a
+            # finished one. Changed text (new hash) takes the full path; a
+            # changed ontology or strategy with the same text is update()'s
+            # job.
+            doc_uid = document.document_info.uid
+            if doc_uid:
+                existing = await self.graph_store.get_document_record(doc_uid)
+                if existing is not None and existing.content_hash == content_hash:
+                    ctx.log(
+                        f"Document '{doc_uid}' already ingested with identical content; "
+                        f"skipping. Call update() to re-extract."
+                    )
+                    return IngestionResult(
+                        document_info=document.document_info,
+                        chunks_indexed=0,
+                        metadata={"skipped_unchanged": True, "content_hash": content_hash},
+                    )
+
             # Step 2: Chunk
             ctx.log("Step 2/9: Chunking text")
             chunks = await self.chunker.chunk_document(document, ctx)
@@ -218,45 +297,8 @@ class IngestionPipeline:
             _assign_deterministic_chunk_uids(document.document_info, chunks)
 
             # Step 3: Build lexical graph (MANDATORY — not a strategy).
-            # Hash the loaded text so ``GraphRAG.update()`` can short-circuit
-            # when content is unchanged. SHA-256 hex; cost is negligible
-            # next to extraction.
-            #
-            # Assumes the loader returns deterministic text for the same
-            # source. Loaders that inject non-deterministic content
-            # (timestamps, randomized ordering, run-id watermarks, etc.)
-            # will produce a different hash on every run and the no-op
-            # short-circuit in update() will never fire — correct, just
-            # not optimal.
-            content_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
-
-            # Unchanged re-ingest short-circuit. Stable chunk UIDs made the
-            # lexical layer idempotent, but extraction still re-ran and, being
-            # LLM work, named a few entities differently each time: measured
-            # +3 to +16 entity nodes, +18 to +50 RELATES and +30 MENTIONED_IN
-            # per re-ingest of one unchanged document. Same rule update()
-            # uses for its no-op: a stored Document with this exact content
-            # hash means every chunk, entity and edge below is already there.
-            # Changed text (new hash) still takes the full path; a changed
-            # ontology or strategy with the same text is update()'s job.
-            doc_uid = document.document_info.uid
-            if doc_uid:
-                existing = await self.graph_store.get_document_record(doc_uid)
-                if existing is not None and existing.content_hash == content_hash:
-                    ctx.log(
-                        f"Document '{doc_uid}' already ingested with identical content; "
-                        f"skipping extraction. Call update() to re-extract."
-                    )
-                    return IngestionResult(
-                        document_info=document.document_info,
-                        chunks_indexed=len(chunks.chunks),
-                        metadata={"skipped_unchanged": True, "content_hash": content_hash},
-                    )
-
             ctx.log("Step 3/9: Building lexical graph (provenance chain)")
-            await self._build_lexical_graph(
-                document.document_info, chunks, ctx, content_hash=content_hash
-            )
+            await self._build_lexical_graph(document.document_info, chunks, ctx)
 
             # Step 4: Extract entities & relationships
             ctx.log("Step 4/9: Extracting entities & relationships")
@@ -331,6 +373,13 @@ class IngestionPipeline:
                 _step_index_chunks(),
             )
 
+            # Step 9b: only now record the content hash. Writing it in step 3
+            # meant a failure in extraction or the graph write left a
+            # Document that looked complete, and the next ingest skipped it
+            # (Copilot review on #309). A partial run therefore retries in
+            # full; only a finished run is recognised as unchanged.
+            await self._mark_content_hash(document.document_info.uid, content_hash)
+
             total_rels = len(resolved.relationships) + mentions_written
             result = IngestionResult(
                 document_info=document.document_info,
@@ -359,13 +408,22 @@ class IngestionPipeline:
             logger.debug("Pipeline failure details", exc_info=True)
             raise IngestionError(f"Pipeline failed: {exc}") from exc
 
+    async def _mark_content_hash(self, doc_uid: str, content_hash: str) -> None:
+        """Record ``content_hash`` on an existing Document node.
+
+        Called as the last step of a successful ``run``. ``upsert_nodes``
+        merges on id, so this only adds the property; the Document node and
+        its ``path`` / metadata were written by ``_build_lexical_graph``.
+        """
+        await self.graph_store.upsert_nodes(
+            [GraphNode(id=doc_uid, label="Document", properties={"content_hash": content_hash})]
+        )
+
     async def _build_lexical_graph(
         self,
         doc_info: DocumentInfo,
         chunks: TextChunks,
         ctx: Context,
-        *,
-        content_hash: str | None = None,
     ) -> None:
         """Build the mandatory provenance chain.
 
@@ -378,17 +436,15 @@ class IngestionPipeline:
         This is NON-OPTIONAL. The Zero-Loss Data principle requires
         that every piece of source material is traceable in the graph.
 
-        ``content_hash`` is the SHA-256 of the loaded source text. When
-        present it is written to the Document node so ``GraphRAG.update()``
-        can short-circuit no-op updates without re-running extraction.
+        The Document's ``content_hash`` is *not* written here; ``run`` sets
+        it via :meth:`_mark_content_hash` once the whole pipeline has
+        succeeded.
         """
         # Document node
         doc_props: dict[str, Any] = {
             "path": doc_info.path or "",
             **doc_info.metadata,
         }
-        if content_hash is not None:
-            doc_props["content_hash"] = content_hash
         doc_node = GraphNode(
             id=doc_info.uid,
             label="Document",

@@ -227,14 +227,18 @@ class TestIngestionPipeline:
 
         await pipeline.run("test.txt", ctx)
 
-        # Find the Document node among all upsert_nodes calls.
-        doc_nodes: list[GraphNode] = []
-        for call in mock_graph_store.upsert_nodes.call_args_list:
-            for n in call[0][0]:
-                if n.label == "Document":
-                    doc_nodes.append(n)
-        assert len(doc_nodes) == 1, "expected exactly one Document upsert"
-        assert doc_nodes[0].properties.get("content_hash") == expected_hash
+        # The Document node is written in step 3 (path + metadata) and the
+        # content_hash is added by a second, final upsert once the run has
+        # completed — so a half-finished ingest never carries a hash.
+        calls = mock_graph_store.upsert_nodes.call_args_list
+        doc_calls = [
+            (i, n) for i, call in enumerate(calls) for n in call[0][0] if n.label == "Document"
+        ]
+        assert len(doc_calls) == 2, "expected the Document upsert, then the hash upsert"
+        (i_first, first), (i_last, last) = doc_calls
+        assert "content_hash" not in first.properties
+        assert last.properties == {"content_hash": expected_hash}
+        assert i_last == len(calls) - 1, "hash must be the last node write of the run"
 
     async def test_pipeline_uses_provided_document_info_uid(
         self, ctx, mock_graph_store, mock_vector_store
@@ -253,8 +257,9 @@ class TestIngestionPipeline:
             for n in call[0][0]:
                 if n.label == "Document":
                     doc_nodes.append(n)
-        assert len(doc_nodes) == 1
-        assert doc_nodes[0].id == "my-stable-id"
+        # step-3 Document write + the end-of-run content_hash write
+        assert len(doc_nodes) == 2
+        assert {n.id for n in doc_nodes} == {"my-stable-id"}
         assert doc_nodes[0].properties.get("path") == "docs/a.md"
 
     async def test_pipeline_remaps_mentions_through_resolver_remap(
@@ -450,6 +455,72 @@ class TestUnchangedReingestShortCircuit:
         mock_graph_store.upsert_relationships.assert_not_called()
         assert result.metadata["skipped_unchanged"] is True
         assert result.nodes_created == 0
+
+    async def test_unchanged_document_never_reaches_the_chunker(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """The check runs before step 2: contextual / semantic chunkers make a
+        provider call per chunk, so a no-op must not chunk. ``chunks_indexed``
+        reports the work actually done (none)."""
+        import hashlib
+
+        chunker = StubChunker()
+        chunker.chunk_document = AsyncMock(wraps=chunker.chunk_document)
+        digest = hashlib.sha256(b"Alice works at Acme Corp.").hexdigest()
+        mock_graph_store.get_document_record = self._stored(digest)
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, StubExtractor())
+        pipeline.chunker = chunker
+
+        result = await pipeline.run("test.txt", ctx, document_info=DocumentInfo(uid="doc-1"))
+
+        chunker.chunk_document.assert_not_called()
+        mock_vector_store.index_chunks.assert_not_called()
+        assert result.metadata["skipped_unchanged"] is True
+        assert result.chunks_indexed == 0
+
+    async def test_skip_fires_without_caller_supplied_document_info(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """Direct ``IngestionPipeline.run(source)`` — no facade, no
+        ``document_info`` — must still recognise an unchanged document: the
+        pipeline derives the Document id from the source path itself."""
+        import hashlib
+
+        extractor = StubExtractor()
+        extractor.extract = AsyncMock(wraps=extractor.extract)
+        digest = hashlib.sha256(b"Alice works at Acme Corp.").hexdigest()
+        mock_graph_store.get_document_record = self._stored(digest)
+
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor)
+        result = await pipeline.run("./docs/../test.txt", ctx)
+
+        mock_graph_store.get_document_record.assert_awaited_once_with("test.txt")
+        extractor.extract.assert_not_called()
+        assert result.metadata["skipped_unchanged"] is True
+
+    async def test_content_hash_is_written_only_after_a_successful_run(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """A failed extraction must not leave a Document that looks complete,
+        or the next ingest would skip it forever."""
+        extractor = StubExtractor()
+        extractor.extract = AsyncMock(side_effect=RuntimeError("provider down"))
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor)
+
+        from graphrag_sdk.core.exceptions import IngestionError
+
+        with pytest.raises(IngestionError):
+            await pipeline.run("test.txt", ctx, document_info=DocumentInfo(uid="doc-1"))
+
+        written = [
+            n
+            for call in mock_graph_store.upsert_nodes.call_args_list
+            for n in call[0][0]
+            if n.label == "Document"
+        ]
+        assert written, "the Document node itself is still written in step 3"
+        assert all("content_hash" not in n.properties for n in written)
 
     async def test_changed_content_takes_the_full_path(
         self, ctx, mock_graph_store, mock_vector_store
@@ -769,6 +840,74 @@ class TestPruneMethod:
         assert msg.count("('Company', 'Person')") <= 3
 
 
+class TestReingestIdempotencyEndToEnd:
+    """The behaviour the PR exists for, exercised through ``pipeline.run`` with
+    the defaults a direct caller gets — no ``document_info``, loader-provided
+    ``DocumentInfo`` with only ``path`` set."""
+
+    def _pipeline(self, mock_graph_store, mock_vector_store, text):
+        return IngestionPipeline(
+            loader=StubLoader(text),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(),
+        )
+
+    @staticmethod
+    def _chunk_ids(mock_graph_store):
+        return sorted(
+            n.id
+            for call in mock_graph_store.upsert_nodes.call_args_list
+            for n in call[0][0]
+            if n.label == "Chunk"
+        )
+
+    async def test_two_runs_of_the_same_file_write_the_same_chunk_ids(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+        text = "Alice works at Acme. Bob works at Beta. Carol runs Gamma."
+        first = self._pipeline(mock_graph_store, mock_vector_store, text)
+        await first.run("report.txt", ctx)
+        ids_a = self._chunk_ids(mock_graph_store)
+        doc_a = {n.id for c in mock_graph_store.upsert_nodes.call_args_list for n in c[0][0] if n.label == "Document"}
+
+        mock_graph_store.upsert_nodes.reset_mock()
+        second = self._pipeline(mock_graph_store, mock_vector_store, text)
+        await second.run("report.txt", ctx)
+        ids_b = self._chunk_ids(mock_graph_store)
+        doc_b = {n.id for c in mock_graph_store.upsert_nodes.call_args_list for n in c[0][0] if n.label == "Document"}
+
+        assert ids_a and ids_a == ids_b
+        assert doc_a == doc_b == {"report.txt"}
+
+    async def test_different_files_with_the_same_text_get_different_chunk_ids(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+        text = "Alice works at Acme. Bob works at Beta."
+        await self._pipeline(mock_graph_store, mock_vector_store, text).run("a.txt", ctx)
+        ids_a = self._chunk_ids(mock_graph_store)
+        mock_graph_store.upsert_nodes.reset_mock()
+        await self._pipeline(mock_graph_store, mock_vector_store, text).run("b.txt", ctx)
+        ids_b = self._chunk_ids(mock_graph_store)
+        assert ids_a and not set(ids_a) & set(ids_b)
+
+    async def test_text_mode_without_document_info_is_stable_too(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+        p = self._pipeline(mock_graph_store, mock_vector_store, "unused")
+        await p.run("ignored", ctx, text="Alice works at Acme. Bob works at Beta.")
+        ids_a = self._chunk_ids(mock_graph_store)
+        mock_graph_store.upsert_nodes.reset_mock()
+        await p.run("ignored", ctx, text="Alice works at Acme. Bob works at Beta.")
+        assert ids_a and ids_a == self._chunk_ids(mock_graph_store)
+
+
 class TestDeterministicChunkUids:
     """Bug #12 — re-ingesting an unchanged document duplicated its chunks.
 
@@ -815,3 +954,26 @@ class TestDeterministicChunkUids:
     def test_uids_are_unique_within_a_document(self):
         uids = self._chunks([f"chunk {i}" for i in range(50)])
         assert len(set(uids)) == 50
+
+    def test_contextual_chunks_hash_the_original_text(self):
+        """``ContextualChunking`` prepends an LLM summary; the id must come from
+        ``metadata["original_chunk"]`` so a reworded summary keeps the id."""
+        from graphrag_sdk.ingestion.pipeline import _assign_deterministic_chunk_uids
+
+        def enriched(summary):
+            chunks = TextChunks(
+                chunks=[
+                    TextChunk(
+                        text=f"{summary}\n\nThe lighthouse was built in 1896.",
+                        index=0,
+                        metadata={"original_chunk": "The lighthouse was built in 1896."},
+                    )
+                ]
+            )
+            _assign_deterministic_chunk_uids(DocumentInfo(uid="doc-1"), chunks)
+            return chunks.chunks[0].uid
+
+        assert enriched("Context: about a lighthouse.") == enriched("Summary: a lighthouse's history.")
+        plain = TextChunks(chunks=[TextChunk(text="The lighthouse was built in 1896.", index=0)])
+        _assign_deterministic_chunk_uids(DocumentInfo(uid="doc-1"), plain)
+        assert plain.chunks[0].uid == enriched("anything")

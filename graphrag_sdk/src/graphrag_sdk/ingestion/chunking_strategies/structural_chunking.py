@@ -177,11 +177,12 @@ class StructuralChunking(ChunkingStrategy):
                     new_metadata["token_count"] = final_tokens
                     new_metadata["breadcrumbs"] = list(el.breadcrumbs) if el.breadcrumbs else []
 
+                    # No ``uid``: the pipeline assigns deterministic chunk
+                    # ids after chunking and overwrites whatever is set here.
                     chunks.append(
                         TextChunk(
                             text=final_text,
                             index=chunk_index,
-                            uid=sc.uid,
                             metadata=new_metadata,
                         )
                     )
