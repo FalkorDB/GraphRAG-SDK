@@ -272,8 +272,35 @@ class TestGraphRAGDeduplicateEntities:
             side_effect=[entity_result, empty_result, empty_result, empty_result, empty_result, empty_result]
         )
 
-        count = await g.deduplicate_entities()
+        # Exact-name phase only; the judge phase has its own tests in
+        # test_judge_dedup.py and is wired in TestDefaultResolver below.
+        count = await g.deduplicate_entities(judge=False)
         assert count == 1  # one duplicate merged
+
+    async def test_deduplicate_entities_runs_the_judge_by_default(
+        self, mock_conn, embedder, llm, monkeypatch
+    ):
+        """Default ``deduplicate_entities()`` = exact phase + the LLM judge over
+        the whole graph, using the facade's LLM unless ``judge_llm`` is given."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        seen: dict = {}
+
+        async def fake_dedup(**kw):
+            seen.update(kw)
+            return 0
+
+        monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
+        await g.deduplicate_entities()
+        assert seen["judge_llm"] is g.llm and seen["judge_vote"] is True
+
+        other = MagicMock()
+        seen.clear()
+        await g.deduplicate_entities(judge_llm=other, judge_vote=False)
+        assert seen["judge_llm"] is other and seen["judge_vote"] is False
+
+        seen.clear()
+        await g.deduplicate_entities(judge=False)
+        assert seen["judge_llm"] is None
 
     async def test_deduplicate_entities_no_duplicates(self, mock_conn, embedder, llm):
         """deduplicate_entities with < 2 entities should return 0."""
@@ -2288,10 +2315,12 @@ class TestFinalizeReminder:
 
 class TestDefaultResolver:
     """``ingest()`` resolves with ``ExactMatchResolution`` unless told otherwise;
-    cross-document dedup belongs to ``finalize()``, where it sees every document.
+    cross-document dedup belongs to ``finalize()``'s LLM-judged phase, where it
+    sees every document.
 
-    These pin that ingest stays zero-LLM-cost for resolution and that an
-    explicit ``resolver=`` still wins.
+    These pin that ingest stays zero-LLM-cost for resolution, that an explicit
+    ``resolver=`` still wins, and that ``finalize()`` runs the judge with the
+    facade's LLM by default.
     """
 
     @staticmethod
@@ -2360,6 +2389,33 @@ class TestDefaultResolver:
         assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
         assert res.relationships[0].end_node_id == "x"
 
+    async def test_finalize_runs_the_judge_with_the_facade_llm(self, graphrag, monkeypatch):
+        seen: dict = {}
+
+        async def fake_dedup(**kw):
+            seen.update(kw)
+            return 0
+
+        monkeypatch.setattr(graphrag._deduplicator, "deduplicate", fake_dedup)
+        graphrag._deduplicator.last_judge_stats = {"merged": 2, "linked": 3, "llm_calls": 4}
+        graphrag._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        graphrag._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
+        graphrag._vector_store.embed_relationships = AsyncMock(return_value=0)
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+
+        result = await graphrag.finalize()
+        assert seen["judge_llm"] is graphrag.llm and seen["judge_vote"] is True
+        assert result.entities_linked == 3 and result.judge_llm_calls == 4
+        assert result.judge_stats == {"merged": 2, "linked": 3, "llm_calls": 4}
+        # embeddings are backfilled BEFORE dedup so the judge reuses them
+        calls = [c for c in graphrag._vector_store.backfill_entity_embeddings.mock_calls]
+        assert calls
+
+        seen.clear()
+        result = await graphrag.finalize(judge=False)
+        assert seen["judge_llm"] is None
+        assert result.judge_stats == {} and result.entities_linked == 0
+
     async def test_explicit_resolver_is_honoured(self, graphrag, monkeypatch):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
@@ -2369,5 +2425,3 @@ class TestDefaultResolver:
         mine = ExactMatchResolution()
         await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
         assert captured["resolver"] is mine
-
-

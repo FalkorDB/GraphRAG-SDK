@@ -77,7 +77,7 @@ Build a knowledge graph from one or more sources. Auto-detects loader from file 
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
 | `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (FixedSizeChunking(1000) if None) |
 | `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None) |
-| `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None) |
+| `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None; cross-document dedup is `finalize()`'s judge phase) |
 | `max_concurrent` | `int` | `3` | Max parallel ingestions (list input only) |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
@@ -177,15 +177,19 @@ async def query(question: str, **kwargs) -> RagResult
 async def deduplicate_entities(
     *,
     fuzzy: bool = False,
-    similarity_threshold: float = 0.9,
+    similarity_threshold: float = 0.95,
     batch_size: int = 500,
+    judge: bool = True,
+    judge_llm: LLMInterface | None = None,
+    judge_vote: bool = True,
 ) -> int
 ```
 
-Post-ingestion entity deduplication. Groups entities by `(normalized name, label)` to prevent cross-type merging (e.g. Person "Paris" and Location "Paris" stay separate).
+Post-ingestion entity deduplication across all documents.
 
-- **Phase 1** (always): Exact name match -- keeps longest description, remaps RELATES and MENTIONED_IN edges, deletes duplicates.
+- **Phase 1** (always): Exact name match by `(normalized name, label)` -- keeps longest description, joins descriptions with `" | "`, records absorbed names in `aliases`, remaps RELATES and MENTIONED_IN edges, deletes duplicates.
 - **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
+- **Phase 3** (default, `judge=True`): LLM-judged cross-document dedup -- name/description embeddings and name-in-description nominate candidate pairs, dense sets of ≤ 8, the judge partitions each set, a second shuffled pass must agree; agreed pairs merge, disagreements become `SAME_AS` edges. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); `judge=False` keeps the call LLM-free. Stats in `_deduplicator.last_judge_stats`.
 
 Call once after all documents are ingested.
 
@@ -194,16 +198,16 @@ Call once after all documents are ingested.
 ### finalize()
 
 ```python
-async def finalize() -> dict[str, Any]
+async def finalize(*, judge: bool = True, judge_llm: LLMInterface | None = None, judge_vote: bool = True) -> FinalizeResult
 ```
 
 Run all post-ingestion steps after all documents are ingested. Bundles:
-1. `deduplicate_entities()` -- global exact-name dedup
-2. `backfill_entity_embeddings()` -- name-only embeddings
+1. `backfill_entity_embeddings()` -- name embeddings on every entity (first, so the judge reuses them)
+2. `deduplicate_entities(judge=..., judge_llm=..., judge_vote=...)` -- exact-name dedup, then the LLM-judged cross-document phase
 3. `embed_relationships()` -- fact text embeddings on RELATES edges
 4. `ensure_indices()` -- all indexes
 
-**Returns:** Dict with counts: `entities_deduplicated`, `entities_embedded`, `relationships_embedded`, `indexes`.
+**Returns:** `FinalizeResult` with `null_stubs_removed`, `entities_deduplicated`, `entities_linked`, `judge_llm_calls`, `judge_stats`, `entities_embedded`, `relationships_embedded`, `indexes`.
 
 ### Sync Wrappers
 
@@ -211,7 +215,7 @@ Run all post-ingestion steps after all documents are ingested. Bundles:
 def retrieve_sync(question: str, **kwargs) -> RetrieverResult
 def completion_sync(question: str, **kwargs) -> RagResult
 def ingest_sync(source: str | list[str], **kwargs) -> IngestionResult | list[IngestionResult]
-def finalize_sync() -> dict[str, Any]
+def finalize_sync(*, judge: bool = True, judge_llm: LLMInterface | None = None, judge_vote: bool = True) -> FinalizeResult
 def query_sync(question: str, **kwargs) -> RagResult  # deprecated
 ```
 
@@ -613,8 +617,8 @@ class ResolutionStrategy(ABC):
 ```
 
 **Built-in:**
-- `ExactMatchResolution(resolve_property="id")`
-- `DescriptionMergeResolution(llm=None, force_summary_threshold=3, max_summary_tokens=500)`
+- `ExactMatchResolution(resolve_property="name")` — `ingest()` default
+- `LLMVerifiedResolution(llm=None, embedder=None, hard_threshold=0.95, soft_threshold=0.65, batch_verification=True, verification_max_pairs_per_call=5, ...)` — opt-in at `ingest()`
 
 ---
 
