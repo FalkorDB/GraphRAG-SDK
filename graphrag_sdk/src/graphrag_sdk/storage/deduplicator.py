@@ -1,6 +1,8 @@
 # GraphRAG SDK — Storage: Entity Deduplicator
-# Two-phase entity deduplication: exact name match + optional fuzzy embedding.
-# Preserves label-aware grouping to prevent cross-type merging.
+# Finalize-time entity deduplication across the whole graph: exact name match,
+# optional fuzzy embedding, and the LLM-judged cross-document phase
+# (``judge_dedup.LLMJudgeDeduplicator``: similarity nominates, the LLM decides,
+# a second shuffled pass must agree).
 
 from __future__ import annotations
 
@@ -9,7 +11,12 @@ import re
 import unicodedata
 from typing import Any
 
-from graphrag_sdk.core.providers import Embedder
+from graphrag_sdk.core.providers import Embedder, LLMInterface
+from graphrag_sdk.storage.judge_dedup import (
+    LLMJudgeDeduplicator,
+    merge_description,
+    merge_description_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +147,7 @@ _REMAP_QUERIES = [
 
 
 class EntityDeduplicator:
-    """Two-phase entity deduplication engine.
+    """Finalize-time entity deduplication engine.
 
     Phase 1 (always): Exact name match — groups entities by
     ``(normalized_name, label)`` to prevent cross-type merging,
@@ -151,6 +158,16 @@ class EntityDeduplicator:
     names, finds near-duplicates by cosine similarity, merges
     those too.
 
+    Phase 3 (optional, ``judge_llm``): LLM-judged cross-document dedup over
+    **every** entity in the graph at once — the ingest-time resolver only
+    ever sees one document, so ``Airbus`` in one file and ``Airbus SE`` in
+    another can never meet there; here they do. Name and description
+    embeddings plus "A's name appears in B's description" nominate candidate
+    pairs; candidates form small dense sets; the judge LLM partitions each
+    set; a second pass over shuffled sets must agree. Agreed pairs are merged
+    (survivor gains every member's label, ``" | "``-joined description and
+    ``aliases``); disagreements are written as ``SAME_AS`` edges instead.
+
     Args:
         graph_store: Graph data access object with ``query_raw()`` method.
         embedder: Embedding provider for fuzzy dedup.
@@ -159,6 +176,7 @@ class EntityDeduplicator:
     def __init__(self, graph_store: Any, embedder: Embedder) -> None:
         self._graph = graph_store
         self._embedder = embedder
+        self.last_judge_stats: dict[str, int] = {}
 
     async def deduplicate(
         self,
@@ -172,12 +190,36 @@ class EntityDeduplicator:
         # the 0.95 used by LLMVerifiedResolution for the same job.
         similarity_threshold: float = 0.95,
         batch_size: int = 500,
+        judge_llm: LLMInterface | None = None,
+        judge_vote: bool = True,
     ) -> int:
-        """Run deduplication and return total number of duplicates merged."""
+        """Run deduplication and return total number of duplicates merged.
+
+        Args:
+            fuzzy: legacy name-embedding phase (merges on cosine alone; off by default).
+            similarity_threshold: cosine floor for the fuzzy phase.
+            batch_size: entities per query page.
+            judge_llm: when given, run the LLM-judged cross-document phase after
+                exact matching (see class docstring). Stats of the last run are
+                in ``self.last_judge_stats``.
+            judge_vote: require the second-pass agreement (default). ``False``
+                halves LLM cost at roughly 3x the wrong-merge rate.
+        """
         total = await self._deduplicate_exact(batch_size)
 
         if fuzzy:
             total += await self._deduplicate_fuzzy(batch_size, similarity_threshold)
+
+        if judge_llm is not None:
+            judge = LLMJudgeDeduplicator(
+                self._graph,
+                self._embedder,
+                judge_llm,
+                self._remap_entity_edges,
+                vote=judge_vote,
+            )
+            self.last_judge_stats = await judge.deduplicate(batch_size)
+            total += self.last_judge_stats["merged"]
 
         logger.info(f"EntityDeduplicator total: {total} duplicates merged")
         return total
@@ -227,33 +269,34 @@ class EntityDeduplicator:
 
             # The duplicate's description dies with the node, so anything it
             # said that the survivor did not is lost outright. Concatenated
-            # with " | ", matching LLMVerifiedResolution's survivor rule, so
-            # both mechanisms leave the same shape behind. Only descriptions of
-            # duplicates actually deleted are absorbed — a failed remap leaves
-            # its node in place.
-            await self._merge_descriptions(survivor, absorbed)
+            # with " | ", matching the judge phase's survivor rule, so both
+            # mechanisms leave the same shape behind; the absorbed names are
+            # kept in ``aliases`` for the same reason. Only duplicates actually
+            # deleted are absorbed — a failed remap leaves its node in place.
+            if absorbed:
+                await self._write_merged_properties(survivor, absorbed)
 
         logger.info(f"EntityDeduplicator phase 1 (exact): merged {merged} duplicates")
         return merged
 
-    async def _merge_descriptions(self, survivor: dict, absorbed: list[dict]) -> None:
-        """Fold the absorbed duplicates' descriptions into the survivor."""
-        descriptions: list[str] = []
-        for ent in [survivor, *absorbed]:
-            desc = str(ent.get("description") or "").strip()
-            if desc and desc not in descriptions:
-                descriptions.append(desc)
-        if len(descriptions) < 2:
-            return
-        combined = " | ".join(descriptions)
+    async def _write_merged_properties(self, survivor: dict, absorbed: list[dict]) -> None:
+        """Survivor keeps every member's description: ``descriptions`` is the
+        list (no LLM summary, nothing dropped), ``description`` the ' | ' join,
+        and ``aliases`` keeps the absorbed names that differ from the survivor's."""
+        desc_list = merge_description_list([survivor, *absorbed])
+        new_desc = merge_description(desc_list)
+        aliases = [d["name"] for d in absorbed if d["name"] and d["name"] != survivor["name"]]
         try:
             await self._graph.query_raw(
-                "MATCH (e:__Entity__ {id: $sid}) SET e.description = $desc",
-                {"sid": survivor["id"], "desc": combined},
+                "MATCH (s:__Entity__ {id: $id}) "
+                "SET s.description = $desc, s.descriptions = $descs, "
+                "s.aliases = [x IN coalesce(s.aliases, []) + $aliases | x]",
+                {"id": survivor["id"], "desc": new_desc, "descs": desc_list, "aliases": aliases},
             )
-            survivor["description"] = combined
+            survivor["description"] = new_desc
+            survivor["descriptions"] = desc_list
         except Exception as exc:
-            logger.warning(f"Failed to merge descriptions onto {survivor['id']}: {exc}")
+            logger.warning(f"Failed to update merged properties on {survivor['id']}: {exc}")
 
     @staticmethod
     def _merge_acronym_groups(groups: list[list[dict]]) -> list[list[dict]]:
@@ -324,7 +367,8 @@ class EntityDeduplicator:
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, "
-                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label "
+                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
+                "e.descriptions AS descriptions "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -425,6 +469,7 @@ class EntityDeduplicator:
                         "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
                         "description": row[2] if len(row) > 2 and row[2] else "",
                         "label": row[3] if len(row) > 3 and row[3] else "",
+                        "descriptions": list(row[4]) if len(row) > 4 and row[4] else [],
                     }
                 )
             offset += batch_size

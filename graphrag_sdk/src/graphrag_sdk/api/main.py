@@ -1383,10 +1383,12 @@ class GraphRAG:
           Override with ``chunker=FixedSizeChunking(...)`` if you need
           character-window chunking.
         - Extractor: GraphExtraction with configured LLM
-        - Resolver: ExactMatchResolution — zero LLM cost; same name + same
-          label within the document, descriptions kept as a list, edges
-          re-pointed to the survivor. Cross-document duplicates are merged
-          once, in :meth:`finalize`.
+        - Resolver: ExactMatchResolution — zero LLM cost. Ingest is per
+          document, so a resolver here can only compare one file's entities
+          with each other; the cross-document duplicates that matter are
+          merged once, by the LLM-judged dedup phase inside :meth:`finalize`.
+          Pass ``resolver=LLMVerifiedResolution(...)`` to also resolve per
+          document at ingest.
 
         Args:
             source: File path (or list of paths) — file mode only.
@@ -1784,12 +1786,19 @@ class GraphRAG:
         entities of one file with each other — and the extractor has already
         collapsed those by ``(name, type)``. The duplicates that matter
         (``Airbus`` in one PDF, ``Airbus SE`` in another) are cross-document and
-        are unreachable from this step by construction; they are merged once,
-        in :meth:`finalize`. Ingest stays zero-LLM-cost for resolution: no
-        ``llm`` is passed, so ``ExactMatchResolution`` neither summarises merged
-        descriptions (they are kept as a list and joined with ``" | "``) nor
-        merges same-name nodes of different labels. Pass a resolver to
-        ``ingest()`` to change this per call.
+        are unreachable from this step by construction. Running the LLM here
+        therefore bought little: on the 11-document benchmark it made ~15
+        correct and ~4 wrong merges per run for ~90 extra LLM calls, and QA
+        moved by less than one question.
+
+        Cross-document dedup runs **once, in** :meth:`finalize`: the
+        LLM-judged phase (``storage/judge_dedup.py``) sees every entity of
+        every document. Ingest stays zero-LLM-cost for resolution: no ``llm``
+        is passed, so ``ExactMatchResolution`` neither summarises merged
+        descriptions (they are joined with ``" | "``) nor merges same-name
+        nodes of different labels — both are the judge's job. Pass
+        ``resolver=LLMVerifiedResolution(...)`` to ``ingest()`` to also
+        resolve per document.
         """
         return ExactMatchResolution(llm=None, cross_label_merge=False)
 
@@ -3051,15 +3060,29 @@ class GraphRAG:
         # precision to 0.739, buying no recall the exact tiers miss.
         similarity_threshold: float = 0.95,
         batch_size: int = 500,
+        judge: bool = True,
+        judge_llm: LLMInterface | None = None,
+        judge_vote: bool = True,
     ) -> int:
         """Global entity deduplication across all ingested documents.
 
         Phase 1 (always): Exact name match — groups entities by normalized
-        name (lowercase, stripped), keeps the one with the longest description,
-        remaps all RELATES and MENTIONED_IN edges, deletes duplicates.
+        name and label, keeps the one with the longest description, joins the
+        descriptions with ``" | "``, remaps all RELATES and MENTIONED_IN edges,
+        deletes duplicates.
 
-        Phase 2 (optional): Fuzzy embedding match — embeds entity names,
-        finds near-duplicates by cosine similarity, merges those too.
+        Phase 2 (optional, ``fuzzy``): legacy name-embedding cosine merge.
+
+        Phase 3 (default on, ``judge``): LLM-judged cross-document dedup.
+        Name and description embeddings nominate candidate pairs (plus
+        "A's name appears in B's description"); candidates form small dense
+        sets; the judge LLM partitions each set; a second pass over shuffled
+        sets must agree. Agreed pairs are merged (survivor gains every
+        member's label, ``" | "``-joined description and ``aliases``);
+        disagreements are written as ``SAME_AS`` edges instead of merged.
+        Every entity ends up with a name embedding in ``e.embedding``. This
+        is the only place cross-document duplicates are merged; ingest
+        resolves per document with exact match only.
 
         Call after all documents are ingested.
 
@@ -3067,14 +3090,26 @@ class GraphRAG:
             fuzzy: If True, also perform fuzzy embedding-based dedup.
             similarity_threshold: Cosine similarity threshold for fuzzy dedup.
             batch_size: Entities per query batch.
+            judge: run the LLM-judged phase (default True). ``False`` =
+                exact-name dedup only, no LLM calls.
+            judge_llm: Judge model; defaults to this instance's ``llm``.
+                A gpt-4.1-class model is strongly recommended — on the
+                benchmark corpus it made 9 wrong merges where gpt-4o-mini
+                made 51.
+            judge_vote: Require second-pass agreement before merging
+                (default). ``False`` halves LLM cost, ~3x wrong merges.
 
         Returns:
-            Total number of duplicate entities merged.
+            Total number of duplicate entities merged (all phases). Judge-phase
+            details (calls, agreed/disagreed pairs, links) are in
+            ``self._deduplicator.last_judge_stats``.
         """
         merged = await self._deduplicator.deduplicate(
             fuzzy=fuzzy,
             similarity_threshold=similarity_threshold,
             batch_size=batch_size,
+            judge_llm=(judge_llm or self.llm) if judge else None,
+            judge_vote=judge_vote,
         )
         # The graph has now been swept globally, so the pending-dedup reminder
         # no longer applies. Reset here rather than in finalize() so a caller
@@ -3086,8 +3121,7 @@ class GraphRAG:
     def _warn_if_dedup_pending(self) -> None:
         """Warn once when reading a graph that was never deduplicated.
 
-        The ingest-time resolver only ever sees a single document
-        (``IngestionPipeline`` calls it with that document's extraction), so
+        Ingest resolves per document with exact match only, so
         cross-document duplicates — "Airbus" in one PDF and "Airbus SE" in
         another — survive ingestion by design and are removed only by
         :meth:`deduplicate_entities`, which runs inside :meth:`finalize`.
@@ -3108,7 +3142,13 @@ class GraphRAG:
             self._docs_since_dedup,
         )
 
-    async def finalize(self) -> FinalizeResult:
+    async def finalize(
+        self,
+        *,
+        judge: bool = True,
+        judge_llm: LLMInterface | None = None,
+        judge_vote: bool = True,
+    ) -> FinalizeResult:
         """Run all post-ingestion steps after all documents are ingested.
 
         Call this **once** after the final :meth:`ingest` for any session
@@ -3117,10 +3157,20 @@ class GraphRAG:
 
         Bundles:
         1. Remove NULL-name stub entities (legacy cleanup)
-        2. ``deduplicate_entities()`` — global exact-name dedup
-        3. ``backfill_entity_embeddings()`` — name-only embeddings
+        2. ``backfill_entity_embeddings()`` — name embeddings on every entity
+           (first, so the judge phase reuses them)
+        3. ``deduplicate_entities()`` — exact-name dedup, then (``judge``)
+           the LLM-judged cross-document phase; see
+           :meth:`deduplicate_entities` for what merges and what links
         4. ``embed_relationships()`` — fact text embeddings on RELATES edges
         5. ``ensure_indices()`` — all indexes
+
+        Args:
+            judge: run the LLM-judged dedup phase (default True). It costs
+                roughly two LLM calls per ~3000 prompt tokens of candidate
+                sets; set ``False`` for exact-name dedup only.
+            judge_llm: judge model, defaults to this instance's ``llm``.
+            judge_vote: require second-pass agreement (default True).
 
         Returns:
             ``FinalizeResult`` — typed counts from each step.
@@ -3137,13 +3187,16 @@ class GraphRAG:
         if null_cleaned:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
-        # Step 2: Global dedup
-        dedup_count = await self.deduplicate_entities()
-        ctx_log(f"finalize: deduplicated {dedup_count} entities")
-
-        # Step 3: Entity embeddings (name-only)
+        # Step 2: Entity name embeddings first, so the judge phase reuses them
         entity_count = await self._vector_store.backfill_entity_embeddings()
         ctx_log(f"finalize: embedded {entity_count} entities")
+
+        # Step 3: Global dedup (exact, then LLM-judged)
+        dedup_count = await self.deduplicate_entities(
+            judge=judge, judge_llm=judge_llm, judge_vote=judge_vote
+        )
+        judge_stats = dict(self._deduplicator.last_judge_stats) if judge else {}
+        ctx_log(f"finalize: deduplicated {dedup_count} entities; judge={judge_stats}")
 
         # Step 4: Relationship embeddings (fact text on RELATES edges)
         rel_count = await self._vector_store.embed_relationships()
@@ -3157,6 +3210,9 @@ class GraphRAG:
         return FinalizeResult(
             null_stubs_removed=null_cleaned,
             entities_deduplicated=dedup_count,
+            entities_linked=judge_stats.get("linked", 0),
+            judge_llm_calls=judge_stats.get("llm_calls", 0),
+            judge_stats=judge_stats,
             entities_embedded=entity_count,
             relationships_embedded=rel_count,
             indexes=index_results,
@@ -3277,12 +3333,18 @@ class GraphRAG:
             )
         )
 
-    def finalize_sync(self) -> FinalizeResult:
+    def finalize_sync(
+        self,
+        *,
+        judge: bool = True,
+        judge_llm: LLMInterface | None = None,
+        judge_vote: bool = True,
+    ) -> FinalizeResult:
         """Synchronous finalize convenience method.
 
         Keep in sync with :meth:`finalize`.
         """
-        return asyncio.run(self.finalize())
+        return asyncio.run(self.finalize(judge=judge, judge_llm=judge_llm, judge_vote=judge_vote))
 
     def update_sync(
         self,

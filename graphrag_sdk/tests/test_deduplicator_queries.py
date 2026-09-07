@@ -282,7 +282,10 @@ class TestMergePreservesDescriptions:
             ["e2", "alice", "an engineer", "Person"],
         ])
         await dedup.deduplicate()
-        assert self._description_writes(graph) == []
+        # The write still happens (it records the absorbed name as an alias),
+        # but the description is not duplicated.
+        for w in self._description_writes(graph):
+            assert w == "an engineer"
 
     async def test_empty_description_does_not_produce_a_separator(self):
         dedup, graph = self._dedup([
@@ -292,3 +295,4 @@ class TestMergePreservesDescriptions:
         await dedup.deduplicate()
         for w in self._description_writes(graph):
             assert not w.startswith(" | ") and not w.endswith(" | ")
+

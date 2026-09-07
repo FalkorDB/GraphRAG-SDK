@@ -7,8 +7,10 @@ import re
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from graphrag_sdk.core.providers.base import LLMBatchItem
+from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.judge_dedup import (
     LLMJudgeDeduplicator,
     knn_pairs,
@@ -222,6 +224,60 @@ def test_missing_name_embedding_is_written_back():
     _run(graph, llm)
     writes = [c for c in graph.calls if "SET e.embedding = vecf32" in c[0]]
     assert len(writes) == 1 and {it["id"] for it in writes[0][1]["items"]} == {"e1", "e2", "e3"}
+
+
+def test_exact_phase_joins_descriptions_and_records_aliases():
+    class G:
+        def __init__(self):
+            self.calls = []
+            self.pages = [
+                SimpleNamespace(
+                    result_set=[
+                        ("a", "Mary Ann", "Schooner of 1855.", "Ship"),
+                        ("b", "mary ann", "Sloop.", "Ship"),
+                    ]
+                ),
+                SimpleNamespace(result_set=[]),
+            ]
+
+        async def query_raw(self, cypher, params=None):
+            self.calls.append((cypher, params or {}))
+            if "RETURN e.id" in cypher and "SKIP" in cypher:
+                return self.pages.pop(0)
+            if "count(" in cypher.lower() or "RETURN" in cypher:
+                return SimpleNamespace(result_set=[[1]])
+            return SimpleNamespace(result_set=[])
+
+    g = G()
+    dd = EntityDeduplicator(g, FakeEmbedder({}))
+    n = asyncio.run(dd.deduplicate())
+    assert n == 1
+    upd = [c for c in g.calls if "s.aliases" in c[0]]
+    assert len(upd) == 1
+    assert upd[0][1]["desc"] == "Schooner of 1855. | Sloop."
+    assert upd[0][1]["aliases"] == ["mary ann"]
+
+
+@pytest.mark.parametrize("judge", [False, True])
+def test_entity_deduplicator_judge_toggle(judge):
+    class G:
+        def __init__(self):
+            self.calls = []
+
+        async def query_raw(self, cypher, params=None):
+            self.calls.append(cypher)
+            if "SKIP" in cypher:
+                return SimpleNamespace(result_set=[])
+            if "RETURN e.id, e.name, e.description" in cypher:
+                return SimpleNamespace(result_set=list(ROWS))
+            return SimpleNamespace(result_set=[])
+
+    g = G()
+    llm = ScriptedLLM([[IBM], [IBM]])
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    n = asyncio.run(dd.deduplicate(judge_llm=llm if judge else None))
+    assert n == (1 if judge else 0)
+    assert bool(dd.last_judge_stats) is judge
 
 
 def test_remap_queries_bind_survivor_before_merge():
