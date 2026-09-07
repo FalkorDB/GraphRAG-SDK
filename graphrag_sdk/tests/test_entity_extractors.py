@@ -223,3 +223,44 @@ class TestGLiNERModelSharing:
             line for line in src.splitlines() if not line.strip().startswith("#")
         )
         assert "self._lock" not in code
+
+
+class TestGLiNERCandidateBand:
+    """The ``"Unknown"`` band is 25 % below the model threshold by default and
+    follows whichever threshold is in effect."""
+
+    def test_default_band_for_default_model(self):
+        ex = GLiNERExtractor()
+        assert ex._threshold == 0.75
+        assert ex._candidate_threshold == pytest.approx(0.5625)
+
+    def test_default_band_follows_model_threshold(self):
+        ex = GLiNERExtractor(model_name="knowledgator/gliner-bi-small-v2.0")
+        assert ex._threshold == 0.5
+        assert ex._candidate_threshold == pytest.approx(0.375)
+
+    def test_default_band_follows_explicit_threshold(self):
+        ex = GLiNERExtractor(threshold=0.8)
+        assert ex._candidate_threshold == pytest.approx(0.6)
+
+    def test_none_disables_band(self):
+        ex = GLiNERExtractor(candidate_threshold=None)
+        assert ex._candidate_threshold is None
+
+    def test_explicit_floor_wins(self):
+        ex = GLiNERExtractor(candidate_threshold=0.7)
+        assert ex._candidate_threshold == 0.7
+
+    def test_floor_above_threshold_rejected(self):
+        with pytest.raises(ValueError, match="candidate_threshold"):
+            GLiNERExtractor(threshold=0.75, candidate_threshold=0.8)
+
+    def test_band_spans_are_unknown_and_below_band_is_not_returned(self):
+        # what _parse_predictions does with a score inside the band; anything
+        # below the band never comes back from the model (queried at the floor)
+        preds = [
+            {"text": "Alice", "label": "person", "score": 0.80, "start": 0, "end": 5},
+            {"text": "Bobby", "label": "person", "score": 0.60, "start": 6, "end": 11},
+        ]
+        ents = _parse_predictions(preds, ["Person"], "c0", 0.75)
+        assert [(e.name, e.type) for e in ents] == [("Alice", "Person"), ("Bobby", "Unknown")]
