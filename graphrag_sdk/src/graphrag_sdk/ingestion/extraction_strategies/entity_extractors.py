@@ -1073,10 +1073,7 @@ class CompositeExtractor(EntityExtractor):
         source_chunk_id: str,
     ) -> list[ExtractedEntity]:
         results = await asyncio.gather(
-            *(
-                e.extract_entities(text, entity_types, source_chunk_id)
-                for e in self._extractors
-            ),
+            *(e.extract_entities(text, entity_types, source_chunk_id) for e in self._extractors),
             return_exceptions=True,
         )
 
@@ -1103,9 +1100,7 @@ class CompositeExtractor(EntityExtractor):
                     if (
                         self._suppress_overlaps
                         and spans
-                        and any(
-                            s < ce and cs < e for (s, e) in spans for (cs, ce) in claimed
-                        )
+                        and any(s < ce and cs < e for (s, e) in spans for (cs, ce) in claimed)
                     ):
                         continue  # fragment of an entity a better extractor already has
                     merged[key] = ent
