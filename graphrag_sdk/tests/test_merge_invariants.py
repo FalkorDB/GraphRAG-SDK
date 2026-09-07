@@ -7,8 +7,9 @@
 3. relationship endpoints are re-pointed to the survivor before any loser is
    removed, so no edge is lost.
 
-Covered here: the shared helper and ExactMatchResolution (ingest). Later
-layers add LLMVerifiedResolution, the finalize exact phase and the judge.
+Covered here: the shared helper, ExactMatchResolution (ingest) and both
+LLMVerifiedResolution merge loops. Later layers add the finalize exact phase
+and the judge.
 """
 
 from __future__ import annotations
@@ -84,3 +85,19 @@ class TestExactMatchAtIngest:
             GraphData(nodes=nodes, relationships=[]), Context()
         )
         assert {n.id for n in res.nodes} == {"a", "b"}
+
+
+class TestLLMVerifiedMergeSites:
+    """The two in-memory merge loops of LLMVerifiedResolution use the shared helper."""
+
+    def test_pass2_and_unified_paths_write_the_list_and_labels(self):
+        import inspect
+
+        from graphrag_sdk.ingestion.resolution_strategies import llm_verified_resolution as m
+
+        src = inspect.getsource(m)
+        # both merge sites call the shared rule; no site builds `description` by hand
+        assert src.count("set_merged_descriptions(survivor,") == 2
+        assert '" | ".join(descriptions)' not in src
+        # labels of every absorbed member are recorded
+        assert "merged_labels" in src

@@ -38,6 +38,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     exact_match_merge,
     flatten_remap,
     remap_relationships,
+    set_merged_descriptions,
 )
 
 logger = logging.getLogger(__name__)
@@ -942,17 +943,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
             # `merged_labels='Engineer'`. GraphNode.label is a single str, so
             # widening it would ripple through storage and query building;
             # the property is additive and loses nothing.
-            descriptions: list[str] = []
-            survivor_desc = survivor.properties.get("description")
-            if survivor_desc:
-                descriptions.append(str(survivor_desc))
             merged_labels: list[str] = []
             for mi in members[1:]:
                 dup = valid[mi]
                 remap[dup.id] = survivor.id
-                dup_desc = dup.properties.get("description")
-                if dup_desc and str(dup_desc) not in descriptions:
-                    descriptions.append(str(dup_desc))
                 if dup.label != survivor.label and dup.label not in merged_labels:
                     merged_labels.append(dup.label)
                 # A dup that already absorbed labels in an earlier merge carries
@@ -963,8 +957,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 for key, value in dup.properties.items():
                     if key not in survivor.properties:
                         survivor.properties[key] = value
-            if descriptions:
-                survivor.properties["description"] = " | ".join(descriptions)
+            set_merged_descriptions(survivor, [valid[mi] for mi in members[1:]])
             if merged_labels:
                 existing = str(survivor.properties.get("merged_labels", "") or "")
                 kept = [p for p in existing.split(" | ") if p]
@@ -1474,10 +1467,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 # "DESC-ONE". Stage 1 (base.py) has always joined with " | ";
                 # PASS 2 was fixed the same way in P3.21. This is the same
                 # defect in the same-label path.
-                descriptions: list[str] = []
-                survivor_desc = survivor.properties.get("description")
-                if survivor_desc:
-                    descriptions.append(str(survivor_desc))
                 # `label` is the same defect one level up: the survivor always
                 # has one, so a duplicate's differing label was destroyed with
                 # no record. Under the unified stage a cross-label merge is an
@@ -1492,9 +1481,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 for mi in members[1:]:
                     dup = valid_nodes[mi]
                     remap[dup.id] = survivor.id
-                    dup_desc = dup.properties.get("description")
-                    if dup_desc and str(dup_desc) not in descriptions:
-                        descriptions.append(str(dup_desc))
                     if dup.label != survivor.label and dup.label not in merged_labels:
                         merged_labels.append(dup.label)
                     for lbl in str(dup.properties.get("merged_labels", "") or "").split(" | "):
@@ -1503,8 +1489,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     for key, value in dup.properties.items():
                         if key not in survivor.properties:
                             survivor.properties[key] = value
-                if descriptions:
-                    survivor.properties["description"] = " | ".join(descriptions)
+                set_merged_descriptions(survivor, [valid_nodes[mi] for mi in members[1:]])
                 if merged_labels:
                     # Same " | " convention as `description` above.
                     existing = str(survivor.properties.get("merged_labels", "") or "")
