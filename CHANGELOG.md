@@ -16,8 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   original chunk text, not the LLM-enriched one. Applies to
   `IngestionPipeline.run()` directly as well as through `GraphRAG.ingest()`:
   when no `document_info` is supplied the pipeline now derives a stable
-  Document id from the normalised source path (or, in text mode, from the
-  text). **Upgrade note:** graphs built before this change hold random chunk
+  Document id from the source (normalised filesystem path; URIs kept
+  verbatim), and in text mode from a hash
+  of the text. `GraphRAG.ingest(text=...)` without `document_id` uses the
+  same text hash (previously a fresh `text-<uuid>` per call), so ingesting
+  identical text twice is now one document and a no-op the second time; pass
+  `document_id` to store identical text as distinct documents.
+  **Upgrade note:** graphs built before this change hold random chunk
   ids; the first re-ingest of an existing document adds one more copy of its
   chunk layer (matching nothing), and is stable from the second re-ingest on.
   Because position is part of the id, inserting a paragraph into an edited
@@ -38,9 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the documented `CallableChunking` example. Measured on the benchmark corpus:
   entity F1 0.574 vs 0.563 and relation F1 0.237 vs 0.223 against 768; with
   the current extraction prompt, exact relation F1 2.2× and answer accuracy
-  27 → 32 % for the full stack. **Cost:** ~35 % more extraction LLM calls and
-  ~19 % more input tokens per ingest (103 → 157 calls on the 11-document
-  corpus), since the per-call instructions are re-sent once per chunk. Pass
+  27 → 32 % for the full stack. **Cost:** more extraction LLM calls per
+  ingest — 103 → 157 (+52 %) on the 11-document benchmark corpus, +35 % on a
+  53k-token corpus — and ~19 % more input tokens, since the per-call
+  instructions are re-sent once per chunk. Pass
   `max_tokens=512` to keep the old size.
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.

@@ -38,6 +38,7 @@ from graphrag_sdk.core.models import (
     RagResult,
     RetrieverResult,
     UpdateResult,
+    stable_document_id,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.discovery import SchemaExtensionProposal, suggest_extensions
@@ -1419,7 +1420,7 @@ class GraphRAG:
         if isinstance(source, list) and document_id is not None:
             raise ValueError(
                 "'document_id' cannot be set on batch ingest (list source). "
-                "Each file's id defaults to os.path.normpath(path); pass an "
+                "Each file's id defaults to its normalised path; pass an "
                 "explicit document_id only for single-source calls."
             )
         if text is not None and loader is not None:
@@ -1496,21 +1497,25 @@ class GraphRAG:
         """Compute the stable Document node id for an ingest/update call.
 
         - explicit ``document_id`` → used verbatim
-        - file mode (source given, no id) → ``os.path.normpath(source)``
-        - text mode (no id) → generated ``text-<8hex>``
+        - file mode (source given, no id) → ``stable_document_id(source)``:
+          the normalised path, or the URI verbatim
+        - text mode (no id) → ``text-<16hex>`` derived from the text
 
         Path normalization collapses ``./``, ``../``, and double slashes
         so the same logical path always yields the same id, regardless of
-        how the caller spelled it.
+        how the caller spelled it; sources with a URI scheme are not
+        touched, since ``normpath`` would rewrite them. Text mode hashes the text (SHA-256, 64
+        bits) so ingesting the same text twice is the same document — and
+        therefore a no-op on the second call, like a file — instead of a
+        fresh random ``text-<uuid>`` per call. Two different texts collide
+        with probability ~2 in 10^11 at 10K ingests; pass ``document_id``
+        when you need to ingest identical text as distinct documents.
         """
         if document_id is not None:
             return document_id
         if text is None and source is not None:
-            return os.path.normpath(source)
-        # 64-bit suffix — at 32 bits (the original [:8]), 10K text-mode
-        # ingests in one session collide with ~12% probability. 64 bits
-        # pushes that to roughly 2 in 10^11 for the same volume.
-        return f"text-{uuid4().hex[:16]}"
+            return stable_document_id(source)
+        return f"text-{hashlib.sha256((text or '').encode('utf-8')).hexdigest()[:16]}"
 
     async def _ingest_single(
         self,

@@ -1069,6 +1069,20 @@ class TestGraphRAGBatchIngest:
         result = await graphrag.ingest(text="some text")
         assert result is not None
 
+    def test_text_mode_document_id_is_derived_from_the_text(self):
+        """Same text → same id (so a second ingest is a no-op); different
+        text → different id; an explicit id always wins."""
+        from graphrag_sdk import GraphRAG
+
+        a = GraphRAG._resolve_document_id(None, "Alice works at Acme.", None)
+        b = GraphRAG._resolve_document_id(None, "Alice works at Acme.", None)
+        c = GraphRAG._resolve_document_id(None, "Bob works at Beta.", None)
+        assert a == b
+        assert a != c
+        assert a.startswith("text-") and len(a) == len("text-") + 16
+        assert GraphRAG._resolve_document_id(None, "Alice works at Acme.", "mine") == "mine"
+        assert GraphRAG._resolve_document_id("./docs/../a.md", None, None) == "a.md"
+
     async def test_ingest_single_still_works(self, graphrag, tmp_path):
         f = tmp_path / "single.txt"
         f.write_text("Single document.")

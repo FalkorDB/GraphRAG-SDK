@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import logging
 from typing import Any
 
@@ -25,6 +24,7 @@ from graphrag_sdk.core.models import (
     IngestionResult,
     Ontology,
     TextChunks,
+    stable_document_id,
 )
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
@@ -218,14 +218,14 @@ class IngestionPipeline:
                 # without a caller-supplied ``document_info`` every run of
                 # the same file was a new Document — and, since the chunk
                 # ids include the document id, a new set of chunks. Derive
-                # the id from the normalised source path, the same rule
-                # ``GraphRAG._resolve_document_id`` applies, so the
-                # pipeline is idempotent on its own and not only through
-                # the facade. ``update()`` always passes an explicit
-                # pending id and is unaffected.
+                # the id from the source (normalised path; URIs verbatim),
+                # the same rule ``GraphRAG._resolve_document_id`` applies,
+                # so the pipeline is idempotent on its own and not only
+                # through the facade. ``update()`` always passes an
+                # explicit pending id and is unaffected.
                 if document_info is None:
                     document.document_info = DocumentInfo(
-                        uid=os.path.normpath(source),
+                        uid=stable_document_id(source),
                         path=document.document_info.path or source,
                         metadata=document.document_info.metadata,
                     )
@@ -278,7 +278,8 @@ class IngestionPipeline:
                 if existing is not None and existing.content_hash == content_hash:
                     ctx.log(
                         f"Document '{doc_uid}' already ingested with identical content; "
-                        f"skipping. Call update() to re-extract."
+                        f"skipping. Use GraphRAG.update() to re-extract with a new "
+                        f"ontology or strategy."
                     )
                     return IngestionResult(
                         document_info=document.document_info,

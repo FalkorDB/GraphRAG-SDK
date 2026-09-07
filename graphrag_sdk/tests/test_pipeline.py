@@ -977,3 +977,45 @@ class TestDeterministicChunkUids:
         plain = TextChunks(chunks=[TextChunk(text="The lighthouse was built in 1896.", index=0)])
         _assign_deterministic_chunk_uids(DocumentInfo(uid="doc-1"), plain)
         assert plain.chunks[0].uid == enriched("anything")
+
+
+class TestStableDocumentId:
+    def test_paths_are_normalised(self):
+        from graphrag_sdk.core.models import stable_document_id
+
+        assert stable_document_id("./docs/../a.md") == "a.md"
+        assert stable_document_id("docs//a.md") == "docs/a.md"
+
+    def test_uris_are_kept_verbatim(self):
+        """``os.path.normpath`` would turn ``https://`` into ``https:/`` and
+        resolve ``..`` inside a query string, merging distinct URLs."""
+        from graphrag_sdk.core.models import stable_document_id
+
+        for uri in (
+            "https://example.test/doc?path=a/../b",
+            "https://example.test/b",
+            "s3://bucket/key//with/./dots",
+            "file:///tmp/../etc/x",
+        ):
+            assert stable_document_id(uri) == uri
+        assert stable_document_id("https://example.test/doc?path=a/../b") != stable_document_id(
+            "https://example.test/b"
+        )
+
+    async def test_pipeline_uses_the_uri_verbatim_as_document_id(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+        pipeline = IngestionPipeline(
+            loader=StubLoader("Alice works at Acme."),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(),
+        )
+        await pipeline.run("https://example.test/doc?path=a/../b", ctx)
+        mock_graph_store.get_document_record.assert_awaited_once_with(
+            "https://example.test/doc?path=a/../b"
+        )
