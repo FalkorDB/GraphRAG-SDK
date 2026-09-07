@@ -7,11 +7,24 @@ Results for [GraphRAG-SDK](https://github.com/FalkorDB/GraphRAG-SDK) on
 [GraphRAG-Bench](https://graphrag-bench.github.io/) (Xiang et al., ICLR 2026),
 covering both subsets and all four task categories.
 
+<Note>
+For the headline comparison against vector RAG (71.48 vs 55.39), the citation
+block and what a benchmark does and does not tell you about production
+hallucinations, see
+[GraphRAG Accuracy Benchmark: FalkorDB vs Vector RAG](/graphrag-accuracy-benchmark).
+This page is the deep methodology reference behind those numbers.
+</Note>
+
 The reproduction package — the runner, the ontology builders and pinned
 dependencies — is available on request; open an
 [issue](https://github.com/FalkorDB/GraphRAG-SDK/issues) or ask on
 [Discord](https://discord.gg/6M4QwDXn2w). The ontologies themselves are
 published below, along with the full configuration.
+
+This score is a ceiling on task performance against a fixed dataset, not a
+guarantee about your data. Grounded retrieval and an explicit abstention path
+are what set the floor for production reliability — see
+[Reducing LLM Hallucinations](/reducing-llm-hallucinations).
 
 ## Results
 
@@ -156,6 +169,15 @@ reported to the benchmark authors.
 over 2053 of 2062 Medical and 1995 of 2009 Novel predictions. Every prediction
 itself succeeded; there were no generation failures or empty answers in either
 subset.
+
+<Note>
+A benchmark score measures task performance on a fixed, offline dataset. It
+does not measure hallucination rate on your own data — that also depends on
+your source-data quality, how narrowly retrieval is scoped, prompting, and
+the abstention logic your application defines. See
+[Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how to ground
+and verify answers in your own deployment.
+</Note>
 
 ---
 
