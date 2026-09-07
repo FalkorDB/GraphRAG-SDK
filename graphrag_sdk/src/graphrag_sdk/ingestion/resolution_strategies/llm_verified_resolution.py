@@ -62,6 +62,93 @@ _PAIR_BLOCK = (
 # are stated explicitly because they are evidence the model should weigh, not
 # noise to hide: "Person" vs "Engineer" is compatible, "City" vs "Airport" is
 # not.
+# Label families for the cross-label gate. Two entities whose extractor labels
+# fall in DIFFERENT known families are never the same thing, whatever the
+# embedding or the LLM says: a person is not the institution named after them,
+# a town is not its church. Measured on the 11-document benchmark, 3 full runs
+# of the unified stage: 54 of 55 merges across gold types were wrong (Person |
+# Institution 12, Person | Organization 7, Institution | Place 6, Person | Place
+# 5 ...) against 8 wrong of 105 same-type merges. Labels not listed here
+# (custom ontologies: "Engineer", "Vessel") belong to no family and are left to
+# the LLM, so Person | Engineer still resolves. Generic labels are wildcards.
+LABEL_FAMILIES: dict[str, frozenset[str]] = {
+    "person": frozenset({"person", "people", "individual", "human"}),
+    "organization": frozenset(
+        {
+            "organization",
+            "organisation",
+            "company",
+            "institution",
+            "agency",
+            "government",
+            "team",
+            "group",
+            "university",
+            "school",
+            "corporation",
+        }
+    ),
+    "place": frozenset(
+        {
+            "location",
+            "place",
+            "city",
+            "country",
+            "region",
+            "state",
+            "province",
+            "building",
+            "facility",
+            "site",
+            "address",
+            "geo",
+            "gpe",
+        }
+    ),
+    "event": frozenset({"event", "incident", "conference", "war", "battle"}),
+    "time": frozenset({"date", "time", "period", "year", "era"}),
+    "work": frozenset(
+        {
+            "product",
+            "technology",
+            "concept",
+            "method",
+            "dataset",
+            "law",
+            "artifact",
+            "document",
+            "work",
+            "tool",
+            "material",
+            "software",
+            "algorithm",
+            "theory",
+        }
+    ),
+}
+_GENERIC_LABELS = frozenset({"", "entity", "__entity__", "unknown", "thing", "other", "misc"})
+_LABEL_TO_FAMILY: dict[str, str] = {
+    member: family for family, members in LABEL_FAMILIES.items() for member in members
+}
+
+
+def labels_compatible(label_a: str, label_b: str) -> bool:
+    """May two entities with these extractor labels be the same thing?
+
+    ``True`` when the labels are equal, when either is generic, when either is
+    unknown to :data:`LABEL_FAMILIES`, or when both map to the same family.
+    ``False`` only when both map to *different* known families.
+    """
+    a = (label_a or "").strip().lower()
+    b = (label_b or "").strip().lower()
+    if a == b or a in _GENERIC_LABELS or b in _GENERIC_LABELS:
+        return True
+    fa, fb = _LABEL_TO_FAMILY.get(a), _LABEL_TO_FAMILY.get(b)
+    if fa is None or fb is None:
+        return True
+    return fa == fb
+
+
 _CROSS_LABEL_PAIR_BLOCK = (
     "Entity A:\n"
     "  Name: {name_a}\n"
@@ -406,6 +493,16 @@ class LLMVerifiedResolution(ResolutionStrategy):
             5 per call gives 58.7 in 7.9s, and one per call gives 61.0 in 20.6s.
             Pass ``batch_verification=False`` for the one-pair-per-call path,
             which buys ~2 more merges for 5x the calls and 2.6x the wall time.
+        label_family_gate: Drop cross-label candidate pairs whose labels fall
+            in different known families (see :data:`LABEL_FAMILIES`) before
+            they reach the LLM (default: True). Measured: 54 of 55
+            cross-type merges on the benchmark were wrong; the gate removes
+            them at zero cost. Labels outside the table are unaffected.
+        cross_label_vote: Ask the LLM twice about each cross-label pair that
+            survives the gate, with A and B swapped, and merge only when both
+            answers are YES (default: True). Same-label pairs are asked once.
+            Cross-label YES answers flipped between identical runs (8 / 26 /
+            31 wrong merges); requiring agreement removes the coin-flips.
         unified_stage: Compare all entities in one pass, embedding
             ``"name: description"`` rather than the name alone, instead of
             bucketing by label first (default: True). Measured on 216 gold
@@ -460,6 +557,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
         cross_label_min_descriptions: int = 3,
         unified_stage: bool = True,
         unified_threshold: float = 0.65,
+        label_family_gate: bool = True,
+        cross_label_vote: bool = True,
     ) -> None:
         if hard_threshold <= soft_threshold:
             raise ValueError(
@@ -485,6 +584,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
         self.cross_label_max_pairs = cross_label_max_pairs
         self.cross_label_min_descriptions = cross_label_min_descriptions
         self.unified_stage = unified_stage
+        self.label_family_gate = label_family_gate
+        self.cross_label_vote = cross_label_vote
         self.unified_threshold = unified_threshold
 
     def _embed_text(self, node: GraphNode) -> str:
@@ -1091,6 +1192,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
 
             hard_pairs: list[tuple[int, int]] = []
             ambiguous_pairs: list[tuple[int, int, float]] = []
+            gated_pairs = 0
 
             # ANN via hnswlib HNSW (O(N log N)) — no OpenMP, no macOS deadlock.
             top_k = min(self.ann_top_k, n_nodes - 1)
@@ -1112,10 +1214,22 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     if j <= i:
                         continue
                     sim_val = 1.0 - float(dists[i, rank])
+                    if sim_val < soft_floor:
+                        continue
+                    if (
+                        self.unified_stage
+                        and self.label_family_gate
+                        and not labels_compatible(valid_nodes[i].label, valid_nodes[j].label)
+                    ):
+                        gated_pairs += 1
+                        continue
                     if sim_val >= self.hard_threshold and not _needs_llm(i, j):
                         hard_pairs.append((i, j))
-                    elif sim_val >= soft_floor:
+                    else:
                         ambiguous_pairs.append((i, j, sim_val))
+
+            if gated_pairs:
+                ctx.log(f"Label family gate dropped {gated_pairs} cross-family candidate pair(s)")
 
             # Hard merges — no LLM needed
             for gi, gj in hard_pairs:
@@ -1270,6 +1384,65 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 else:
                     confirmed = await self._verify_one_by_one(blocks, requests)
 
+                # Second opinion on cross-label YESes. A YES on "Eleanor
+                # Whitford (Person) = Whitford Archive (Organization)" flipped
+                # between identical runs; asking again with A and B swapped and
+                # requiring agreement keeps only the answers the model gives
+                # consistently. Same-label pairs are not re-asked.
+                vetoed = 0
+                if self.unified_stage and self.cross_label_vote:
+                    recheck = [
+                        req
+                        for req in requests
+                        if confirmed.get(req.prompt_index) and req.node_a.label != req.node_b.label
+                    ]
+                    if recheck:
+                        swapped_blocks = [
+                            _CROSS_LABEL_PAIR_BLOCK.format(
+                                name_a=str(req.node_b.properties.get("name", req.node_b.id)),
+                                label_a=req.node_b.label,
+                                desc_a=str(
+                                    req.node_b.properties.get("description", "(no description)")
+                                ),
+                                neighbors_a=_fmt_neighbors(req.node_b.id),
+                                name_b=str(req.node_a.properties.get("name", req.node_a.id)),
+                                label_b=req.node_a.label,
+                                desc_b=str(
+                                    req.node_a.properties.get("description", "(no description)")
+                                ),
+                                neighbors_b=_fmt_neighbors(req.node_a.id),
+                                similarity=req.similarity,
+                            )
+                            for req in recheck
+                        ]
+                        swapped_reqs = [
+                            _VerificationRequest(
+                                node_a=req.node_b,
+                                node_b=req.node_a,
+                                idx_a=req.idx_b,
+                                idx_b=req.idx_a,
+                                similarity=req.similarity,
+                                label=req.label,
+                                prompt_index=k,
+                            )
+                            for k, req in enumerate(recheck)
+                        ]
+                        if self.batch_verification:
+                            second = await self._verify_batched(swapped_blocks)
+                        else:
+                            second = await self._verify_one_by_one(swapped_blocks, swapped_reqs)
+                        for k, req in enumerate(recheck):
+                            if not second.get(k):
+                                confirmed[req.prompt_index] = False
+                                vetoed += 1
+                                logger.debug(
+                                    "Cross-label vote vetoed '%s' (%s) + '%s' (%s)",
+                                    req.node_a.properties.get("name", req.node_a.id),
+                                    req.node_a.label,
+                                    req.node_b.properties.get("name", req.node_b.id),
+                                    req.node_b.label,
+                                )
+
                 llm_confirmed = 0
                 for req in requests:
                     if confirmed.get(req.prompt_index):
@@ -1280,6 +1453,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 ctx.log(
                     f"Label '{label}': {len(capped)} ambiguous pairs → "
                     f"{llm_confirmed} LLM-confirmed merges"
+                    + (f" ({vetoed} cross-label YES vetoed on second vote)" if vetoed else "")
                 )
 
             # Build clusters from Union-Find
