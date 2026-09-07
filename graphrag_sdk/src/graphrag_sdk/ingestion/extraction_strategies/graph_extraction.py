@@ -13,6 +13,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
+    RESERVED_NODE_LABELS,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -22,7 +23,6 @@ from graphrag_sdk.core.models import (
     GraphRelationship,
     Ontology,
     Relation,
-    RESERVED_NODE_LABELS,
     TextChunks,
 )
 from graphrag_sdk.core.providers import LLMInterface
@@ -464,9 +464,7 @@ class GraphExtraction(ExtractionStrategy):
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.entity_types = _reject_reserved_labels(
-            entity_types or list(DEFAULT_ENTITY_TYPES)
-        )
+        self.entity_types = _reject_reserved_labels(entity_types or list(DEFAULT_ENTITY_TYPES))
         self._max_concurrency = max_concurrency
 
     async def extract(

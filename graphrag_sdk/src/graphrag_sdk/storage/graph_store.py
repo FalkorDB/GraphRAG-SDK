@@ -14,12 +14,12 @@ from typing import Any
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
     ChunkEntityRow,
     ChunkRelationshipRow,
     DocumentRecord,
     GraphNode,
     GraphRelationship,
-    RESERVED_NODE_LABELS,
 )
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 

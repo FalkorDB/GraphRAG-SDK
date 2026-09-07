@@ -73,53 +73,87 @@ _PRONOUNS: set[str] = {
 # between runs, and cannot be quietly skipped the way the prompt instruction was
 # (see RESULTS.md P2.10).  Well-known two-letter acronyms - AI, US, UK, EU, UN,
 # Go - are deliberately absent and stay.
-_SHELL_TOKENS: frozenset[str] = frozenset({
-    "sh", "cd", "ls", "rm", "cp", "mv", "dt", "bg", "fg", "fn", "df", "du",
-    "ps", "cat", "pwd", "echo", "mkdir", "rmdir", "chmod", "chown", "grep",
-    "awk", "sed", "env", "sudo", "ssh", "tmp", "var", "usr", "bin", "etc",
-})
+_SHELL_TOKENS: frozenset[str] = frozenset(
+    {
+        "sh",
+        "cd",
+        "ls",
+        "rm",
+        "cp",
+        "mv",
+        "dt",
+        "bg",
+        "fg",
+        "fn",
+        "df",
+        "du",
+        "ps",
+        "cat",
+        "pwd",
+        "echo",
+        "mkdir",
+        "rmdir",
+        "chmod",
+        "chown",
+        "grep",
+        "awk",
+        "sed",
+        "env",
+        "sudo",
+        "ssh",
+        "tmp",
+        "var",
+        "usr",
+        "bin",
+        "etc",
+    }
+)
 
-_ENTITY_STOPLIST: set[str] = _PRONOUNS | _SHELL_TOKENS | {
-    # Generic/anonymous references
-    "narrator",
-    "the narrator",
-    "author",
-    "the author",
-    "reader",
-    "the reader",
-    "speaker",
-    "the speaker",
-    "listener",
-    "the listener",
-    "the man",
-    "the woman",
-    "the boy",
-    "the girl",
-    "the child",
-    "man",
-    "woman",
-    "boy",
-    "girl",
-    "child",
-    "people",
-    "person",
-    "someone",
-    "somebody",
-    "everyone",
-    "everybody",
-    "mistress",
-    "master",
-    # Meta-textual
-    "story",
-    "chapter",
-    "passage",
-    "book",
-    "text",
-    "narrative",
-    "paragraph",
-    "section",
-    "document",
-}
+_ENTITY_STOPLIST: set[str] = (
+    _PRONOUNS
+    | _SHELL_TOKENS
+    | {
+        # Generic/anonymous references
+        "narrator",
+        "the narrator",
+        "author",
+        "the author",
+        "reader",
+        "the reader",
+        "speaker",
+        "the speaker",
+        "listener",
+        "the listener",
+        "the man",
+        "the woman",
+        "the boy",
+        "the girl",
+        "the child",
+        "man",
+        "woman",
+        "boy",
+        "girl",
+        "child",
+        "people",
+        "person",
+        "someone",
+        "somebody",
+        "everyone",
+        "everybody",
+        "mistress",
+        "master",
+        # Meta-textual
+        "story",
+        "chapter",
+        "passage",
+        "book",
+        "text",
+        "narrative",
+        "paragraph",
+        "section",
+        "document",
+    }
+)
 
 
 # ── Entity Utility Functions ─────────────────────────────────────
@@ -164,9 +198,7 @@ _SPECIFIC_DATE_RE = re.compile(
 )
 
 # Overrides the rule above: these name a span of time, not a moment.
-_DATE_PERIOD_RE = re.compile(
-    r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age\b", re.IGNORECASE
-)
+_DATE_PERIOD_RE = re.compile(r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age\b", re.IGNORECASE)
 
 
 def is_specific_date(name: str) -> bool:
