@@ -2287,11 +2287,11 @@ class TestFinalizeReminder:
 
 
 class TestDefaultResolver:
-    """``ingest()`` resolves with ``LLMVerifiedResolution`` unless told otherwise.
+    """``ingest()`` resolves with ``ExactMatchResolution`` unless told otherwise;
+    cross-document dedup belongs to ``finalize()``, where it sees every document.
 
-    The default moved from ``ExactMatchResolution``; these pin both that the
-    default is wired with the facade's own providers and that an explicit
-    ``resolver=`` still wins.
+    These pin that ingest stays zero-LLM-cost for resolution and that an
+    explicit ``resolver=`` still wins.
     """
 
     @staticmethod
@@ -2318,17 +2318,47 @@ class TestDefaultResolver:
         g._write_graph_config = AsyncMock()
         return captured
 
-    async def test_default_is_llm_verified_with_facade_providers(self, graphrag, monkeypatch):
-        from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
-            LLMVerifiedResolution,
+    async def test_default_ingest_resolver_is_exact_match(self, graphrag, monkeypatch):
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
         )
 
         captured = self._capture_pipeline(graphrag, monkeypatch)
         await graphrag.ingest(text="Airbus builds aircraft.")
         resolver = captured["resolver"]
-        assert isinstance(resolver, LLMVerifiedResolution)
-        assert resolver.llm is graphrag.llm
-        assert resolver.embedder is graphrag.embedder
+        assert isinstance(resolver, ExactMatchResolution)
+        # zero-LLM at ingest: no summaries, no cross-label merges
+        assert resolver.llm is None
+        assert resolver.cross_label_merge is False
+
+    async def test_default_ingest_resolver_joins_descriptions_and_keeps_labels_apart(
+        self, graphrag
+    ):
+        """Same name + same label → one node, descriptions joined with ' | ',
+        edges re-pointed to the survivor. Same name + different label → two
+        nodes (the judge decides at finalize). No LLM call in either case."""
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship
+
+        nodes = [
+            GraphNode(id="p1", label="Person", properties={"name": "Alice", "description": "engineer"}),
+            GraphNode(id="p2", label="Person", properties={"name": "alice", "description": "born 1970"}),
+            GraphNode(id="p3", label="Person", properties={"name": "Alice", "description": "lives in Paris"}),
+            GraphNode(id="o1", label="Organization", properties={"name": "Alice", "description": "a company"}),
+            GraphNode(id="x", label="Location", properties={"name": "Paris", "description": ""}),
+        ]
+        rels = [GraphRelationship(start_node_id="p2", end_node_id="x", type="RELATES", properties={})]
+        graphrag.llm.abatch_invoke = AsyncMock(side_effect=AssertionError("LLM must not be called"))
+
+        res = await graphrag._default_resolver().resolve(GraphData(nodes=nodes, relationships=rels), Context())
+
+        ids = {n.id for n in res.nodes}
+        assert len(ids) == 3 and "o1" in ids and "x" in ids  # 3 Persons → 1, Organization kept
+        survivor = next(n for n in res.nodes if n.label == "Person")
+        assert res.merged_count == 2
+        assert set(survivor.properties["description"].split(" | ")) == {"engineer", "born 1970", "lives in Paris"}
+        assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
+        assert res.relationships[0].end_node_id == "x"
 
     async def test_explicit_resolver_is_honoured(self, graphrag, monkeypatch):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
@@ -2339,3 +2369,5 @@ class TestDefaultResolver:
         mine = ExactMatchResolution()
         await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
         assert captured["resolver"] is mine
+
+

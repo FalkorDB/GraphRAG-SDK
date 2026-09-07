@@ -41,6 +41,48 @@ _SUMMARY_WITH_TYPE_PROMPT = (
 )
 
 
+def description_list(props: dict) -> list[str]:
+    """The member descriptions of a node as a list.
+
+    A merged node carries ``descriptions`` (list) and ``description`` (the
+    same texts joined with ``" | "``, which is what search and prompts read).
+    An unmerged node has only ``description``. Either way this returns the
+    list, deduplicated, empty strings dropped.
+    """
+    raw = props.get("descriptions")
+    items: list[str] = []
+    if isinstance(raw, list):
+        items = [str(d).strip() for d in raw]
+    else:
+        single = str(props.get("description") or "").strip()
+        # A survivor written before ``descriptions`` existed may hold a
+        # joined string; split it so old graphs merge the same way.
+        items = single.split(" | ") if single else []
+    out: list[str] = []
+    for d in items:
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+def set_merged_descriptions(survivor: GraphNode, members: list[GraphNode]) -> list[str]:
+    """Rule for every merge: the survivor keeps **every** member's description.
+
+    Writes ``descriptions`` (a list — ``["desc1", "desc2", ...]``, survivor's
+    first, duplicates dropped) and ``description`` (the same list joined with
+    ``" | "`` for the fulltext index, search and LLM prompts). Returns the list.
+    """
+    merged: list[str] = []
+    for node in [survivor, *members]:
+        for d in description_list(node.properties):
+            if d not in merged:
+                merged.append(d)
+    if merged:
+        survivor.properties["descriptions"] = merged
+        survivor.properties["description"] = " | ".join(merged)
+    return merged
+
+
 def _pick_canonical_label(nodes: list[GraphNode]) -> str:
     """Heuristic label selection: most frequent non-Unknown label wins.
 
@@ -277,9 +319,11 @@ async def exact_match_merge(
             continue
         survivor = group_nodes[0]
         if entry["descriptions"]:
-            survivor.properties["description"] = (
-                sl_summaries[i] if i in sl_summaries else " | ".join(entry["descriptions"])
-            )
+            set_merged_descriptions(survivor, group_nodes[1:])
+            if i in sl_summaries:
+                # An LLM summary (force_summary_threshold reached) replaces the
+                # joined string only; the member list is kept intact.
+                survivor.properties["description"] = sl_summaries[i]
         if entry["all_source_ids"]:
             survivor.properties["source_chunk_ids"] = entry["all_source_ids"]
         for dup in group_nodes[1:]:
@@ -343,6 +387,9 @@ async def exact_match_merge(
                 if lab not in parts:
                     parts.append(lab)
             cl_survivor.properties["merged_labels"] = " | ".join(p for p in parts if p)
+        set_merged_descriptions(
+            cl_survivor, [n for n in sl_survivors_in_cand if n.id != cl_survivor.id]
+        )
         cl_survivor.properties["description"] = cl_summary
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
