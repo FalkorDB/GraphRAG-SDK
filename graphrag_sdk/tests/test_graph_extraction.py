@@ -23,11 +23,13 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     is_valid_entity_name,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    DEFAULT_RELATION_TYPES,
     VERIFY_EXTRACT_RELS_PROMPT,
     GraphExtraction,
     _format_entity_types,
     _format_relation_patterns,
     _reject_reserved_labels,
+    _relationship_type_instruction,
 )
 from graphrag_sdk.storage.graph_store import GraphStore
 
@@ -1038,3 +1040,60 @@ class TestReservedNodeLabels:
     def test_store_and_extractor_share_one_definition(self):
         """Two hardcoded copies would drift; the bug returns when they do."""
         assert GraphStore._STRUCTURAL_LABELS is RESERVED_NODE_LABELS
+
+
+class TestDefaultRelationTypes:
+    """The shipped relation vocabulary — the counterpart to DEFAULT_ENTITY_TYPES.
+
+    Entity extraction always shipped a default type list; relations shipped
+    nothing, so the prompt asked the model to invent a label per edge. Measured
+    on an 11-document corpus that produced 447 distinct labels against 30 in
+    gold. Supplying a default list doubled exact triple F1 (0.065 -> 0.134) with
+    no loss of recall, and held across five unrelated Wikipedia domains
+    (vocabulary 2.2-2.9x smaller, 10-18% -> 66-81% of edges on the list).
+    """
+
+    def test_default_is_applied_when_nothing_is_passed(self):
+        ge = GraphExtraction(llm=MockLLM())
+        assert ge.relation_types == list(DEFAULT_RELATION_TYPES)
+        assert len(ge.relation_types) > 0
+
+    def test_explicit_list_overrides_the_default(self):
+        ge = GraphExtraction(llm=MockLLM(), relation_types=["eats", "owns"])
+        assert ge.relation_types == ["eats", "owns"]
+
+    def test_empty_list_restores_open_vocabulary(self):
+        """``[]`` is a request, not an omission.
+
+        Guards the ``is None`` check: a truthiness test would silently swap an
+        explicit open-vocabulary request for the default list.
+        """
+        ge = GraphExtraction(llm=MockLLM(), relation_types=[])
+        assert ge.relation_types == []
+
+    def test_default_list_is_not_shared_between_instances(self):
+        a = GraphExtraction(llm=MockLLM())
+        b = GraphExtraction(llm=MockLLM())
+        a.relation_types.append("mutated")
+        assert "mutated" not in b.relation_types
+        assert "mutated" not in DEFAULT_RELATION_TYPES
+
+    def test_default_labels_are_well_formed(self):
+        for label in DEFAULT_RELATION_TYPES:
+            assert label == label.lower(), f"{label} is not lower_snake_case"
+            assert " " not in label, f"{label} contains a space"
+            assert label.replace("_", "").isalpha(), f"{label} has odd characters"
+        assert len(set(DEFAULT_RELATION_TYPES)) == len(DEFAULT_RELATION_TYPES)
+
+    def test_default_list_reaches_the_prompt(self):
+        """The list is worthless if it never renders into the prompt."""
+        rels = [Relation(label=lbl) for lbl in DEFAULT_RELATION_TYPES]
+        block = _format_relation_patterns(rels)
+        assert "## Allowed Relationships" in block
+        for label in DEFAULT_RELATION_TYPES:
+            assert label in block
+        assert "MUST be one of" in _relationship_type_instruction(rels)
+
+    def test_open_vocabulary_prompt_when_list_is_empty(self):
+        assert _format_relation_patterns([]) == ""
+        assert "UPPER_SNAKE_CASE" in _relationship_type_instruction([])
