@@ -574,19 +574,6 @@ class TestSpansMerging:
         assert "chunk-1" in merged[0].spans
 
 
-class TestNoiseFilteringPrompt:
-    """Bug 4: VERIFY_EXTRACT_RELS_PROMPT should contain noise-filtering instructions."""
-
-    def test_prompt_contains_operator_filtering(self):
-        assert "symbolic" in VERIFY_EXTRACT_RELS_PROMPT.lower()
-
-    def test_prompt_contains_abbreviation_filtering(self):
-        assert "non-domain-specific" in VERIFY_EXTRACT_RELS_PROMPT
-
-    def test_prompt_contains_short_token_filtering(self):
-        assert "1-2 characters" in VERIFY_EXTRACT_RELS_PROMPT
-
-
 class TestEntityTypeDescriptions:
     """Bug 3: _format_entity_types should include descriptions when available."""
 
@@ -836,3 +823,118 @@ class TestGraphExtractionSchemaAttributes:
         )
         assert len(ents) == 1
         assert ents[0].attributes == {}
+
+
+class TestFailedChunkReporting:
+    """Finding #7: a broken extraction must not look like an empty document.
+
+    Before the fix, per-chunk failures were swallowed and replaced with
+    empty results, so a document whose chunks all failed returned byte
+    identical output to a document that genuinely contained no entities.
+    These three arms mirror the benchmark harness that proved it.
+    """
+
+    class _ScriptedExtractor(EntityExtractor):
+        """Fails on the first ``n_fail`` chunks, returns [] for the rest."""
+
+        def __init__(self, n_fail: int) -> None:
+            self._n_fail = n_fail
+            self.calls = 0
+
+        async def extract_entities(
+            self, text: str, entity_types: list[str], source_chunk_id: str
+        ) -> list[ExtractedEntity]:
+            index = self.calls
+            self.calls += 1
+            if index < self._n_fail:
+                raise RuntimeError(f"simulated NER failure on chunk {index}")
+            return []
+
+    async def _run(self, n_fail: int, ctx, *, silent_llm: bool = False):
+        extractor = self._ScriptedExtractor(n_fail)
+        # silent_llm: step 2 also yields nothing, so the graph really is empty
+        # in every arm and only the new fields can tell the arms apart.
+        llm = (
+            _mock_hybrid_llm(step1_entities=[], step2_entities=[], step2_relationships=[])
+            if silent_llm
+            else _mock_hybrid_llm()
+        )
+        strategy = GraphExtraction(llm=llm, entity_extractor=extractor)
+        chunks = _make_chunks("one.", "two.", "three.", "four.")
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        # Guard against the instrument silently not running: if the extractor
+        # was never called, every assertion below is vacuously true.
+        assert extractor.calls == 4, "extractor did not run on all 4 chunks"
+        return result
+
+    async def test_empty_document_is_not_reported_as_failed(self, ctx):
+        result = await self._run(0, ctx)
+        assert result.chunks_attempted == 4
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_total_failure_is_reported(self, ctx):
+        result = await self._run(4, ctx)
+        assert result.chunks_attempted == 4
+        assert len(result.failed_chunks) == 4
+        assert result.extraction_failed is True
+
+    async def test_partial_failure_reports_only_the_failed_chunks(self, ctx):
+        result = await self._run(2, ctx)
+        assert result.chunks_attempted == 4
+        assert len(result.failed_chunks) == 2
+        # Not a total failure: the surviving chunks did their job.
+        assert result.extraction_failed is False
+
+    async def test_empty_and_broken_are_distinguishable(self, ctx):
+        """The finding itself: these two used to be identical."""
+        empty = await self._run(0, ctx, silent_llm=True)
+        broken = await self._run(4, ctx, silent_llm=True)
+        assert empty.nodes == broken.nodes == []
+        assert (empty.chunks_attempted, empty.failed_chunks, empty.extraction_failed) != (
+            broken.chunks_attempted,
+            broken.failed_chunks,
+            broken.extraction_failed,
+        )
+
+    async def test_failed_chunks_are_retryable_ids(self, ctx):
+        """A count is not enough; the caller must be able to re-ingest."""
+        result = await self._run(2, ctx)
+        chunks = _make_chunks("one.", "two.", "three.", "four.")
+        known = {c.uid for c in chunks.chunks}
+        assert set(result.failed_chunks) <= known
+        assert all(isinstance(uid, str) and uid for uid in result.failed_chunks)
+
+    async def test_no_chunks_reports_nothing_attempted(self, ctx):
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=self._ScriptedExtractor(0)
+        )
+        result = await strategy.extract(TextChunks(chunks=[]), Ontology(), ctx)
+        assert result.chunks_attempted == 0
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_successful_extraction_reports_no_failures(self, ctx):
+        """Guard the happy path: normal ingests must stay clean."""
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        assert len(result.nodes) > 0
+        assert result.chunks_attempted == 1
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+
+class TestNoiseFilteringPrompt:
+    """Bug 4: VERIFY_EXTRACT_RELS_PROMPT should contain noise-filtering instructions."""
+
+    def test_prompt_contains_operator_filtering(self):
+        assert "symbolic" in VERIFY_EXTRACT_RELS_PROMPT.lower()
+
+    def test_prompt_contains_abbreviation_filtering(self):
+        assert "non-domain-specific" in VERIFY_EXTRACT_RELS_PROMPT
+
+    def test_prompt_contains_short_token_filtering(self):
+        assert "1-2 characters" in VERIFY_EXTRACT_RELS_PROMPT

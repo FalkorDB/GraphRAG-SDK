@@ -164,3 +164,62 @@ class TestEntityExtractorABC:
                 )]
 
         assert isinstance(MyExtractor(), EntityExtractor)
+
+
+class TestGLiNERModelSharing:
+    """Bugs #8 and #11 — one model copy per extractor, and a serialising lock.
+
+    #11: with current (not peak) RSS, six extractors each loading their own
+    model went 74.5 MB -> 2447 MB, ~395 MB marginal per copy, projecting
+    ~11.6 GB for 30 concurrent documents. With the shared cache the same six
+    sit at 1425.3 -> 1425.4 MB: 0.0 MB marginal, ~1.39 GB projected.
+
+    #8: inference ran under a per-instance lock while the caller dispatched it
+    via ``asyncio.to_thread``, so concurrent documents serialised. Counter-
+    balanced over eight documents: locked 3.75/3.54 s, unlocked 2.21/2.46 s =
+    1.56x. Removing it is only sound because GLiNER inference proved
+    thread-safe — 40/40 documents byte-identical against the serialised run.
+    """
+
+    def _extractor(self, monkeypatch, loads):
+        from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+
+        class FakeGLiNER:
+            @staticmethod
+            def from_pretrained(name):
+                loads.append(name)
+                return object()
+
+        monkeypatch.setitem(__import__("sys").modules, "gliner",
+                            type("m", (), {"GLiNER": FakeGLiNER}))
+        monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {}, raising=False)
+        return ee.GLiNERExtractor
+
+    def test_model_loaded_once_across_instances(self, monkeypatch):
+        loads = []
+        cls = self._extractor(monkeypatch, loads)
+        models = [cls()._load_model() for _ in range(5)]
+        assert len(loads) == 1
+        assert len({id(m) for m in models}) == 1
+
+    def test_different_models_are_not_shared(self, monkeypatch):
+        loads = []
+        cls = self._extractor(monkeypatch, loads)
+        a = cls(model_name="model-a", threshold=0.5)._load_model()
+        b = cls(model_name="model-b", threshold=0.5)._load_model()
+        assert loads == ["model-a", "model-b"]
+        assert a is not b
+
+    def test_inference_takes_no_lock(self):
+        """Guards bug #8 against reintroduction."""
+        import inspect
+
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            GLiNERExtractor,
+        )
+
+        src = inspect.getsource(GLiNERExtractor._predict_sync)
+        code = "\n".join(
+            line for line in src.splitlines() if not line.strip().startswith("#")
+        )
+        assert "self._lock" not in code
