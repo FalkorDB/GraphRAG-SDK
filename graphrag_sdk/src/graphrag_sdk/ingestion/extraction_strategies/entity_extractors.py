@@ -532,9 +532,7 @@ class GLiNERExtractor(EntityExtractor):
     ) -> None:
         self._model_name = model_name or self.DEFAULT_MODEL
         if threshold is None:
-            threshold = self.DEFAULT_THRESHOLDS.get(
-                self._model_name, self._FALLBACK_THRESHOLD
-            )
+            threshold = self.DEFAULT_THRESHOLDS.get(self._model_name, self._FALLBACK_THRESHOLD)
             if self._model_name not in self.DEFAULT_THRESHOLDS:
                 logger.warning(
                     "No measured threshold for GLiNER model %r; falling back to "
@@ -618,9 +616,7 @@ class GLiNERExtractor(EntityExtractor):
     def _word_spans(self, model: Any, text: str) -> list[tuple[str, int, int]]:
         """Split text the same way GLiNER does, keeping char offsets."""
         if self._splitter is None:
-            splitter = getattr(
-                getattr(model, "data_processor", None), "words_splitter", None
-            )
+            splitter = getattr(getattr(model, "data_processor", None), "words_splitter", None)
             if splitter is None:
                 from gliner.data_processing import WordsSplitter
 
@@ -667,11 +663,7 @@ class GLiNERExtractor(EntityExtractor):
         # ``self._threshold`` comes back and is demoted to ``UNKNOWN_LABEL`` by
         # ``_parse_predictions`` rather than being discarded. When no candidate
         # threshold is configured the two are equal and nothing is demoted.
-        floor = (
-            self._threshold
-            if self._candidate_threshold is None
-            else self._candidate_threshold
-        )
+        floor = self._threshold if self._candidate_threshold is None else self._candidate_threshold
 
         # No lock here, deliberately.
         #
