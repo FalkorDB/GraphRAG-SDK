@@ -406,6 +406,77 @@ class TestIngestionPipeline:
         assert mention_rels[0].end_node_id == "chunk-0"
 
 
+class TestUnchangedReingestShortCircuit:
+    """Re-ingesting a document whose content hash is already stored is a no-op.
+
+    Stable chunk UIDs (Bug #12) made the chunk layer idempotent, but
+    extraction still re-ran and, being LLM work, named a few entities
+    differently each time: measured +3 to +16 entity nodes, +18 to +50
+    RELATES and +30 MENTIONED_IN per re-ingest of one unchanged document.
+    """
+
+    def _pipeline(self, mock_graph_store, mock_vector_store, extractor):
+        return IngestionPipeline(
+            loader=StubLoader("Alice works at Acme Corp."),
+            chunker=StubChunker(),
+            extractor=extractor,
+            resolver=StubResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(),
+        )
+
+    @staticmethod
+    def _stored(content_hash):
+        from graphrag_sdk.core.models import DocumentRecord
+
+        return AsyncMock(return_value=DocumentRecord(path="test.txt", content_hash=content_hash))
+
+    async def test_identical_content_skips_extraction_and_writes(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        import hashlib
+
+        extractor = StubExtractor()
+        extractor.extract = AsyncMock(wraps=extractor.extract)
+        digest = hashlib.sha256(b"Alice works at Acme Corp.").hexdigest()
+        mock_graph_store.get_document_record = self._stored(digest)
+
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor)
+        result = await pipeline.run("test.txt", ctx, document_info=DocumentInfo(uid="doc-1"))
+
+        extractor.extract.assert_not_called()
+        mock_graph_store.upsert_nodes.assert_not_called()
+        mock_graph_store.upsert_relationships.assert_not_called()
+        assert result.metadata["skipped_unchanged"] is True
+        assert result.nodes_created == 0
+
+    async def test_changed_content_takes_the_full_path(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        extractor = StubExtractor()
+        extractor.extract = AsyncMock(wraps=extractor.extract)
+        mock_graph_store.get_document_record = self._stored("0" * 64)
+
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor)
+        result = await pipeline.run("test.txt", ctx, document_info=DocumentInfo(uid="doc-1"))
+
+        extractor.extract.assert_called_once()
+        assert "skipped_unchanged" not in result.metadata
+
+    async def test_new_document_takes_the_full_path(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        extractor = StubExtractor()
+        extractor.extract = AsyncMock(wraps=extractor.extract)
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+
+        pipeline = self._pipeline(mock_graph_store, mock_vector_store, extractor)
+        await pipeline.run("test.txt", ctx, document_info=DocumentInfo(uid="doc-1"))
+
+        extractor.extract.assert_called_once()
+
+
 class TestRemapMentionsUnit:
     """Direct unit tests for ``IngestionPipeline._remap_mentions`` covering
     the chain-following contract independently of the full pipeline."""

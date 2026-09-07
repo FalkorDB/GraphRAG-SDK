@@ -229,6 +229,30 @@ class IngestionPipeline:
             # short-circuit in update() will never fire — correct, just
             # not optimal.
             content_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
+
+            # Unchanged re-ingest short-circuit. Stable chunk UIDs made the
+            # lexical layer idempotent, but extraction still re-ran and, being
+            # LLM work, named a few entities differently each time: measured
+            # +3 to +16 entity nodes, +18 to +50 RELATES and +30 MENTIONED_IN
+            # per re-ingest of one unchanged document. Same rule update()
+            # uses for its no-op: a stored Document with this exact content
+            # hash means every chunk, entity and edge below is already there.
+            # Changed text (new hash) still takes the full path; a changed
+            # ontology or strategy with the same text is update()'s job.
+            doc_uid = document.document_info.uid
+            if doc_uid:
+                existing = await self.graph_store.get_document_record(doc_uid)
+                if existing is not None and existing.content_hash == content_hash:
+                    ctx.log(
+                        f"Document '{doc_uid}' already ingested with identical content; "
+                        f"skipping extraction. Call update() to re-extract."
+                    )
+                    return IngestionResult(
+                        document_info=document.document_info,
+                        chunks_indexed=len(chunks.chunks),
+                        metadata={"skipped_unchanged": True, "content_hash": content_hash},
+                    )
+
             ctx.log("Step 3/9: Building lexical graph (provenance chain)")
             await self._build_lexical_graph(
                 document.document_info, chunks, ctx, content_hash=content_hash
