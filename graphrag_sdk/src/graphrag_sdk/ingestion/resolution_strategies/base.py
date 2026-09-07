@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import TYPE_CHECKING
@@ -13,6 +14,8 @@ from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, Re
 if TYPE_CHECKING:
     from graphrag_sdk.core.providers import LLMInterface
 
+
+logger = logging.getLogger(__name__)
 
 _SUMMARY_PROMPT = (
     "Summarise the following descriptions of the entity '{entity_name}' "
@@ -61,8 +64,16 @@ async def exact_match_merge(
     force_summary_threshold: int = 3,
     max_summary_tokens: int = 500,
     cross_label_merge: bool = False,
+    cross_label_min_descriptions: int = 3,
+    resolve_property: str = "name",
 ) -> tuple[list[GraphNode], dict[str, str], int]:
     """Phase 1: group nodes by normalized name and merge exact duplicates.
+
+    *resolve_property* selects which property carries the entity name; it
+    exists so ``ExactMatchResolution`` can expose the same knob while
+    sharing this implementation. Nodes lacking that property fall back to
+    ``node.id``, which for extracted entities is already
+    ``name__type`` normalized.
 
     When *cross_label_merge* is False (default), groups by
     ``(normalized_name, label)`` — only same-type duplicates merge.
@@ -77,13 +88,19 @@ async def exact_match_merge(
     batch invocation; no extra calls beyond what the same-label summary
     path already performs.
 
+    *cross_label_min_descriptions* is the evidence floor for that second
+    stage: a name/label group with fewer descriptions than this is left
+    alone rather than put to the LLM. It is deliberately separate from
+    *force_summary_threshold*, which answers a different question (when to
+    have the LLM summarise a merged description).
+
     Returns:
         (deduplicated_nodes, id_remap, merged_count)
     """
     # ── Stage 1: always group by (name, label) for the safe same-label pass ──
     sl_groups: dict[tuple[str, str], list[GraphNode]] = defaultdict(list)
     for node in nodes:
-        name = node.properties.get("name", node.id)
+        name = node.properties.get(resolve_property, node.id)
         norm = str(name).strip().lower()
         sl_groups[(norm, node.label)].append(node)
 
@@ -118,7 +135,14 @@ async def exact_match_merge(
     if cross_label_merge and llm is not None:
         by_name: dict[str, list[int]] = defaultdict(list)
         for i, entry in enumerate(sl_entries):
-            norm = str(entry["nodes"][0].properties.get("name", "")).strip().lower()
+            first = entry["nodes"][0]
+            # Must use the same key and the same fallback as the same-label
+            # grouping above. This read used to default to "", so every node
+            # lacking `resolve_property` normalised to the empty string and
+            # landed in one bucket -- unrelated nameless nodes under different
+            # labels then looked like a cross-label homograph group and were
+            # put to the LLM together.
+            norm = str(first.properties.get(resolve_property, first.id)).strip().lower()
             by_name[norm].append(i)
         for _name_key, indices in by_name.items():
             if len(indices) < 2:
@@ -127,8 +151,35 @@ async def exact_match_merge(
             if len(labels) < 2:
                 continue
             total_orig_descs = sum(sl_entries[i]["orig_desc_count"] for i in indices)
-            if total_orig_descs < force_summary_threshold:
-                # Fail-safe: insufficient evidence to ask the LLM; preserve.
+            if total_orig_descs < cross_label_min_descriptions:
+                # Fail-safe: too little evidence to ask the LLM here, so
+                # preserve both nodes under their original labels and let the
+                # cross-label PASS 2 in LLMVerifiedResolution decide instead.
+                #
+                # The gate used to read `< force_summary_threshold`, which is a
+                # different question -- that knob decides when the LLM should
+                # *summarise* merged descriptions. Changing the summary policy
+                # silently changed which entities merged. The two are now
+                # separate; the default is unchanged at 3.
+                #
+                # Lowering it to 2 was tried and rejected on evidence. This
+                # stage has no vector filter, so every same-name cross-label
+                # group it accepts costs an LLM call and its precision rests
+                # entirely on that one answer. PASS 2 screens the same pairs
+                # against a cosine floor first and rejects the cheap cases for
+                # free -- `Apple` the fruit vs `Apple` the company score 0.437
+                # and never reach the model. Measured end to end (3 reps): what
+                # this gate skips, PASS 2 merges correctly 3/3, and it still
+                # rejects the homograph trap 3/3. So the gate costs no recall
+                # downstream, and lowering it only moves work to the stage with
+                # the weaker safety net.
+                logger.debug(
+                    "cross-label merge skipped for '%s' (%s): %d description(s), need %d",
+                    sl_entries[indices[0]]["nodes"][0].properties.get(resolve_property, ""),
+                    "/".join(sorted(labels)),
+                    total_orig_descs,
+                    cross_label_min_descriptions,
+                )
                 continue
             all_descs: list[str] = []
             for i in indices:
@@ -136,7 +187,8 @@ async def exact_match_merge(
                     d = n.properties.get("description", "")
                     if d:
                         all_descs.append(str(d))
-            entity_name = str(sl_entries[indices[0]]["nodes"][0].properties.get("name", ""))
+            _first = sl_entries[indices[0]]["nodes"][0]
+            entity_name = str(_first.properties.get(resolve_property, _first.id))
             cl_candidates.append(
                 {
                     "sl_indices": indices,
@@ -156,7 +208,8 @@ async def exact_match_merge(
             and len(entry["descriptions"]) >= force_summary_threshold
             and llm is not None
         ):
-            name = str(entry["nodes"][0].properties.get("name", ""))
+            _n0 = entry["nodes"][0]
+            name = str(_n0.properties.get(resolve_property, _n0.id))
             prompts.append(
                 _SUMMARY_PROMPT.format(
                     entity_name=name,
@@ -259,9 +312,17 @@ async def exact_match_merge(
         existing_srcs = cl_survivor.properties.get("source_chunk_ids", [])
         if isinstance(existing_srcs, list):
             merged_sources.extend(existing_srcs)
+        # The losers' labels are otherwise destroyed here: this loop copies only
+        # keys the survivor lacks, and the survivor always has a label. Same
+        # defect as the embedding stage (P3.29) and PASS 2 (P3.21). graph_store
+        # promotes this property to real Cypher labels on write, so a merged
+        # node stays reachable under every type it was extracted as.
+        absorbed_labels: list[str] = []
         for s in sl_survivors_in_cand:
             if s.id == cl_survivor.id:
                 continue
+            if s.label and s.label != cl_survivor.label and s.label not in absorbed_labels:
+                absorbed_labels.append(s.label)
             for k, v in s.properties.items():
                 if k not in cl_survivor.properties:
                     cl_survivor.properties[k] = v
@@ -275,6 +336,13 @@ async def exact_match_merge(
             merged_count += 1
         if merged_sources:
             cl_survivor.properties["source_chunk_ids"] = merged_sources
+        if absorbed_labels:
+            existing = cl_survivor.properties.get("merged_labels")
+            parts = [p.strip() for p in str(existing).split("|")] if existing else []
+            for lab in absorbed_labels:
+                if lab not in parts:
+                    parts.append(lab)
+            cl_survivor.properties["merged_labels"] = " | ".join(p for p in parts if p)
         cl_survivor.properties["description"] = cl_summary
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
@@ -296,6 +364,30 @@ async def exact_match_merge(
         deduplicated_nodes.append(survivor)
 
     return deduplicated_nodes, id_remap, merged_count
+
+
+def flatten_remap(id_remap: dict[str, str]) -> dict[str, str]:
+    """Collapse multi-hop remap chains so every key points at its final survivor.
+
+    Resolution runs in successive passes, and each pass merges the survivors of
+    the previous one. Phase 1 may record ``dup -> A``; a later pass then merges
+    A itself and records ``A -> B``. The combined mapping contains both hops,
+    but ``remap_relationships`` performs a single lookup, so a relationship
+    pointing at ``dup`` would be rewritten to ``A`` — a node that was removed.
+    The relationship is then left dangling.
+
+    Cycles cannot arise from union-find output, but a defensive visit set is
+    kept so a malformed mapping degrades to "stop early" rather than hanging.
+    """
+    flattened: dict[str, str] = {}
+    for start in id_remap:
+        seen = {start}
+        target = id_remap[start]
+        while target in id_remap and target not in seen:
+            seen.add(target)
+            target = id_remap[target]
+        flattened[start] = target
+    return flattened
 
 
 def remap_relationships(
