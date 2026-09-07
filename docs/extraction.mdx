@@ -81,7 +81,8 @@ A local transformer model that runs on your machine — no API calls needed.
 from graphrag_sdk import GLiNERExtractor
 
 extractor = GLiNERExtractor(
-    threshold=0.75,                          # confidence threshold (below = "Unknown")
+    threshold=0.75,                          # at or above: typed entity
+    candidate_threshold=0.5625,              # band below threshold kept as "Unknown" (default: 25 % below threshold)
     model_name="urchade/gliner_medium-v2.1", # HuggingFace model
 )
 ```
@@ -90,7 +91,7 @@ extractor = GLiNERExtractor(
 1. The model is loaded lazily on first use (thread-safe via `threading.Lock`)
 2. Runs inference via `asyncio.to_thread()` to avoid blocking the event loop
 3. Returns predictions with character-level spans — more precise than LLM spans
-4. Entities below the confidence threshold are labeled `"Unknown"` (not discarded)
+4. Entities in the band just below the confidence threshold (default: 25 % below it, e.g. 0.5625–0.75) are labeled `"Unknown"` and handed to the step-2 LLM, which re-types or drops them against the text; anything below the band is discarded. Pass `candidate_threshold=None` to disable the band.
 
 **Best for:** Production pipelines where you want fast, cheap NER without API costs.
 
@@ -198,7 +199,7 @@ Person, Organization, Technology, Product, Location,
 Date, Event, Concept, Law, Dataset, Method
 ```
 
-Entities that don't match any type (or fall below the confidence threshold) are labeled `"Unknown"`.
+Entities that don't match any type (or score in the band just below the confidence threshold) are labeled `"Unknown"`.
 
 ### Customizing the Ontology
 

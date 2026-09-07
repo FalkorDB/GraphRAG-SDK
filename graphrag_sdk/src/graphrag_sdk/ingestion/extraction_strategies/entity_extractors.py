@@ -39,6 +39,9 @@ DEFAULT_ENTITY_TYPES: list[str] = [
 
 UNKNOWN_LABEL = "Unknown"
 
+#: Sentinel for "use the class default" where ``None`` is itself a valid value.
+_DEFAULT: Any = object()
+
 MIN_NAME_LEN = 2  # single-char names are noise
 MAX_NAME_LEN = 80  # descriptions masquerading as names
 
@@ -440,17 +443,27 @@ class GLiNERExtractor(EntityExtractor):
     processed as a series of overlapping windows and the results are merged.
     Short text takes a fast path and behaves exactly as before.
 
-    **Confidence handling.** By default the model is queried at ``threshold``,
-    so anything less confident is discarded inside GLiNER and never reaches this
-    SDK. Set ``candidate_threshold`` below ``threshold`` to instead *keep* those
-    entities and label them ``"Unknown"``. The rest of the pipeline is already
-    built for this: ontology filtering explicitly whitelists ``"Unknown"`` so
-    low-confidence nodes survive pruning, and entity resolution prefers any
-    specific type over ``"Unknown"`` when merging duplicates. Off by default —
-    lowering ``threshold`` outright was measured to raise entity recall 32%
-    while dropping entity F1 0.568 -> 0.474 and triple F1 0.236 -> 0.211, so
-    low-confidence predictions are mostly noise and should be marked, not
-    trusted.
+    **Confidence handling.** Spans scoring at or above ``threshold`` are typed.
+    Spans in the band just below it — from ``candidate_threshold`` up to
+    ``threshold`` — are kept but labelled ``"Unknown"``; anything below the band
+    is discarded inside GLiNER and never reaches this SDK. The rest of the
+    pipeline is built for the ``"Unknown"`` label: the step-2 LLM re-types or
+    drops each one against the text, ontology filtering whitelists it so
+    survivors are not pruned, and entity resolution prefers any specific type
+    over ``"Unknown"`` when merging duplicates.
+
+    By default the band is **25 % of the threshold** (``CANDIDATE_BAND``), so it
+    follows whichever model threshold is in effect: 0.5625–0.75 for
+    ``gliner_medium-v2.1``, 0.375–0.5 for the bi-encoders. Measured end to end on
+    the 11-document benchmark against the same code with the band off: NER
+    spans 1828 -> 2468, the step-2 LLM kept most of them under a real type (0
+    ``Unknown`` nodes reached the graph), entity recall 0.535 -> 0.571 at
+    precision 0.605 -> 0.572 (F1 0.568 -> 0.572), triple relaxed F1 0.228 ->
+    0.236, QA 30.4 % -> 32.4 %, ingest cost +8 %. A much wider band (floor 0.30,
+    earlier measurement) was net negative — recall +0.13 for precision -0.13,
+    F1 -0.027 — which is why this is a fraction of the threshold and not a
+    fixed low floor. Pass ``candidate_threshold=None`` to turn the band off, or
+    a number below ``threshold`` to set the floor explicitly.
 
     **Thresholds are model-specific and are not comparable between models.**
     ``DEFAULT_THRESHOLDS`` records the measured operating point for each known
@@ -469,6 +482,10 @@ class GLiNERExtractor(EntityExtractor):
         window_overlap: Word-tokens shared between consecutive windows. Must
             exceed the model's ``max_width`` (longest representable entity,
             12 words by default) or entities on a boundary are lost.
+        candidate_threshold: Floor of the ``"Unknown"`` band. Default: 25 %
+            below ``threshold`` (``CANDIDATE_BAND``). ``None`` disables the
+            band (spans below ``threshold`` are discarded). Must not exceed
+            ``threshold``.
     """
 
     # Safety margin under config.max_len; the label prompt and special tokens
@@ -501,13 +518,18 @@ class GLiNERExtractor(EntityExtractor):
     #: value transfers to an unknown model.
     _FALLBACK_THRESHOLD = 0.5
 
+    #: Default ``candidate_threshold`` as a fraction below ``threshold``:
+    #: ``threshold * (1 - CANDIDATE_BAND)``. Relative, so it tracks the
+    #: per-model threshold instead of assuming one score scale.
+    CANDIDATE_BAND = 0.25
+
     def __init__(
         self,
         threshold: float | None = None,
         model_name: str | None = None,
         window_tokens: int | None = None,
         window_overlap: int = 48,
-        candidate_threshold: float | None = None,
+        candidate_threshold: float | None | object = _DEFAULT,
     ) -> None:
         self._model_name = model_name or self.DEFAULT_MODEL
         if threshold is None:
@@ -521,6 +543,8 @@ class GLiNERExtractor(EntityExtractor):
                     self._FALLBACK_THRESHOLD,
                 )
         self._threshold = threshold
+        if candidate_threshold is _DEFAULT:
+            candidate_threshold = round(threshold * (1.0 - self.CANDIDATE_BAND), 4)
         if candidate_threshold is not None and candidate_threshold > threshold:
             raise ValueError(
                 f"candidate_threshold ({candidate_threshold}) must be <= "
