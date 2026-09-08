@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from enum import Enum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
@@ -91,6 +93,23 @@ class TextChunks(DataModel):
     """Collection of text chunks from a single document."""
 
     chunks: list[TextChunk] = Field(default_factory=list)
+
+
+_URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def stable_document_id(source: str) -> str:
+    """Document node id for a loader ``source`` when the caller gives none.
+
+    Filesystem paths are normalised (``./``, ``../``, doubled slashes) so the
+    same file spelled two ways is one document. Anything with a URI scheme
+    (``https://``, ``s3://`` …) is returned verbatim: ``os.path.normpath`` would
+    collapse ``https://`` to ``https:/`` and resolve ``..`` inside the query
+    string, merging distinct URLs into one id.
+    """
+    if _URI_SCHEME.match(source):
+        return source
+    return os.path.normpath(source)
 
 
 class DocumentInfo(DataModel):
