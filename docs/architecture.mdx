@@ -73,6 +73,8 @@ The knowledge graph contains these node types and edge types:
 
 All LLM-extracted relationships use the single `RELATES` edge type. The original relationship type (e.g. `WORKS_AT`, `LOCATED_IN`) is preserved as the `rel_type` property on the edge. A `fact` property stores a human-readable fact string for embedding.
 
+`MENTIONED_IN` edges are what let retrieval trace an entity mentioned in an answer back to its source chunk — see [Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how to surface that provenance trail and define an abstention path when it's missing.
+
 ### Post-ingestion: Entity Deduplication
 
 Entity deduplication is handled post-ingestion via `deduplicate_entities()` rather than during the pipeline. This allows ingesting multiple documents independently, then deduplicating globally. The method groups entities by `(normalized name, label)` to prevent cross-type merging (e.g. Person "Paris" and Location "Paris" remain separate).
@@ -180,3 +182,4 @@ Each subsystem has a dedicated document with step-by-step explanations:
 - [Graph Schema](/graph-schema) — how the knowledge graph is structured in FalkorDB
 - [Storage](/storage) — GraphStore, VectorStore, and EntityDeduplicator internals
 - [Retrieval](/retrieval) — the multi-path retrieval system that answers questions
+- [Reducing LLM Hallucinations](/reducing-llm-hallucinations) — grounding answers in retrieved evidence and defining an abstention path

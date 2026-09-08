@@ -1,0 +1,302 @@
+---
+title: "GraphRAG Accuracy Benchmark: FalkorDB vs Vector RAG for Reliable LLM Answers"
+sidebarTitle: "Accuracy Benchmark"
+description: "GraphRAG-SDK on FalkorDB scores 71.48 overall on GraphRAG-Bench vs 55.39 for vector RAG with reranking — full models, datasets, evaluation definition, reproduction steps and limitations."
+---
+
+**Last updated: August 2026.** All figures are point-in-time measurements for
+GraphRAG-SDK 1.3.0 with `gpt-4o-mini`, and for competitor entries as published
+on the GraphRAG-Bench leaderboard in August 2026.
+
+## Summary: how much more accurate is GraphRAG than vector RAG?
+
+On [GraphRAG-Bench](https://graphrag-bench.github.io/) (Xiang et al., ICLR
+2026), the [FalkorDB GraphRAG SDK](https://github.com/FalkorDB/GraphRAG-SDK)
+scores **71.48 overall** against **55.39** for the benchmark's vector-RAG
+baseline, *RAG (w/ rerank)* — a **+16.09 point** absolute gap, or **~29%
+relative** improvement. Both systems use the same generation backbone,
+`gpt-4o-mini`, and the same judge, so the difference is attributable to
+retrieval, not to the model.
+
+| System | Novel (multi-doc) ACC | Medical (single-doc) ACC | Overall |
+| --- | ---: | ---: | ---: |
+| **FalkorDB GraphRAG SDK 1.3.0** | **66.09** | **76.87** | **71.48** |
+| RAG (w/ rerank) — vector RAG baseline | 48.35 | 62.43 | 55.39 |
+| **Difference** | **+17.74** | **+14.44** | **+16.09** |
+
+`Overall = (Novel ACC + Medical ACC) / 2`. Overall is our own cross-dataset
+summary; the GraphRAG-Bench leaderboard ranks each dataset separately.
+
+<Note>
+Competitor figures are taken unchanged from the published GraphRAG-Bench
+leaderboard as of August 2026. We did not re-run them. See
+[Limitations](#limitations-what-this-benchmark-does-not-prove).
+</Note>
+
+For the full 15-system leaderboard comparison, ontology integrity notes and
+per-run counts, see the deep methodology reference at
+[Benchmark](/benchmark).
+
+## What was measured, and on which datasets?
+
+GraphRAG-Bench has two subsets, each with four task categories.
+
+| Subset | Corpus | Questions | Character |
+| --- | --- | ---: | --- |
+| Novel | 20 documents | 2,010 | Multi-document fiction; entity- and relation-heavy |
+| Medical | 1 corpus | 2,062 | Single-corpus domain text |
+
+The four task categories, scored identically on both subsets, are **Fact
+Retrieval**, **Complex Reasoning**, **Contextual Summarize** and **Creative
+Generation**.
+
+### Per-category results — GraphRAG-Bench (Medical), ACC average 76.87
+
+| Level | ACC | ROUGE-L | Cov | FS |
+| --- | --- | --- | --- | --- |
+| Fact Retrieval | 74.50 | 45.43 | — | — |
+| Complex Reasoning | 76.47 | 26.55 | — | — |
+| Contextual Summarize | 82.29 | — | 62.02 | — |
+| Creative Generation | 74.21 | — | 49.72 | 70.75 |
+
+### Per-category results — GraphRAG-Bench (Novel), ACC average 66.09
+
+| Level | ACC | ROUGE-L | Cov | FS |
+| --- | --- | --- | --- | --- |
+| Fact Retrieval | 65.49 | 41.82 | — | — |
+| Complex Reasoning | 59.26 | 24.62 | — | — |
+| Contextual Summarize | 75.42 | — | 54.11 | — |
+| Creative Generation | 64.21 | — | 43.38 | 68.77 |
+
+Cov is coverage and FS is factual score, reported by the benchmark's evaluator
+for the categories where they apply.
+
+## How is accuracy (ACC) computed?
+
+Per dataset, ACC is the **unweighted mean of the four task-category scores**,
+matching the GraphRAG-Bench leaderboard convention:
+
+```text
+Dataset ACC = (Fact Retrieval + Complex Reasoning + Contextual Summarize + Creative Generation) / 4
+Overall     = (Novel ACC + Medical ACC) / 2
+```
+
+Scoring is done by the benchmark's own `Evaluation/generation_eval.py`,
+**unmodified**, with:
+
+| Judge setting | Value |
+| --- | --- |
+| Judge model | `gpt-4o-mini` |
+| Judge embeddings | `BAAI/bge-large-en-v1.5` |
+| Judge temperature | 0 |
+| Judge seed | 42 |
+
+## What exact model and embedding configuration produced 71.48?
+
+Per the benchmark's Appendix H.2, GraphRAG-SDK's own defaults are preserved
+rather than tuned to the benchmark; the protocol is matched on the backbone
+model and the judge.
+
+| Setting | Value | Source |
+| --- | --- | --- |
+| Backbone LLM | `gpt-4o-mini` (Azure OpenAI) — graph construction *and* generation | Benchmark protocol |
+| Generation temperature | 0.7 | Appendix H.2 |
+| Framework | GraphRAG-SDK 1.3.0 (PyPI) on FalkorDB | — |
+| Graph layout | one graph per corpus document | — |
+| Chunking | `SentenceTokenCapChunking`, max_tokens 512, overlap 2 sentences | SDK default |
+| Retrieval | `MultiPathRetrieval` — chunk_top_k 15, rel_top_k 15, max_entities 30, max_relationships 20, keyword_limit 10 | SDK default |
+| Embeddings | `text-embedding-3-large` @ 1024 dimensions | Declared deviation |
+| Text-to-Cypher | enabled (`enable_cypher=True`) | Declared deviation |
+| Evaluation | benchmark's `Evaluation/generation_eval.py`, unmodified | Benchmark protocol |
+| Judge | `gpt-4o-mini`, `BAAI/bge-large-en-v1.5` embeddings, temperature 0, seed 42 | Benchmark protocol |
+
+### Declared deviations from SDK defaults
+
+Two settings were raised above the SDK's own defaults. Both are single global
+values, chosen before any results were scored, and applied identically to both
+subsets.
+
+- **`enable_cypher = True`** (SDK default `False`) — ontology-guided
+  text-to-Cypher retrieval is a core GraphRAG-SDK capability, enabled so the
+  measurement reflects the framework as deployed. It contributed to 22% of
+  Medical and 29% of Novel answers.
+- **`embedding_dimension = 1024`** (SDK default `256`) — the same vector width
+  as `bge-large-en-v1.5`, the embedding model Appendix H.2 specifies for
+  evaluated systems.
+
+Declaring these is the point: a benchmark number is only checkable if every
+deviation from the shipped defaults is stated up front.
+
+## How do I reproduce these results?
+
+<AccordionGroup>
+  <Accordion title="1. Install the SDK and start FalkorDB">
+
+```bash
+pip install graphrag-sdk[litellm]==1.3.0
+docker run -d -p 6379:6379 -p 3000:3000 --name falkordb falkordb/falkordb:latest
+```
+
+Point the SDK at Azure OpenAI `gpt-4o-mini` for both extraction and generation,
+and at `text-embedding-3-large` with `dimensions=1024` for embeddings.
+
+  </Accordion>
+  <Accordion title="2. Obtain the GraphRAG-Bench datasets">
+
+Download the Novel and Medical subsets and the `Evaluation/` directory from the
+[GraphRAG-Bench project](https://graphrag-bench.github.io/). Use them as
+published; do not filter or re-split the question sets.
+
+  </Accordion>
+  <Accordion title="3. Use the published ontologies">
+
+Both ontologies are published so the run is checkable without the runner:
+
+| Subset | Ontology | Entities | Relations |
+| --- | --- | ---: | ---: |
+| Medical | [`ontology_medical.json`](https://github.com/FalkorDB/GraphRAG-SDK/blob/6faaf6b03979ddf2a696749f082aee6c61606f1c/docs/benchmark/ontology_medical.json) | 10 | 13 |
+| Novel | [`ontology_novel.json`](https://github.com/FalkorDB/GraphRAG-SDK/blob/6faaf6b03979ddf2a696749f082aee6c61606f1c/docs/benchmark/ontology_novel.json) | 8 | 13 |
+
+They were hand-authored from the **corpus only**. The question sets and the
+`evidence`, `evidence_relations` and `evidence_triple` fields were never read
+during ontology design or indexing, and no question, answer or evidence text
+appears in either file.
+
+  </Accordion>
+  <Accordion title="4. Index, answer, judge">
+
+Per subset, the pipeline runs in three stages:
+
+1. **Index** — each corpus document is chunked, and entities and relationships
+   are extracted against that subset's ontology into its own FalkorDB graph
+   (one graph per document, so retrieval is scoped to the document a question
+   was written against).
+2. **Answer** — every question in the subset is answered through
+   `MultiPathRetrieval`, with the retrieved context recorded alongside the
+   answer.
+3. **Judge** — answers are scored by the benchmark's own
+   `Evaluation/generation_eval.py`, unmodified, with `gpt-4o-mini` as judge and
+   `bge-large-en-v1.5` embeddings.
+
+The run produces, per subset: the leaderboard row, the fully resolved
+configuration, per-question predictions with their retrieved context, and each
+answer's individual judge scores.
+
+  </Accordion>
+</AccordionGroup>
+
+### How long does indexing take?
+
+Measured on a 24-core machine, and dominated by extraction API calls rather
+than local compute:
+
+| Subset | Chunks | Indexing time |
+| --- | ---: | --- |
+| Medical (1 corpus) | 510 | ~1.5 h end to end |
+| Novel (20 documents) | ~2,500 | ~4 h |
+
+<Tip>
+The full reproduction package — the runner, the ontology builders and pinned
+dependencies — is available on request. Open an
+[issue](https://github.com/FalkorDB/GraphRAG-SDK/issues) or ask on
+[Discord](https://discord.gg/6M4QwDXn2w). The ontologies and the full
+configuration are already published above.
+</Tip>
+
+## Limitations: what this benchmark does not prove
+
+This section matters more than the headline number. Read it before citing.
+
+- **Competitor numbers were not re-run by us.** They are taken from the
+  published GraphRAG-Bench leaderboard as of August 2026. Hardware, run dates
+  and prompt versions differ between entries.
+- **Novel produced 2,009 predictions rather than 2,010.** The dataset contains
+  a duplicate question id (`Novel-55f0c0e2`) carrying identical question text
+  under two different `source` values with contradictory ground truths — one
+  answers the question asked, the other is unrelated. Our runner answers each
+  id once. This has been reported to the benchmark authors.
+- **The evaluator skips samples whose judge call raises.** Averages are over
+  **2,053 of 2,062** Medical and **1,995 of 2,009** Novel predictions. Every
+  prediction itself succeeded: there were no generation failures and no empty
+  answers in either subset.
+- **LLM-as-judge scoring carries its own variance and bias.** The judge is a
+  language model; repeated runs will not be bit-identical, and judge
+  preferences can favour particular answer styles.
+- **Two datasets in two domains do not generalize to every workload.** Fiction
+  and medical text are not your corpus. Results are point-in-time for a
+  specific model and SDK version pairing.
+- **Overall (71.48 / 55.39) is our own cross-dataset average**, not a figure
+  published by the leaderboard, which ranks each dataset separately.
+
+## What a benchmark does and does not tell you
+
+An accuracy benchmark measures **task performance on a fixed dataset with fixed
+questions and fixed ground truths**. That is a genuine signal — it is the
+cleanest apples-to-apples comparison of retrieval quality available — but it is
+not the same thing as reliability in production.
+
+Reducing hallucinations in a deployed system depends on four things the
+benchmark holds constant or does not exercise at all:
+
+- **Source-data quality and coverage.** The graph can only ground what was
+  ingested. Missing, stale or contradictory source documents put a ceiling on
+  any retrieval method.
+- **Retrieval rules and scoping.** Traversal depth, per-tenant graph isolation
+  and ontology-guided Cypher determine whether the right evidence is even
+  reachable. See [Retrieval](/retrieval) and [Strategies](/strategies).
+- **Prompting and context construction.** How retrieved entities, relations and
+  chunks are assembled into the generation prompt changes what the model
+  attends to.
+- **Abstention logic.** Returning an evidence-insufficient response — rather
+  than guessing — when retrieval comes back empty or below a confidence
+  threshold. A system that answers everything will eventually answer wrongly.
+
+<Warning>
+No retrieval architecture eliminates hallucinations. Graph-grounded retrieval
+**reduces** them, **grounds** answers in retrieved evidence and makes claims
+**verifiable** by exposing the traversal path behind each answer. Treat a
+higher benchmark score as raising the ceiling; the surrounding system —
+data, scoping, prompting and abstention — determines the floor.
+</Warning>
+
+## How to cite
+
+Plain text:
+
+```text
+FalkorDB. "GraphRAG Accuracy Benchmark: FalkorDB vs Vector RAG for Reliable LLM Answers."
+GraphRAG-SDK 1.3.0, measured August 2026 on GraphRAG-Bench (Xiang et al., ICLR 2026).
+https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark
+```
+
+BibTeX:
+
+```bibtex
+@misc{falkordb2026graphragbenchmark,
+  title        = {GraphRAG Accuracy Benchmark: FalkorDB vs Vector RAG for Reliable LLM Answers},
+  author       = {{FalkorDB}},
+  year         = {2026},
+  month        = {August},
+  note         = {GraphRAG-SDK 1.3.0, evaluated on GraphRAG-Bench (Xiang et al., ICLR 2026);
+                  overall ACC 71.48 vs 55.39 for RAG with reranking},
+  howpublished = {\url{https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark}}
+}
+```
+
+## Source code and further reading
+
+| Resource | Link |
+| --- | --- |
+| GraphRAG-SDK repository | [github.com/FalkorDB/GraphRAG-SDK](https://github.com/FalkorDB/GraphRAG-SDK) |
+| Medical ontology | [`docs/benchmark/ontology_medical.json`](https://github.com/FalkorDB/GraphRAG-SDK/blob/6faaf6b03979ddf2a696749f082aee6c61606f1c/docs/benchmark/ontology_medical.json) |
+| Novel ontology | [`docs/benchmark/ontology_novel.json`](https://github.com/FalkorDB/GraphRAG-SDK/blob/6faaf6b03979ddf2a696749f082aee6c61606f1c/docs/benchmark/ontology_novel.json) |
+| GraphRAG-Bench site and leaderboard | [graphrag-bench.github.io](https://graphrag-bench.github.io/) |
+| Full methodology, 15-system leaderboard, counts and caveats | [Benchmark](/benchmark) |
+| Retrieval internals | [Retrieval](/retrieval) |
+| Pipeline design | [Architecture](/architecture) |
+| Swappable strategies | [Strategies](/strategies) |
+
+---
+
+*Leaderboard figures as published at graphrag-bench.github.io. Last updated:
+August 2026.*
