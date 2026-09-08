@@ -550,7 +550,7 @@ A node that survives that way stops being the table's row, though. The re-sync t
 The re-sync short-circuits when nothing changed: an unchanged source returns `no_op=True` without writing. The content hash covers the **mapping** as well as the rows, so changing a declared type or adding a column re-writes the source instead of being mistaken for unchanged data.
 </Note>
 
-A document remembers how it was written, and nothing may change its mind: re-reading a CSV as prose replaced its record chunks with one text chunk and took every entity with them — measured as two organizations before the call and none after, with nothing raised. A table appearing in `apply_changes(modified=[...])` therefore comes back as a per-entry error rather than being acted on. Re-ingest it with `ingest()` instead, which finds its declaration.
+A document remembers how it was written, and nothing may change its mind: re-reading a CSV as prose would replace its record chunks with one text chunk and take every entity with them. So `update()` refuses to change a document's kind — a `.csv` cannot be updated as prose, nor a text document as records — while a table in `apply_changes(modified=[...])` is re-synced through its stored mapping like any other `update()`.
 
 A table is addressed by its **name** — the basename of its mapping's `source`, `employees.csv` — unless you pass `document_id`. A document is addressed by its path because the path is all there is to know about it; a table has a declaration, and exports move. Keyed on the path, `/exports/2026-02/hr.csv` was a second Document under the same label with January's left behind reading as current; keyed on the name, a new export of a known table is a re-sync of it, from wherever it arrives. Use the same handle for `update()`, `delete_document()` and `drop_table()`.
 
@@ -741,7 +741,7 @@ await rag.query("""
 
 An empty result means nothing joined.
 
-`finalize()` folds each group with the ordinary resolver and carries the table's typed columns onto the survivor:
+A name that matches letter for letter needs no `finalize()` to join: the row and the mention already share a node. `finalize()` is for the names that do not — the spelling variants the canonical rule folds and the pairs the resolver judges — and it carries what the table wrote onto the survivor:
 
 ```python
 await rag.ingest("employees.csv")
@@ -749,7 +749,7 @@ await rag.ingest(text=BOARD_NOTE, document_id="board_note.txt")
 await rag.finalize()
 ```
 
-The survivor is the node whose id came from a declared key, because that id is reproducible: the next ingest of the same table recomputes it. Keeping the prose-derived id instead would make re-ingest create a second node for the same row. Nothing has to be dropped to make room for anything: the export's title is `employees__title`, whatever the extractor decided from prose is unsigned, and both sit on the one node.
+The survivor is the node a table wrote — keyed, or a placeholder a link created — over one only prose produced, because that node is the one the next re-sync finds by its key. Keeping the prose node instead would leave the next export with nothing to update and a second node to create. Nothing has to be dropped to make room for anything: the export's title is `employees__title`, whatever the extractor decided from prose is unsigned, and both sit on the one node.
 
 A table with **no** name column joins nothing at all, by construction — that is the case a mapping-less load lands in, and why declaring `name=` is what connects it.
 
@@ -871,4 +871,4 @@ stated once rather than two ways of choosing a path that could disagree.
 
 ## Example
 
-`examples/11_structured_ingestion.py` runs the whole path against a local FalkorDB: two CSVs declared on the ontology, a document, `finalize()` resolving the note's "Acme Corp" onto the CSV's row, the ontology the mappings declared, a structured question, a prose question and one that needs both halves, and a re-ingest that corrects a row, adds one and drops one.
+`examples/11_structured_ingestion.py` runs the whole path against a local FalkorDB: two CSVs declared on the ontology, a document whose "Acme Corp" lands on the CSV's row from the first write, `finalize()` and its report, the ontology the mappings declared, a structured question, a prose question and one that needs both halves, and a re-ingest that corrects a row, adds one and drops one.

@@ -38,10 +38,12 @@ GraphRAG(
     connection: FalkorDBConnection | ConnectionConfig,
     llm: LLMInterface,
     embedder: Embedder,
-    schema: GraphSchema | None = None,
+    ontology: Ontology | None = None,
     retrieval_strategy: RetrievalStrategy | None = None,
+    embedding_dimension: int = 256,
     *,
     enable_cypher: bool = False,
+    schema: Ontology | None = None,  # deprecated alias of ontology=
 )
 ```
 
@@ -50,9 +52,11 @@ GraphRAG(
 | `connection` | `FalkorDBConnection \| ConnectionConfig` | required | Database connection or config to create one |
 | `llm` | `LLMInterface` | required | LLM provider |
 | `embedder` | `Embedder` | required | Embedding provider |
-| `schema` | `GraphSchema \| None` | `None` | Schema constraints for extraction (empty = unconstrained) |
+| `ontology` | `Ontology \| None` | `None` | Entity and relation types for extraction, and any `tables=` declared on it (empty = unconstrained) |
 | `retrieval_strategy` | `RetrievalStrategy \| None` | `None` | Default retrieval strategy (uses `MultiPathRetrieval` if None) |
+| `embedding_dimension` | `int` | `256` | Dimension of the vectors `embedder` produces |
 | `enable_cypher` | `bool` | `False` | Add text-to-Cypher retrieval, which answers counts and aggregates over declared columns. One extra LLM call per question. |
+| `schema` | `Ontology \| None` | `None` | Deprecated; use `ontology=` |
 
 **Public attributes:** `llm`, `embedder`, `schema`, `graph_store`, `vector_store`
 
@@ -87,7 +91,7 @@ A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mappin
 | `record_loader` | `RecordLoaderStrategy \| None` | `None` | How a table is read (`CsvRecordLoader` if None). Tables only. |
 | `strict_mapping` | `bool` | `False` | Fail when a table has a column its mapping never reads. Tables only. |
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
-| `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (FixedSizeChunking(1000) if None). Rejected for a table. |
+| `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (`SentenceTokenCapChunking()` if None). Rejected for a table. |
 | `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None). Rejected for a table. |
 | `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None) |
 | `max_concurrency` | `int` | `3` | Max parallel ingestions (list input only) |

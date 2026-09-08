@@ -6,7 +6,7 @@ Tables and documents in one graph, end to end:
   - declare a mapping          — in the ontology, alongside the entity types
   - rag.ingest(csv)            — deterministic, no model involved
   - rag.ingest(text=...)       — the ordinary extraction path, unchanged
-  - rag.finalize()             — where the two halves resolve into one node
+  - rag.finalize()             — embeddings, indexes, a resolver across sources
   - retrieval                  — including aggregation over typed columns
 
 The problem this solves: run a CSV through the prose path and every cell
@@ -107,11 +107,12 @@ ORGS = TableMapping(
 # One record is a person, plus a link to the organization it points at. The link
 # is what turns an `org_id` column from text into an edge.
 #
-#   key    the column identifying the record. Its value becomes the node id, so
-#          re-ingesting a corrected export updates in place.
-#   name   the display name. A table carrying both key and name also publishes
-#          the id an extractor would compute for the same thing, which is what
-#          lets this node and a node from prose become one.
+#   key    the column identifying the record, kept on the node as entity_key.
+#          Links and a re-sync resolve through it, so re-ingesting a corrected
+#          export updates the row in place.
+#   name   the display name. The node id is derived from it exactly as it is
+#          for a prose mention, which is what makes this node and one from
+#          prose the same node from the first write.
 #   links  a column pointing at another entity. The target is named only when
 #          the pointer creates it, so it can never overwrite the name orgs.csv
 #          supplied, and the two files can arrive in either order.
@@ -181,12 +182,20 @@ async def main():
         result = await rag.ingest(text=BOARD_NOTE, document_id="board_note.txt")
         print(f"   board_note.txt: {result.nodes_created} nodes")
 
-        # ── 3. Resolve ────────────────────────────────────────────
-        # The note's "Acme Corp" and the CSV's ORG-42 are two nodes until here.
-        # They agree on the name, so the ordinary resolver folds them together
-        # and carries the typed columns onto the survivor.
+        # ── 3. Finalize ───────────────────────────────────────────
+        # The note's "Acme Corp" and orgs.csv's ORG-42 are already one node: a
+        # row's id is derived from its name exactly as a mention's is, so there
+        # was no merge to do. finalize() is where the graph becomes queryable as
+        # a whole — entity and edge embeddings, indexes — and where a resolver
+        # judges the names that do not match letter for letter across sources,
+        # remembering a NO so the pair is never asked about again. Its report
+        # lists what it could not decide for you.
         summary = await rag.finalize()
-        print(f"── finalize: merged {summary.entities_deduplicated} duplicates")
+        print(
+            f"── finalize: {summary.entities_deduplicated} merged, "
+            f"{len(summary.property_conflicts)} property conflicts, "
+            f"{len(summary.probable_duplicates)} probable duplicates to look at"
+        )
 
         # ── 4. The ontology the mappings declared ─────────────────
         # This is what makes the columns queryable: generated Cypher can now see
@@ -217,7 +226,7 @@ async def main():
         # Alice's title is corrected, a new hire appears, and Carol leaves the
         # export entirely.
         #
-        # The last one is the case that needs the machinery. Node ids come from
+        # The last one is the case that needs the machinery. Rows are matched on
         # the declared key, so a changed row rewrites itself and a new row simply
         # arrives. A *removed* row has nothing left to rewrite it, so without a
         # re-sync it would sit in the graph forever.

@@ -176,13 +176,13 @@ def _prose_extractable(prop: Attribute) -> bool:
     """Whether the prose extractor should be asked to fill ``prop``.
 
     Two kinds of attribute are declared in the schema but never extracted from
-    text. SDK-managed names (``name``, ``description``...) come from the
-    top-level entity object. ``structured`` attributes are owned by the table
-    that declared them: ``employees__age`` is what ``employees.csv`` says, and a
-    PDF stating an age must not be written under that name, because the node
-    is upserted with ``SET n += props`` and the table's value would be replaced
-    by a prose reading. A document contributes an unsigned ``age`` when the
-    schema declares one, and the two stay distinguishable on the node.
+    text. The SDK-managed ``name`` comes from the top-level entity object.
+    ``structured`` attributes are owned by the table that declared them:
+    ``employees__age`` is what ``employees.csv`` says, and a PDF stating an age
+    must not be written under that name, because the node is upserted with
+    ``SET n += props`` and the table's value would be replaced by a prose
+    reading. A document contributes an unsigned ``age`` when the schema declares
+    one, and the two stay distinguishable on the node.
     """
     return prop.name not in _SDK_MANAGED_ATTRIBUTE_NAMES and not prop.structured
 
@@ -704,8 +704,9 @@ class GraphExtraction(ExtractionStrategy):
         """Parse the step 2 LLM response (verified entities + relationships).
 
         When ``ontology`` declares attributes for an entity / relation type, every
-        declared attribute appears in the record's ``attributes`` dict, with
-        ``None`` for values the LLM didn't supply or couldn't coerce. Records
+        prose-extractable declared attribute (see :func:`_prose_extractable`)
+        appears in the record's ``attributes`` dict, with ``None`` for values the
+        LLM didn't supply or couldn't coerce. Records
         are never dropped — downstream storage strips ``None`` so the graph
         sees "key missing" for the unfilled slots.
         """
