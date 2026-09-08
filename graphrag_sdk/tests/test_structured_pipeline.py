@@ -163,6 +163,32 @@ class TestStructuredIngest:
         assert alice.properties["name"] == "Alice Smith"
         assert alice.properties["employees__employee_id"] == "E-1"
 
+    async def test_an_empty_cell_takes_the_column_off_the_row(
+        self, pipeline, tmp_path, ctx: Context
+    ):
+        """A blank cell is carried as ``None`` — which the store's write skips — and
+        then removed by column, so a value from the previous export cannot stay."""
+        path = tmp_path / "employees.csv"
+        path.write_text(
+            "employee_id,full_name,age,job_title,org_id\n"
+            "E-1,Alice Smith,34,,ORG-42\n"
+            "E-2,Bob Jones,,CFO,ORG-42\n",
+            encoding="utf-8",
+        )
+        pipe, store = pipeline
+        removed = AsyncMock(return_value=1)
+        store.drop_node_property = removed
+        await pipe.run(str(path), EMPLOYEES, ctx)
+
+        alice = store.node(compute_entity_id("Alice Smith", "Person"))
+        assert alice.properties["employees__title"] is None
+        assert alice.properties["employees__age"] == 34
+        calls = {(c.args[0], c.args[1], tuple(c.kwargs["ids"])) for c in removed.call_args_list}
+        assert calls == {
+            ("Person", "employees__title", (compute_entity_id("Alice Smith", "Person"),)),
+            ("Person", "employees__age", (compute_entity_id("Bob Jones", "Person"),)),
+        }
+
     async def test_identity_comes_from_the_name(self, pipeline, employees_csv, ctx: Context):
         """One identity scheme for both halves. A row's id is derived from its
         name exactly as a prose mention's is, so "Alice Smith" in a PDF and
@@ -483,9 +509,7 @@ class TestOneNodePerKeyWithinABatch:
             r.end_node_id for r in store.relationships
         }
         assert bare not in touched, "no edge may point at a placeholder that was never written"
-        citing = [
-            r for r in store.relationships if r.properties.get("rel_type") == "CITING"
-        ]
+        citing = [r for r in store.relationships if r.properties.get("rel_type") == "CITING"]
         assert compute_entity_id("Diversification and exports", "Paper") in {
             r.end_node_id for r in citing
         }

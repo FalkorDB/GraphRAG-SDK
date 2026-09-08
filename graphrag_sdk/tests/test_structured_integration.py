@@ -530,6 +530,34 @@ class TestASharedNodeKeepsWhatEachSourceGave:
         assert [r[0] for r in via] == ["Alice Smith", "Bob Jones"]
         await rag.close()
 
+    @pytest.mark.parametrize("orgs_first", [True, False], ids=["orgs_first", "employees_first"])
+    async def test_a_key_only_link_signs_a_target_that_is_another_tables_row(
+        self, real_falkordb_rag_factory, llm, resolver, orgs_csv, employees_csv, orgs_first
+    ):
+        """``EMPLOYEES`` points at organizations by key alone. When ``orgs.csv`` is
+        already in, the pointer finds the row by ``entity_key`` and its edges are
+        moved there — and the reference itself was then discarded, so the row
+        never carried ``employees__org_id``. Whether a table still points at a
+        node is read off that column by re-sync and drop, so it has to land in
+        either order, and the owner's identity has to stay the owner's.
+        """
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=_ontology(ORGS, EMPLOYEES)
+        )
+        for path in (orgs_csv, employees_csv) if orgs_first else (employees_csv, orgs_csv):
+            await rag.ingest(path)
+
+        rows = await _rows(
+            rag,
+            "MATCH (o:Organization) RETURN o.name, o.orgs__org_id, o.employees__org_id, "
+            "o.entity_key, o.is_stub ORDER BY o.name",
+        )
+        assert rows == [
+            ["Acme Corp", "ORG-42", "ORG-42", "ORG-42", False],
+            ["Globex", "ORG-7", "ORG-7", "ORG-7", False],
+        ]
+        await rag.close()
+
     async def test_the_second_document_adds_its_chunks_instead_of_replacing_the_first(
         self, real_falkordb_rag_factory, scripted_llm, resolver, employees_csv
     ):
@@ -573,6 +601,141 @@ class TestASharedNodeKeepsWhatEachSourceGave:
         assert docs == ["note1.txt"]
         assert listed == mentioned, "note2's chunk is gone from the list, note1's is not"
         assert len(listed) == 1
+        await rag.close()
+
+
+class TestAReSyncTakesBackWhatTheNewExportNoLongerSays:
+    """A re-sync must leave a node saying what the *current* export says.
+
+    A row that left the export, or a foreign key that moved, used to leave its
+    signed columns and its ``entity_key``/``is_stub`` on any node a document
+    kept alive, so the graph went on reading that node as the table's row. A
+    cell blanked between two exports kept its old value the same way, because a
+    write only adds. The node a row and a mention share cannot be deleted with
+    the row, so the re-sync has to reach the same end by retraction.
+    """
+
+    HEADER = "employee_id,full_name,age,job_title,org_id\n"
+    ALICE = "E-1,Alice Smith,34,Engineer,ORG-42\n"
+    BOB = "E-2,Bob Jones,45,CFO,ORG-42\n"
+    BOB_NO_TITLE = "E-2,Bob Jones,45,,ORG-42\n"
+
+    def _write(self, path, rows: list[str]) -> str:
+        path.write_text(self.HEADER + "".join(rows), encoding="utf-8")
+        return str(path)
+
+    async def _alice(self, rag):
+        rows = await _rows(
+            rag,
+            "MATCH (p:Person {name:'Alice Smith'}) RETURN p.employees__employee_id, "
+            "p.employees__age, p.employees__title, p.entity_key, p.is_stub, p.description",
+        )
+        assert len(rows) == 1, f"one Alice: {rows}"
+        return rows[0]
+
+    async def test_a_row_that_left_takes_its_columns_and_identity_with_it(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, tmp_path
+    ):
+        llm = scripted_llm([("Alice Smith", "Person", "Presented the plan")])
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(EMPLOYEES))
+        source = tmp_path / "employees.csv"
+        await rag.ingest(self._write(source, [self.ALICE, self.BOB]))
+        await rag.ingest(
+            text="Alice Smith presented the plan.", document_id="note1.txt", resolver=resolver
+        )
+        assert await self._alice(rag) == ["E-1", 34, "Engineer", "E-1", False, "Presented the plan"]
+
+        await rag.update(self._write(source, [self.BOB]))
+
+        assert await self._alice(rag) == [None, None, None, None, None, "Presented the plan"], (
+            "the note keeps Alice; employees.csv no longer says anything about her"
+        )
+        assert (
+            await _rows(
+                rag, "MATCH (p:Person {name:'Alice Smith'})-[r:RELATES]->() RETURN r.rel_type"
+            )
+            == []
+        ), "the row's WORKS_AT went with the row"
+        await rag.close()
+
+    async def test_a_foreign_key_that_moved_is_taken_off_the_old_target(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, tmp_path
+    ):
+        """Only Bob pointed at Acme Corp; when his row points at Globex instead, the
+        Acme node a note keeps alive must stop carrying ``employees__org_id``."""
+        llm = scripted_llm([("Acme Corp", "Organization", "Reported a revenue miss")])
+        naming = TestASharedNodeKeepsWhatEachSourceGave.EMPLOYEES_NAMING_THEIR_ORG
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(naming))
+        source = tmp_path / "employees.csv"
+        await rag.ingest(
+            text="Acme Corp reported a Q3 revenue miss.",
+            document_id="board_note.txt",
+            resolver=resolver,
+        )
+
+        def export(org_id: str, org_name: str) -> str:
+            source.write_text(
+                "employee_id,full_name,age,org_id,org_name\n"
+                f"E-2,Bob Jones,45,{org_id},{org_name}\n",
+                encoding="utf-8",
+            )
+            return str(source)
+
+        await rag.ingest(export("ORG-42", "Acme Corp"))
+
+        async def acme():
+            rows = await _rows(
+                rag,
+                "MATCH (o:Organization {name:'Acme Corp'}) "
+                "RETURN o.employees__org_id, o.entity_key, o.is_stub, o.description",
+            )
+            assert len(rows) == 1
+            return rows[0]
+
+        assert await acme() == ["ORG-42", "ORG-42", True, "Reported a revenue miss"]
+
+        await rag.update(export("ORG-7", "Globex"))
+
+        assert await acme() == [None, None, None, "Reported a revenue miss"], (
+            "no row points at Acme any more, so it is the note's entity again"
+        )
+        globex = await _rows(
+            rag,
+            "MATCH (o:Organization {entity_key:'ORG-7'})<-[:RELATES {rel_type:'WORKS_AT'}]-(p) "
+            "RETURN o.employees__org_id, o.is_stub, p.name",
+        )
+        assert globex == [["ORG-7", True, "Bob Jones"]]
+        await rag.close()
+
+    async def test_a_cell_blanked_between_exports_is_gone_from_the_node(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(EMPLOYEES))
+        source = tmp_path / "employees.csv"
+        await rag.ingest(self._write(source, [self.BOB]))
+        bob = "MATCH (p:Person {entity_key:'E-2'}) RETURN p.employees__title, p.employees__age"
+        assert await _rows(rag, bob) == [["CFO", 45]]
+
+        await rag.update(self._write(source, [self.BOB_NO_TITLE]))
+
+        assert await _rows(rag, bob) == [[None, 45]], "an empty cell is no column, not the old one"
+        await rag.close()
+
+    async def test_a_row_still_in_the_export_keeps_everything(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, tmp_path
+    ):
+        """The retraction is scoped to what left: Bob leaving must not touch Alice."""
+        llm = scripted_llm([("Alice Smith", "Person", "Presented the plan")])
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(EMPLOYEES))
+        source = tmp_path / "employees.csv"
+        await rag.ingest(self._write(source, [self.ALICE, self.BOB]))
+        await rag.ingest(
+            text="Alice Smith presented the plan.", document_id="note1.txt", resolver=resolver
+        )
+
+        await rag.update(self._write(source, [self.ALICE]))
+
+        assert await self._alice(rag) == ["E-1", 34, "Engineer", "E-1", False, "Presented the plan"]
         await rag.close()
 
 
@@ -701,9 +864,15 @@ class TestReSyncingAStructuredSource:
 
         await rag.update(self._write(source, [self.ACME]))
 
-        assert await _rows(rag, "MATCH (o:Organization {orgs__org_id:'ORG-7'}) RETURN o.name") == [
-            ["Globex"]
-        ], "still referenced by employees.csv, so it stays"
+        rows = await _rows(
+            rag,
+            "MATCH (o:Organization {entity_key:'ORG-7'}) "
+            "RETURN o.name, o.orgs__org_id, o.orgs__hq_country, o.employees__org_id, o.is_stub",
+        )
+        assert rows == [["Globex", None, None, "ORG-7", True]], (
+            "still referenced by employees.csv, so it stays — as that table's placeholder, "
+            "without the columns orgs.csv no longer has a row for"
+        )
 
     async def test_a_mapping_that_stops_fitting_leaves_the_graph_alone(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path

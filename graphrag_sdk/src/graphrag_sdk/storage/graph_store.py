@@ -1360,6 +1360,32 @@ class GraphStore:
             deleted += r.result_set[0][0] if r.result_set else 0
         return deleted
 
+    async def entities_outside_document(
+        self, candidate_ids: list[str], document_id: str
+    ) -> list[str]:
+        """The entities in ``candidate_ids`` that ``document_id`` no longer mentions.
+
+        After a table is re-synced the rows and foreign keys the new export has
+        are ``MENTIONED_IN`` its new record chunks, and the ones it dropped are
+        not: they survive only because a document or another table still holds
+        them. Those are the nodes the table has to take its columns back from.
+        Scoped to the candidates, so it never scans the graph.
+        """
+        if not candidate_ids:
+            return []
+        outside: list[str] = []
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            r = await self._conn.query(
+                "UNWIND $ids AS eid "
+                "MATCH (e:__Entity__ {id: eid}) "
+                "WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(:Document {id: $doc}) "
+                "RETURN e.id",
+                {"ids": batch, "doc": document_id},
+            )
+            outside.extend(row[0] for row in r.result_set or [] if row and row[0])
+        return outside
+
     # ── Ontology evolution (data-graph migration primitives) ────
     #
     # The ``GraphRAG`` evolution methods orchestrate ontology-graph writes
@@ -1505,19 +1531,36 @@ class GraphStore:
             if isinstance(row, list) and len(row) >= 2 and row[0]
         ]
 
-    async def drop_node_property(self, label: str, prop: str) -> int:
-        """Remove ``prop`` from every node carrying ``label``.
+    async def drop_node_property(
+        self, label: str, prop: str, *, ids: Sequence[str] | None = None
+    ) -> int:
+        """Remove ``prop`` from every node carrying ``label``, or from ``ids`` only.
 
         Returns the number of nodes touched.
         """
         safe_label = sanitize_cypher_label(label)
         safe_prop = sanitize_cypher_label(prop)
+        if ids is not None and not ids:
+            return 0
+        scope, params = self._id_scope(ids)
         r = await self._conn.query(
-            f"MATCH (n:`{safe_label}`) WHERE n.`{safe_prop}` IS NOT NULL "
+            f"MATCH (n:`{safe_label}`) WHERE n.`{safe_prop}` IS NOT NULL{scope} "
             f"REMOVE n.`{safe_prop}` "
             f"RETURN count(n) AS n",
+            params,
         )
         return r.result_set[0][0] if r.result_set else 0
+
+    @staticmethod
+    def _id_scope(ids: Sequence[str] | None) -> tuple[str, dict[str, Any] | None]:
+        """A ``WHERE`` clause tail and its parameters restricting a match to ``ids``.
+
+        ``None`` means unscoped: the whole label. An empty sequence is a scope
+        that matches nothing, and callers short-circuit on it.
+        """
+        if ids is None:
+            return "", None
+        return " AND n.id IN $ids", {"ids": list(ids)}
 
     async def release_entity_keys(
         self,
@@ -1525,6 +1568,7 @@ class GraphStore:
         *,
         owned_by: Sequence[str],
         referenced_by: Sequence[str],
+        ids: Sequence[str] | None = None,
     ) -> int:
         """Take a dropped table's identity off the nodes of ``label`` that survive it.
 
@@ -1547,22 +1591,29 @@ class GraphStore:
                 of this label.
             referenced_by: Signed key properties of the *other* tables' links
                 into this label.
+            ids: Restrict to these nodes — the rows a re-sync no longer has —
+                rather than the whole label, which is what a drop wants.
 
         Returns the number of nodes changed.
         """
         safe_label = sanitize_cypher_label(label)
+        if ids is not None and not ids:
+            return 0
+        scope, params = self._id_scope(ids)
 
         def absent(properties: Sequence[str]) -> str:
             return "".join(f" AND n.`{sanitize_cypher_label(p)}` IS NULL" for p in properties)
 
         released = await self._conn.query(
             f"MATCH (n:`{safe_label}`) WHERE n.entity_key IS NOT NULL"
-            f"{absent(owned_by)}{absent(referenced_by)} "
+            f"{absent(owned_by)}{absent(referenced_by)}{scope} "
             f"REMOVE n.entity_key, n.is_stub RETURN count(n) AS n",
+            params,
         )
         demoted = await self._conn.query(
-            f"MATCH (n:`{safe_label}`) WHERE n.is_stub = false{absent(owned_by)} "
+            f"MATCH (n:`{safe_label}`) WHERE n.is_stub = false{absent(owned_by)}{scope} "
             f"SET n.is_stub = true RETURN count(n) AS n",
+            params,
         )
         return sum(r.result_set[0][0] if r.result_set else 0 for r in (released, demoted))
 

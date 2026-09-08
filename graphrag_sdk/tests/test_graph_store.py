@@ -25,8 +25,7 @@ def _upsert_queries(mock_connection):
     a tripwire for that unrelated detail.
     """
     return [
-        call for call in mock_connection.query.call_args_list
-        if "CREATE INDEX" not in call[0][0]
+        call for call in mock_connection.query.call_args_list if "CREATE INDEX" not in call[0][0]
     ]
 
 
@@ -244,6 +243,59 @@ class TestReleaseEntityKeys:
         assert "REMOVE n.entity_key, n.is_stub" in remove
         assert " AND n." not in remove.split("WHERE", 1)[1].split("REMOVE")[0]
         assert "SET n.is_stub = true" in demote
+
+    async def test_scoped_to_ids_touches_only_those_nodes(self, graph_store, mock_connection):
+        await graph_store.release_entity_keys(
+            "Person", owned_by=["hr__employee_id"], referenced_by=[], ids=["a", "b"]
+        )
+        remove, demote = mock_connection.query.call_args_list
+        assert " AND n.id IN $ids " in remove[0][0]
+        assert remove[0][1] == {"ids": ["a", "b"]}
+        assert " AND n.id IN $ids " in demote[0][0]
+        assert demote[0][1] == {"ids": ["a", "b"]}
+
+    async def test_an_empty_scope_is_not_the_whole_label(self, graph_store, mock_connection):
+        released = await graph_store.release_entity_keys(
+            "Person", owned_by=[], referenced_by=[], ids=[]
+        )
+        assert released == 0
+        mock_connection.query.assert_not_called()
+
+
+class TestDropNodeProperty:
+    async def test_unscoped_is_the_whole_label(self, graph_store, mock_connection):
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[[4]]))
+        touched = await graph_store.drop_node_property("Person", "hr__age")
+        assert touched == 4
+        cypher, params = mock_connection.query.call_args[0]
+        assert "MATCH (n:`Person`) WHERE n.`hr__age` IS NOT NULL REMOVE n.`hr__age`" in cypher
+        assert params is None
+
+    async def test_scoped_to_ids(self, graph_store, mock_connection):
+        await graph_store.drop_node_property("Person", "hr__age", ids=["x"])
+        cypher, params = mock_connection.query.call_args[0]
+        assert "IS NOT NULL AND n.id IN $ids REMOVE" in cypher
+        assert params == {"ids": ["x"]}
+
+    async def test_an_empty_scope_touches_nothing(self, graph_store, mock_connection):
+        assert await graph_store.drop_node_property("Person", "hr__age", ids=[]) == 0
+        mock_connection.query.assert_not_called()
+
+
+class TestEntitiesOutsideDocument:
+    async def test_reads_the_candidates_the_document_no_longer_mentions(
+        self, graph_store, mock_connection
+    ):
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[["gone"], [None]]))
+        left = await graph_store.entities_outside_document(["gone", "kept"], "people.csv")
+        assert left == ["gone"]
+        cypher, params = mock_connection.query.call_args[0]
+        assert "NOT (e)-[:MENTIONED_IN]->(:Chunk)<-[:PART_OF]-(:Document {id: $doc})" in cypher
+        assert params == {"ids": ["gone", "kept"], "doc": "people.csv"}
+
+    async def test_no_candidates_no_query(self, graph_store, mock_connection):
+        assert await graph_store.entities_outside_document([], "people.csv") == []
+        mock_connection.query.assert_not_called()
 
 
 class TestGraphStoreUpsertRelationships:
@@ -476,9 +528,7 @@ class TestGraphStoreDocumentLifecycle:
         record = await graph_store.get_document_record("ghost")
         assert record is None
 
-    async def test_get_document_record_handles_pre_1_1_0_docs(
-        self, graph_store, mock_connection
-    ):
+    async def test_get_document_record_handles_pre_1_1_0_docs(self, graph_store, mock_connection):
         """Documents ingested before v1.1.0 lack content_hash; the typed
         record carries None for the hash (the update() short-circuit then
         falls through to a full update — fail-safe)."""
@@ -508,9 +558,7 @@ class TestGraphStoreDocumentLifecycle:
         assert "PART_OF" in cypher
         assert "DISTINCT" in cypher
 
-    async def test_cleanup_pending_documents_skips_committed(
-        self, graph_store, mock_connection
-    ):
+    async def test_cleanup_pending_documents_skips_committed(self, graph_store, mock_connection):
         """v1.1.0 state-machine: cleanup MUST NOT delete a pending whose
         ready_to_commit=true — that pending was committed by a prior call
         that crashed before completing the cutover. Discarding it would
@@ -529,9 +577,7 @@ class TestGraphStoreDocumentLifecycle:
         params = mock_connection.query.call_args[0][1]
         assert params["prefix"] == "docs/a.md__pending__"
 
-    async def test_find_pending_returns_committed_state(
-        self, graph_store, mock_connection
-    ):
+    async def test_find_pending_returns_committed_state(self, graph_store, mock_connection):
         """find_pending checks for COMMITTED first; a hit returns immediately
         and the WRITTEN fallback query is never issued."""
         results = [
@@ -551,9 +597,7 @@ class TestGraphStoreDocumentLifecycle:
         cypher = mock_connection.query.await_args_list[0][0][0]
         assert "p.ready_to_commit = true" in cypher
 
-    async def test_find_pending_returns_written_state(
-        self, graph_store, mock_connection
-    ):
+    async def test_find_pending_returns_written_state(self, graph_store, mock_connection):
         """When no COMMITTED pending exists, the second query falls back to
         any non-committed pending and labels it WRITTEN."""
         results = [
@@ -592,9 +636,7 @@ class TestGraphStoreDocumentLifecycle:
         assert out[0] == "COMMITTED"
         assert out[1] == "docs/a.md__pending__zzzzzzzz"
 
-    async def test_find_pending_returns_none_when_no_pending(
-        self, graph_store, mock_connection
-    ):
+    async def test_find_pending_returns_none_when_no_pending(self, graph_store, mock_connection):
         results = [
             MagicMock(result_set=[]),  # 1: no COMMITTED
             MagicMock(result_set=[]),  # 2: no WRITTEN either
@@ -629,8 +671,8 @@ class TestGraphStoreDocumentLifecycle:
         results = [
             MagicMock(result_set=[[1]]),  # 0. precondition: pending exists
             MagicMock(result_set=[[5]]),  # 1. delete chunks
-            MagicMock(result_set=[]),     # 2. delete old doc
-            MagicMock(result_set=[]),     # 3. rename pending + remove marker
+            MagicMock(result_set=[]),  # 2. delete old doc
+            MagicMock(result_set=[]),  # 3. rename pending + remove marker
         ]
         mock_connection.query = AsyncMock(side_effect=results)
 
@@ -654,9 +696,7 @@ class TestGraphStoreDocumentLifecycle:
         # FINAL state would still report as a pending Document.
         assert "REMOVE p.ready_to_commit" in rename_cypher
 
-    async def test_rollforward_aborts_if_pending_missing(
-        self, graph_store, mock_connection
-    ):
+    async def test_rollforward_aborts_if_pending_missing(self, graph_store, mock_connection):
         """Precondition: if the pending Document is missing, refuse to
         proceed. Without this guard the live document would be deleted
         and the rename would silently no-op, losing the data."""
@@ -704,7 +744,7 @@ class TestGraphStoreDocumentLifecycle:
     async def test_delete_document_chunks_and_node(self, graph_store, mock_connection):
         results = [
             MagicMock(result_set=[[3]]),  # 1. delete chunks
-            MagicMock(result_set=[]),     # 2. delete document node
+            MagicMock(result_set=[]),  # 2. delete document node
         ]
         mock_connection.query = AsyncMock(side_effect=results)
 
@@ -712,9 +752,7 @@ class TestGraphStoreDocumentLifecycle:
         assert chunks_removed == 3
         assert mock_connection.query.await_count == 2
 
-    async def test_delete_orphan_entities_skips_when_empty(
-        self, graph_store, mock_connection
-    ):
+    async def test_delete_orphan_entities_skips_when_empty(self, graph_store, mock_connection):
         """No candidates → no Cypher (saves a roundtrip)."""
         n = await graph_store.delete_orphan_entities([])
         assert n == 0
@@ -738,9 +776,7 @@ class TestGraphStoreDocumentLifecycle:
         params = mock_connection.query.call_args[0][1]
         assert params["ids"] == ["e1", "e2", "e3"]
 
-    async def test_delete_orphan_entities_batches_large_lists(
-        self, graph_store, mock_connection
-    ):
+    async def test_delete_orphan_entities_batches_large_lists(self, graph_store, mock_connection):
         """A list larger than the batch size must split into multiple
         round-trips so the params payload stays bounded."""
         # 1200 ids with batch size 500 → 3 calls (500 + 500 + 200)

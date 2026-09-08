@@ -479,7 +479,10 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
 
         # A foreign key arriving AFTER its target's source must attach to the real
         # node, not raise a placeholder beside it. Look every reference up by its
-        # key; where the target already exists, point the edges there instead.
+        # key; where the target already exists, point the edges there instead —
+        # and the reference too, so its claim still lands: the signed key column
+        # is how the graph knows this table points at that node, and what a
+        # re-sync or a drop reads to decide whose row the node still is.
         resolved: dict[str, str] = {}
         by_label: dict[str, list[ReferenceNode]] = {}
         for reference in references:
@@ -493,7 +496,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 if real and real != reference.id:
                     resolved[reference.id] = real
         if resolved:
-            references = [r for r in references if r.id not in resolved]
+            references = [r._replace(id=resolved.get(r.id, r.id)) for r in references]
             for edge in edges:
                 edge.start_node_id = resolved.get(edge.start_node_id, edge.start_node_id)
                 edge.end_node_id = resolved.get(edge.end_node_id, edge.end_node_id)
@@ -512,6 +515,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
             link_sequential=link_sequential,
         )
         await self.graph_store.upsert_nodes(nodes)
+        await self._retract_blank_cells(nodes)
         # One entry per row arrives here, but a foreign key repeats: 25k rows
         # pointing at 50 organizations produced 25k MERGEs for 50 nodes. They are
         # idempotent, so every repeat after the first is pure waste.
@@ -524,6 +528,26 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
             f"{result.edges} edges"
         )
         return result
+
+    async def _retract_blank_cells(self, nodes: list[GraphNode]) -> int:
+        """Take a column off the rows whose cell is empty in this export.
+
+        ``upsert_nodes`` adds what a row carries and leaves the rest alone, so a
+        cell that held a value last time and is blank now would keep the old
+        value on the node. The table is the only writer of its signed columns;
+        an empty cell means the column is not there, and after a re-sync the
+        node has to say so too. Grouped by column, so a batch costs one query
+        per column that has a blank in it.
+        """
+        blank: dict[tuple[str, str], list[str]] = {}
+        for node in nodes:
+            for prop, value in node.properties.items():
+                if value is None:
+                    blank.setdefault((node.label, prop), []).append(node.id)
+        removed = 0
+        for (label, prop), ids in blank.items():
+            removed += await self.graph_store.drop_node_property(label, prop, ids=ids)
+        return removed
 
     # ── internals ───────────────────────────────────────────────
 
@@ -773,7 +797,8 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
             if display not in (None, ""):
                 properties["name"] = str(display)
         for prop, column in columns.items():
-            value = column.cast(record.get(column.name))
-            if value is not None:
-                properties[node.signed(prop)] = value
+            # An empty cell is carried as ``None``: the write skips it, and
+            # ``_retract_blank_cells`` takes the column off the node, so a cell
+            # cleared between two exports does not keep its old value.
+            properties[node.signed(prop)] = column.cast(record.get(column.name))
         return properties

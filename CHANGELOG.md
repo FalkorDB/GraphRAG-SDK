@@ -259,6 +259,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node — in which case the node becomes that table's row, or that table's
   placeholder, exactly as if the dropped table had never arrived.
 
+- **A re-sync takes back what the new export no longer says.** `update()` of a
+  table deleted the rows that had left and the edges that went with them, but a
+  node another source kept alive — a person a memo mentions, an organization a
+  second table points at — kept the departed row's signed columns, its
+  `entity_key` and `is_stub: false`, and read as a current row of a table that
+  no longer had it; a foreign key that moved left `employees__org_id` on its
+  old target the same way, and a cell blanked between two exports kept the old
+  value because a write only adds. Found by a randomised stress probe over the
+  shared shape (the separate shape deletes the row node and never had the
+  problem). The post-cutover cleanup now applies to the survivors the table no
+  longer mentions the same retraction `drop_table()` applies to the whole label,
+  and an empty cell now removes its column from the row.
+
+- **A key-only link signs a target that is another table's row.** When a link
+  declared by key alone (`Link("WORKS_AT", to="Organization", by="org_id")`)
+  found its target already in the graph as a row of `orgs.csv`, the edges were
+  pointed at the row and the reference itself was discarded, so the row never
+  carried `employees__org_id`. Whether a table still points at a node is read
+  off exactly that column by re-sync and by `drop_table()`, which then released
+  an identity the pointing table still justified. The reference is now
+  re-pointed and written, so the claim lands in either ingest order; the
+  owner's name, columns and `is_stub: false` are untouched.
+
 - **A table no longer rewrites what a label means.** The ontology fragment a
   mapping contributes describes a label it did not create only by what the table
   did — `Declared by a structured source, keyed on exp_id`, `Referenced by key

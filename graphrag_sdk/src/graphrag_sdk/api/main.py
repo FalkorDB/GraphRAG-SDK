@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Sequence
 from typing import Any, Literal, overload
 from uuid import uuid4
 
@@ -1052,32 +1053,9 @@ class GraphRAG:
             # Loaded before ids were the table's name, or under an explicit id
             # that happens to be the path the caller gave. One more place to look.
             deleted = await self.delete_document(os.path.normpath(source), if_missing="ignore")
-        touched = 0
-        for property_name in sorted(mapping.signed_name(p) for p in mapping.typed_properties):
-            touched += await self._graph_store.drop_node_property(mapping.label, property_name)
-            await self._ontology_store.drop_entity_property(mapping.label, property_name)
-        # The key columns the table signed, on its own label and on every label
-        # its links point at, then the unsigned identity those keys justified.
-        # Which other tables still key each label decides what ``entity_key``
-        # and ``is_stub`` become; the write path's own reading of each mapping
-        # is what says which signed property is whose.
-        own = record_mapping_for(mapping)
-        others = [
-            record_mapping_for(other)
-            for other in self._global_ontology.tables
-            if other.source != mapping.source
-        ]
-        released = 0
-        for node in own.nodes:
-            key_property = node.signed(node.key_property)
-            touched += await self._graph_store.drop_node_property(node.label, key_property)
-            await self._ontology_store.drop_entity_property(node.label, key_property)
-            peers = [n for other in others for n in other.nodes if n.label == node.label]
-            released += await self._graph_store.release_entity_keys(
-                node.label,
-                owned_by=[n.signed(n.key_property) for n in peers if not n.reference],
-                referenced_by=[n.signed(n.key_property) for n in peers if n.reference],
-            )
+        touched, released = await self._retract_table(mapping)
+        for label, property_name in self._signed_properties_of(mapping):
+            await self._ontology_store.drop_entity_property(label, property_name)
         await self._ontology_store.drop_table_mapping(mapping.source)
         self._natural_mappings.pop(wanted, None)
         self._mapping_changes.discard(mapping.source)
@@ -1091,6 +1069,62 @@ class GraphRAG:
             released,
         )
         return await self._refresh_global_ontology()
+
+    @staticmethod
+    def _signed_properties_of(mapping: TableMapping) -> list[tuple[str, str]]:
+        """Every ``(label, property)`` the table writes under its signature.
+
+        The typed columns on its own label, and the key column on its own label
+        and on every label its links point at. Read off the write path's own
+        normalisation of the mapping, so what is taken back is exactly what was
+        put down.
+        """
+        signed: list[tuple[str, str]] = []
+        for node in record_mapping_for(mapping).nodes:
+            signed.extend((node.label, node.signed(prop)) for prop in node.typed_properties)
+            signed.append((node.label, node.signed(node.key_property)))
+        return signed
+
+    async def _retract_table(
+        self, mapping: TableMapping, ids: Sequence[str] | None = None
+    ) -> tuple[int, int]:
+        """Take back what ``mapping`` signed on the nodes in ``ids`` — or on all of them.
+
+        The signed columns go first, then the unsigned identity they justified:
+        ``entity_key`` and ``is_stub`` are removed, kept, or ``is_stub`` set back
+        to ``true``, according to which *other* tables still key each node —
+        the write path's reading of each mapping says which signed property is
+        whose. ``drop_table()`` calls this for the whole label; a re-sync calls
+        it for the rows and foreign keys the new export no longer has, which
+        otherwise keep reading as current on the nodes a document kept alive.
+
+        Returns ``(nodes a property was removed from, nodes whose identity changed)``.
+        """
+        own = record_mapping_for(mapping)
+        others = [
+            record_mapping_for(other)
+            for other in self._global_ontology.tables
+            if other.source != mapping.source
+        ]
+        touched = released = 0
+        for label, property_name in self._signed_properties_of(mapping):
+            touched += await self._graph_store.drop_node_property(label, property_name, ids=ids)
+        for node in own.nodes:
+            peers = [n for other in others for n in other.nodes if n.label == node.label]
+            released += await self._graph_store.release_entity_keys(
+                node.label,
+                owned_by=[n.signed(n.key_property) for n in peers if not n.reference],
+                referenced_by=[n.signed(n.key_property) for n in peers if n.reference],
+                ids=ids,
+            )
+        return touched, released
+
+    def _table_for_document(self, document_id: str) -> TableMapping | None:
+        """The declared table whose Document this is, if it is one."""
+        for mapping in self._global_ontology.tables:
+            if self._table_document_id(mapping) == document_id:
+                return mapping
+        return None
 
     # ── Group 3 internals: atomic-backfill engine ───────────────
     #
@@ -2585,7 +2619,9 @@ class GraphRAG:
              the surviving entities' ``source_chunk_ids``.
           3. ``delete_orphan_entities`` — drop entity nodes whose
              MENTIONED_IN went to zero after cutover.
-          4. ``clear_cleanup_state`` — remove the recovery-state
+          4. for a table, ``_retract_table`` — take the signed columns and
+             the identity off the survivors its new rows no longer mention.
+          5. ``clear_cleanup_state`` — remove the recovery-state
              properties so future Phase-0 calls don't reprocess.
 
         Returns ``(stale_relates_deleted, orphan_entities_deleted)``.
@@ -2606,13 +2642,23 @@ class GraphRAG:
         )
         trimmed = await self._graph_store.strip_stale_provenance(candidate_ids, old_chunk_ids)
         orphans_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
+        retracted = 0
+        mapping = self._table_for_document(document_id)
+        if mapping is not None:
+            # A row that left the export, a foreign key that moved: the node a
+            # document kept alive would otherwise still carry this table's
+            # columns and read as its row. Same retraction drop_table() does,
+            # on the survivors alone.
+            left = await self._graph_store.entities_outside_document(candidate_ids, document_id)
+            retracted, _ = await self._retract_table(mapping, ids=left)
         await self._graph_store.clear_cleanup_state(document_id)
-        if stale_deleted or trimmed or orphans_deleted:
+        if stale_deleted or trimmed or orphans_deleted or retracted:
             ctx.log(
                 f"post-cutover cleanup: {document_id} — "
                 f"removed {stale_deleted} stale RELATES, "
                 f"trimmed provenance on {trimmed} entities, "
-                f"{orphans_deleted} orphan entities"
+                f"{orphans_deleted} orphan entities, "
+                f"retracted table columns from {retracted} entities"
             )
         return (stale_deleted, orphans_deleted)
 

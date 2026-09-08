@@ -544,6 +544,8 @@ Three kinds of change, and only one of them needs machinery:
 
 The third case is why this path exists. The new records are written under a pending Document and swapped in atomically, so a departed row has no new chunk, the cutover deletes its old one, and its entity goes too **unless another source still mentions it**. Cleanup is scoped, never global: if `employees.csv` still points at `ORG-7`, dropping that organization from `orgs.csv` leaves the node alone.
 
+A node that survives that way stops being the table's row, though. The re-sync takes back what the table signed on it — its typed columns, its key column, and the `entity_key`/`is_stub` those justified — the same way `drop_table()` does for a whole table, so an organization that left `orgs.csv` but is still pointed at by `employees.csv` reads as that table's placeholder again, and a person a memo mentions keeps the memo's facts and none of the export's. The same holds inside a row that stays: a cell that is blank in the new export removes its column from the node rather than keeping last export's value.
+
 <Note>
 The re-sync short-circuits when nothing changed: an unchanged source returns `no_op=True` without writing. The content hash covers the **mapping** as well as the rows, so changing a declared type or adding a column re-writes the source instead of being mistaken for unchanged data.
 </Note>
