@@ -1689,21 +1689,38 @@ class GraphRAG:
                 for a document and to the table's name for a table. In text
                 mode, defaults to a generated ``text-<8hex>`` id.
                 Pass an explicit value when you want a different identity
-                scheme (e.g. content-hash, repo-relative path, slug).
-            loader: Custom loader strategy. File mode only.
-            chunker: Custom chunking strategy.
-            extractor: Custom extraction strategy.
+                scheme (e.g. content-hash, repo-relative path, slug). For a
+                table, pass the name of the table a differently named export
+                belongs to: ``ingest("employees_2026Q3.csv",
+                document_id="employees.csv")`` re-syncs ``employees.csv``.
+            record_loader: How to read a table. Structured sources only.
+                Defaults to
+                :class:`~graphrag_sdk.ingestion.loaders.record_loader.CsvRecordLoader`,
+                which sniffs the delimiter; pass your own
+                :class:`~graphrag_sdk.ingestion.loaders.record_loader.RecordLoaderStrategy`
+                for another format.
+            strict_mapping: Structured sources only. Fail when the table has a
+                column its mapping never reads, instead of ignoring the column.
+            loader: Custom loader strategy. File mode only. Passing one to a
+                ``.csv`` (e.g. ``TextLoader()``) reads it as prose instead of
+                records.
+            chunker: Custom chunking strategy. Rejected for a table: records are
+                not chunked.
+            extractor: Custom extraction strategy. Rejected for a table: no model
+                extracts from records.
             resolver: Custom resolution strategy.
             max_concurrency: Max parallel ingestions (list source only).
             ctx: Execution context.
 
         Returns:
-            ``IngestionResult`` for a single source. For a list of sources,
+            ``IngestionResult`` for a single document,
+            ``StructuredIngestionResult`` for a table. For a list of sources,
             ``list[IngestionResult | Exception]`` aligned by index — each slot
             is either a result (success) or the exception captured for that
             source (failure). One bad source does not abort the whole batch;
             callers must inspect each entry. Failures are also logged at
-            WARNING.
+            WARNING. A list may not contain a table: each table is written on
+            its own, so ``ValueError`` is raised before anything is ingested.
         """
         # ── Structured mode ──
         # The source itself says which path it takes: a .csv is records, not
@@ -4519,6 +4536,30 @@ class GraphRAG:
             ``await delete_document(...)`` directly.
         """
         return asyncio.run(self.delete_document(document_id, if_missing=if_missing))
+
+    def drop_table_sync(self, source: str) -> Ontology:
+        """Synchronous ``drop_table`` convenience method.
+
+        Keep in sync with :meth:`drop_table`.
+
+        Note:
+            Backed by ``asyncio.run()`` — see :meth:`update_sync` for
+            the async-context restriction. From inside ``async def``,
+            ``await drop_table(...)`` directly.
+        """
+        return asyncio.run(self.drop_table(source))
+
+    def query_sync(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
+        """Synchronous ``query`` convenience method.
+
+        Keep in sync with :meth:`query`.
+
+        Note:
+            Backed by ``asyncio.run()`` — see :meth:`update_sync` for
+            the async-context restriction. From inside ``async def``,
+            ``await query(...)`` directly.
+        """
+        return asyncio.run(self.query(cypher, params))
 
     def apply_changes_sync(
         self,

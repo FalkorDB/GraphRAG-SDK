@@ -9,203 +9,145 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### Structured ingestion — CSVs and other tabular sources by declared mapping
+#### Structured ingestion — tables declared on the ontology, one node for a row and its mention
 
-- **`Ontology(tables=[TableMapping(...)])`** — declare what a table's columns
-  mean as part of the schema, and `ingest(source)` reads it as records instead of
-  sending it through the extraction pipeline. No model is involved and the same
-  input always produces the same graph, because identity comes from a declared
-  key and every property type is declared rather than inferred. Run a CSV through
-  the prose path and `age` becomes the string `"34"` if it survives at all;
-  nothing can be averaged, filtered numerically, or joined on a key.
+- **`Ontology(tables=[TableMapping(...)])`** declares what a table's columns mean,
+  next to the entity types, and `ingest("employees.csv")` reads the file as
+  records instead of prose. No model is involved: identity comes from a declared
+  key and every property type is declared rather than inferred, so the same file
+  always produces the same graph. Run a CSV through the prose path and `age`
+  becomes the string `"34"` if it survives at all; nothing can be averaged,
+  filtered numerically or joined on a key. A `.csv`, `.tsv`, `.psv` or `.tab`
+  takes the record path on its extension and its mapping is found by filename —
+  there is no `mapping=` argument, so the call for a table is the call for a
+  document and the two cannot disagree about how a file is read. A file that
+  really is prose living in columns opts out with
+  `ingest(path, loader=TextLoader())`. A table inside a batch list is refused:
+  each table is written on its own, so one bad row cannot fail the batch.
+  `ingest_sync()` mirrors the call.
 
-  There is no `mapping=` argument. A `.csv` routes to the record path on its
-  extension and its mapping is looked up by filename, so the call for a table is
-  the same call as for a document and the two cannot disagree about how a file
-  should be read. A file that really is prose living in columns opts out with
-  `ingest(path, loader=TextLoader())`.
+- **`TableMapping`, `Column` and `Link` are the whole declaration surface.** A
+  table describes one entity per record: `key=` identifies the row, `name=` is
+  its display name, `properties={"age": Column("age", "INTEGER")}` types the
+  columns (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`) and
+  `links=[Link("WORKS_AT", to="Organization", by="org_id")]` turns a column that
+  holds another entity's key into an edge, with `properties=` on the link for
+  edge attributes. The mapping is validated against the file's real header and
+  every cell against its declared type before anything is written, so one that
+  does not fit raises `MappingError` and leaves the graph untouched. `INTEGER`
+  and `FLOAT` read both `1,234.56` and `1.234,56`; `FLOAT` refuses `nan` and
+  `inf`; `LIST` is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
+  comma, semicolon, tab and pipe), `RecordLoaderStrategy` and `RecordBatch` for
+  other formats, and `TextLoader`.
 
-- **`TableMapping()`** and **`Link()`** are the whole declaration surface. A table
-  describes one entity per record, and `links=[Link(...)]` turns a column that
-  holds another entity's key into an actual edge. Adding a link is an argument
-  rather than a rewrite, so a table that turns out to have a foreign key does not
-  force the declaration into a different shape. Column types via **`Column`**:
-  `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. A mapping is validated
-  against the source's real header before anything is written, so one that does
-  not fit raises `MappingError` and leaves the graph untouched.
+- **A row and a prose mention of the same thing are one node from the first
+  write.** An entity's id is derived from its name for a table row exactly as
+  for a mention in a document, so the two halves of a graph land on one node
+  with no merge step, in whichever order the sources arrive. The row's key is
+  carried unsigned as `entity_key`, and is what links and re-sync resolve
+  through: a foreign key to a table that has not loaded yet creates a placeholder
+  (`is_stub: true`) that is renamed in place — edges intact — when the owning
+  source arrives, and a row whose name changes between exports keeps its node
+  and its prose description. Two rows sharing a name fall back to their key and
+  are reported, because a prose mention of that name is ambiguous and should
+  join neither. A link's target is keyed, never named: a pointer creates a
+  missing target and adds only its key to one that already exists — another
+  table's row or an entity a document mentioned — so it can never overwrite what
+  the owning source wrote.
 
-- **One identity scheme for rows and prose.** An entity's id is derived from its
-  **name**, for a table row exactly as for a mention in a document, so the two
-  halves of a graph land on one node from the first write with no merge step —
-  and `key=` on a `TableMapping` is optional, defaulting to the name. The row's
-  key is carried as an unsigned `entity_key` and is what links and re-sync
-  resolve through: a foreign key to a table that has not loaded yet raises a
-  placeholder that is renamed in place onto its name-derived id when the owning
-  source arrives (edges intact), and a row whose name changes between exports
-  keeps its node and its prose description rather than being orphaned. Two rows
-  sharing a name fall back to their key and are reported, since a prose mention
-  of that name is ambiguous and should join neither. `alias_ids` is gone.
+- **Every structured property is signed with its source.** `age` declared by
+  `employees.csv` is stored as `employees__age`, and the signed columns reach
+  the ontology as `Attribute(structured=True)`. Two tables therefore cannot
+  overwrite each other, an extracted property (always unsigned) cannot collide
+  with a declared one, and a signed property is left out of the extraction
+  prompt so a document cannot write under a table's name. Where two sources
+  disagree the conflict is kept, reported in `finalize().property_conflicts`,
+  and never resolved for you. A header that is not an identifier (`id`,
+  `hq country`) is stored under a `col_` name; property names and relationship
+  types must be identifiers because generated Cypher writes them bare, and a
+  label the sanitiser would rewrite is refused rather than silently changed.
 
-- **Every structured property is signed with its source** — `age` declared by
-  `employees.csv` is stored as `employees__age`. Two tables writing one property
-  therefore cannot overwrite each other, and an extracted property (always
-  unsigned) cannot collide with a declared one at all: that is structural rather
-  than guarded. Where two sources disagree the conflict is kept, reported in
-  `finalize().property_conflicts`, and never resolved for you — neither source is
-  preferred. Edge properties declared on a `Link` are signed too.
+- **A record is a Chunk** (`kind: "record"`) carrying its cells beside the
+  rendered text, under a `Document` whose id is the table's name — the basename
+  of the mapping's `source`. A row is retrievable and traceable to its source
+  exactly as a paragraph is, and
+  `ingest("employees_2026Q3.csv", document_id="employees.csv")` names which
+  table a differently-named export is. Records are not chained with
+  `NEXT_CHUNK`; rows have no reading order. `update()`, `delete_document()` and
+  `drop_table()` take the same handle, and a Document records how it was written,
+  so `update()` cannot re-read a table as prose or a document as records.
 
-- **A table with no declared mapping gets one proposed** rather than refused.
-  One model call for the whole table — never one per row — shown the measured
-  columns, the first rows and the ontology as it stands, and asked what a row is
-  about: label, name column, key, types, links. Everything it says about the data
-  is held to the data (the key must be unique, the columns must exist, a link
-  must point at a known label; a claim that fails goes back with the reason), and
-  a type the file cannot hold is widened to the measured one. The proposal is
-  stored in the ontology as `derived`, reused by every later load, and reported
-  by `finalize().proposed_mappings`. Declaring a `TableMapping` for the source
-  replaces it; **`drop_table(source)`** removes it with its rows and values.
-  Without a model the file is read as-is: typed columns measured over the whole
-  file, the label from the filename, the leftmost unique-and-complete column as
-  key, and no name column, so it joins nothing. A file with no
-  unique-and-complete column is refused instead of keyed on the row ordinal,
-  which would rebind every row the moment the export was re-sorted.
+- **Re-ingesting a table re-syncs it.** A table is a snapshot, not an addition:
+  a row deleted from the export is removed, a cell blanked between exports loses
+  its column, a foreign key that moved leaves its old target, and a node another
+  source still mentions survives with the table's signed columns and identity
+  retracted from it. The re-sync runs through the existing crash-safe cutover,
+  and the content hash covers the mapping as well as the rows, so re-declaring a
+  column's type rewrites the source instead of no-opping on unchanged content.
+  `StructuredIngestionResult` reports `records`, `entities`, `references`,
+  `edges`, `rows_skipped`, `rows_in_source`, `chunks_deleted` and
+  `entities_deleted`. Rows whose key cell is blank are skipped and named in a
+  warning; a key that repeats is logged with the column and the values, since it
+  usually means the wrong column was declared.
 
-- **A table is addressed by its name.** Its Document id defaults to the basename
-  of the mapping's `source` — `employees.csv` — rather than the path it was read
-  from, so a new export of a known table is a re-sync of it from wherever it
-  arrives, and `ingest("employees_2026Q3.csv", document_id="employees.csv")`
-  names which table a differently-named file is. `update()`, `delete_document()`
-  and `drop_table()` take the same handle.
-
-- **A property a table owns is not offered to the extractor.** Signed properties
-  (`employees__age`) are left out of the extraction prompt, so a document cannot
-  write a value under a table's name; prose facts land unsigned beside them.
-
-- **`finalize()` lets a resolver judge across sources, by default.** The
-  strategy that decides within one document whether two mentions are one entity
-  — `LLMVerifiedResolution`: embed, then ask the model about the close pairs — now
-  runs inside `finalize()` over every entity in the graph at once. That is the
-  only place a table's "Priya Raman" and a note's "Ms. Raman" ever meet. With no
-  argument, `finalize()` builds the strategy over the instance's own `llm` and
-  `embedder`, asking from cosine 0.6 rather than the within-document 0.80 because
-  names differ more across sources ("Ms. Raman" / "Priya Raman" scores 0.70).
-  `finalize(resolver=...)` substitutes your own; `finalize(resolve=False)` turns
-  the judgement off and calls no model — spelling variants merge, the rest is
-  reported, as before. The resolver decides identity; the merge keeps the table's
-  node and every value it signed, moves the mention's description and edges onto
-  it, and never folds two rows of one table into each other. What it decided is
-  in `finalize().resolved_duplicates`. A resolver that fails — no model reachable
-  — is logged and `finalize()` completes without it.
-
-  A **NO is remembered**: written as a `DISTINCT_FROM` edge between the two
-  nodes and listed in `finalize().rejected_duplicates`, so the next `finalize()`
-  neither asks again nor merges the pair on a threshold, and the pair leaves
-  `probable_duplicates`. The edge goes with either node, so a re-read document
-  is judged afresh. Pairs the name rules flag as probable duplicates are handed
-  to the resolver to judge whatever they scored on embeddings; two rows of one
-  table are handed over as distinct and never asked about. The hand-off is four
-  documented `ctx.metadata` keys on `ResolutionStrategy` (`RESOLUTION_SKIP_PAIRS`,
-  `RESOLUTION_DISTINCT_IDS`, `RESOLUTION_ASK_PAIRS`, `RESOLUTION_REJECTED_PAIRS`);
-  `LLMVerifiedResolution` honours them, a strategy that ignores them still works.
-
-- **A record is a Chunk** (`kind: "record"`), carrying its cells alongside the
-  rendered text, so a row is retrievable and traceable to its source exactly as
-  a paragraph is. Records are deliberately not chained with `NEXT_CHUNK`: rows
-  have no reading order.
-
-- **A link's target is keyed, never named.** A pointer creates the target if
-  it is missing — carrying its key so it is joinable and flagged `is_stub` until
-  the source that owns the entity arrives — and adds only its key to a node that
-  already exists, whether that node is another table's row or an entity a
-  document mentioned. Order between sources does not matter.
-
-- **Documents and tables land on one node.** `finalize()` groups entities by
-  `(display name, label)` and merges each group, carrying the typed columns onto
-  the survivor — the one whose id came from a declared key, because that id is
-  reproducible. The bridge is exact string equality on the name, never
-  similarity, so a table whose display names are spelled differently from the
-  prose will not join. An `alias_ids` property is also written but nothing reads
-  it; do not reason about the join in terms of it.
-
-- **Data-safety guarantees on the structured path.** Each of these was a load
-  that produced a plausible graph and reported success:
-
-  - A `Table` declared without `name=` — an ordinary fact export — kept its rows
-    through `finalize()`. Step 1's legacy NULL-name cleanup is now scoped to
-    nodes no mapping wrote, having previously deleted every row of such a table
-    during the call the docs tell you to make.
-  - `key="id"`, and any header that is not a usable identifier, are stored under
-    a `col_` property name (`col_id`, `col_hq_country`) and published to the
-    ontology under that name. `key="id"` used to overwrite the node's graph id,
-    costing every row its `MENTIONED_IN` edges and any ability to join to prose;
-    a header with a space reached the driver inside a parameter map and surfaced
-    as a raw `DatabaseError`.
-  - `INTEGER` and `FLOAT` no longer strip every comma. Both separators present
-    means the rightmost is the decimal point, so `1,234.56` and `1.234,56` both
-    read as `1234.56`; a lone comma not followed by three digits is a decimal
-    comma, so `880,5` is `880.5`. `1,234` is refused for `FLOAT` naming both
-    readings, and read as grouping for `INTEGER`. A German export's `880,5` was
-    previously stored as `8805.0`.
-  - Rows whose key cell is blank are reported: `rows_skipped` and
-    `rows_in_source` on `StructuredIngestionResult`, plus a warning naming the
-    column and the row numbers. A four-row file with one blank key reported
-    `records: 3` and nothing else.
-  - Two rows whose declared keys differ but whose display names match stay two
-    entities. Dedup merged them and deleted one, reporting the loss as a
-    successful dedup.
-  - Both passes now complete before anything is written, so a cell that fails its
-    declared type leaves the graph untouched as documented. The Document, a chunk
-    per row and the content hash were previously committed first, and because the
-    document record then existed the retry compared hashes instead of writing.
-
-- **`CsvRecordLoader`** (sniffs comma, semicolon, tab and pipe) plus
-  **`RecordLoaderStrategy`** / **`RecordBatch`** for other formats. A record
-  stream is a factory, not an iterator: the write path walks the records twice,
-  and a one-shot iterator would ingest zero rows without raising.
+- **A table with no declared mapping gets one proposed.** One model call for the
+  whole table — never one per row — shown the measured columns, the first rows
+  and the ontology as it stands, and held to the data: the key must be unique,
+  the columns must exist, a link must point at a known label, and a type the file
+  cannot hold is widened to the measured one. The proposal is stored in the
+  ontology as `derived`, reused by every later load and reported by
+  `finalize().proposed_mappings`. Declaring a `TableMapping` for the source
+  replaces it; **`drop_table(source)`** removes it with its rows, its values and
+  the identity it gave — the signed key column leaves the graph and the
+  ontology on every label the table wrote, and `entity_key`/`is_stub` are
+  released unless another table still keys the node. Without a model the file is
+  read as-is: types measured over the whole file, the label from the filename,
+  the leftmost unique-and-complete column as key and no name column, so it joins
+  nothing; a file with no such column is refused rather than keyed on the row
+  ordinal, which would rebind every row the moment the export was re-sorted.
 
 - **Ontology registration is additive.** A mapping's declared types reach the
   ontology, which is what lets text-to-Cypher see that `age` is an `INTEGER`.
-  Labels that already exist are extended through the ontology-evolution
-  primitives rather than redeclared, so one source may declare a label by key
-  alone and another add properties to it later. A type contradiction still
-  raises.
+  A label that already exists is extended through the ontology-evolution
+  primitives rather than redeclared, its description is kept, and a type
+  contradiction still raises. Because the mapping lives in the ontology passed to
+  `GraphRAG(ontology=...)`, its labels exist before any document is extracted,
+  so the extractor uses the real labels instead of guessing from a built-in list
+  — which is what makes the order sources arrive in stop mattering.
 
-- **`TextLoader` is exported**, because it is the documented escape for a table
-  that really is prose.
+- **`finalize()` lets a resolver judge across sources.** The strategy that
+  decides within one document whether two mentions are one entity —
+  `LLMVerifiedResolution`: embed, then ask the model about the close pairs — now
+  runs inside `finalize()` over the whole graph, the only place a table's
+  "Priya Raman" and a note's "Ms. Raman" ever meet. By default it is built over
+  the instance's own `llm` and `embedder`, asking from cosine 0.6 rather than the
+  within-document 0.8 because names differ more across sources;
+  `finalize(resolver=...)` substitutes your own and `finalize(resolve=False)`
+  calls no model. The merge keeps the keyed node and every value it signed,
+  moves the mention's description and edges onto it, and never folds two rows of
+  one table into each other. A declared type beats a guessed one, so a `Concept`
+  the extractor guessed is absorbed by the `MitigationPractice` a mapping
+  declared, while two declared labels sharing a name stay apart. A NO is
+  remembered as a `DISTINCT_FROM` edge, so the pair is neither asked about nor
+  merged on a threshold again; the edge goes with either node, so a re-read
+  document is judged afresh. Everything found is on `FinalizeResult` —
+  `resolved_duplicates`, `rejected_duplicates`, `probable_duplicates`,
+  `unmerged_name_collisions`, `property_conflicts`, `unresolved_references`,
+  `entities_without_a_name`, `proposed_mappings`, `mapping_changed`,
+  `stale_signed_properties` — and reported at WARNING, since nothing is resolved
+  for you. The hand-off to a custom strategy is four documented `ctx.metadata`
+  keys on `ResolutionStrategy` (`RESOLUTION_SKIP_PAIRS`,
+  `RESOLUTION_DISTINCT_IDS`, `RESOLUTION_ASK_PAIRS`,
+  `RESOLUTION_REJECTED_PAIRS`); a strategy that ignores them still works.
 
-- **A mapping's labels are registered before anything is extracted**, because it
-  is declared in the ontology passed to `GraphRAG(ontology=...)`. The extractor
-  then has the real labels available while it reads a document instead of
-  guessing from a built-in list, which produces more correct labels first time
-  (9 merges instead of 4 on one corpus). This is what makes the order sources
-  arrive in stop mattering, so it is no longer something a caller can forget.
-
-- **`GraphRAG(enable_cypher=True)`** — turns on text-to-Cypher retrieval, which
-  translates a question into a query against the ontology. This is what answers
-  questions no passage contains the answer to (counts, averages, "how many of
-  these"), so it is the setting that makes a structured source's declared column
-  types worth declaring. Previously the only way to reach it was to hand-build a
-  `MultiPathRetrieval` out of `rag._graph_store` and `rag._vector_store`. Off by
-  default: it costs an extra LLM call per question.
-
-- **`GraphRAG.query(cypher, params)`** — read your own graph. The escape hatch
-  for checking what an ingest wrote or aggregating yourself, and previously
-  absent, which is why the examples and docs reached into internals.
-
-- **`RetrievalStrategy.set_ontology()`** — a hook the facade calls whenever the
-  working ontology changes. A no-op by default, overridden by
-  `MultiPathRetrieval`.
-
-- **Re-syncing a structured source is the same call.** A table is a snapshot, not
-  an addition, so ingesting one already in the graph re-syncs it rather than
-  writing over the top: a row **deleted** from the source is removed instead of
-  persisting forever with an orphaned chunk. There is no separate update call to
-  reach for. It runs through the existing crash-safe cutover, and cleanup is
-  scoped — an entity another source still mentions survives.
-  `StructuredIngestionResult` reports `chunks_deleted` / `entities_deleted`. The
-  content hash covers the mapping as well as the rows, so re-declaring a column's
-  type re-writes the source instead of no-opping on unchanged content and leaving
-  the old typing in place.
+- **`GraphRAG(enable_cypher=True)`** turns on text-to-Cypher retrieval, which
+  answers the questions no passage contains — counts, averages, "how many of
+  these" — and is what makes a declared column type worth declaring. Off by
+  default: it costs an extra LLM call per question. **`GraphRAG.query(cypher,
+  params)`** reads your own graph, for checking what an ingest wrote.
+  **`RetrievalStrategy.set_ontology()`** is the hook the facade calls whenever
+  the working ontology changes, so generated Cypher sees a column the moment a
+  table declares it; a no-op by default, overridden by `MultiPathRetrieval`.
 
 - See `examples/11_structured_ingestion.py` and the
   [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)
@@ -228,218 +170,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind a grounded answer. Covered by
   `graphrag_sdk/tests/test_grounded_abstention.py`.
 
-### Fixed
-
-- **A foreign key now lands on a node that already exists.** A link's target was
-  written `ON CREATE` only, so an `Organization` a document had mentioned before
-  `employees.csv` arrived never received `entity_key`, `is_stub` or the signed
-  `employees__org_id`: every row pointing at it was joined by edge, but the node
-  itself was not findable by key and the next table keyed on the same column
-  raised a duplicate. Measured on one corpus of eleven documents and four tables,
-  22 of the link targets that had a prose mention were in that state. A reference
-  now adds its key claims to an existing node and still never touches its name,
-  description or any property another source supplied.
-
-- **Provenance on a shared node is a union, not the last writer.** The
-  entity-level `source_chunk_ids` list was overwritten by each ingest and by each
-  resolver merge, so an entity mentioned in two documents remembered only the
-  second — 34 of 34 such entities in the same corpus. The `MENTIONED_IN` edges
-  were always right; the property now agrees with them: each write appends the
-  chunks it does not have, a merge keeps both nodes' chunks, and `update()` or
-  `delete_document()` removes the chunks it deleted from every entity the
-  document had touched.
-
-- **`drop_table()` takes the identity it gave.** Dropping a table removed its
-  typed properties but left the signed key column, `entity_key` and `is_stub` on
-  every node the table had created or keyed, so a node that survived because a
-  document mentioned it still looked like a row of a table that no longer
-  existed, and the key column stayed in the ontology. The key column now goes
-  from the graph and the ontology on every label the table wrote, and
-  `entity_key` and `is_stub` are released unless another table still keys the
-  node — in which case the node becomes that table's row, or that table's
-  placeholder, exactly as if the dropped table had never arrived.
-
-- **A re-sync takes back what the new export no longer says.** `update()` of a
-  table deleted the rows that had left and the edges that went with them, but a
-  node another source kept alive — a person a memo mentions, an organization a
-  second table points at — kept the departed row's signed columns, its
-  `entity_key` and `is_stub: false`, and read as a current row of a table that
-  no longer had it; a foreign key that moved left `employees__org_id` on its
-  old target the same way, and a cell blanked between two exports kept the old
-  value because a write only adds. Found by a randomised stress probe over the
-  shared shape (the separate shape deletes the row node and never had the
-  problem). The post-cutover cleanup now applies to the survivors the table no
-  longer mentions the same retraction `drop_table()` applies to the whole label,
-  and an empty cell now removes its column from the row.
-
-- **A key-only link signs a target that is another table's row.** When a link
-  declared by key alone (`Link("WORKS_AT", to="Organization", by="org_id")`)
-  found its target already in the graph as a row of `orgs.csv`, the edges were
-  pointed at the row and the reference itself was discarded, so the row never
-  carried `employees__org_id`. Whether a table still points at a node is read
-  off exactly that column by re-sync and by `drop_table()`, which then released
-  an identity the pointing table still justified. The reference is now
-  re-pointed and written, so the claim lands in either ingest order; the
-  owner's name, columns and `is_stub: false` are untouched.
-
-- **A table no longer rewrites what a label means.** The ontology fragment a
-  mapping contributes describes a label it did not create only by what the table
-  did — `Declared by a structured source, keyed on exp_id`, `Referenced by key
-  from a structured source` — and the store's `coalesce` took that text over the
-  description the user declared. Measured on twelve tables: every declared
-  description was gone after the first load, and `propose_mapping()` asked to
-  place an undeclared grants table chose `Experiment` three times out of three,
-  because `Experiment` now read "keyed on exp_id" instead of "a field experiment
-  measuring methane flux". The extractor and text-to-Cypher read the same
-  descriptions. An existing label's description is now kept; a label nothing has
-  described still takes the table's note. The proposal prompt also shows each
-  label's description next to its properties, which it did not before. With
-  both, the same table is placed under a new `Funding` label three times out of
-  three.
-
-- **One placeholder per key inside a file.** A reference's id comes from the name
-  the row gives it, or from the key when it gives none. A `citations.csv` whose
-  `citing` column carried an arXiv id and whose `cited` column carried the id plus
-  a title therefore raised two `Paper` placeholders for one paper — one named by
-  the title, one named `1801.02681` — and the lookup against the graph could not
-  catch it because nothing had been written yet. References to one key within a
-  batch now collapse onto the row that declares it, else the reference that names
-  it, and edges follow. The same collapse puts a `manager_id` that points at rows
-  of its own file on those rows. Keys are also stripped of surrounding whitespace
-  before they are stored as `entity_key`, matching the id derivation that already
-  ignored it; `inst-10 ` and `INST-10` previously derived one id but could not
-  find each other by key.
-
-- **Names that differ only in digits are never merged.** A JSON export read as
-  prose yielded `Person` entities named by their ids, and `P-021` was merged into
-  `P-011`: codes, versions and periods embed almost identically, so such pairs
-  score above the hard-merge threshold, and a model asked about them was not
-  consistent. `LLMVerifiedResolution` now leaves any pair apart whose names are
-  equal once digits are removed and different with them — `GPT-3` / `GPT-4`,
-  `Q1 2024` / `Q2 2024`, `P-011` / `P-021` — without asking.
-
-- **Merging two prose entities keeps the better-connected one.** When the
-  resolver judged `Austria` and `Republik Österreich` to be one country, the
-  survivor was chosen by description length — so the hub the tables pointed at
-  (five rows, four mentions) was renamed to the one-mention citation, and a
-  text-to-Cypher query on `c.name CONTAINS 'Austria'` came back empty. Degree
-  (`RELATES` in either direction plus `MENTIONED_IN`) now ranks before
-  description length; a row or placeholder still outranks any prose node, so
-  table-declared names are untouched. Measured on three papers and three tables:
-  the merge still happens, the hub keeps its name.
-
-- **A table is no longer read as prose by accident.** Ingesting a `.csv` without
-  a mapping took the text path: the whole file became one chunk with its commas
-  intact and no column kept its type. Measured on a two-row export — one entity
-  written, `age` absent entirely, nothing raised. It now raises, naming both ways
-  out, because the graph looks populated afterwards and a warning would not save
-  anyone. Passing a loader explicitly remains the escape, for the real case of a
-  ticket or survey export whose text should be chunked.
-
-- **A hand-written mapping that introduces a label beside one already in use now
-  says so,** naming the labels that hold entities. Two labels for one kind of
-  thing cannot be joined by resolution, so the same real-world entity ends up
-  held twice with its facts split.
-
-- **A column named `links`, `key` or `name` no longer crashes a proposal.** Those
-  are `Table`'s own parameter names, so passing them as properties raised
-  `TypeError: got multiple values for keyword argument`. Such a column is left
-  unmapped and reported.
-
-- **A table and a document now join regardless of which is ingested first.**
-  Resolution matches on name *and* label, which is what keeps "Apple" the company
-  apart from "Apple" the fruit. But an extractor can only use a label the
-  ontology already has, so a document read before any mapping was declared filed
-  "Carbon Farming" under a guessed `Concept`, the mapping later declared it a
-  `MitigationPractice`, and the two could never merge. Measured on one corpus
-  with only the order changed: prose first merged 0, tables first merged 5, with
-  nothing raised either way. A declared type now beats a guessed one — the same
-  rule that already governs declared columns — so the declared label absorbs the
-  guessed one while keeping the document's description. Two *declared* labels
-  sharing a name are still kept apart, as is a name under only undeclared labels.
-  Whatever remains unmerged is surfaced as
-  `FinalizeResult.unmerged_name_collisions` instead of appearing as a bare
-  `entities_deduplicated=0`.
-
-- **Writes are indexed, so a large source is not quadratic.** Every write is
-  `MERGE (n:Label {id: ...})`, and a MERGE can only use an index on the label in
-  its own pattern — indexing `__Entity__.id` does not help, because that label is
-  added by a later `SET`. Nothing indexed `id` at all, so writing n nodes cost
-  O(n²). Measured on a structured ingest: 4,000 rows took 15.2s and 50,000 would
-  have taken hours; they now take 1.9s and 38.5s. Range indices on `id` are
-  created for `Document`, `Chunk` and every label the write path touches, before
-  the write rather than after. Prose ingestion benefits too, where it was hidden
-  by documents contributing few nodes each.
-
-- **An update cannot re-interpret a table as prose.** `update(path)` without the
-  mapping re-read a CSV as text, replaced its record chunks with one text chunk
-  and deleted every entity: two organizations before the call, none after,
-  nothing raised. Arriving via `apply_changes(modified=[...])`, that is how a
-  scheduled sync would have quietly emptied a table. A Document now records how
-  it was written and the mismatch is refused in both directions.
-
-- **Rows sharing a key no longer disappear.** A chunk identifies a row, but its
-  id was derived from the row's *key*, so two rows with the same key collapsed
-  into one chunk holding the first row's cells while the ingest reported both.
-  Every row now keeps its own chunk, and a key that is not unique is logged with
-  the column and the repeated values, since it usually means the wrong column was
-  declared. Chunk ids for unique keys are unchanged.
-
-- **A declaration that cannot be written is rejected where it is written.**
-  Property names and relationship types must be identifiers, because generated
-  Cypher writes them as bare names; a backtick in a property name previously
-  surfaced as `DatabaseError: Invalid input at end of input` from a query the
-  caller never wrote. Labels stay permissive (`Legal Entity` is fine) but are
-  refused when the sanitiser would silently rewrite them.
-
-- **`FLOAT` rejects `nan` and `inf`,** which are valid float literals and turn an
-  `avg()` over the whole column into `NaN` with nothing to point at. **`LIST` is
-  parsed as a CSV row,** so a quoted element may contain a comma instead of being
-  split into two.
-
-- Fixed vector-search ordering so chunk, entity, and relationship searches use
-  similarity scores, with higher values indicating closer matches.
-
-- **Text-to-Cypher rows now carry their column names.** Results reached the
-  answering LLM as bare values, so `RETURN avg(p.age) AS average_age` arrived as
-  the single token `"39.5"` and was reported as missing context. Each value is
-  labelled with its column, and the section names the question the query was
-  generated from, since a scalar aggregate has no scope of its own. Only
-  reachable with `enable_cypher=True`, which is off by default.
-
-- **A merge now keeps the reproducible identity.** The survivor was chosen by
-  longest description alone, so a node extracted from prose could outrank one
-  keyed on a declared column. The keyed id then stopped existing and the next
-  ingest of that table recreated it as a second node. The rank is now: derived
-  from a declared key, then real over placeholder, then longest description. For
-  a corpus with no structured sources the ordering is unchanged.
-
-- **The retrieval strategy no longer holds a stale ontology.** It was built at
-  construction time and only refreshed on the ontology's first load, so every
-  later change was invisible to it — including every structured ingest, which is
-  precisely when new typed columns appear. Measured: after ingesting a CSV the
-  facade knew `Organization.employee_count` and the strategy's copy had no
-  properties at all, so generated Cypher could not aggregate over the column the
-  mapping existed to declare. The working ontology is now republished to the
-  strategy on every change.
-
-- **A structured source is addressed like every other file.** The record loader
-  defaulted a Document id to the bare file name while the text path uses
-  `os.path.normpath(source)`, so `ingest` and `update` disagreed about which
-  document a source was, and two same-named exports in different directories
-  collided into one Document.
-
-- **`ingest_sync()` accepts `mapping`.** It had no such parameter, so the sync
-  API could not ingest a structured source at all, and neither `ingest` overload
-  mentioned it, so a type checker rejected the call the docs teach. The existing
-  wrapper-drift tripwire test now covers `ingest` too, which is why this survived.
-
-- **A mapping cannot declare `name` as a property.** The extraction path merges
-  ontology-declared attributes over the system properties it builds, so a
-  declared `name` let the extractor answer it with a null and blank out the
-  display name of everything extracted from prose.
-
 ### Changed
+
+- **`finalize()` calls the model by default.** It used to deduplicate on exact
+  names only. It now also runs `LLMVerifiedResolution` over the whole graph —
+  one embedding pass, then one model call per close pair, each pair asked once —
+  unless `finalize(resolve=False)` is passed, which restores the previous
+  behaviour. A resolver that fails, because no model is reachable, is logged and
+  `finalize()` completes without it.
+
+- **A `.csv` is no longer read as prose.** `ingest()` sent every file through
+  the text loader, so a table became one chunk with its commas intact and no
+  column kept its type. A `.csv`, `.tsv`, `.psv` or `.tab` now takes the record
+  path; with no mapping declared it is proposed one (with a model) or read as-is
+  (without), and a warning says so. `ingest(path, loader=TextLoader())` keeps
+  the old behaviour for a file that really is prose in columns.
+
+- **`finalize()`'s exact-name phase groups by canonical form.** Two entities
+  used to be merged without a model only when their lower-cased names were
+  identical. They now merge when they reduce to the same canonical key: case,
+  punctuation, apostrophes and `&`, `Surname, Given` inversion, common
+  abbreviations (`Corp.` → `corporation`) and one trailing legal form
+  (`Ltd`, `Inc`, `GmbH`) are normalised, word order is not — `Morgan Stanley`
+  and `Stanley Morgan` stay apart. Spellings the rule deliberately declines to
+  join (`M. Ellison` / `Maya Ellison`, a pure reordering) are listed in
+  `FinalizeResult.probable_duplicates` with the reason, never merged.
+
+- **A merge's survivor is chosen by identity and connectivity before
+  description length.** The survivor of a deduplication was the node with the
+  longest description. The rank is now: a node keyed on a declared column, then
+  a real node over a placeholder, then degree (`RELATES` in either direction plus
+  `MENTIONED_IN`), then description length, then name length, then id — so the
+  hub five rows point at is not renamed after a one-mention citation, and a tie
+  settles the same way on every run. For a corpus with no structured sources
+  only the degree and tie-break steps are new.
 
 - Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
   published at <https://docs.falkordb.com/graphrag>, where GraphRAG SDK now
@@ -447,6 +211,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
   `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
   MDX/link validation in CI.
+
+### Fixed
+
+- **A merge no longer discards the duplicate's properties.** The deduplicator
+  remapped edges only, so `DETACH DELETE` took the duplicate's properties with
+  it — its description, which entity vector search embeds, and every value only
+  it knew. Properties are now carried onto the survivor before the delete, with
+  a value already on the survivor always winning.
+
+- **Edge identity includes `rel_type`.** Every data edge is `RELATES` with its
+  semantic type in `rel_type`, but the deduplicator's remap and the writers that
+  decide whether an edge already exists compared endpoints only, so a merge kept
+  one edge per entity pair and dropped every other fact between the two. The
+  remap also left the survivor unbound in its `MERGE`, which could fork it into a
+  second node that took the remapped edges.
+
+- **An entity's `source_chunk_ids` is a union, not the last writer.** The
+  entity-level list was overwritten by each ingest and by each merge, so an
+  entity mentioned in two documents remembered only the second while its
+  `MENTIONED_IN` edges were right. Each write now appends the chunks it does not
+  have, a merge keeps both nodes' chunks, and `update()` or `delete_document()`
+  removes the chunks it deleted from every entity the document had touched.
+
+- **Names that differ only in digits are never merged.** Codes, versions and
+  periods embed almost identically, so `GPT-3` / `GPT-4`, `Q1 2024` / `Q2 2024`
+  and `P-011` / `P-021` scored above the hard-merge threshold, and a model asked
+  about them was not consistent. `LLMVerifiedResolution` now leaves any pair
+  apart whose names are equal once digits are removed and different with them,
+  without asking.
+
+- **Writes are indexed, so a large ingest is not quadratic.** Every write is
+  `MERGE (n:Label {id: ...})`, and a `MERGE` can only use an index on the label
+  in its own pattern; nothing indexed `id` on the data labels, so writing *n*
+  nodes cost O(n²) — 4,000 rows took 15.2 s and now take 1.9 s. Range indices on
+  `id` are created for `Document`, `Chunk` and every label the write path
+  touches, before the write. Prose ingestion benefits too.
+
+- **Text-to-Cypher rows carry their column names.** Results reached the
+  answering model as bare values, so `RETURN avg(p.age) AS average_age` arrived
+  as the single token `"39.5"` and was reported as missing context. Each value
+  is labelled with its column, and the section names the question the query was
+  generated from.
+
+- **The retrieval strategy no longer holds a stale ontology.** It was built at
+  construction time and refreshed only on the ontology's first load, so every
+  later change — an evolution call, a table's new typed columns — was invisible
+  to generated Cypher. The working ontology is republished to the strategy on
+  every change.
+
+- Fixed vector-search ordering so chunk, entity, and relationship searches use
+  similarity scores, with higher values indicating closer matches.
 
 ## [1.4.0] - 2026-08-10
 

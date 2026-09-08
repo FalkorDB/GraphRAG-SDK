@@ -439,6 +439,19 @@ class TestGraphRAGSyncWrappers:
         result = g.completion_sync("test?")
         assert result.answer == "Sync completion."
 
+    def test_query_sync(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        mock_conn.query.return_value = MagicMock(result_set=[["Acme", 3]])
+        rows = g.query_sync("MATCH (n) RETURN n.name, count(*)", {"x": 1})
+        assert rows == [["Acme", 3]]
+        mock_conn.query.assert_called_with("MATCH (n) RETURN n.name, count(*)", {"x": 1})
+
+    def test_drop_table_sync(self, mock_conn, embedder, llm):
+        """The sync twin reaches ``drop_table``: an unknown table is refused the same way."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        with pytest.raises(ValueError, match="No table named 'missing.csv'"):
+            g.drop_table_sync("data/missing.csv")
+
 
 class TestGraphRAGRetrieve:
     async def test_retrieve_returns_retriever_result(self, mock_conn, embedder):
