@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -683,5 +684,139 @@ class TestGraphStoreIdIndex:
         mock_connection.query = AsyncMock(side_effect=side_effect)
         result = await graph_store.upsert_nodes(
             [GraphNode(id="n1", label="Person", properties={})]
+class TestMergedLabelsBecomeRealLabels:
+    """Labels absorbed during resolution must be queryable as Cypher labels.
+
+    Resolution collapses duplicates into one node and records the losers'
+    labels in a ``merged_labels`` property, because ``GraphNode.label`` holds a
+    single string. Measured against a real FalkorDB, a property is not a type:
+    a Person node that absorbed ``Engineer`` was invisible to
+    ``MATCH (n:Engineer)`` (0 rows) while the property lookup found it. These
+    tests pin the promotion of that property to real labels.
+    """
+
+    @staticmethod
+    def _label_queries(mock_connection) -> list[str]:
+        # The upsert query also contains ``SET n:__Entity__``, so the promotion
+        # query is identified by being a MATCH rather than a MERGE.
+        return [
+            c[0][0]
+            for c in mock_connection.query.call_args_list
+            if " SET n:" in c[0][0] and "MERGE" not in c[0][0]
+        ]
+
+    async def test_absorbed_label_is_added_as_a_label(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"name": "Ada", "merged_labels": "Engineer"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1, "expected one label-promotion query"
+        assert "`Engineer`" in queries[0]
+
+    async def test_node_without_merged_labels_issues_no_extra_query(
+        self, graph_store, mock_connection
+    ):
+        """Control: the promotion must not fire for ordinary nodes."""
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={"name": "Ada"})]
+        )
+        assert self._label_queries(mock_connection) == []
+
+    async def test_several_absorbed_labels_are_all_added(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Engineer | Author"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert "`Author`" in queries[0] and "`Engineer`" in queries[0]
+
+    async def test_the_survivors_own_label_is_not_re_added(
+        self, graph_store, mock_connection
+    ):
+        """``Person`` is already on the node; re-setting it would be noise."""
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Person | Engineer"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert queries[0].count(":`") == 1, "Person should not be set twice"
+        assert "`Engineer`" in queries[0]
+
+    async def test_backticks_in_a_label_cannot_inject_cypher(
+        self, graph_store, mock_connection
+    ):
+        """The label is interpolated, so it must be sanitized like every other.
+
+        Safety here means the payload cannot escape its backtick-quoted
+        identifier, so the check strips every quoted span and asserts nothing
+        executable survives outside them.
+        """
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Eng` DETACH DELETE n //"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        outside_identifiers = re.sub(r"`[^`]*`", "", queries[0])
+        assert "DETACH" not in outside_identifiers
+        assert queries[0].count("`") % 2 == 0, "unbalanced backticks means an escape"
+
+    async def test_structural_labels_are_never_promoted(self, graph_store, mock_connection):
+        """An entity must not become a ``Document`` or ``Chunk``.
+
+        Those labels select structural nodes in listing and cleanup queries;
+        stamping one onto an entity would make it show up there.
+        """
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Document | Chunk | __Entity__ | Engineer"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert "`Engineer`" in queries[0]
+        for bad in ("`Document`", "`Chunk`", "`__Entity__`"):
+            assert bad not in queries[0]
+
+    async def test_promotion_failure_does_not_fail_the_upsert(
+        self, graph_store, mock_connection
+    ):
+        """A label is an enrichment; losing it must not lose the node."""
+
+        async def flaky(cypher, params=None):
+            if "UNWIND $ids" in cypher:
+                raise Exception("label add failed")
+            return MagicMock(result_set=[])
+
+        mock_connection.query = AsyncMock(side_effect=flaky)
+        result = await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={"merged_labels": "Engineer"})]
         )
         assert result == 1

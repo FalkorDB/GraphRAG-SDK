@@ -55,6 +55,8 @@ class GraphStore:
 
     _BATCH_SIZE = 500
     _STRUCTURAL_LABELS = RESERVED_NODE_LABELS
+    #: Property written by entity resolution holding labels absorbed on merge.
+    _MERGED_LABELS_KEY = "merged_labels"
     _REL_LABEL_HINTS: dict[str, tuple[str, str]] = {
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),
@@ -122,6 +124,7 @@ class GraphStore:
             by_label.setdefault(node.label, []).append(node)
 
         count = 0
+        promotable: list[tuple[GraphNode, str]] = []
         for label, group in by_label.items():
             safe_label = sanitize_cypher_label(label)
             is_entity = label not in self._STRUCTURAL_LABELS
@@ -143,6 +146,7 @@ class GraphStore:
             await self._ensure_id_index(safe_label)
             if is_entity:
                 await self._ensure_id_index("__Entity__")
+                promotable.extend(cleaned_group)
             # Process in batches
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):
                 batch = cleaned_group[start : start + self._BATCH_SIZE]
@@ -188,8 +192,63 @@ class GraphStore:
                             )
                             raise DatabaseError(f"Node upsert failed: {inner_exc}") from inner_exc
 
+        await self._promote_merged_labels(promotable)
+
         logger.debug(f"Upserted {count} nodes")
         return count
+
+    async def _promote_merged_labels(self, nodes: list[tuple[GraphNode, str]]) -> None:
+        """Add labels absorbed during resolution as real Cypher labels.
+
+        Entity resolution collapses duplicates into one node and records the
+        losers' labels in a ``merged_labels`` property, because
+        ``GraphNode.label`` holds a single string. A property is not a type:
+        measured against a real FalkorDB, a ``Person`` that absorbed
+        ``Engineer`` was invisible to ``MATCH (n:Engineer)`` (0 rows) while the
+        property lookup found it. Promoting them here keeps the merged node
+        reachable under every type it was extracted as, which is the whole
+        point of preserving the label.
+
+        Failures are logged, not raised -- the labels are an enrichment and
+        must not cost us the nodes themselves.
+        """
+        by_labels: dict[tuple[str, ...], list[str]] = {}
+        for node, cid in nodes:
+            raw = node.properties.get(self._MERGED_LABELS_KEY)
+            if not isinstance(raw, str):
+                continue
+            extra: set[str] = set()
+            for part in raw.split("|"):
+                part = part.strip()
+                # The survivor already carries its own label.
+                if not part or part == node.label:
+                    continue
+                # Never stamp a structural or marker label onto an entity: it
+                # would surface in every MATCH (:Document) / (:Chunk) query.
+                if part in self._STRUCTURAL_LABELS or part == "__Entity__":
+                    logger.warning("Skipping structural merged label %r", part)
+                    continue
+                try:
+                    extra.add(sanitize_cypher_label(part))
+                except ValueError:
+                    logger.warning("Skipping unusable merged label %r", part)
+            if extra:
+                by_labels.setdefault(tuple(sorted(extra)), []).append(cid)
+
+        for labels, ids in by_labels.items():
+            clause = "".join(f":`{lab}`" for lab in labels)
+            try:
+                await self._conn.query(
+                    f"UNWIND $ids AS nid MATCH (n:__Entity__ {{id: nid}}) SET n{clause}",
+                    {"ids": ids},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to add merged labels %s to %d node(s): %s",
+                    ", ".join(labels),
+                    len(ids),
+                    exc,
+                )
 
     async def upsert_relationships(self, relationships: list[GraphRelationship]) -> int:
         """Batch upsert relationships using UNWIND, grouped by type.

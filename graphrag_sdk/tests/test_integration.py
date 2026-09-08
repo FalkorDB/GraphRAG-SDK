@@ -189,7 +189,7 @@ class TestSubmoduleImports:
 #
 #   - ``ExactMatchResolution`` — the default; mention IDs and node IDs
 #     align without remapping.
-#   - ``SemanticResolution(embedder=…)`` — fuzzy resolver. Tripwire for
+#   - ``LLMVerifiedResolution(embedder=…)`` — fuzzy resolver. Tripwire for
 #     the v1.1.0 mention-remap fix; without that fix, MENTIONED_IN
 #     edges silently fail to write for any merged entity, breaking
 #     orphan-cleanup correctness for fuzzy-resolver users.
@@ -199,7 +199,7 @@ class TestSubmoduleImports:
 
 
 def _resolver_param_ids():
-    return ["ExactMatch", "Semantic"]
+    return ["ExactMatch", "LLMVerified"]
 
 
 @pytest.fixture(params=_resolver_param_ids())
@@ -210,13 +210,17 @@ def resolver(request, embedder):
     from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
         ExactMatchResolution,
     )
-    from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-        SemanticResolution,
+    from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
+        LLMVerifiedResolution,
     )
 
     if request.param == "ExactMatch":
         return ExactMatchResolution()
-    return SemanticResolution(embedder=embedder)
+    # No llm: the surrounding tests script their LLM for extraction, so a
+    # resolver that also calls it would consume those scripted responses.
+    # Without an llm the embedding stage still merges the >=0.95 tier for
+    # free, which is all this tripwire needs to exercise mention-remap.
+    return LLMVerifiedResolution(embedder=embedder)
 
 
 async def _entity_count(rag, name: str) -> int:

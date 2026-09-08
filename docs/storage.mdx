@@ -220,28 +220,32 @@ After ingesting multiple documents, the same real-world entity might exist as mu
 ### Phase 1: Exact Name Match (Always Runs)
 
 1. **Fetch** all `__Entity__` nodes with their primary label (the non-`__Entity__` label)
-2. **Group** by `(normalized_name.lower(), label)` — grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
-3. **For each group with duplicates:**
-   - **Survivor:** The entity with the longest description
+2. **Group** by `(normalized name, label)` — the name is lower-cased, accent- and punctuation-folded, and stripped of a leading English article, so `The University of Barcelona` and `university of barcelona` fall together. Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate). Generational suffixes are kept: `Elias Whitford, Jr.` is not `Elias Whitford`.
+3. **Fold acronyms:** a 2–6 letter name that spells the initials of exactly one same-label multi-word name (`AIHS` → `Ashford Island Historical Society`) joins that group. An acronym with two or more plausible expansions (`US` → `United States`, `Universal Studios`) is left alone.
+4. **For each group with duplicates:**
+   - **Survivor:** The entity with the longest description; the other descriptions are appended, joined with `" | "`, so nothing a duplicate said is lost
    - **Remap edges:** All RELATES and MENTIONED_IN edges from duplicates are redirected to the survivor:
      ```cypher
      -- Outgoing RELATES
      MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__)
      WHERE b.id <> $survivor_id
-     MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b)
+     MATCH (s:__Entity__ {id: $survivor_id})
+     MERGE (s)-[nr:RELATES]->(b)
      SET nr += properties(r)
      DELETE r
 
      -- Incoming RELATES
      MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id})
      WHERE a.id <> $survivor_id
-     MERGE (a)-[nr:RELATES]->(s:__Entity__ {id: $survivor_id})
+     MATCH (s:__Entity__ {id: $survivor_id})
+     MERGE (a)-[nr:RELATES]->(s)
      SET nr += properties(r)
      DELETE r
 
      -- MENTIONED_IN
      MATCH (dup:__Entity__ {id: $dup_id})-[r:MENTIONED_IN]->(c:Chunk)
-     MERGE (s:__Entity__ {id: $survivor_id})-[:MENTIONED_IN]->(c)
+     MATCH (s:__Entity__ {id: $survivor_id})
+     MERGE (s)-[:MENTIONED_IN]->(c)
      DELETE r
      ```
    - **Delete** the duplicate node: `MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e`
@@ -253,8 +257,23 @@ Enabled via `fuzzy=True`. Catches near-duplicates that have slightly different n
 1. **Fetch** all surviving entities with their labels
 2. **Batch-embed** entity names
 3. **Normalize** vectors and compute pairwise cosine similarity in blocks (1000 entities per block to avoid OOM)
-4. **Merge** pairs above the similarity threshold (default: 0.9), but only within the same label (no cross-type merging)
+4. **Merge** pairs above the similarity threshold (default: 0.95 — at 0.90 the pass wrongly merged 2 of 33 hard-negative pairs for no added recall), but only within the same label (no cross-type merging)
 5. **Remap and delete** as in Phase 1
+
+### Phase 3: LLM-Judged Cross-Document Dedup (Default in `finalize()`)
+
+Ingest resolves per document, so `Airbus` in one file and `Airbus SE` in another never meet until here. `LLMJudgeDeduplicator` (`storage/judge_dedup.py`) runs once over the whole graph, after Phase 1:
+
+1. **Embed** every entity's name (reused from `backfill_entity_embeddings()`, written to `e.embedding` if missing) and its description
+2. **Nominate** candidate pairs through three LLM-free doors: top-10 name neighbours at cosine ≥ 0.65, top-10 description neighbours at ≥ 0.55, and "A's name appears inside B's description"
+3. **Group** candidates into dense sets of at most 8 (a chain A–B–C–D where only neighbours are similar cannot form); pack whole sets into prompts of ≤ 3,000 tokens
+4. **Judge, pass 1** — the LLM partitions each set into same-referent groups; names, labels and descriptions only, no similarity scores shown
+5. **Judge, pass 2** — the same sets, members shuffled and reversed; an answer that changes with the order is a guess
+6. **Both passes agree → merge**: survivor = longest description; descriptions joined with `" | "`; every member's label added to the survivor; other names kept in `aliases`; edges remapped to the survivor first, then the loser deleted
+7. **Only one pass agrees → link**: a `SAME_AS` edge (`source='llm_judge'`, `agreement=1`) between the two; both nodes and both descriptions stay
+8. **Neither → nothing**
+
+Measured on the benchmark corpus: the two-pass vote cut wrong merges by two thirds at 2× judge cost; gpt-4.1 made 9 wrong merges where gpt-4o-mini made 51, so pass a gpt-4.1-class `judge_llm`. Statistics (candidates, sets, calls, agreed/disagreed pairs, merged, linked) are in `EntityDeduplicator.last_judge_stats` and `FinalizeResult.judge_stats`. `finalize(judge=False)` skips this phase.
 
 ---
 
@@ -299,6 +318,7 @@ The connection layer retries transient query failures up to 3 times using expone
 |------|-----------------|
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | GraphStore — batched MERGE, label hints, statistics, cleanup |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | VectorStore — index management, chunk/entity/relationship embedding, search |
-| [`storage/deduplicator.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — exact + fuzzy dedup, edge remapping |
+| [`storage/deduplicator.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — exact + fuzzy dedup, edge remapping; runs the judge phase |
+| [`storage/judge_dedup.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/judge_dedup.py) | LLMJudgeDeduplicator — cross-document dedup: nominate, group, judge twice, merge or link |
 | [`utils/cypher.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/utils/cypher.py) | sanitize_cypher_label() and other Cypher utilities |
 | [`core/connection.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/connection.py) | FalkorDBConnection — async client, connection pooling, retry |

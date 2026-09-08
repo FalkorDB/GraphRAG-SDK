@@ -26,6 +26,173 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind a grounded answer. Covered by
   `graphrag_sdk/tests/test_grounded_abstention.py`.
 
+### Changed
+
+- Default chunk size lowered from 512 to 384 tokens in
+  `SentenceTokenCapChunking`, `StructuralChunking`, `ContextualChunking` and
+  the documented `CallableChunking` example. Measured on the benchmark corpus:
+  entity F1 0.574 vs 0.563 and relation F1 0.237 vs 0.223 against 768; with
+  the current extraction prompt, exact relation F1 2.2× and answer accuracy
+  27 → 32 % for the full stack. **Cost:** more extraction LLM calls per
+  ingest — 103 → 157 (+52 %) on the 11-document benchmark corpus, +35 % on a
+  53k-token corpus — and ~19 % more input tokens, since the per-call
+  instructions are re-sent once per chunk. Pass
+  `max_tokens=512` to keep the old size.
+- **`max_llm_pairs` silently capped deduplication recall, and the progress log
+  misreported it.** The cap keeps the 500 highest-similarity candidate pairs and
+  discards the rest *unverified*, so duplicates below the cut stay unmerged — a
+  recall ceiling, not a batching detail. It was invisible twice over: nothing
+  warned, and the progress line reported the pre-cap count as the number sent to
+  the LLM (a run verifying 500 of 15,877 pairs logged `15877 boundary pairs →
+  LLM`). It matters at scale: candidate pairs grow as roughly n^2 (measured
+  exponent 1.99), so the cap drops 13 pairs at 755 nodes and a projected 98% at
+  5,000. The count sent is now reported accurately alongside the number dropped,
+  a warning names both counts and the two ways to respond, and the docstring no
+  longer describes the limit as "per call". The default is deliberately
+  unchanged — verification is LLM work and raising the cap costs the same
+  quadratic.
+
+- **Entity resolution crashed on a near-perfect cross-label pair.** The
+  ambiguous-zone clustering in `LLMVerifiedResolution` built its distance matrix
+  as a bare `1 - similarity`. Those similarities come from hnswlib's float32
+  inner product, which for two identical unit vectors can return `-1.19e-07`
+  instead of `0` — giving a similarity of `1.0000001` and a negative distance.
+  `scipy.cluster.hierarchy.fcluster` rejects such a linkage matrix outright, so
+  the whole resolution stage aborted with `ValueError: Linkage 'Z' contains
+  negative distances`. Reachable in practice because the cross-label guard holds
+  identical names under different labels back from the hard-merge shortcut and
+  routes them into exactly that zone; reproduced on a 755-node corpus. Distances
+  are now clamped to `[0, 1]` by `_pair_distance`, which cannot reorder anything
+  since only out-of-range values move.
+
+- `ExactMatchResolution` now behaves identically to Phase 1 of
+  `LLMVerifiedResolution`, because it delegates to the same `exact_match_merge`
+  helper instead of re-implementing it. Previously it grouped on the raw `id`
+  property rather than the normalised name — so the default constructor merged
+  almost nothing — and it merged by copying only the keys the survivor lacked,
+  which silently discarded every duplicate's `description` and
+  `source_chunk_ids`. It also never merged across labels and never summarised.
+  Measured against a real FalkorDB on a 5-node input: 5 nodes written before,
+  2 after; `'British mathematician'` before, `'British mathematician | wrote the
+  first algorithm'` after.
+
+- The cross-label candidate scan in `exact_match_merge` read
+  `properties.get("name", "")` while the same-label grouping read
+  `properties.get("name", node.id)`. With different fallbacks, every node
+  lacking a name normalised to the empty string and landed in one bucket, so
+  unrelated nameless nodes under different labels were sent to the LLM as a
+  same-name homograph group. Both reads now use the same key and fallback.
+
+- Absorbed labels are preserved in the Stage 1 cross-label merge
+  (`exact_match_merge`) and promoted to real Cypher labels on write, so a node
+  merged from `FalkorDB`/Technology + `FalkorDB`/Organization stays reachable
+  via `MATCH (n:Organization)`. This was the third of four merge paths carrying
+  the same defect.
+
+- `deduplicate_entities()` no longer discards the descriptions of the entities
+  it absorbs. The finalize-time deduplicator picked a survivor per group and
+  `DETACH DELETE`d the rest, so every description but one was destroyed: two
+  `Cape Morrow Light`/Location nodes, one saying it is a lighthouse and the
+  other giving the year it was first lit, became one node that kept only the
+  longer text. Absorbed descriptions are
+  now joined with `' | '`, matching the rule `LLMVerifiedResolution` and
+  `exact_match_merge` already use; duplicates and empty strings are skipped, and
+  no write is issued when there is nothing to add. This makes the merge
+  non-destructive; which entities are folded together is described under
+  **Changed** below.
+
+- Fixed vector-search ordering so chunk, entity, and relationship searches use
+  similarity scores, with higher values indicating closer matches.
+
+
+- Reading a graph that was never deduplicated now logs a warning. The
+  ingest-time resolver only ever sees a single document, so cross-document
+  duplicates — `Airbus` from one PDF and `Airbus SE` from another — survive
+  ingestion by design and are removed only by `deduplicate_entities()`, which
+  runs inside `finalize()`. Nothing required that call, so it was possible to
+  ingest hundreds of documents and query a graph full of duplicates with no
+  indication that a step had been missed. `retrieve()` (and `completion()`,
+  which routes through it) now warns once per pending batch. Calling
+  `deduplicate_entities()` or `finalize()` clears it. Behaviour is otherwise
+  unchanged — nothing is forced, and querying an existing graph without
+  ingesting first stays silent.
+
+- **`finalize()` now runs an LLM-judged cross-document dedup phase**
+  (`storage/judge_dedup.py`, `finalize(judge=True)` — the default) after the
+  exact-name phase. Ingest keeps `ExactMatchResolution` as its default: a
+  resolver at ingest only ever sees one document, so the cross-document
+  duplicates that matter (`Airbus` in one file, `Airbus SE` in another) are
+  unreachable there by construction. At finalize: every entity's name is
+  embedded (and stored on the node for retrieval), descriptions are embedded,
+  and three LLM-free doors nominate candidate pairs — top-10 name neighbours
+  ≥ 0.65, top-10 description neighbours ≥ 0.55, and "A's name appears in B's
+  description"; candidates are grouped into dense sets of at most 8 and packed
+  into ≤ 3,000-token prompts; the judge LLM partitions each set; a second pass
+  over shuffled sets must agree. Agreed pairs are **merged** (survivor = longest
+  description; descriptions joined with `" | "`; every member's label added;
+  other names kept in `aliases`; edges remapped, then the loser deleted);
+  disagreements become **`SAME_AS` edges** (`source='llm_judge'`) instead —
+  nothing is lost. The exact-name phase now also joins descriptions and
+  records `aliases`. `FinalizeResult` gains `entities_linked`,
+  `judge_llm_calls`, `judge_stats`. Use a gpt-4.1-class `judge_llm`: on the
+  benchmark corpus it made 9 wrong merges where gpt-4o-mini made 51; the
+  two-pass vote cut wrong merges by two thirds at 2× judge cost.
+  `finalize(judge=False)` keeps finalize LLM-free; pass
+  `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per
+  document.
+
+- `LLMVerifiedResolution.soft_threshold` lowered from 0.80 to 0.65, and a new
+  `unified_threshold` (default 0.65) gates a unified same-label and cross-label
+  candidate stage (`cross_label_max_pairs`, default 200). Batched verification
+  is bounded by `verification_token_budget` (default 4000) and a new
+  `verification_max_pairs_per_call` (default 5). At larger budgets a single
+  call could carry 155 pairs, and repeat trials on identical input returned two
+  distinct modes (25/26/27/28 vs 51/53/54/58 correct merges) with nothing in
+  the logs, parser or metrics to tell a good run from a bad one. At 4000 tokens
+  and 5 pairs the spread across trials is 3. A token cap alone does not bound
+  the failure — short, description-free blocks still packed 102-119 pairs into
+  one call — hence the separate pair-count cap.
+
+  Why 0.65 for the candidate gate: it is the cosine floor that decides which
+  pairs the LLM ever sees, so it bounds recall. Measured end to end against a
+  real FalkorDB and a real LLM on 216 audited gold pairs and 39 must-not-merge
+  pairs, 3 runs at each setting:
+
+  | gate | merges (mean) | recall | wrong merges | LLM calls |
+  | --- | --- | --- | --- | --- |
+  | 0.75 | 84.7 | 39.2% | 2, 3, 3 | 42 |
+  | 0.65 (shipped) | 107.0 | 49.5% | 2 every run | 100 |
+
+  22 more true merges — 26% more recall — at no precision cost; the gap far
+  exceeds the run-to-run spread of 4-5. The cost is ~2.4x the LLM calls in this
+  stage. Lowering further does not help: below 0.65 the pairs still missing are
+  descriptive coreference ("Adelaide" / "the tug") whose cosine is near zero.
+  Pass `unified_threshold=0.75` to restore the cheaper profile.
+
+- `ExactMatchResolution.resolve_property` default changed from `"id"` to
+  `"name"`. Entity ids are unique per extraction, so matching on `id` never
+  merged anything; `name` is what every caller meant.
+
+- `EntityDeduplicator` (the finalize-time pass behind `deduplicate_entities()`
+  and `finalize()`) still groups by `(normalised name, label)`, and a short
+  name that is the initials of exactly one same-label multi-word name (`AIHS`
+  / `Ashford Island Historical Society`) is now merged into it — this is the
+  only rule that reaches acronym pairs, whose character and embedding
+  similarity are both below any usable threshold. An acronym matching two or
+  more long forms (`US` / `United States` / `Universal Studios`) is left alone.
+  Name normalisation folds accents, punctuation, inner dots (`A.I.` → `AI`) and
+  a leading English article only; foreign articles are kept so `Los Angeles`
+  and `Angeles` stay distinct. `deduplicate_entities(similarity_threshold=...)`
+  default raised from 0.9 to 0.95: at 0.90 the fuzzy pass wrongly merged 2 of
+  33 hard-negative pairs for no added recall.
+
+- Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
+  published at <https://docs.falkordb.com/graphrag>, where GraphRAG SDK now
+  appears as a product in the FalkorDB docs product switcher. Pages moved from
+  `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
+  `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
+  MDX/link validation in CI.
+
 ### Fixed
 
 - Re-ingesting the same file no longer duplicates its chunks. Chunk ids are
@@ -55,29 +222,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run completes, so a partially failed ingest is retried in full rather than
   skipped.
 
-### Changed
+### Removed
 
-- Default chunk size lowered from 512 to 384 tokens in
-  `SentenceTokenCapChunking`, `StructuralChunking`, `ContextualChunking` and
-  the documented `CallableChunking` example. Measured on the benchmark corpus:
-  entity F1 0.574 vs 0.563 and relation F1 0.237 vs 0.223 against 768; with
-  the current extraction prompt, exact relation F1 2.2× and answer accuracy
-  27 → 32 % for the full stack. **Cost:** more extraction LLM calls per
-  ingest — 103 → 157 (+52 %) on the 11-document benchmark corpus, +35 % on a
-  53k-token corpus — and ~19 % more input tokens, since the per-call
-  instructions are re-sent once per chunk. Pass
-  `max_tokens=512` to keep the old size.
-- Fixed vector-search ordering so chunk, entity, and relationship searches use
-  similarity scores, with higher values indicating closer matches.
-
-### Changed
-
-- Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
-  published at <https://docs.falkordb.com/graphrag>, where GraphRAG SDK now
-  appears as a product in the FalkorDB docs product switcher. Pages moved from
-  `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
-  `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
-  MDX/link validation in CI.
+- **BREAKING:** `SemanticResolution` and `DescriptionMergeResolution` have been
+  removed, along with their exports from `graphrag_sdk` and
+  `graphrag_sdk.ingestion.resolution_strategies`. Neither was reachable from any
+  production code path — nothing in `src/` constructed either one. Both were
+  strictly weaker than `LLMVerifiedResolution`: `SemanticResolution` had no
+  cross-label merging at all (`Paris`/Person and `Paris`/Location could never
+  fuse), and `DescriptionMergeResolution` re-implemented the same-label half of
+  Stage 1 as a fourth independent copy of the merge loop. Use
+  `LLMVerifiedResolution` (opt-in at `ingest()`) or `ExactMatchResolution`
+  (the `ingest()` default); cross-document dedup is `finalize()`'s judge
+  phase.
 
 ## [1.4.0] - 2026-08-10
 

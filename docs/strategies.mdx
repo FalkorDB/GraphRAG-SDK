@@ -13,7 +13,7 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `MarkdownLoader` |
 | 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking`, `StructuralChunking` |
 | 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
-| 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
+| 4 | Resolution | `ResolutionStrategy` | `LLMVerifiedResolution`, `ExactMatchResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
 
@@ -402,37 +402,42 @@ class ResolutionStrategy(ABC):
 
 Returns `ResolutionResult` with deduplicated `nodes`, remapped `relationships`, and `merged_count`.
 
-### Built-in: ExactMatchResolution
+### Built-in: LLMVerifiedResolution (opt-in at ingest)
 
-Deduplicates by exact property match (default: `id`). Fast, no LLM calls.
+Three tiers: exact match by normalized name, then `"name: description"` embedding similarity in one unified same/cross-label candidate stage, then an LLM YES/NO verdict for the ambiguous zone — with a label-family gate (Person vs Place pairs never reach the LLM) and a second, A/B-swapped vote before any cross-label merge. Runs per document when passed to `ingest(resolver=...)`. Cross-document dedup is done once, by the LLM-judged phase in `finalize()` (see [Storage](/storage)).
+
+```python
+from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import LLMVerifiedResolution
+
+resolver = LLMVerifiedResolution(
+    llm=llm,                            # LLMInterface for verification — required for tiers 2-3
+    embedder=embedder,                  # Embedder for name similarity — required for tiers 2-3
+    hard_threshold=0.95,                # merge without asking at or above this cosine
+    soft_threshold=0.65,                # skip pairs below this cosine
+    batch_verification=True,            # 5 pairs per LLM call
+    verification_max_pairs_per_call=5,
+)
+```
+
+Both providers must be passed explicitly when you construct the strategy yourself; `GraphRAG.ingest()` wires its own LLM and embedder only into the default instance. Without an embedder the strategy silently runs the exact-match tier alone.
+
+Merged descriptions are joined with `" | "`; labels absorbed from cross-label merges are kept in `merged_labels` and promoted to real Cypher labels on write.
+
+**When to use:** Default. Recall on real duplicates is roughly 2.5x that of exact match on the benchmark corpus, at the cost of embedding and LLM calls during ingest.
+
+### Built-in: ExactMatchResolution (ingest default)
+
+Deduplicates by `(normalized name, label)` only. Fast, no embeddings, no LLM calls.
 
 ```python
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 
 resolver = ExactMatchResolution(
-    resolve_property="id",  # property to match on (default: "id")
+    resolve_property="name",  # property to match on (default: "name")
 )
 ```
 
-**When to use:** Default. Fast and deterministic. Works well when extraction produces consistent entity IDs.
-
-### Built-in: DescriptionMergeResolution
-
-Deduplicates by `(normalized name, label)` -- same-name entities with different labels (e.g. Person "Paris" vs Location "Paris") are kept separate. Merges descriptions:
-- If fewer than `force_summary_threshold` descriptions: concatenates them
-- If more: uses LLM to summarize into a single description
-
-```python
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
-
-resolver = DescriptionMergeResolution(
-    llm=llm,                       # LLMInterface for summarization (optional)
-    force_summary_threshold=3,     # Trigger LLM summary at this many descriptions (default: 3)
-    max_summary_tokens=500,        # Max tokens for LLM summary (default: 500)
-)
-```
-
-**When to use:** Multi-document ingestion where the same entity appears with different descriptions. Useful when the same entity is described differently across documents.
+**When to use:** Extraction is consistent, or ingest cost matters more than duplicate recall. Cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`.
 
 ---
 

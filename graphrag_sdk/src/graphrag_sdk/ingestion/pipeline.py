@@ -324,7 +324,7 @@ class IngestionPipeline:
             # nothing. That would silently break update()/delete_document()
             # orphan-cleanup correctness for any resolver that merges
             # entities (ExactMatch when same-id duplicates exist;
-            # SemanticResolution and LLMVerifiedResolution always). The
+            # LLMVerifiedResolution always). The
             # ``if resolved.remap`` guard makes this a no-op when the
             # resolver returned an empty remap.
             if resolved.remap and graph_data.mentions:
@@ -620,7 +620,7 @@ class IngestionPipeline:
         upsert's MATCH on the merged-away id finds nothing), which would
         invalidate the orphan-cleanup invariant for fuzzy resolvers.
 
-        Two-stage resolvers (``SemanticResolution``, ``LLMVerifiedResolution``)
+        Two-stage resolvers (``LLMVerifiedResolution``)
         merge dicts from successive phases without flattening, so the
         remap can contain transitive chains like ``{A: B, B: C}`` where
         a single ``remap.get(A)`` returns ``B`` — itself a merged-away

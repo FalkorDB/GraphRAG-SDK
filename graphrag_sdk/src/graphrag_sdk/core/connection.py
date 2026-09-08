@@ -200,7 +200,13 @@ class FalkorDBConnection:
                 last_exc = exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
-                    logger.error(
+                    # "Already indexed / already exists" is the expected reply
+                    # to an idempotent CREATE INDEX on a graph that has one;
+                    # VectorStore treats it as success. Logging it as an error
+                    # made every finalize() print three spurious failures.
+                    level = logging.DEBUG if self._is_already_exists(exc) else logging.ERROR
+                    logger.log(
+                        level,
                         "Non-transient FalkorDB query failure: %s: %s",
                         type(exc).__name__,
                         exc,
@@ -251,10 +257,17 @@ class FalkorDBConnection:
         "procedure not found",
     )
 
+    _ALREADY_EXISTS_MARKERS = ("already indexed", "already exists")
+
     @classmethod
     def _is_non_transient(cls, exc: Exception) -> bool:
         msg = str(exc).lower()
         return any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS)
+
+    @classmethod
+    def _is_already_exists(cls, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(marker in msg for marker in cls._ALREADY_EXISTS_MARKERS)
 
     # ── Health & Admin ────────────────────────────────────────────
 

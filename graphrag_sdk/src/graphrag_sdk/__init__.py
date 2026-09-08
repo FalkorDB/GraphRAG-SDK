@@ -104,17 +104,11 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
-    DescriptionMergeResolution,
-)
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
     ExactMatchResolution,
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
-)
-from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-    SemanticResolution,
 )
 
 # ── Retrieval Strategies ────────────────────────────────────────
@@ -204,10 +198,8 @@ __all__ = [
     "IngestionPipeline",
     "LoaderStrategy",
     "ResolutionStrategy",
-    "DescriptionMergeResolution",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
-    "SemanticResolution",
     # Retrieval
     "CosineReranker",
     "MultiPathRetrieval",
