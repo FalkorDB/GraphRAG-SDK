@@ -1106,18 +1106,85 @@ class GraphRAG:
             for other in self._global_ontology.tables
             if other.source != mapping.source
         ]
+        # A re-sync can hand over every row that left a large export; the ids
+        # travel as a query parameter, so they go in the same slices every
+        # other id-scoped query uses.
+        size = self._graph_store._BATCH_SIZE
+        scopes: list[Sequence[str] | None] = (
+            [None]
+            if ids is None
+            else [ids[start : start + size] for start in range(0, len(ids), size)]
+        )
         touched = released = 0
-        for label, property_name in self._signed_properties_of(mapping):
-            touched += await self._graph_store.drop_node_property(label, property_name, ids=ids)
-        for node in own.nodes:
-            peers = [n for other in others for n in other.nodes if n.label == node.label]
-            released += await self._graph_store.release_entity_keys(
-                node.label,
-                owned_by=[n.signed(n.key_property) for n in peers if not n.reference],
-                referenced_by=[n.signed(n.key_property) for n in peers if n.reference],
-                ids=ids,
-            )
+        for scope in scopes:
+            for label, property_name in self._signed_properties_of(mapping):
+                touched += await self._graph_store.drop_node_property(
+                    label, property_name, ids=scope
+                )
+            for node in own.nodes:
+                peers = [n for other in others for n in other.nodes if n.label == node.label]
+                released += await self._graph_store.release_entity_keys(
+                    node.label,
+                    owned_by=[n.signed(n.key_property) for n in peers if not n.reference],
+                    referenced_by=[n.signed(n.key_property) for n in peers if n.reference],
+                    ids=scope,
+                )
         return touched, released
+
+    async def _retract_rows_this_table_still_points_at(
+        self, mapping: TableMapping, candidate_ids: list[str], document_id: str
+    ) -> int:
+        """Demote a departed row that a link of the same table still reaches.
+
+        ``manager_id`` pointing at rows of the same file: the manager's row
+        leaves the export while three rows still report to her. Her node is
+        still mentioned by this Document — through those rows' references — so
+        the retraction over unmentioned nodes keeps it, columns and all, reading
+        as a current row. Here it becomes what the export now says it is: a
+        placeholder this table points at. Its typed columns and its row key go,
+        the link's key stays, and ``is_stub`` is set back to ``true`` unless
+        another table still has it as a row.
+        """
+        own = record_mapping_for(mapping)
+        row = next((node for node in own.nodes if not node.reference), None)
+        if row is None or not any(node.reference and node.label == row.label for node in own.nodes):
+            return 0
+        departed = await self._graph_store.rows_outside_document(
+            candidate_ids, document_id, row.label, row.signed(row.key_property)
+        )
+        if not departed:
+            return 0
+        peers = [
+            node
+            for other in self._global_ontology.tables
+            if other.source != mapping.source
+            for node in record_mapping_for(other).nodes
+            if node.label == row.label
+        ]
+        touched = 0
+        size = self._graph_store._BATCH_SIZE
+        for start in range(0, len(departed), size):
+            scope = departed[start : start + size]
+            for prop in [*row.typed_properties, row.key_property]:
+                touched += await self._graph_store.drop_node_property(
+                    row.label, row.signed(prop), ids=scope
+                )
+            await self._graph_store.release_entity_keys(
+                row.label,
+                owned_by=[n.signed(n.key_property) for n in peers if not n.reference],
+                referenced_by=[
+                    n.signed(n.key_property)
+                    for n in [*peers, *own.nodes]
+                    if n.reference and n.label == row.label
+                ],
+                ids=scope,
+            )
+        logger.info(
+            "%s: %d row(s) left the export but are still pointed at by it; kept as placeholders",
+            mapping.source,
+            len(departed),
+        )
+        return touched
 
     def _table_for_document(self, document_id: str) -> TableMapping | None:
         """The declared table whose Document this is, if it is one."""
@@ -1730,6 +1797,13 @@ class GraphRAG:
         # below because the argument rules differ: no chunker and no extractor
         # apply, since no model is called.
         if isinstance(source, str) and self._is_tabular(source, loader):
+            if text is not None:
+                raise ValueError(
+                    "Cannot pass both 'source' and 'text'. Use 'source' for file "
+                    "paths or 'text' (with optional 'document_id') for raw text."
+                )
+            if document_id is not None and not document_id.strip():
+                raise ValueError("'document_id' must be a non-empty string")
             for name, value in (("chunker", chunker), ("extractor", extractor)):
                 if value is not None:
                     raise ValueError(
@@ -1738,6 +1812,12 @@ class GraphRAG:
                         f"{source} is really prose that happens to live in columns, say "
                         "so by passing a loader: ingest(source, loader=TextLoader())."
                     )
+            if resolver is not None:
+                raise ValueError(
+                    "'resolver' does not apply to a structured source: a row is "
+                    "matched on its declared key, and identity across sources is "
+                    "judged by finalize(resolver=...)."
+                )
             mapping = await self._mapping_for(
                 source, document_id=document_id, record_loader=record_loader, ctx=ctx
             )
@@ -1974,36 +2054,7 @@ class GraphRAG:
                 continue
             if previous.fingerprint_of_declaration != mapping.fingerprint_of_declaration:
                 self._mapping_changes.add(mapping.source)
-            if previous.label != mapping.label:
-                # The declaration moved the rows to another label. The proposal's
-                # nodes go with the re-sync that follows (their record chunks are
-                # replaced, and an entity nothing mentions is removed), so what
-                # is left to clean is the signed properties on any node under
-                # the old label that a document also mentions.
-                for property_name in sorted(
-                    previous.signed_name(declared) for declared in previous.typed_properties
-                ):
-                    await self._graph_store.drop_node_property(previous.label, property_name)
-                    await self._ontology_store.drop_entity_property(previous.label, property_name)
-                continue
-            # Distinct names from pass 2's `prop`, which is an Attribute — reusing
-            # the name here bound it to str first and every Attribute access below
-            # became a type error.
-            dropped = {previous.signed_name(declared) for declared in previous.typed_properties} - {
-                mapping.signed_name(declared) for declared in mapping.typed_properties
-            }
-            for property_name in sorted(dropped):
-                touched = await self._graph_store.drop_node_property(mapping.label, property_name)
-                if touched:
-                    # WARNING, not INFO: this is the one place a redeclaration
-                    # deletes data, and INFO never reaches an unconfigured logger.
-                    logger.warning(
-                        "%s no longer declares %s; removed it from %d %s node(s)",
-                        mapping.source,
-                        property_name,
-                        touched,
-                        mapping.label,
-                    )
+            await self._retract_what_the_declaration_dropped(previous, mapping, existing)
 
         # Pass 2: extend what already existed.
         for entity in incoming.entities:
@@ -2058,6 +2109,56 @@ class GraphRAG:
                     )
 
         return await self._ontology_store.load()
+
+    async def _retract_what_the_declaration_dropped(
+        self, previous: TableMapping, mapping: TableMapping, existing: Ontology
+    ) -> None:
+        """Take back what ``previous`` signed and ``mapping`` no longer declares.
+
+        Everything a table writes under its signature is compared, not only the
+        typed columns: the key on its own label and the key on every label its
+        links point at are signed too. So a link removed, a key column renamed,
+        or the rows moved to another label each leave exactly the properties they
+        stopped declaring — on the nodes and in the schema — while a document's
+        own facts on those nodes are untouched, because only this table could
+        ever have written under its signature.
+
+        Every label that lost a key this way also gives back the identity the
+        dropped key alone put on it: a placeholder that only a removed link
+        pointed at loses ``entity_key`` and ``is_stub``, or keeps them as another
+        table's row or placeholder -- or as this table's own row, when the label
+        is still declared -- exactly as :meth:`drop_table` would leave them. The
+        rows themselves are handled by the re-sync that follows the declaration.
+        """
+        before = set(self._signed_properties_of(previous))
+        after = set(self._signed_properties_of(mapping))
+        still_declared = record_mapping_for(mapping).nodes
+        for label, property_name in sorted(before - after):
+            touched = await self._graph_store.drop_node_property(label, property_name)
+            await self._ontology_store.drop_entity_property(label, property_name)
+            if touched:
+                # WARNING, not INFO: this is the one place a redeclaration
+                # deletes data, and INFO never reaches an unconfigured logger.
+                logger.warning(
+                    "%s no longer declares %s; removed it from %d %s node(s)",
+                    mapping.source,
+                    property_name,
+                    touched,
+                    label,
+                )
+        others = [
+            record_mapping_for(other)
+            for other in existing.tables
+            if other.source != previous.source
+        ]
+        for label in sorted({lbl for lbl, _ in before - after}):
+            peers = [n for other in others for n in other.nodes if n.label == label]
+            peers += [n for n in still_declared if n.label == label]
+            await self._graph_store.release_entity_keys(
+                label,
+                owned_by=[n.signed(n.key_property) for n in peers if not n.reference],
+                referenced_by=[n.signed(n.key_property) for n in peers if n.reference],
+            )
 
     async def _retire_superseded_proposals(
         self, incoming: Ontology, existing: Ontology
@@ -2123,6 +2224,11 @@ class GraphRAG:
         # document and its chunks — reporting nothing.
         self._check_no_pending_marker(resolved_id)
         await self._validate_graph_config()
+        # Before deciding whether this is a first write or a re-sync: a delete
+        # that crashed past its commit marker still shows a Document, and a
+        # cutover that crashed mid-way shows none. Read after recovery, the
+        # record says what is actually there.
+        await self._phase0_recover_prior_operations(resolved_id, ctx)
         existing_record = await self._graph_store.get_document_record(resolved_id)
         # Same guard the prose path applies. Without it a stable
         # document_id silently rebinds to a different file: measured, a renamed
@@ -2155,6 +2261,9 @@ class GraphRAG:
                 document_id=resolved_id,
                 record_loader=record_loader,
                 strict_mapping=strict,
+                # The record was read a moment ago; if another writer removed
+                # it since, this call is still an ingest and should write.
+                if_missing="ingest",
                 ctx=ctx,
             )
             resynced = StructuredIngestionResult(resolved_id)
@@ -2164,6 +2273,9 @@ class GraphRAG:
             resynced.entities = int(counts.get("entities", 0))
             resynced.references = int(counts.get("references", 0))
             resynced.edges = int(counts.get("edges", 0))
+            resynced.rows_skipped = int(counts.get("rows_skipped", 0))
+            resynced.rows_in_source = int(counts.get("rows_in_source", resynced.records))
+            resynced.content_hash = str(counts.get("content_hash", "") or "")
             resynced.chunks_deleted = update_result.chunks_deleted
             resynced.entities_deleted = update_result.entities_deleted
             resynced.replaced_existing = True
@@ -2219,7 +2331,6 @@ class GraphRAG:
         pipeline = StructuredIngestionPipeline(
             loader=record_loader or CsvRecordLoader(document_id=document_id),
             graph_store=self._graph_store,
-            vector_store=self._vector_store,
         )
         # TableMapping is the declaration — a label, a key, a property map and a
         # list of links. The write path wants it flattened into nodes and edges
@@ -2660,6 +2771,10 @@ class GraphRAG:
         trimmed = await self._graph_store.strip_stale_provenance(candidate_ids, old_chunk_ids)
         orphans_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
         retracted = 0
+        # A new process deleting a table knows nothing about it until the
+        # persisted ontology is read; without this the step below found no
+        # mapping and left the table's columns on every surviving node.
+        await self._ensure_ontology_initialized()
         mapping = self._table_for_document(document_id)
         if mapping is not None:
             # A row that left the export, a foreign key that moved: the node a
@@ -2668,6 +2783,9 @@ class GraphRAG:
             # on the survivors alone.
             left = await self._graph_store.entities_outside_document(candidate_ids, document_id)
             retracted, _ = await self._retract_table(mapping, ids=left)
+            retracted += await self._retract_rows_this_table_still_points_at(
+                mapping, [eid for eid in candidate_ids if eid not in set(left)], document_id
+            )
         await self._graph_store.clear_cleanup_state(document_id)
         if stale_deleted or trimmed or orphans_deleted or retracted:
             ctx.log(
@@ -2877,8 +2995,9 @@ class GraphRAG:
         ``test_orphans_cleaned_after_crash_between_commit_and_cleanup``
         is the tripwire for this invariant.
 
-        Passing ``mapping`` re-syncs a *structured* source through the same
-        state machine. That is the only way a table stays correct over time:
+        A tabular source (``.csv``, ``.tsv``, ``.psv``, ``.tab``, read with the
+        mapping the ontology holds for it) re-syncs through the same state
+        machine. That is the only way a table stays correct over time:
         plain re-ingest updates the rows that changed and adds the rows that
         appeared, but a row **deleted** from the source has nothing left to
         rewrite it, so it would otherwise sit in the graph forever. Here the new
@@ -2895,11 +3014,14 @@ class GraphRAG:
             text: Raw text. Skips the loader. Mutually exclusive with
                 ``source``.
             document_id: Stable id of the Document node to update. In
-                file mode, defaults to ``os.path.normpath(source)`` so
-                ``update(path)`` matches the corresponding ``ingest(path)``
-                with no extra plumbing. Required in text mode.
+                file mode, defaults to ``os.path.normpath(source)`` — or the
+                table's name for a tabular source — so ``update(path)`` matches
+                the corresponding ``ingest(path)`` with no extra plumbing.
+                Required in text mode.
             loader / chunker / extractor / resolver: Per-call strategy
                 overrides, identical to ``ingest()``.
+            record_loader / strict_mapping: Per-call overrides for a tabular
+                source, identical to ``ingest()``.
             cache_unchanged_chunks: When ``True``, wrap the extractor in
                 :class:`~graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction.CachedChunkExtraction`:
                 new chunks whose text is byte-identical to an existing
@@ -3087,24 +3209,23 @@ class GraphRAG:
             )
 
         # A document remembers how it was written, and an update may not change
-        # its mind. Re-reading a CSV as prose replaced its record chunks with one
-        # text chunk and took every entity with them: measured as two
-        # organizations before the call and none after, with nothing raised. The
-        # same call arrives from apply_changes(modified=[...]), which is how a
-        # CI-driven sync would have quietly emptied a table.
+        # its mind: re-reading a table as prose would replace its record chunks
+        # with one text chunk and take every entity with them. The same call
+        # arrives from apply_changes(modified=[...]), where nobody is watching.
         existing_kind = existing.kind or "prose"
         wanted_kind = "structured" if mapping is not None else "prose"
         if existing_kind != wanted_kind:
             if wanted_kind == "prose":
                 raise ValueError(
-                    f"Document '{resolved_id}' was written from a structured source, "
-                    "so updating it without 'mapping' would re-read it as prose and "
-                    "delete its records. Pass the mapping that describes it."
+                    f"Document '{resolved_id}' was written from a table, so updating "
+                    "it from a prose file would re-read it as prose and delete its "
+                    "records. Update it from the table's export, or delete_document() "
+                    "it first if the source really is prose now."
                 )
             raise ValueError(
                 f"Document '{resolved_id}' was written from text, so it cannot be "
-                "updated with a 'mapping'. Delete it first with delete_document() "
-                "if the source really is structured now."
+                "updated from a table. Delete it first with delete_document() if the "
+                "source really is structured now."
             )
 
         if existing.content_hash == new_hash:
@@ -3148,7 +3269,6 @@ class GraphRAG:
             structured_pipeline = StructuredIngestionPipeline(
                 loader=record_loader or CsvRecordLoader(document_id=pending_id),
                 graph_store=self._graph_store,
-                vector_store=self._vector_store,
             )
             try:
                 # Writing under ``pending_id`` is what keeps the new record
@@ -4416,8 +4536,11 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        max_concurrency: int = 3,
+        record_loader: RecordLoaderStrategy | None = None,
+        strict_mapping: bool = False,
         ctx: Context | None = None,
-    ) -> IngestionResult: ...
+    ) -> IngestionResult | StructuredIngestionResult: ...
 
     @overload
     def ingest_sync(

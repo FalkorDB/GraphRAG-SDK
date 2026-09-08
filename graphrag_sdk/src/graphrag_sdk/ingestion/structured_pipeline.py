@@ -166,7 +166,7 @@ def _reference_key(reference: ReferenceNode) -> tuple[str, str]:
 def _collapse_same_key_references(
     references: list[ReferenceNode],
     edges: list[GraphRelationship],
-    keyed: dict[str, list[tuple[str, str]]],
+    keyed: dict[tuple[str, str], list[tuple[str, str]]],
 ) -> list[ReferenceNode]:
     """One node per ``(label, key)`` within a batch, however each row named it.
 
@@ -183,7 +183,7 @@ def _collapse_same_key_references(
     that names it, otherwise the first bare one. Edges follow the survivor.
     """
     canonical: dict[tuple[str, str], str] = {}
-    for label, rows in keyed.items():
+    for (label, _signed_key), rows in keyed.items():
         for entity_key, node_id in rows:
             canonical.setdefault((label, entity_key), node_id)
     for reference in references:
@@ -404,18 +404,11 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
     Args:
         loader: How to read the source into records.
         graph_store: Storage layer.
-        vector_store: Optional, used only so callers can index the new chunks.
     """
 
-    def __init__(
-        self,
-        loader: RecordLoaderStrategy,
-        graph_store: Any,
-        vector_store: Any | None = None,
-    ) -> None:
+    def __init__(self, loader: RecordLoaderStrategy, graph_store: Any) -> None:
         self.loader = loader
         self.graph_store = graph_store
-        self.vector_store = vector_store
 
     async def run(
         self,
@@ -449,10 +442,15 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         ctx = ctx or Context()
         batch = await self.loader.load_records(source, ctx)
         doc_info = batch.document_info
-        if document_id:
-            doc_info = DocumentInfo(
-                uid=document_id, path=doc_info.path, metadata=dict(doc_info.metadata)
-            )
+        # The Document remembers how it was written, and update() refuses to
+        # re-read a table as prose on the strength of it. Stamped here so a
+        # custom loader that says nothing about it still produces a Document
+        # that can be re-synced.
+        doc_info = DocumentInfo(
+            uid=document_id or doc_info.uid,
+            path=doc_info.path,
+            metadata={**dict(doc_info.metadata), "kind": "structured"},
+        )
 
         problems = mapping.validate_against(batch.columns, strict=strict)
         if problems:
@@ -473,7 +471,14 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         # failure "leaves the graph untouched"; this is what makes that true.
         chunks = self._record_chunks(batch, mapping, doc_info, result)
         if not chunks.chunks:
-            ctx.log(f"{source} produced no records, nothing written")
+            # Still a state of the table — the one with no rows. The Document is
+            # written with its hash so a re-sync to it completes its cutover and
+            # takes the previous rows out, instead of failing on a pending
+            # Document that was never written.
+            ctx.log(f"{source} produced no records; Document written, nothing else")
+            await self._build_lexical_graph(
+                doc_info, chunks, ctx, content_hash=result.content_hash, link_sequential=False
+            )
             return result
         nodes, references, edges, keyed = self._map_records(batch, mapping, doc_info, result)
 
@@ -504,8 +509,8 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         # The other direction: a placeholder this source's rows now name, or a row
         # whose name changed since the last export. Both carry the key; both are
         # moved to the id the name gives them before anything is written.
-        for label, rows in keyed.items():
-            await self.graph_store.reconcile_keyed_identity(label, rows)
+        for (label, signed_key), rows in keyed.items():
+            await self.graph_store.reconcile_keyed_identity(label, signed_key, rows)
 
         await self._build_lexical_graph(
             doc_info,
@@ -665,9 +670,10 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         nodes: list[GraphNode] = []
         references: list[ReferenceNode] = []
         edges: list[GraphRelationship] = []
-        # label -> [(entity_key, node_id)] for every real node, so run() can point
-        # placeholders and renamed rows at the id the name now gives them.
-        keyed: dict[str, list[tuple[str, str]]] = {}
+        # (label, signed key property) -> [(entity_key, node_id)] for every real
+        # node, so run() can point placeholders and renamed rows at the id the
+        # name now gives them — and only rows this table wrote.
+        keyed: dict[tuple[str, str], list[tuple[str, str]]] = {}
 
         # An entity's id comes from its NAME — the same derivation a prose mention
         # gets — so a row and a document describing one thing land on one node
@@ -724,7 +730,9 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                     )
                     result.references += 1
                 else:
-                    keyed.setdefault(node.label, []).append((raw_key, node_id))
+                    keyed.setdefault((node.label, node.signed(node.key_property)), []).append(
+                        (raw_key, node_id)
+                    )
                     nodes.append(
                         GraphNode(
                             id=node_id,

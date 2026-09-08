@@ -61,7 +61,7 @@ class RecordingGraphStore:
     async def resolve_by_entity_key(self, label, keys):
         return {}
 
-    async def reconcile_keyed_identity(self, label, rows):
+    async def reconcile_keyed_identity(self, label, signed_key, rows):
         return {"renamed": 0, "merged": 0}
 
     def __getattr__(self, name):

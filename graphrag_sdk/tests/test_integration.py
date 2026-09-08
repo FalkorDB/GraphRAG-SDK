@@ -1045,8 +1045,10 @@ class TestIncrementalUpdateInvariants:
         merged = await dedup.deduplicate(fuzzy=False)
         assert merged >= 1, "test setup: dedup should have merged alice-1/alice-2"
 
+        # Which Alice survives is the ranking's call (the better-connected one);
+        # the invariant is that exactly one node is left carrying either id.
         result = await conn.query(
-            "MATCH (n:__Entity__ {id: 'alice-1'}) "
+            "MATCH (n:__Entity__) WHERE n.id IN ['alice-1', 'alice-2'] "
             "RETURN count(n) AS n, "
             "       sum(CASE WHEN 'Person' IN labels(n) THEN 1 ELSE 0 END) AS labelled",
             {},
@@ -1061,7 +1063,7 @@ class TestIncrementalUpdateInvariants:
 
         # The real survivor — not a ghost — must hold the migrated edges.
         result = await conn.query(
-            "MATCH (n:__Entity__ {id: 'alice-1'}) "
+            "MATCH (n:__Entity__) WHERE n.id IN ['alice-1', 'alice-2'] "
             "RETURN size((n)-[:RELATES]->()) AS relates, "
             "       size((n)-[:MENTIONED_IN]->()) AS mentions",
             {},
@@ -1187,21 +1189,20 @@ class TestIncrementalUpdateInvariants:
         )
 
         result = await conn.query(
-            "MATCH (n:__Entity__ {id: 'alice-2'}) RETURN count(n) AS n", {}
+            "MATCH (n:__Entity__) WHERE n.id IN ['alice-1', 'alice-2'] RETURN count(n) AS n", {}
         )
-        assert result.result_set[0][0] == 0, "the duplicate should have been deleted"
+        assert result.result_set[0][0] == 1, "the duplicate should have been deleted"
 
         result = await conn.query(
-            "MATCH (:__Entity__ {id: 'alice-1'})-[r:RELATES]->(:__Entity__ {id: 'acme'}) "
+            "MATCH (a:__Entity__)-[r:RELATES]->(:__Entity__ {id: 'acme'}) "
+            "WHERE a.id IN ['alice-1', 'alice-2'] "
             "RETURN r.fact AS fact",
             {},
         )
         assert result.result_set, "the untyped fact must be migrated, not dropped"
         assert result.result_set[0][0] == "untyped fact"
 
-    async def test_upsert_keeps_distinct_facts_between_same_pair(
-        self, real_falkordb_rag_factory
-    ):
+    async def test_upsert_keeps_distinct_facts_between_same_pair(self, real_falkordb_rag_factory):
         """``upsert_relationships`` must not collapse two facts onto one edge.
 
         Pre-fix the write path did ``MERGE (a)-[r:RELATES]->(b)``, unkeyed, so

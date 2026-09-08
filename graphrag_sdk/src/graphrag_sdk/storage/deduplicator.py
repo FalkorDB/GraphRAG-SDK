@@ -117,6 +117,28 @@ def union_chunk_ids(existing: Any, incoming: Any) -> list[str]:
     return old + [c for c in new if c not in old]
 
 
+def properties_to_carry(
+    keep: dict[str, Any], dup: dict[str, Any], *, never: frozenset[str]
+) -> dict[str, Any]:
+    """What a merge copies from the node being deleted onto the one that stays.
+
+    keep_existing: a value already on the survivor always wins, and an empty
+    string or list counts as absent. ``source_chunk_ids`` is the one property
+    both sides hold at once — the survivor was mentioned wherever either was —
+    so it becomes the union. ``never`` names what stays behind whatever the
+    survivor lacks; ``id`` and ``embedding`` always do.
+    """
+    carry = {
+        key: value
+        for key, value in dup.items()
+        if key not in never and value is not None and keep.get(key) in (None, "", [])
+    }
+    provenance = union_chunk_ids(keep.get("source_chunk_ids"), dup.get("source_chunk_ids"))
+    if provenance and provenance != keep.get("source_chunk_ids"):
+        carry["source_chunk_ids"] = provenance
+    return carry
+
+
 def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> list[dict]:
     """Drop candidates a mapping already said are a *different* thing.
 
@@ -135,9 +157,9 @@ def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> l
     kept: list[dict] = []
     for dup in duplicates:
         if dup.get("is_stub") is not None and dup.get("id") != survivor.get("id"):
-            # ``id`` for a mapped node is derived from the key the mapping
-            # declared, so two different ids are a statement that these are two
-            # things.
+            # Rows that share a display name are keyed apart at write time, and
+            # rows whose names merely look alike were never one id. Either way
+            # two mapped ids are two rows, and a name is not evidence otherwise.
             logger.info(
                 "Not merging %s into %s: both were written from a declared key, "
                 "so the shared name %r is two different rows",
@@ -184,13 +206,14 @@ def _survivor_rank(entity: dict) -> tuple[int, int, int, int, int, str]:
 
     Ordered by:
 
-    1. **Derived from a declared key.** A structured node's id comes from a key
-       the mapping declared, so the next ingest of that source recomputes the
-       same id. A node extracted from prose is keyed on a surface form the model
-       happened to produce. If the prose node survives, the keyed id is gone, and
-       re-ingesting the table recreates it as a *second* node: measured as two
-       ``E-1`` people, one titled "Engineer" and one "engineer". Keeping the
-       reproducible id is what makes re-ingest idempotent after resolution.
+    1. **Written from a table.** A structured node carries ``entity_key``, the
+       value its row is keyed by, and the next ingest of that source finds it by
+       that key whatever the name became. A node extracted from prose is keyed on
+       a surface form the model happened to produce. If the prose node survives,
+       the key is gone with the other, and re-ingesting the table recreates the
+       row as a *second* node: measured as two ``E-1`` people, one titled
+       "Engineer" and one "engineer". Keeping the keyed node is what makes
+       re-ingest idempotent after resolution.
     2. **Real over placeholder.** A stub was created by a foreign key and knows
        only an id and a name.
     3. **Best connected.** Between two nodes of the same provenance, the one the
@@ -368,6 +391,7 @@ class EntityDeduplicator:
             groups.setdefault((key, label), []).append(ent)
 
         merged = 0
+        deleted: set[str] = set()
         for (_norm_name, _label), group in groups.items():
             if len(group) < 2:
                 continue
@@ -387,8 +411,15 @@ class EntityDeduplicator:
                         {"dup_id": dup["id"]},
                     )
                     merged += 1
+                    deleted.add(dup["id"])
                 except Exception as exc:
                     logger.warning(f"Failed to delete duplicate entity {dup['id']}: {exc}")
+
+        # What follows works from the groups too, and a node deleted above would
+        # otherwise be "adopted" a second time — a MATCH on nothing succeeds, and
+        # the count reports a merge that never happened.
+        for group in groups.values():
+            group[:] = [ent for ent in group if ent["id"] not in deleted]
 
         merged += await self._adopt_into_declared_labels(groups)
         logger.info(f"EntityDeduplicator phase 1 (exact): merged {merged} duplicates")
@@ -406,6 +437,7 @@ class EntityDeduplicator:
         all_names: list[str] = []
         all_labels: list[str] = []
         rank_by_id: dict[str, tuple[int, int, int, int, int, str]] = {}
+        keyed: set[str] = set()
         for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "
@@ -421,6 +453,8 @@ class EntityDeduplicator:
                 all_ids.append(row[0])
                 all_names.append(row[1] if len(row) > 1 and row[1] else str(row[0]))
                 all_labels.append(row[2] if len(row) > 2 and row[2] else "")
+                if len(row) > 3 and row[3] is not None:
+                    keyed.add(row[0])
                 rank_by_id[row[0]] = _survivor_rank(
                     {
                         "is_stub": row[3] if len(row) > 3 else None,
@@ -439,6 +473,11 @@ class EntityDeduplicator:
 
         if len(all_ids) < 2:
             return 0
+
+        # The same two refusals the exact phase makes. Two keyed nodes are two
+        # rows whatever their names embed like, and a pair the resolver already
+        # judged distinct is not re-decided by a cosine score.
+        decided = await self._fetch_distinct_pairs()
 
         raw_vectors = await self._embedder.aembed_documents(all_names)
         valid = [
@@ -477,6 +516,8 @@ class EntityDeduplicator:
                     and v_ids[gi] not in merged_set
                     and v_ids[gj] not in merged_set
                     and v_labels[gi] == v_labels[gj]  # prevent cross-type merging
+                    and not (v_ids[gi] in keyed and v_ids[gj] in keyed)
+                    and frozenset((v_ids[gi], v_ids[gj])) not in decided
                 ):
                     survivor_id = v_ids[gi]
                     dup_id = v_ids[gj]
@@ -902,8 +943,8 @@ class EntityDeduplicator:
                         "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
                         "description": row[2] if len(row) > 2 and row[2] else "",
                         "label": row[3] if len(row) > 3 and row[3] else "",
-                        # Only a mapped source writes is_stub, so its presence
-                        # marks an id derived from a declared key.
+                        # Only a table write sets is_stub (False for a row, True
+                        # for a placeholder), so its presence marks a keyed node.
                         "is_stub": row[4] if len(row) > 4 else None,
                         "degree": row[5] if len(row) > 5 else 0,
                     }
@@ -925,13 +966,9 @@ class EntityDeduplicator:
         The remap migrates edges only, so ``DETACH DELETE`` would otherwise take
         the duplicate's properties with it. That silently loses whatever only the
         duplicate knew: the ``description`` entity vector search embeds, and every
-        typed value a structured source supplied.
-
-        keep_existing: a value already on the survivor always wins, so a merge
-        can never overwrite what the survivor knew. ``source_chunk_ids`` is the
-        exception that follows from the same rule: the survivor was mentioned
-        wherever either node was, so it gets the union, as its remapped
-        ``MENTIONED_IN`` edges already say.
+        typed value a structured source supplied. ``is_stub`` travels too: a
+        survivor that absorbed a table's row is now the node that row re-syncs to.
+        The policy is :func:`properties_to_carry`.
         """
         try:
             res = await self._graph.query_raw(
@@ -945,18 +982,7 @@ class EntityDeduplicator:
         if not res.result_set:
             return 0
         keep_props, dup_props = res.result_set[0][0] or {}, res.result_set[0][1] or {}
-        carry = {
-            key: value
-            for key, value in dup_props.items()
-            if key not in self._NEVER_CARRY
-            and value is not None
-            and keep_props.get(key) in (None, "", [])
-        }
-        provenance = union_chunk_ids(
-            keep_props.get("source_chunk_ids"), dup_props.get("source_chunk_ids")
-        )
-        if provenance and provenance != keep_props.get("source_chunk_ids"):
-            carry["source_chunk_ids"] = provenance
+        carry = properties_to_carry(keep_props, dup_props, never=self._NEVER_CARRY)
         if not carry:
             return 0
         try:

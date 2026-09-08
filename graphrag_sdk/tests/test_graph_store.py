@@ -16,16 +16,22 @@ def graph_store(mock_connection):
     return GraphStore(mock_connection)
 
 
-def _upsert_queries(mock_connection):
-    """The write queries a call made, excluding the index it ensures first.
+def _is_index_housekeeping(cypher: str) -> bool:
+    return "CREATE INDEX" in cypher or "db.indexes()" in cypher
 
-    ``upsert_nodes`` range-indexes a label's ``id`` the first time it writes to
-    that label, because a MERGE can only use an index on the label in its own
-    pattern. Asserting a raw call count here would make every test in this class
-    a tripwire for that unrelated detail.
+
+def _upsert_queries(mock_connection):
+    """The write queries a call made, excluding the indexes it ensures first.
+
+    ``upsert_nodes`` range-indexes a label the first time it writes to it,
+    because a MERGE can only use an index on the label in its own pattern, and
+    reads what the graph already indexes once per instance. Asserting a raw call
+    count here would make every test in this class a tripwire for that detail.
     """
     return [
-        call for call in mock_connection.query.call_args_list if "CREATE INDEX" not in call[0][0]
+        call
+        for call in mock_connection.query.call_args_list
+        if not _is_index_housekeeping(call[0][0])
     ]
 
 
@@ -97,7 +103,7 @@ class TestGraphStoreUpsertNodes:
         fallback = [
             call
             for call in mock_connection.query.call_args_list
-            if "UNWIND" not in call[0][0] and "CREATE INDEX" not in call[0][0]
+            if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
         ]
         assert len(fallback) == 1, "the per-item fallback should have run once"
         fallback_params = fallback[0][0][1]
@@ -144,7 +150,7 @@ class TestUpsertNodesKeepsProvenance:
         fallback = [
             call[0][0]
             for call in mock_connection.query.call_args_list
-            if "UNWIND" not in call[0][0] and "CREATE INDEX" not in call[0][0]
+            if "UNWIND" not in call[0][0] and not _is_index_housekeeping(call[0][0])
         ]
         assert len(fallback) == 1
         assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
@@ -259,6 +265,73 @@ class TestReleaseEntityKeys:
             "Person", owned_by=[], referenced_by=[], ids=[]
         )
         assert released == 0
+        mock_connection.query.assert_not_called()
+
+
+class TestReconcileKeyedIdentity:
+    """A table may only move the nodes it wrote, or the placeholders left for it."""
+
+    async def test_only_stubs_and_this_tables_rows_qualify(self, graph_store, mock_connection):
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
+
+        await graph_store.reconcile_keyed_identity(
+            "Person", "hr__employee_id", [("1", "alice_smith__person")]
+        )
+
+        lookup = [
+            call[0][0]
+            for call in mock_connection.query.call_args_list
+            if not _is_index_housekeeping(call[0][0])
+        ][0]
+        assert "{entity_key: it.k}" in lookup
+        assert "n.id <> it.new_id" in lookup
+        assert "(n.is_stub = true OR n.`hr__employee_id` IS NOT NULL)" in lookup, (
+            "another table numbering the same label from 1 writes the same entity_key for"
+            " a different person; without this its rows would be renamed to ours"
+        )
+
+    async def test_the_key_it_matches_on_is_indexed_first(self, graph_store, mock_connection):
+        mock_connection.query = AsyncMock(return_value=MagicMock(result_set=[]))
+
+        await graph_store.reconcile_keyed_identity("Person", "hr__employee_id", [("1", "x")])
+        await graph_store.resolve_by_entity_key("Person", ["1"])
+
+        indexes = [
+            call[0][0]
+            for call in mock_connection.query.call_args_list
+            if "CREATE INDEX" in call[0][0]
+        ]
+        assert indexes == [
+            "CREATE INDEX FOR (n:`Person`) ON (n.id)",
+            "CREATE INDEX FOR (n:`Person`) ON (n.entity_key)",
+        ], "both lookups run once per keyed row; indexed once per label, not per call"
+
+    async def test_an_index_the_graph_already_has_is_not_created_again(
+        self, graph_store, mock_connection
+    ):
+        """Reopening a graph used to fail one CREATE per label and log it as an error."""
+        listing = MagicMock(result_set=[["Person", ["id", "entity_key"]], ["Chunk", ["uid"]]])
+        mock_connection.query = AsyncMock(
+            side_effect=lambda cypher, *a, **k: (
+                listing if "db.indexes()" in cypher else MagicMock(result_set=[])
+            )
+        )
+
+        await graph_store.resolve_by_entity_key("Person", ["1"])
+        await graph_store.resolve_by_entity_key("Organization", ["O1"])
+
+        queries = [call[0][0] for call in mock_connection.query.call_args_list]
+        assert sum("db.indexes()" in q for q in queries) == 1, "read once per instance"
+        assert [q for q in queries if "CREATE INDEX" in q] == [
+            "CREATE INDEX FOR (n:`Organization`) ON (n.id)",
+            "CREATE INDEX FOR (n:`Organization`) ON (n.entity_key)",
+        ]
+
+    async def test_nothing_to_reconcile_touches_nothing(self, graph_store, mock_connection):
+        assert await graph_store.reconcile_keyed_identity("Person", "hr__employee_id", []) == {
+            "renamed": 0,
+            "merged": 0,
+        }
         mock_connection.query.assert_not_called()
 
 

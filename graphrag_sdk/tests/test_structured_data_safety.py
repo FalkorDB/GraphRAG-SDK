@@ -142,6 +142,84 @@ class TestNothingIsDeletedWithoutSaying:
         await rag.close()
 
 
+class TestTwoTablesOwningOneLabelStayApart:
+    """Two exports number the same label from 1, and neither may rename the other's rows."""
+
+    @staticmethod
+    def _ontology() -> Ontology:
+        return Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="hr.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    standalone=True,
+                ),
+                TableMapping(
+                    source="crm.csv",
+                    label="Person",
+                    key="contact_id",
+                    name="contact_name",
+                    standalone=True,
+                ),
+            ],
+        )
+
+    async def test_a_shared_surrogate_key_is_not_a_shared_identity(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """``hr.csv`` row 1 is Alice; ``crm.csv`` row 1 is Bob.
+
+        Both write ``entity_key = "1"`` under ``Person``. The re-sync that moves a
+        renamed row to its new id matched on that key alone, so loading the CRM
+        export renamed Alice to Bob, and re-loading HR renamed Bob back — one
+        person left of two, and every load reported success.
+        """
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self._ontology())
+        hr = tmp_path / "hr.csv"
+        hr.write_text("employee_id,full_name\n1,Alice Smith\n")
+        crm = tmp_path / "crm.csv"
+        crm.write_text("contact_id,contact_name\n1,Bob Jones\n")
+
+        await rag.ingest(str(hr))
+        await rag.ingest(str(crm))
+        await rag.ingest(str(hr))
+        await rag.finalize(resolve=False)
+
+        rows = await rag.query(
+            "MATCH (p:Person) RETURN p.name, p.hr__employee_id, p.crm__contact_id ORDER BY p.name"
+        )
+        assert rows == [["Alice Smith", "1", None], ["Bob Jones", None, "1"]]
+        await rag.close()
+
+    async def test_fuzzy_dedup_leaves_two_keyed_rows_alone(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path, embedder
+    ):
+        """Names that embed alike are still two rows when both carry a key.
+
+        The exact phase refuses this merge; the optional embedding phase judged
+        the same pair by cosine score alone and deleted one of them.
+        """
+        from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self._ontology())
+        hr = tmp_path / "hr.csv"
+        hr.write_text("employee_id,full_name\n1,Jon Smith\n2,John Smith\n")
+        await rag.ingest(str(hr))
+
+        # A threshold of -1 declares every pair similar, so nothing about the
+        # embedder decides this: only the keyed-row guard can keep them apart.
+        dedup = EntityDeduplicator(rag._graph_store, embedder)
+        merged = await dedup.deduplicate(fuzzy=True, similarity_threshold=-1.0)
+
+        assert merged == 0
+        rows = await rag.query("MATCH (p:Person) RETURN p.hr__employee_id ORDER BY p.name")
+        assert rows == [["2"], ["1"]]
+        await rag.close()
+
+
 class TestAFailedLoadWritesNothing:
     async def test_one_bad_cell_leaves_the_graph_untouched(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path

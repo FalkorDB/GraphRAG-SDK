@@ -196,6 +196,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   join (`M. Ellison` / `Maya Ellison`, a pure reordering) are listed in
   `FinalizeResult.probable_duplicates` with the reason, never merged.
 
+- **`ingest()` of a tabular file returns a `StructuredIngestionResult`.** It
+  is not an `IngestionResult`: a row is not a chunk, so it reports `records`,
+  `rows_skipped`, `entities_created` and the like instead of chunk counts. Code
+  that reads `result.chunks_created` off a `.csv` ingest has to look at
+  `result.records`. The `ingest_sync` overloads say so.
+
 - **A merge's survivor is chosen by identity and connectivity before
   description length.** The survivor of a deduplication was the node with the
   longest description. The rank is now: a node keyed on a declared column, then
@@ -247,6 +253,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nodes cost O(n²) — 4,000 rows took 15.2 s and now take 1.9 s. Range indices on
   `id` are created for `Document`, `Chunk` and every label the write path
   touches, before the write. Prose ingestion benefits too.
+
+- **Two tables keyed on one label cannot rename each other's rows.** A
+  table's re-ingest reconciles a row whose name changed by finding the node
+  that holds the same key; the lookup used to match on the bare `entity_key`,
+  so `hr.csv` row `7` claimed `payroll.csv` row `7` when both wrote `Person`.
+  It now matches only a placeholder or a node carrying the table's *own* signed
+  key, and the fuzzy phase of `finalize()` leaves two keyed rows apart without
+  asking the model — the keys already say they are different people.
+
+- **A row the export dropped, but still points at, becomes a placeholder.** A
+  manager whose own row left `staff.csv` while a report still named her stayed
+  a row: the re-sync kept every node the new export mentioned, and her node was
+  mentioned — through the reference. Her typed columns and her key are now taken
+  back and she is marked a placeholder, keeping only what the link says.
+
+- **A table declaration that drops a link takes the link's key with it.** A
+  redeclaration removed the typed columns it no longer named, but not the
+  signed key a link had put on its target label, so the property stayed on the
+  nodes and in the ontology. The full set a table signs — columns, its own key,
+  each link's key — is diffed, and a label the table no longer keys gives back
+  `entity_key` and `is_stub` as `drop_table()` would.
+
+- **An export with no rows left is a state the graph can reach.** Re-syncing a
+  table to an empty file failed its cutover with a database error because no
+  `Document` was written for it; the deletes are now applied and the document
+  stays, empty. A fresh `GraphRAG` instance also reads the ontology before
+  `delete_document()` on a table, so the columns come off in a new process too,
+  and a re-ingest that finds a prior interrupted operation recovers it first.
+
+- **Reopening a graph no longer logs an error per label.** The write path
+  created its `id` indexes with no memory of which existed, so every new
+  process hit "Attribute 'id' is already indexed" for each label — surfaced as
+  an `ERROR` by the connection. Existing indexes are read once and only the
+  missing ones are created; `entity_key` is indexed alongside `id`, which is
+  what a table's lookup by key uses.
 
 - **Text-to-Cypher rows carry their column names.** Results reached the
   answering model as bare values, so `RETURN avg(p.age) AS average_age` arrived

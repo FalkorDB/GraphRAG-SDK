@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import unicodedata
 from collections.abc import Sequence
 from typing import Any, NamedTuple
@@ -22,10 +21,8 @@ from graphrag_sdk.core.models import (
     GraphNode,
     GraphRelationship,
 )
-from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, union_chunk_ids
+from graphrag_sdk.storage.deduplicator import _REMAP_QUERIES, properties_to_carry
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
-
-_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ReferenceNode(NamedTuple):
@@ -88,8 +85,9 @@ class GraphStore:
 
     def __init__(self, connection: FalkorDBConnection) -> None:
         self._conn = connection
-        # Labels whose ``id`` has been range-indexed by this instance.
-        self._id_indexed_labels: set[str] = set()
+        # ``(label, property)`` pairs known to be range-indexed. Seeded from the
+        # graph on first use, then extended as this instance creates indexes.
+        self._indexed: set[tuple[str, str]] | None = None
 
     # ── Write Operations ─────────────────────────────────────────
 
@@ -102,30 +100,58 @@ class GraphStore:
         "RELATES": ("__Entity__", "__Entity__"),
     }
 
+    _LABEL_INDEXED_PROPERTIES = ("id", "entity_key")
+
     async def _ensure_label_id_index(self, label: str) -> None:
-        """Range-index ``id`` on a label before MERGEing into it.
+        """Range-index ``id`` and ``entity_key`` on a label before writing into it.
 
         Every node write is ``MERGE (n:`Label` {id: ...})``, and a MERGE can only
         use an index on the label in the *pattern*. Indexing ``__Entity__.id`` does
         not help, because that label is added by a later ``SET`` — the MERGE still
         scans every node of the specific label, which makes writing n nodes cost
         O(n^2). Measured on a structured ingest: 25k rows took 95s with an
-        ``__Entity__`` index alone.
+        ``__Entity__`` index alone. ``entity_key`` is the other property a table
+        write looks nodes up by — a foreign key finding its target, a row finding
+        the placeholder or the renamed node it wrote last time — and those
+        lookups run once per keyed row, so they get the same treatment.
 
         Labels come from the ontology and from mappings, so they cannot be known
-        up front and are indexed the first time they are written. Attempted once
-        per label per instance; failure is not fatal, it only costs speed.
+        up front and are indexed the first time they are written. What the graph
+        already has is read once per instance, so reopening an existing graph
+        creates nothing rather than failing a CREATE per label. Failure is not
+        fatal, it only costs speed.
         """
-        if label in self._id_indexed_labels:
-            return
-        self._id_indexed_labels.add(label)
+        if self._indexed is None:
+            self._indexed = await self._read_range_indexes()
         safe_label = sanitize_cypher_label(label)
+        for prop in self._LABEL_INDEXED_PROPERTIES:
+            if (label, prop) in self._indexed:
+                continue
+            self._indexed.add((label, prop))
+            try:
+                await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.{prop})")
+                logger.debug("Created range index on %s.%s", safe_label, prop)
+            except Exception as exc:
+                # Another instance got there first, or the graph refused.
+                logger.debug("Range index on %s.%s not created: %s", safe_label, prop, exc)
+
+    async def _read_range_indexes(self) -> set[tuple[str, str]]:
+        """Every ``(label, property)`` the graph already indexes; empty if unreadable."""
         try:
-            await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.id)")
-            logger.debug("Created range index on %s.id", safe_label)
-        except Exception as exc:
-            # Almost always "already indexed", which is the steady state.
-            logger.debug("Range index on %s.id not created: %s", safe_label, exc)
+            result = await self._conn.query(
+                "CALL db.indexes() YIELD label, properties RETURN label, properties"
+            )
+        except Exception:
+            logger.debug("Could not list indexes; will attempt each CREATE", exc_info=True)
+            return set()
+        rows = getattr(result, "result_set", None) or []
+        return {
+            (row[0], prop)
+            for row in rows
+            if isinstance(row, (list, tuple)) and len(row) >= 2 and isinstance(row[1], list)
+            for prop in row[1]
+            if isinstance(prop, str)
+        }
 
     async def upsert_nodes(self, nodes: list[GraphNode]) -> int:
         """Batch upsert nodes using UNWIND, grouped by label.
@@ -253,6 +279,7 @@ class GraphStore:
         """
         if not keys:
             return {}
+        await self._ensure_label_id_index(label)
         safe_label = sanitize_cypher_label(label)
         found = await self.query_raw(
             f"UNWIND $keys AS k MATCH (n:`{safe_label}` {{entity_key: k}}) RETURN k, n.id",
@@ -261,7 +288,7 @@ class GraphStore:
         return {row[0]: row[1] for row in getattr(found, "result_set", None) or [] if row[1]}
 
     async def reconcile_keyed_identity(
-        self, label: str, rows: Sequence[tuple[str, str]]
+        self, label: str, signed_key: str, rows: Sequence[tuple[str, str]]
     ) -> dict[str, int]:
         """Point every node carrying one of these keys at the id its name now gives it.
 
@@ -276,17 +303,27 @@ class GraphStore:
           and so the id, changed; the node written last time must follow rather
           than be orphaned with its prose description.
 
-        ``rows`` are ``(entity_key, new_id)``. A node under ``label`` with that key
-        and a different id is **renamed in place** when nothing is at ``new_id``
-        (edges stay on the node), or **merged** into what is (edges remapped,
-        properties carried, old node deleted). One batched lookup.
+        Only nodes this table is entitled to move are considered: a placeholder
+        (``is_stub = true``) or a node carrying ``signed_key``, the key property
+        as this table signs it. A second table that owns the same label from its
+        own key space — ``hr.csv`` and ``crm.csv`` both numbering people from 1 —
+        writes the same ``entity_key`` values for different people, and without
+        that guard each export would rename the other's rows to its own names.
+
+        ``rows`` are ``(entity_key, new_id)``. A qualifying node under ``label``
+        with that key and a different id is **renamed in place** when nothing is
+        at ``new_id`` (edges stay on the node), or **merged** into what is (edges
+        remapped, properties carried, old node deleted). One batched lookup.
         """
         if not rows:
             return {"renamed": 0, "merged": 0}
+        await self._ensure_label_id_index(label)
         safe_label = sanitize_cypher_label(label)
+        safe_key = sanitize_cypher_label(signed_key)
         found = await self.query_raw(
             f"UNWIND $rows AS it "
-            f"MATCH (n:`{safe_label}` {{entity_key: it.k}}) WHERE n.id <> it.new_id "
+            f"MATCH (n:`{safe_label}` {{entity_key: it.k}}) "
+            f"WHERE n.id <> it.new_id AND (n.is_stub = true OR n.`{safe_key}` IS NOT NULL) "
             f"RETURN it.new_id AS new_id, collect(DISTINCT n.id) AS old_ids",
             {"rows": [{"k": key, "new_id": new_id} for key, new_id in rows]},
         )
@@ -319,12 +356,15 @@ class GraphStore:
             )
         return counts
 
+    # The row about to be written sets ``is_stub`` itself; a placeholder's
+    # ``True`` must not land on the node first and then have to be undone.
+    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+
     async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
         """Copy what only the old node knew onto the new one, then delete the old.
 
-        A value already on the survivor wins; empty strings and lists count as
-        absent. ``source_chunk_ids`` is the union of both. ``id``, ``embedding``
-        and the stub bookkeeping never travel.
+        Same policy as a dedup merge (:func:`properties_to_carry`), except that
+        the stub bookkeeping stays behind.
         """
         res = await self.query_raw(
             "MATCH (k:__Entity__ {id: $new}), (d:__Entity__ {id: $old}) "
@@ -333,18 +373,7 @@ class GraphStore:
         )
         if res.result_set:
             keep, dup = res.result_set[0][0] or {}, res.result_set[0][1] or {}
-            carry = {
-                key: value
-                for key, value in dup.items()
-                if key not in ("id", "embedding", "is_stub")
-                and value is not None
-                and keep.get(key) in (None, "", [])
-            }
-            # Provenance is the one property both sides can hold at once: the
-            # merged node was mentioned wherever either of them was.
-            provenance = union_chunk_ids(keep.get("source_chunk_ids"), dup.get("source_chunk_ids"))
-            if provenance and provenance != keep.get("source_chunk_ids"):
-                carry["source_chunk_ids"] = provenance
+            carry = properties_to_carry(keep, dup, never=self._NEVER_CARRY_ON_RECONCILE)
             if carry:
                 await self.query_raw(
                     "MATCH (k:__Entity__ {id: $new}) SET k += $carry",
@@ -1386,6 +1415,38 @@ class GraphStore:
             outside.extend(row[0] for row in r.result_set or [] if row and row[0])
         return outside
 
+    async def rows_outside_document(
+        self, candidate_ids: list[str], document_id: str, label: str, signed_key: str
+    ) -> list[str]:
+        """The nodes in ``candidate_ids`` this table wrote as rows and no longer does.
+
+        A row is current when a record chunk of ``document_id`` keyed on its
+        ``entity_key`` mentions it. Being mentioned at all is not enough: a
+        table whose link points at its own label (``manager_id``) still mentions
+        a row that left the export, through the rows that report to it, so
+        :meth:`entities_outside_document` keeps it and its stale columns with
+        it. Scoped to nodes carrying ``signed_key`` — this table's own rows — so
+        a placeholder it merely points at is not counted.
+        """
+        if not candidate_ids:
+            return []
+        safe_label = sanitize_cypher_label(label)
+        safe_key = sanitize_cypher_label(signed_key)
+        outside: list[str] = []
+        for start in range(0, len(candidate_ids), self._BATCH_SIZE):
+            batch = candidate_ids[start : start + self._BATCH_SIZE]
+            r = await self._conn.query(
+                f"UNWIND $ids AS eid "
+                f"MATCH (e:`{safe_label}` {{id: eid}}) WHERE e.`{safe_key}` IS NOT NULL "
+                f"OPTIONAL MATCH (e)-[:MENTIONED_IN]->(c:Chunk {{record_key: e.entity_key}})"
+                f"<-[:PART_OF]-(:Document {{id: $doc}}) "
+                f"WITH e, count(c) AS current WHERE current = 0 "
+                f"RETURN e.id",
+                {"ids": batch, "doc": document_id},
+            )
+            outside.extend(row[0] for row in r.result_set or [] if row and row[0])
+        return outside
+
     # ── Ontology evolution (data-graph migration primitives) ────
     #
     # The ``GraphRAG`` evolution methods orchestrate ontology-graph writes
@@ -1436,7 +1497,8 @@ class GraphStore:
     async def count_unresolved_references(self) -> dict[str, int]:
         """Per label, reference stubs no source ever filled in.
 
-        A ``Link`` writes its target ON CREATE with ``is_stub: True``, on the
+        A ``Link`` writes its target with ``is_stub: True`` — on create, and onto
+        a prose-extracted node it lands on that no table has claimed yet — on the
         promise that the table owning that entity will arrive and describe it. A
         stub still flagged at the end means the promise was not kept: either the
         owning export was never loaded, or the key it is joined on does not match

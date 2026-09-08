@@ -739,6 +739,150 @@ class TestAReSyncTakesBackWhatTheNewExportNoLongerSays:
         await rag.close()
 
 
+class TestAReSyncFollowsTheExportAllTheWayDown:
+    """The cases where the graph could not follow the table to its new state."""
+
+    REPORTS = TableMapping(
+        source="staff.csv",
+        label="Person",
+        key="employee_id",
+        name="full_name",
+        properties={"age": Column("age", "INTEGER")},
+        links=[Link("REPORTS_TO", to="Person", by="manager_id")],
+    )
+
+    @staticmethod
+    def _write(path, rows: list[str]) -> str:
+        path.write_text("employee_id,full_name,age,manager_id\n" + "".join(rows), encoding="utf-8")
+        return str(path)
+
+    MAYA = "E-1,Maya Ellison,51,\n"
+    NOOR = "E-2,Noor Haddad,34,E-1\n"
+
+    async def test_a_departed_row_the_table_still_points_at_becomes_a_placeholder(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """Maya's row leaves the export; Noor still reports to E-1.
+
+        Her node is still mentioned by this document — through Noor's reference —
+        so the retraction over unmentioned nodes kept it, age and all, reading as
+        a current row. The export now knows her only as a manager id.
+        """
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=_ontology(self.REPORTS)
+        )
+        source = tmp_path / "staff.csv"
+        await rag.ingest(self._write(source, [self.MAYA, self.NOOR]))
+
+        await rag.ingest(self._write(source, [self.NOOR]))
+
+        rows = await _rows(
+            rag,
+            "MATCH (p:Person {name:'Maya Ellison'}) RETURN p.staff__employee_id, p.staff__age, "
+            "p.staff__manager_id, p.entity_key, p.is_stub",
+        )
+        assert rows == [[None, None, "E-1", "E-1", True]], (
+            "a placeholder the table points at: the link's key and identity stay, the"
+            " row's columns and key go"
+        )
+        assert await _rows(
+            rag, "MATCH (:Person {name:'Noor Haddad'})-[r:RELATES]->(m) RETURN r.rel_type, m.name"
+        ) == [["REPORTS_TO", "Maya Ellison"]]
+        await rag.close()
+
+    async def test_an_export_with_no_rows_left_is_a_state_the_graph_can_reach(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """A table emptied upstream used to fail its cutover with a database error."""
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=_ontology(self.REPORTS)
+        )
+        source = tmp_path / "staff.csv"
+        await rag.ingest(self._write(source, [self.MAYA, self.NOOR]))
+
+        result = await rag.ingest(self._write(source, []))
+
+        assert result.records == 0 and result.entities_deleted == 2
+        assert await _rows(rag, "MATCH (p:Person) RETURN count(p)") == [[0]]
+        assert await _rows(rag, "MATCH (d:Document {id:'staff.csv'}) RETURN count(d)") == [[1]]
+        await rag.close()
+
+    async def test_a_fresh_instance_deleting_a_table_takes_its_columns_back(
+        self, real_falkordb_rag_factory, llm, resolver, scripted_llm, tmp_path
+    ):
+        """``delete_document`` in a new process knew nothing about the table until the
+        ontology was read, so the columns stayed on every node a note kept alive."""
+        rag = real_falkordb_rag_factory(
+            llm=scripted_llm([("Maya Ellison", "Person", "Runs the group")]),
+            resolver=resolver,
+            ontology=_ontology(self.REPORTS),
+        )
+        await rag.ingest(self._write(tmp_path / "staff.csv", [self.MAYA]))
+        await rag.ingest(text="Maya Ellison runs the group.", document_id="note.txt")
+
+        # Same graph, no ontology handed in: everything it knows is what it reads.
+        fresh = real_falkordb_rag_factory(llm=llm, resolver=resolver, connection=rag._conn.config)
+        await fresh.delete_document("staff.csv")
+
+        rows = await _rows(
+            rag,
+            "MATCH (p:Person {name:'Maya Ellison'}) RETURN p.staff__age, p.entity_key, p.is_stub",
+        )
+        assert rows == [[None, None, None]]
+        await rag.close()
+
+    async def test_a_link_the_declaration_dropped_leaves_the_nodes_and_the_schema(
+        self, real_falkordb_rag_factory, resolver, scripted_llm, tmp_path
+    ):
+        """Noor's manager is not a row of the table; a note knows her.
+
+        Dropping the link has to take back everything the link alone put on that
+        node -- its signed key and the identity that came with it -- while the
+        note's facts and the column the table still declares stay.
+        """
+        declared = dict(
+            source="staff.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={"age": Column("age", "INTEGER")},
+        )
+        named_link = TableMapping(
+            **declared,
+            links=[Link("REPORTS_TO", to="Person", by="manager_id", name="manager_name")],
+        )
+        without_link = TableMapping(**declared)
+        rag = real_falkordb_rag_factory(
+            llm=scripted_llm([("Maya Ellison", "Person", "Runs the group")]),
+            resolver=resolver,
+            ontology=_ontology(named_link),
+        )
+        source = tmp_path / "staff.csv"
+        source.write_text(
+            "employee_id,full_name,age,manager_id,manager_name\n"
+            "E-2,Noor Haddad,34,E-9,Maya Ellison\n",
+            encoding="utf-8",
+        )
+        await rag.ingest(text="Maya Ellison runs the group.", document_id="note.txt")
+        await rag.ingest(str(source))
+        maya = (
+            "MATCH (p:Person {name:'Maya Ellison'}) "
+            "RETURN p.staff__manager_id, p.entity_key, p.is_stub, p.description"
+        )
+        assert await _rows(rag, maya) == [["E-9", "E-9", True, "Runs the group"]]
+
+        await rag.set_ontology(_ontology(without_link))
+        await rag.ingest(str(source))
+
+        assert await _rows(rag, maya) == [[None, None, None, "Runs the group"]]
+        assert await _rows(rag, "MATCH (p:Person {name:'Noor Haddad'}) RETURN p.staff__age") == [
+            [34]
+        ]
+        person = next(e for e in (await rag.get_ontology()).entities if e.label == "Person")
+        assert "staff__manager_id" not in {prop.name for prop in person.properties}
+        await rag.close()
+
+
 class TestReSyncingAStructuredSource:
     """A table is a snapshot, so the graph has to follow it downwards too.
 
@@ -907,6 +1051,19 @@ class TestReSyncingAStructuredSource:
         # the suffix is what decides which path a source takes.
         with pytest.raises(ValueError, match="only apply to a structured source"):
             await rag.update(str(tmp_path / "note.txt"), strict_mapping=True)
+
+    async def test_ingest_rejects_arguments_that_cannot_apply(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+        source = self._write(tmp_path / "orgs.csv", [self.ACME])
+        with pytest.raises(ValueError, match="does not apply to a structured source"):
+            await rag.ingest(source, resolver=resolver)
+        with pytest.raises(ValueError, match="both 'source' and 'text'"):
+            await rag.ingest(source, text="rows")
+        with pytest.raises(ValueError, match="non-empty"):
+            await rag.ingest(source, document_id="  ")
+        assert await _rows(rag, "MATCH (o:Organization) RETURN count(o)") == [[0]]
 
     async def test_update_can_create_a_source_it_has_never_seen(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path
