@@ -164,3 +164,103 @@ class TestEntityExtractorABC:
                 )]
 
         assert isinstance(MyExtractor(), EntityExtractor)
+
+
+class TestGLiNERModelSharing:
+    """Bugs #8 and #11 — one model copy per extractor, and a serialising lock.
+
+    #11: with current (not peak) RSS, six extractors each loading their own
+    model went 74.5 MB -> 2447 MB, ~395 MB marginal per copy, projecting
+    ~11.6 GB for 30 concurrent documents. With the shared cache the same six
+    sit at 1425.3 -> 1425.4 MB: 0.0 MB marginal, ~1.39 GB projected.
+
+    #8: inference ran under a per-instance lock while the caller dispatched it
+    via ``asyncio.to_thread``, so concurrent documents serialised. Counter-
+    balanced over eight documents: locked 3.75/3.54 s, unlocked 2.21/2.46 s =
+    1.56x. Removing it is only sound because GLiNER inference proved
+    thread-safe — 40/40 documents byte-identical against the serialised run.
+    """
+
+    def _extractor(self, monkeypatch, loads):
+        from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+
+        class FakeGLiNER:
+            @staticmethod
+            def from_pretrained(name):
+                loads.append(name)
+                return object()
+
+        monkeypatch.setitem(__import__("sys").modules, "gliner",
+                            type("m", (), {"GLiNER": FakeGLiNER}))
+        monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {}, raising=False)
+        return ee.GLiNERExtractor
+
+    def test_model_loaded_once_across_instances(self, monkeypatch):
+        loads = []
+        cls = self._extractor(monkeypatch, loads)
+        models = [cls()._load_model() for _ in range(5)]
+        assert len(loads) == 1
+        assert len({id(m) for m in models}) == 1
+
+    def test_different_models_are_not_shared(self, monkeypatch):
+        loads = []
+        cls = self._extractor(monkeypatch, loads)
+        a = cls(model_name="model-a", threshold=0.5)._load_model()
+        b = cls(model_name="model-b", threshold=0.5)._load_model()
+        assert loads == ["model-a", "model-b"]
+        assert a is not b
+
+    def test_inference_takes_no_lock(self):
+        """Guards bug #8 against reintroduction."""
+        import inspect
+
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            GLiNERExtractor,
+        )
+
+        src = inspect.getsource(GLiNERExtractor._predict_sync)
+        code = "\n".join(
+            line for line in src.splitlines() if not line.strip().startswith("#")
+        )
+        assert "self._lock" not in code
+
+
+class TestGLiNERCandidateBand:
+    """The ``"Unknown"`` band is 25 % below the model threshold by default and
+    follows whichever threshold is in effect."""
+
+    def test_default_band_for_default_model(self):
+        ex = GLiNERExtractor()
+        assert ex._threshold == 0.75
+        assert ex._candidate_threshold == pytest.approx(0.5625)
+
+    def test_default_band_follows_model_threshold(self):
+        ex = GLiNERExtractor(model_name="knowledgator/gliner-bi-small-v2.0")
+        assert ex._threshold == 0.5
+        assert ex._candidate_threshold == pytest.approx(0.375)
+
+    def test_default_band_follows_explicit_threshold(self):
+        ex = GLiNERExtractor(threshold=0.8)
+        assert ex._candidate_threshold == pytest.approx(0.6)
+
+    def test_none_disables_band(self):
+        ex = GLiNERExtractor(candidate_threshold=None)
+        assert ex._candidate_threshold is None
+
+    def test_explicit_floor_wins(self):
+        ex = GLiNERExtractor(candidate_threshold=0.7)
+        assert ex._candidate_threshold == 0.7
+
+    def test_floor_above_threshold_rejected(self):
+        with pytest.raises(ValueError, match="candidate_threshold"):
+            GLiNERExtractor(threshold=0.75, candidate_threshold=0.8)
+
+    def test_band_spans_are_unknown_and_below_band_is_not_returned(self):
+        # what _parse_predictions does with a score inside the band; anything
+        # below the band never comes back from the model (queried at the floor)
+        preds = [
+            {"text": "Alice", "label": "person", "score": 0.80, "start": 0, "end": 5},
+            {"text": "Bobby", "label": "person", "score": 0.60, "start": 6, "end": 11},
+        ]
+        ents = _parse_predictions(preds, ["Person"], "c0", 0.75)
+        assert [(e.name, e.type) for e in ents] == [("Alice", "Person"), ("Bobby", "Unknown")]

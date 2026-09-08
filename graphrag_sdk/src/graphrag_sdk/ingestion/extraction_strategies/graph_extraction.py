@@ -13,6 +13,7 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
+    RESERVED_NODE_LABELS,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -42,6 +43,76 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
 
 logger = logging.getLogger(__name__)
 
+# Default relation vocabulary — the missing counterpart to DEFAULT_ENTITY_TYPES.
+#
+# Entity extraction has always shipped a default type list, so the LLM is told
+# what kinds of things to look for. Relations shipped nothing: with no ontology
+# the prompt said "use a descriptive label in UPPER_SNAKE_CASE", and the model
+# invented a fresh name for almost every edge. Measured on an 11-document
+# corpus: 447 distinct relation labels against 30 in the gold annotation, 68.2%
+# of them used exactly once, and only 17.3% of edges carrying a label the gold
+# data also uses. Two of gold's most common predicates (``contains``, 123
+# triples; ``authored``, 54) were emitted zero times.
+#
+# Supplying any fixed list doubles exact triple F1 (0.0725 -> 0.1490, +2.06x),
+# and a list written *without* reference to the gold vocabulary scored as well
+# as the gold vocabulary itself (0.1490 vs 0.1456). The gain comes from being
+# consistent, not from guessing the right words — which is what makes a shipped
+# default worth having.
+#
+# This list is deliberately domain-neutral and pairs with DEFAULT_ENTITY_TYPES.
+# It is *guidance*, not a filter: exactly like ``entity_types``, it steers the
+# prompt, and a relation the model labels outside this list is still kept. The
+# hard-filtering path is ``Ontology.relations``, which prunes non-conforming
+# edges in ``IngestionPipeline._prune``. Users who want that stricter behaviour
+# should declare an ontology; users who want none of it can pass
+# ``relation_types=[]``.
+DEFAULT_RELATION_TYPES: list[str] = [
+    # structure / place
+    "located_in",
+    "part_of",
+    "contains",
+    "occurred_in",
+    # affiliation
+    "member_of",
+    "employed_at",
+    "founded",
+    "owns",
+    "subsidiary_of",
+    # creation & production
+    "created",
+    "authored",
+    "designed_by",
+    "developed_by",
+    "manufactured",
+    "published_in",
+    "supplied_to",
+    # people
+    "born_in",
+    "died_in",
+    "married_to",
+    "child_of",
+    "sibling_of",
+    "student_of",
+    "colleague_of",
+    # activity & influence
+    "participated_in",
+    "directed",
+    "awarded",
+    "named_after",
+    "succeeded_by",
+    "influenced",
+    # technical
+    "uses",
+    "based_on",
+]
+
+# This prompt asks for entity verification AND descriptions AND relations.
+# Removing the verification job was tried and REVERTED: without it the LLM
+# emitted 813 entities instead of 719 and entity precision fell 0.645 -> 0.551
+# (RESULTS.md P2.12). The instruction is doing real work, even though a
+# dedicated call built to do the same job scored no better than random
+# (P2.10). Do not remove it again without re-running that measurement.
 VERIFY_EXTRACT_RELS_PROMPT = (
     "You are an expert knowledge graph builder.\n"
     "Given the text and pre-extracted entities below, do two things:\n"
@@ -58,18 +129,28 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "{text}\n\n"
     "## Instructions\n\n"
     "### Entities\n"
-    "- REMOVE any entity that is:\n"
-    "  - A purely symbolic or operator token (e.g. +=, ->, ++, ==, !=)\n"
-    "  - A common non-domain-specific shell/system abbreviation "
-    "(e.g. sh, cd, dt, ls, rm, cp, mv)\n"
-    "  - A generic short token (1-2 characters) that is not a widely-recognised "
-    "named entity or acronym (AI, US, UK, Go are fine; dt, bg, fn are not)\n"
+    "- REMOVE any entity that is not a real named thing in the text: an "
+    "operator or symbol token, a generic shell or system abbreviation, or a "
+    "short token that is not a widely-recognised name or acronym.\n"
     "- For each verified entity provide a concise 1-2 sentence description "
     "capturing key attributes and roles from the text. This description is "
     "embedded for semantic search.\n\n"
     "### Relationships\n"
     "- Extract ALL factual connections stated or implied in the text.\n"
-    "- source and target must be entity names from the verified entity list.\n"
+    "- source and target must be entity names from the entity list above.\n"
+    # Measured (P5.6): "ALL" above is not enough on its own -- the model treats
+    # the task as a summary, returns ~12 relations per chunk and stops while
+    # using 2.5k of a 16k reply budget.  Giving it twice the text grew the reply
+    # 1.3%; the three lines below grew it 15.5% for +4% ingest time, and beat a
+    # second "what did you miss?" LLM call that cost 4.7x the ingest time.
+    # Do not extend this with a per-entity walkthrough instruction: measured at
+    # 4.6x ingest time and a worse graph than changing nothing.
+    "- This is an EXHAUSTIVE extraction task, NOT a summary. Do not stop after "
+    "the most important or most obvious connections.\n"
+    "- There is no maximum. A dense paragraph often yields 20 or more "
+    "relationships. A long list is correct, not a mistake.\n"
+    "- Never end the list early. Never leave connections out because you have "
+    "already written several.\n"
     "{relationship_type_instruction}"
     "- description: one sentence describing the relationship as a "
     "standalone fact. This is embedded for semantic search — it must be "
@@ -336,6 +417,38 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
     return extra
 
 
+def _reject_reserved_labels(types: list[str]) -> list[str]:
+    """Reject entity types that collide with the store's structural labels.
+
+    ``Document`` and ``Chunk`` are used by the graph store for corpus
+    bookkeeping. An extracted entity carrying one of those labels fails two
+    ways at once, both silently:
+
+    1. Document-level queries (``MATCH (p:Document) ...``) start returning
+       extracted entities, so document counts and lookups are wrong. This was
+       found in the field as an 11-document corpus reporting 106 documents.
+    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
+       label is *not* structural, so the node never receives ``__Entity__``
+       and is dropped from deduplication and retrieval. It is written, then
+       ignored.
+
+    Neither failure raises, so the graph just quietly degrades. Fail here
+    instead, at configuration time, where the caller can act on it.
+    """
+    reserved = {label.casefold(): label for label in RESERVED_NODE_LABELS}
+    clashes = [t for t in types if str(t).strip().casefold() in reserved]
+    if clashes:
+        raise ValueError(
+            f"entity_types may not contain the reserved label(s) {sorted(set(clashes))}. "
+            f"{sorted(RESERVED_NODE_LABELS)} are used internally for corpus "
+            "bookkeeping; reusing them silently corrupts document counts and "
+            "removes the entity from deduplication and retrieval. "
+            "Rename the type (e.g. 'Document' -> 'Publication', "
+            "'Chunk' -> 'TextSegment')."
+        )
+    return list(types)
+
+
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
     """Format entity types for prompt injection.
 
@@ -416,6 +529,13 @@ class GraphExtraction(ExtractionStrategy):
         coref_resolver: Optional coreference resolver applied per-chunk.
         entity_types: Entity type labels. Default: DEFAULT_ENTITY_TYPES.
             Overridden by ontology.entities if present.
+        relation_types: Relation labels offered to the LLM. Default:
+            DEFAULT_RELATION_TYPES. This is the exact counterpart of
+            ``entity_types`` — guidance for the prompt, not a filter, so a
+            relation labelled outside the list is still kept. Overridden by
+            ``ontology.relations`` when one is declared, and that path *does*
+            prune non-conforming edges. Pass ``[]`` to restore the old
+            open-vocabulary behaviour where the model invents every label.
         max_concurrency: Maximum parallel LLM calls.
     """
 
@@ -426,12 +546,18 @@ class GraphExtraction(ExtractionStrategy):
         entity_extractor: EntityExtractor | None = None,
         coref_resolver: CorefResolver | None = None,
         entity_types: list[str] | None = None,
+        relation_types: list[str] | None = None,
         max_concurrency: int | None = None,
     ) -> None:
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.entity_types = entity_types or list(DEFAULT_ENTITY_TYPES)
+        self.entity_types = _reject_reserved_labels(entity_types or list(DEFAULT_ENTITY_TYPES))
+        # `is None` rather than falsy: relation_types=[] is a meaningful request
+        # for open-vocabulary mode, not an omission.
+        self.relation_types = (
+            list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
+        )
         self._max_concurrency = max_concurrency
 
     async def extract(
@@ -442,13 +568,25 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: ontology overrides instance default
         if ontology.entities:
-            entity_types = [e.label for e in ontology.entities]
+            # Ontology labels bypass the constructor, so re-check here: an
+            # ontology declaring a reserved label must fail as loudly as
+            # passing one to entity_types would.
+            entity_types = _reject_reserved_labels([e.label for e in ontology.entities])
             entity_type_descs: dict[str, str] = {
                 e.label: e.description for e in ontology.entities if e.description
             }
         else:
             entity_types = list(self.entity_types)
             entity_type_descs = {}
+
+        # Relation vocabulary. A declared ontology wins, and that path also
+        # prunes non-conforming edges downstream. Otherwise fall back to the
+        # instance default, which only steers the prompt — nothing is pruned,
+        # mirroring how entity_types behaves.
+        if ontology.relations:
+            prompt_relations = list(ontology.relations)
+        else:
+            prompt_relations = [Relation(label=lbl) for lbl in self.relation_types]
 
         ctx.log(
             f"Extracting from {len(chunks.chunks)} chunks (hybrid, "
@@ -466,6 +604,10 @@ class GraphExtraction(ExtractionStrategy):
 
         if not active_chunks:
             return GraphData(nodes=[], relationships=[])
+
+        # Chunks whose extraction raised. Tracked so the caller can tell an
+        # empty document from a broken one, and retry just these uids.
+        failed_chunk_uids: set[str] = set()
 
         # ── Optional: Coreference resolution per chunk ──
         chunk_texts: list[str] = []
@@ -537,6 +679,7 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(active_chunks[i].uid)
                     chunk_entities.append([])
                 else:
                     chunk_entities.append(result)
@@ -552,9 +695,9 @@ class GraphExtraction(ExtractionStrategy):
             has_attrs = _ontology_has_attributes(ontology)
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
-                relation_patterns=_format_relation_patterns(ontology.relations),
+                relation_patterns=_format_relation_patterns(prompt_relations),
                 attribute_block=_render_attribute_block(ontology),
-                relationship_type_instruction=_relationship_type_instruction(ontology.relations),
+                relationship_type_instruction=_relationship_type_instruction(prompt_relations),
                 entities_json=entities_json,
                 text=text,
                 json_example=_JSON_EXAMPLE_WITH_ATTRS if has_attrs else _DEFAULT_JSON_EXAMPLE,
@@ -568,6 +711,7 @@ class GraphExtraction(ExtractionStrategy):
 
         all_entities: list[ExtractedEntity] = []
         all_relations: list[ExtractedRelation] = []
+        rels_by_chunk: dict[int, list[ExtractedRelation]] = {}
 
         if step2_prompts:
             step2_results = await self.llm.abatch_invoke(step2_prompts, **batch_kw2)
@@ -580,6 +724,10 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 2 verify+rels failed for chunk {chunk.index}: {item.error}",
                         logging.WARNING,
                     )
+                    # Relations for this chunk are lost even though step 1
+                    # entities survive, so it counts as failed: the caller
+                    # needs to know this chunk's edges were never extracted.
+                    failed_chunk_uids.add(chunk.uid)
                     # Fall back to step 1 entities only
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
@@ -601,6 +749,9 @@ class GraphExtraction(ExtractionStrategy):
                 else:
                     # LLM returned no entities — use step 1 entities
                     all_entities.extend(chunk_entities[chunk_idx])
+                rels_by_chunk.setdefault(chunk_idx, []).extend(rels)
+
+            for rels in rels_by_chunk.values():
                 all_relations.extend(rels)
 
         # ── Aggregate across chunks ──
@@ -629,12 +780,22 @@ class GraphExtraction(ExtractionStrategy):
             mentions=all_mentions,
             extracted_entities=merged_entities,
             extracted_relations=merged_relations,
+            chunks_attempted=len(active_chunks),
+            failed_chunks=sorted(failed_chunk_uids),
         )
 
         ctx.log(
             f"Extracted {len(nodes)} nodes, {len(relationships)} relationships, "
             f"{len(all_mentions)} mentions"
         )
+        if failed_chunk_uids:
+            # Escalate: an INFO summary saying "0 nodes" reads as an empty
+            # document. Say plainly that chunks were lost.
+            ctx.log(
+                f"{len(failed_chunk_uids)} of {len(active_chunks)} chunks failed "
+                f"extraction and contributed nothing to the graph",
+                logging.WARNING,
+            )
         return graph_data
 
     @staticmethod
@@ -719,7 +880,7 @@ class GraphExtraction(ExtractionStrategy):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
-            if not is_valid_entity_name(name):
+            if not is_valid_entity_name(name, entity_types):
                 continue
             raw_type = str(item.get("type", "")).strip()
             if "/" in raw_type or "(" in raw_type or ")" in raw_type:
@@ -754,7 +915,9 @@ class GraphExtraction(ExtractionStrategy):
             rel_type = str(item.get("type", "")).strip()
             if not source or not target or not rel_type:
                 continue
-            if not is_valid_entity_name(source) or not is_valid_entity_name(target):
+            if not is_valid_entity_name(source, entity_types) or not is_valid_entity_name(
+                target, entity_types
+            ):
                 continue
 
             description = str(item.get("description", "")).strip()

@@ -1084,7 +1084,7 @@ class GraphRAG:
             new_mentions: list[GraphRelationship] = []
             for ent in parsed:
                 ent_name = (ent.get("name") or "").strip()
-                if not is_valid_entity_name(ent_name):
+                if not is_valid_entity_name(ent_name, [label]):
                     skipped += 1
                     continue
                 ent_id = compute_entity_id(label, ent_name)
