@@ -48,8 +48,6 @@ logger = logging.getLogger(__name__)
 # and what it holds; small enough that proposing costs nothing on a large table.
 _DEFAULT_SAMPLE_ROWS = 500
 
-# A column is only offered as a foreign key when most of its values already
-
 _TYPE_ORDER = ("INTEGER", "FLOAT", "BOOLEAN", "DATE", "STRING")
 
 
@@ -72,18 +70,10 @@ class ColumnProfile:
         """Every filled value distinct, and nothing missing."""
         return self.total > 0 and self.filled == self.total and self.distinct == self.total
 
-    @property
-    def looks_like_a_name(self) -> bool:
-        """Mostly multi-word text, which is what a display name looks like."""
-        if self.inferred_type != "STRING" or not self.samples:
-            return False
-        wordy = sum(1 for value in self.samples if " " in value.strip())
-        return wordy >= max(1, len(self.samples) // 2)
 
-    def describe(self) -> str:
-        shown = ", ".join(repr(value) for value in self.samples[:3])
-        note = " unique, no gaps" if self.is_unique else f" {self.filled}/{self.total} filled"
-        return f"{self.name} ({self.inferred_type}{note}) e.g. {shown}"
+# A leading zero followed by a digit: "02134", "00501". A number never keeps
+# one, so the value is a code, and reading it as a number would drop the zero.
+_ZERO_PADDED = re.compile(r"^\s*[-+]?0\d")
 
 
 def _types_holding(values: list[str]) -> frozenset[str]:
@@ -97,8 +87,11 @@ def _types_holding(values: list[str]) -> frozenset[str]:
     holding = {"STRING", "LIST"}
     if not filled:
         return frozenset(holding)
+    # Zip codes, phone numbers and padded account codes parse as numbers and
+    # lose their leading zeros on the way. That is a code, not a quantity.
+    padded = any(_ZERO_PADDED.match(str(value)) for value in filled)
     for candidate in _TYPE_ORDER:
-        if candidate == "STRING":
+        if candidate == "STRING" or (padded and candidate in ("INTEGER", "FLOAT")):
             continue
         probe = Column("probe", candidate)
         try:

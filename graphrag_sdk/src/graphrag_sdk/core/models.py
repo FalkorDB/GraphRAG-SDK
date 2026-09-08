@@ -358,10 +358,13 @@ class Ontology(DataModel):
 
         A label a sibling mapping already connected counts as declared, so a
         second table adding properties to ``Person`` does not have to repeat how
-        ``Person`` connects.
+        ``Person`` connects. So does a label a sibling's ``Link`` points at: the
+        table owning ``Organization`` is reached through every ``WORKS_AT`` edge
+        that keys it, which is exactly how a placeholder is meant to be filled.
         """
         known = {entity.label for entity in self.entities}
         known |= {m.label for m in self.tables if m.links or m.standalone}
+        known |= {link.to for m in self.tables for link in m.links}
         stranded = [
             m for m in self.tables if m.label not in known and not m.links and not m.standalone
         ]

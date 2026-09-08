@@ -112,6 +112,31 @@ class TestCsvRecordLoader:
         batch = await CsvRecordLoader(encoding="latin-1").load_records(str(path), ctx)
         assert list(batch)[0]["name"] == "Zoë"
 
+    async def test_excels_byte_order_mark_is_not_part_of_the_first_header(
+        self, tmp_path, ctx: Context
+    ):
+        """A BOM left on ``employee_id`` fails ``key="employee_id"`` against a
+        column the user can see is called exactly that."""
+        path = tmp_path / "excel.csv"
+        path.write_bytes("employee_id,full_name\nE-1,Alice\n".encode("utf-8-sig"))
+        batch = await CsvRecordLoader().load_records(str(path), ctx)
+        assert batch.columns == ["employee_id", "full_name"]
+        assert list(batch)[0] == {"employee_id": "E-1", "full_name": "Alice"}
+
+    async def test_a_file_in_another_encoding_is_named_with_the_fix(self, tmp_path, ctx: Context):
+        path = tmp_path / "latin.csv"
+        path.write_bytes("name\nZoë\n".encode("latin-1"))
+        with pytest.raises(ValueError, match=r"latin.csv is not utf-8-sig.*encoding="):
+            await CsvRecordLoader().load_records(str(path), ctx)
+
+    async def test_duplicate_column_names_are_rejected(self, tmp_path, ctx: Context):
+        """``DictReader`` keeps the last same-named column, so the first would
+        pass validation by name and never reach a record."""
+        path = tmp_path / "dupes.csv"
+        path.write_text("name,age,name\nAnn,30,Annie\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"duplicate column names \['name'\]"):
+            await CsvRecordLoader().load_records(str(path), ctx)
+
 
 class TestRecordBatch:
     def test_iterating_calls_the_factory_each_time(self):

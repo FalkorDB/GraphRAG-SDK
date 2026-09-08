@@ -333,6 +333,13 @@ class TestCastingRefusesValuesThatPoisonQueries:
     def test_an_ordinary_list_still_splits(self):
         assert Column("tags", "LIST").cast("a,b, c") == ["a", "b", "c"]
 
+    @pytest.mark.parametrize(
+        "raw", ["2024-01-05", "2024-01-05T10:00:00", "2024-01-05T10:00:00Z", "2024-01-05 10:00Z"]
+    )
+    def test_a_date_accepts_the_shapes_exports_write(self, raw):
+        """Python 3.10's parser rejects the ``Z`` suffix most API exports use."""
+        assert Column("signed_on", "DATE").cast(raw) == "2024-01-05"
+
 
 class TestTableMappingIsTheOnlyFormYouWrite:
     """One declaration that grows, instead of two that you switch between.
@@ -525,19 +532,52 @@ class TestTableMappingIsTheOnlyFormYouWrite:
         assert len(table.edges) == 3
 
     def test_two_links_naming_the_same_target_twice_are_refused(self):
+        """Refused where the declaration is written, not at the first ingest,
+        so it cannot be saved into an ontology first."""
         with pytest.raises(MappingError, match="same target twice"):
-            record_mapping_for(
-                TableMapping(
-                    source="contracts.csv",
-                    label="Contract",
-                    key="contract_id",
-                    links=[
-                        Link("A", to="Organization", by="a_id"),
-                        Link("B", to="Organization", by="org_id"),
-                        Link("C", to="Organization", by="org_id"),
-                    ],
-                )
+            TableMapping(
+                source="contracts.csv",
+                label="Contract",
+                key="contract_id",
+                links=[
+                    Link("A", to="Organization", by="a_id"),
+                    Link("B", to="Organization", by="org_id"),
+                    Link("C", to="Organization", by="org_id"),
+                ],
             )
+
+    def test_a_link_by_the_records_own_key_is_refused_at_declaration(self):
+        with pytest.raises(MappingError, match="link the record to itself"):
+            TableMapping(
+                source="p.csv",
+                label="Person",
+                key="id_",
+                links=[Link("KNOWS", to="Person", by="id_")],
+            )
+
+    def test_a_links_edge_properties_are_checked_at_declaration(self):
+        """``TableMapping.properties`` were validated eagerly and a link's were
+        not, so a reserved or unusable edge property survived until ingest."""
+        with pytest.raises(MappingError, match="written by the SDK"):
+            Link("WORKS_AT", to="Organization", by="org_id", properties={"id": "x"})
+        with pytest.raises(MappingError, match="not a usable name"):
+            Link("WORKS_AT", to="Organization", by="org_id", properties={"bad name": "y"})
+        link = Link("WORKS_AT", to="Organization", by="org_id", properties={"since": "since"})
+        assert link.properties == {"since": Column("since")}
+
+    def test_an_edge_property_changes_the_declaration_fingerprint(self):
+        """``finalize().mapping_changed`` reads this digest; retyping an edge
+        property is a re-declaration the same as retyping a node property."""
+        plain = Link("WORKS_AT", to="Organization", by="org_id")
+        dated = Link(
+            "WORKS_AT",
+            to="Organization",
+            by="org_id",
+            properties={"since": Column("since", "DATE")},
+        )
+        a = TableMapping(source="p.csv", label="P", key="k", links=[plain])
+        b = TableMapping(source="p.csv", label="P", key="k", links=[dated])
+        assert a.fingerprint_of_declaration != b.fingerprint_of_declaration
 
     def test_a_link_may_point_at_the_records_own_label(self):
         """A manager is a Person too. Only the record's own *key* is refused."""

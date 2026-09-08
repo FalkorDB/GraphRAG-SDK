@@ -92,7 +92,10 @@ class CsvRecordLoader(RecordLoaderStrategy):
     Args:
         delimiter: Field separator. ``None`` sniffs it from the first kilobyte,
             which handles comma and tab without the caller choosing.
-        encoding: File encoding.
+        encoding: File encoding. The default reads UTF-8 with or without the
+            byte-order mark Excel writes, which would otherwise become part of
+            the first header and make ``key="employee_id"`` fail against a file
+            whose first column is visibly called ``employee_id``.
         document_id: Overrides the Document node id. Defaults to
             ``os.path.normpath(source)``, matching what the text path derives for
             a file so ``ingest``, ``update`` and ``delete_document`` all address a
@@ -105,7 +108,7 @@ class CsvRecordLoader(RecordLoaderStrategy):
         self,
         *,
         delimiter: str | None = None,
-        encoding: str = "utf-8",
+        encoding: str = "utf-8-sig",
         document_id: str | None = None,
     ) -> None:
         self._delimiter = delimiter
@@ -128,12 +131,17 @@ class CsvRecordLoader(RecordLoaderStrategy):
         path = Path(source)
         if not path.is_file():
             raise FileNotFoundError(f"structured source not found: {source}")
-        delimiter = self._sniff(path)
-
-        with path.open("r", encoding=self._encoding, newline="") as handle:
-            reader = csv.DictReader(handle, delimiter=delimiter)
-            columns = list(reader.fieldnames or [])
-            record_count = sum(1 for _ in reader)
+        try:
+            delimiter = self._sniff(path)
+            with path.open("r", encoding=self._encoding, newline="") as handle:
+                reader = csv.DictReader(handle, delimiter=delimiter)
+                columns = list(reader.fieldnames or [])
+                record_count = sum(1 for _ in reader)
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"{source} is not {self._encoding}: {exc.reason} at byte {exc.start}. "
+                f"Pass CsvRecordLoader(encoding=...) with the file's encoding."
+            ) from exc
         if not columns:
             raise ValueError(f"{source} has no header row, so no columns to map")
         blank = [i for i, c in enumerate(columns) if not (c or "").strip()]
@@ -141,6 +149,14 @@ class CsvRecordLoader(RecordLoaderStrategy):
             raise ValueError(
                 f"{source} has unnamed columns at positions {blank}; every column "
                 "a mapping might read needs a name"
+            )
+        # DictReader keeps only the last of two same-named columns, so the first
+        # would be read and validated by name yet never reach a record.
+        repeated = sorted({c for c in columns if columns.count(c) > 1})
+        if repeated:
+            raise ValueError(
+                f"{source} has duplicate column names {repeated}; a mapping reads a "
+                "column by name, so two columns cannot share one"
             )
 
         def open_records() -> Iterator[dict[str, Any]]:

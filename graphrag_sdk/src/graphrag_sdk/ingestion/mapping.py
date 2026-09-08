@@ -50,9 +50,9 @@ class NodeMapping:
 
     Args:
         label: The entity label, e.g. ``"Person"``.
-        key: The column whose value identifies the entity. Its value becomes the
-            node id via the same derivation the extraction path uses, so a
-            structured node and an extracted node can be the same node.
+        key: The column whose value identifies the entity, kept on the node as
+            ``entity_key`` for links and re-sync. It derives the node id only
+            when the record has no ``name``.
         name: The column carrying the display name, when the record has one.
             The name is the entity's **identity**: its id is derived from it the
             same way a prose mention's is, so a row and a document describing one
@@ -128,10 +128,8 @@ class NodeMapping:
 
         Usually the column's own name. A header the SDK owns or cannot address —
         ``id``, ``HQ Country`` — is stored under a ``col_`` name instead, because
-        writing it verbatim either overwrites a system value or reaches the driver
-        as something it cannot serialise. ``key="id"`` used to overwrite the
-        node's graph id, which cost every row of that table its provenance edges
-        and its ability to join to prose, and reported success.
+        writing it verbatim would either overwrite a system value or reach the
+        driver as something it cannot serialise.
         """
         return safe_property_name(self.key)
 
@@ -209,12 +207,9 @@ class EdgeMapping:
         extracted node and a keyed node have to meet on them. An edge has no such
         join, so every declared property is signed, which also puts the SDK's own
         ``rel_type``, ``fact`` and ``source_chunk_ids`` permanently out of a
-        declaration's reach instead of merely discouraged.
-
-        Without this, two tables declaring the same edge property overwrote each
-        other and the loser's value was gone from the graph: hr.csv and
-        finance.csv both declaring ``WORKS_AT.since`` left whichever loaded last,
-        with nothing reported. The design keeps conflicts; this is what lets it.
+        declaration's reach. Two tables declaring ``WORKS_AT.since`` therefore
+        write two properties and the conflict is kept, rather than whichever
+        loaded last winning silently.
         """
         if not self.signature:
             return prop
@@ -424,10 +419,8 @@ class RecordMapping:
                         # Load bearing, not decoration. The property is named
                         # hr__age, and this description is the only thing that
                         # tells text-to-Cypher the word "age" means that column
-                        # and that hr.csv is where it came from. Measured: with
-                        # it, "what grade does finance say?" generates
-                        # p.finance__grade; the unsigned schema instead looked for
-                        # an entity named finance and answered wrongly.
+                        # and that hr.csv is where it came from, so "what grade
+                        # does finance say?" can generate p.finance__grade.
                         description=col.description
                         or (
                             f"{col.name}, from table {node.signature}"

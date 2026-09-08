@@ -28,7 +28,7 @@ COLUMN_TYPES: frozenset[str] = frozenset({"STRING", "INTEGER", "FLOAT", "BOOLEAN
 
 # Keys the SDK writes on every entity node. A mapping that declared one of these
 # as a property name would shadow a system value, so they are rejected. ``name``
-# is here because it has its own slot: use ``NodeMapping(name="full_name")``.
+# is here because it has its own slot: use ``TableMapping(name="full_name")``.
 RESERVED_PROPERTY_NAMES: frozenset[str] = frozenset(
     {
         "id",
@@ -64,11 +64,8 @@ def safe_property_name(column: str, owned: frozenset[str] | None = None) -> str:
 
     A header is whatever the exporting system wrote — ``HQ Country``,
     ``Revenue (M USD)``, ``id``. A graph property name is written into generated
-    Cypher as a bare name and, when it is one the SDK owns, silently overwrites a
-    system value. Measured before this existed: a header with a space reached the
-    driver inside a parameter map and surfaced as ``DatabaseError: Invalid input
-    at end of input``, from a query the caller never wrote; and ``key="id"``
-    overwrote the node's graph id, which cost every row its provenance edges.
+    Cypher as a bare identifier, and one the SDK owns (``id``) would overwrite a
+    system value, so either kind is stored under a ``col_`` name instead.
 
     Identifiers the SDK does not own pass through unchanged, so existing graphs
     do not move. ``owned`` overrides which names are the SDK's, because a record
@@ -87,10 +84,9 @@ _GROUPED = re.compile(r"^-?\d{1,3}(,\d{3})+$")
 def _normalise_number(raw: str, integral: bool = False) -> str:
     """Return ``raw`` with grouping separators removed and ``.`` as the decimal.
 
-    A comma means opposite things either side of the Atlantic, so stripping every
-    comma is wrong half the time and silently: measured, a German export's
-    ``880,5`` was stored as ``8805.0`` — every figure in the column out by a
-    factor of ten, with nothing to point at. The decidable cases are decided and
+    A comma means opposite things either side of the Atlantic — ``880,5`` is
+    eight hundred and eighty and a half in a German export — so stripping every
+    comma is silently wrong half the time. The decidable cases are decided and
     the one that is not is refused rather than guessed.
 
     - Both separators present: the rightmost is the decimal point, so
@@ -262,8 +258,12 @@ class Column:
                 if isinstance(raw, (date, datetime)):
                     return raw.isoformat()
                 # Stored as an ISO string: FalkorDB has no date type, and an
-                # ISO string sorts and compares correctly.
-                return datetime.fromisoformat(str(raw)).date().isoformat()
+                # ISO string sorts and compares correctly. Python 3.10's parser
+                # does not know the ``Z`` suffix most API exports use.
+                text = str(raw).strip()
+                if text.endswith(("Z", "z")):
+                    text = text[:-1] + "+00:00"
+                return datetime.fromisoformat(text).date().isoformat()
         except (TypeError, ValueError) as exc:
             # Keep the cause's own words when it has any: the number and boolean
             # paths raise messages that say which reading was ambiguous and what
@@ -323,6 +323,9 @@ class Link:
                 raise MappingError(f"Link.{label} must be non-empty")
         _check_identifier("relationship type", self.type)
         _check_label(self.to)
+        # Validated here, not at ingest, so a bad edge property is refused where
+        # it was written rather than after the ontology holding it was saved.
+        self.properties = dict(_as_columns(self.properties))
 
     @property
     def typed_properties(self) -> dict[str, Column]:
@@ -383,9 +386,13 @@ class TableMapping:
         label: The label each row becomes. Need not already exist; a mapping may
             add it to the ontology, in which case it must also say how the new
             label connects — see ``links`` and ``standalone``.
-        key: The column identifying the row. Its value derives the node id, so
+        key: The column identifying the row, stored on the node as
+            ``entity_key`` and what links and a re-sync resolve through, so
             re-loading a corrected export updates in place instead of
-            duplicating. **Optional: defaults to** ``name``. Most tables have one
+            duplicating. The node *id* is derived from ``name`` when one is
+            declared, so a row and a prose mention of the same name share a
+            node; the key derives it only when there is no name.
+            **Optional: defaults to** ``name``. Most tables have one
             column that is both the identifier and the display name, and then
             the node id is exactly what prose extraction would compute for that
             name — the two halves share an id outright. Declare a separate key
@@ -460,6 +467,27 @@ class TableMapping:
                 "standalone=True means the label relates to nothing; drop it, or "
                 "drop the links."
             )
+        targets: set[tuple[str, str]] = set()
+        for link in self.links:
+            if not isinstance(link, Link):
+                raise MappingError(
+                    f"links must contain Link objects, got {type(link).__name__}. "
+                    'Write links=[Link("WORKS_AT", to="Organization", by="org_id")].'
+                )
+            # A target keyed by the subject's own key column is the subject.
+            if link.by == self.key and link.to == self.label:
+                raise MappingError(
+                    f"link {link.type!r} points at {link.to!r} by column {link.by!r}, "
+                    "which is this record's own key, so it would link the record to "
+                    "itself. Point it at the column holding the other entity's key."
+                )
+            if (link.to, link.by) in targets:
+                raise MappingError(
+                    f"two links both point at {link.to!r} by column {link.by!r}, "
+                    "so they describe the same target twice. Drop one, or point "
+                    "them at the different columns holding each target's key."
+                )
+            targets.add((link.to, link.by))
         # Normalise the input contract (a bare string means STRING) exactly once,
         # so every reader after this point sees Columns.
         self.properties = dict(_as_columns(self.properties))
@@ -479,9 +507,7 @@ class TableMapping:
         Derived from ``source`` and required to be a bare Cypher identifier: the
         SDK sends property maps as query parameters, and the driver serialises
         their keys **unquoted** into the query text, so a name needing backticks
-        never reaches the server intact. Measured before this rule existed: a
-        header with a space surfaced as ``DatabaseError: Invalid input at end of
-        input``, from a query the caller never wrote.
+        never reaches the server intact.
 
         Not derived through :func:`safe_property_name`, which is not injective —
         ``hr.csv``, ``HR.CSV`` and ``hr csv`` all collapse to one name there, and
@@ -500,9 +526,12 @@ class TableMapping:
         parts += sorted(
             f"{name}={column.name}:{column.type}" for name, column in self.typed_properties.items()
         )
-        parts += sorted(
-            f"{link.type}->{link.to}:{link.by}:{link.name or ''}" for link in self.links
-        )
+        for link in sorted(self.links, key=lambda link: (link.type, link.to, link.by)):
+            parts.append(f"{link.type}->{link.to}:{link.by}:{link.name or ''}")
+            parts += sorted(
+                f"{link.type}->{link.to}:{link.by}.{name}={column.name}:{column.type}"
+                for name, column in link.typed_properties.items()
+            )
         return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
     def signed_name(self, prop: str) -> str:

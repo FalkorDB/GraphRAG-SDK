@@ -139,6 +139,29 @@ class TestSignatureCollisionsAreRefused:
         assert signature_for(source) == expected
 
 
+class TestANewLabelMustConnect:
+    def test_a_label_a_sibling_link_points_at_is_connected(self):
+        """The table owning ``Organization`` is reached through every
+        ``WORKS_AT`` that keys it; that is how a placeholder gets filled."""
+        ontology = Ontology(
+            tables=[
+                TableMapping(
+                    source="hr.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    links=[Link("WORKS_AT", to="Organization", by="org_id")],
+                ),
+                TableMapping(source="orgs.csv", label="Organization", name="org_name"),
+            ]
+        )
+        assert {m.label for m in ontology.tables} == {"Person", "Organization"}
+
+    def test_a_label_nothing_reaches_is_refused(self):
+        with pytest.raises(ValueError, match="does not say how it connects"):
+            Ontology(tables=[TableMapping(source="orgs.csv", label="Organization", name="n")])
+
+
 class TestStandalone:
     def test_standalone_with_links_is_refused(self):
         from graphrag_sdk.ingestion.mapping import MappingError

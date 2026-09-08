@@ -99,6 +99,22 @@ class TestItNeverGuessesIdentity:
         assert mapping.name is None
 
 
+class TestACodeIsNotANumber:
+    @pytest.mark.parametrize("values", [["02134", "10001", "00501"], ["0044", "0049"]])
+    async def test_zero_padded_values_stay_strings(self, values):
+        """``02134`` parses as INTEGER and comes back as ``2134``. Zip codes,
+        phone prefixes and padded account codes would lose digits silently."""
+        rows = "\n".join(f"R-{index},{value}" for index, value in enumerate(values))
+        batch = await _batch(f"row_id,code\n{rows}\n")
+        mapping, _ = natural_mapping(batch, "codes.csv")
+        assert mapping.properties["code"].type == "STRING"
+
+    async def test_a_plain_zero_is_still_a_number(self):
+        batch = await _batch("row_id,count\nR-1,0\nR-2,12\nR-3,0.5\n")
+        mapping, _ = natural_mapping(batch, "counts.csv")
+        assert mapping.properties["count"].type == "FLOAT"
+
+
 class TestTypesAreMeasuredOverTheWholeFile:
     async def test_a_late_unparseable_value_widens_the_type(self):
         """A 500-row sample would declare INTEGER and then fail on row 601.
