@@ -1,7 +1,7 @@
 <h1 align="center">GraphRAG-SDK</h1>
 <h2 align="center">The simplest, most accurate GraphRAG framework built on FalkorDB</h2>
 
-<p align="center"><b>Benchmark-leading accuracy</b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b><a href="#quick-start">5-minute setup</a></b></p>
+<p align="center"><b>Benchmark-leading accuracy</b> · <b><a href="https://docs.falkordb.com/graphrag/reducing-llm-hallucinations">Reduce LLM hallucinations</a></b> · <b>FalkorDB-fast</b> · <b>Multi-tenant</b> · <b>Graph traversal</b> · <b><a href="#quick-start">5-minute setup</a></b></p>
 
 <p align="center">
   <a href="https://pypi.org/project/graphrag-sdk/"><img src="https://img.shields.io/pypi/v/graphrag-sdk.svg?label=pypi" alt="PyPI version"></a>
@@ -17,6 +17,22 @@
 
 
 Most GraphRAG systems work in demos and break under production constraints. GraphRAG SDK was built from real deployments around a simple idea: the retrieval harness matters more than the model. The result is a modular, benchmark-leading framework with predictable cost and sensible defaults that gets you from raw documents to cited answers in under 5 minutes.
+
+It is designed to **reduce LLM hallucinations**: answers can be grounded in context retrieved from the knowledge graph, while applications inspect that context, validate generated claims, and gate generation when evidence is insufficient. `MENTIONED_IN` provenance edges trace entity mentions to their source chunks — see the [Reducing LLM Hallucinations guide](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) and the [grounded answers with abstention example](graphrag_sdk/examples/grounded_answers_with_abstention.py).
+
+---
+
+## Why GraphRAG for factual reliability?
+
+Hallucinations in RAG are usually a retrieval failure, not a model failure: the model is asked to answer from context that never contained the answer. A knowledge graph attacks that at the retrieval layer, and keeps the evidence attached to the answer.
+
+- **Relationship traversal retrieves the connected evidence vector similarity misses** — multi-hop facts rarely live in one chunk that happens to be similar to the question.
+- **Retrieved context is traceable to source chunks**; `MENTIONED_IN` edges trace entity mentions, and `return_context=True` returns the retrieval trail for application-level validation.
+- **The ontology constrains what can be extracted**, so the graph stores typed, checkable facts instead of free-form model output.
+- **Your application can abstain when evidence is insufficient** — gate generation on retrieval and return an explicit "evidence-insufficient" response ([example](graphrag_sdk/examples/grounded_answers_with_abstention.py)).
+- **Benchmark accuracy is the measurable outcome** of all of the above — see the table below.
+
+→ Full guide: [Reducing LLM hallucinations](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) · API reference: [Reliability and Grounding](https://docs.falkordb.com/graphrag/reliability-and-grounding)
 
 ---
 
@@ -46,9 +62,10 @@ Most GraphRAG systems work in demos and break under production constraints. Grap
 > at temperature 0.7 for both graph construction and generation, `text-embedding-3-large`
 > at 1024 dimensions, text-to-Cypher retrieval enabled, and the benchmark's own
 > `generation_eval.py` unmodified as the judge. Competitor numbers are from the
-> published leaderboard, unchanged. See [the benchmark page](https://docs.falkordb.com/graphrag/benchmark) for
-> per-category results, the full 15-system comparison, configuration and reproduction
-> instructions.
+> published leaderboard, unchanged. See [the GraphRAG accuracy benchmark page](https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark)
+> for the full FalkorDB vs vector RAG comparison, configuration, reproduction
+> instructions and limitations, and [the benchmark methodology page](https://docs.falkordb.com/graphrag/benchmark) for
+> per-category results and the full 15-system comparison.
 
 Vectors match similar chunks. The graph traverses relationships. Every answer cites its source.
 
@@ -207,7 +224,7 @@ guards the default.
 | Retrieval | Relationship expansion | DB |
 | Retrieval | Cosine reranking | Local |
 
-> 💡 Every answer is traceable to its source chunks via `MENTIONS` edges. Pass `return_context=True` to `completion()` to get the retrieval trail alongside the answer.
+> 💡 Retrieved context can be traced to source chunks; `MENTIONED_IN` edges connect entity mentions to chunks. Pass `return_context=True` to `completion()` so your application can inspect the retrieval trail and validate generated claims.
 
 ---
 
@@ -222,10 +239,13 @@ guards the default.
 | 3 | [Custom Strategies](graphrag_sdk/examples/03_custom_strategies.py) | Composing ingestion strategies explicitly |
 | 4 | [Custom Provider](graphrag_sdk/examples/04_custom_provider.py) | Plug in any LLM or embedder behind a clean interface |
 | 5 | [Notebook Demo](graphrag_sdk/examples/05_notebook_demo.ipynb) | An interactive walkthrough that shows the provenance trail |
+| 6 | [Markdown, Document-Aware](graphrag_sdk/examples/06_markdown_document_aware.py) | Structure-preserving Markdown ingestion with queryable heading breadcrumbs |
 | 7 | [Incremental Updates](graphrag_sdk/examples/07_incremental_updates.py) | `update`, `delete_document`, and `apply_changes` for CI-driven graph syncs |
 | 11 | [Structured Ingestion](graphrag_sdk/examples/11_structured_ingestion.py) | Declared mappings end to end, with a re-ingest that corrects a row, adds one and drops one |
-| 13 | [Documents and Tables](graphrag_sdk/examples/13_documents_and_tables.ipynb) | A notebook: a PDF, a CSV, a PDF and a CSV, then a corrected export — with a checkpoint to inspect the graph at each stage |
-| 14 | [Research Group Knowledge Base](graphrag_sdk/examples/14_research_group_knowledge_base/) | Twelve messy CSVs, six arXiv PDFs, two notes and a JSON file in one graph — with scripts that verify the graph against the CSVs, ask 18 questions and load six faulty files |
+| 8 | [Ontology Lifecycle](graphrag_sdk/examples/08_ontology_lifecycle.py) | Declare an ontology, ingest with it, and round-trip it as JSON config |
+| 9 | [Ontology Evolution](graphrag_sdk/examples/09_ontology_evolution.py) | Mutating schema evolution — rename types and atomically add attributes with LLM backfill |
+| 10 | [Ontology Discovery](graphrag_sdk/examples/10_ontology_discovery.py) | Discover an ontology from raw sources and propose extensions as new docs arrive |
+| ★ | [Grounded Answers with Abstention](graphrag_sdk/examples/grounded_answers_with_abstention.py) | Cite the retrieved context behind an answer, and abstain when the graph has no supporting evidence |
 
 ---
 
@@ -237,10 +257,13 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 |-------|-------------|
 | [Getting Started](https://docs.falkordb.com/graphrag/getting-started) | Step-by-step tutorial from install to first query |
 | [Architecture](https://docs.falkordb.com/graphrag/architecture) | Pipeline design, graph schema, retrieval strategy |
+| [Reducing LLM Hallucinations](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) | Grounded retrieval, source provenance, and abstention |
 | [Configuration](https://docs.falkordb.com/graphrag/configuration) | Connection, providers, and tuning reference |
 | [Strategies](https://docs.falkordb.com/graphrag/strategies) | All ABCs and built-in implementations |
 | [Providers](https://docs.falkordb.com/graphrag/providers) | LLM and embedder configuration guide |
+| [Reliability and Grounding](https://docs.falkordb.com/graphrag/reliability-and-grounding) | Grounding, provenance and abstention mapped to the APIs that implement them |
 | [Benchmark](https://docs.falkordb.com/graphrag/benchmark) | Methodology, results, and reproduction instructions |
+| [Accuracy Benchmark: FalkorDB vs Vector RAG](https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark) | 71.48 vs 55.39 comparison, evaluation definition, limitations, how to cite |
 | [API Reference](https://docs.falkordb.com/graphrag/api-reference) | Full API documentation |
 
 ---

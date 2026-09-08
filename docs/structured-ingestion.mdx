@@ -50,7 +50,7 @@ A record is a chunk. That is the whole trick: a row becomes retrievable and trac
 
 ### What it looks like on the graph
 
-Two sources describing one person — `employees.csv` and a board-review PDF — produce this shape. Every node and edge below is real: it is the graph `examples/13_documents_and_tables.ipynb` builds, read back from FalkorDB.
+Two sources describing one person — `employees.csv` and a board-review PDF — produce this shape. Every node and edge below is real: it was read back from FalkorDB after the two files were ingested.
 
 ```mermaid
 flowchart LR
@@ -869,12 +869,6 @@ stated once rather than two ways of choosing a path that could disagree.
 
 ---
 
-## Examples
+## Example
 
-Three, shortest first. All run against a local FalkorDB.
-
-| | |
-| --- | --- |
-| `examples/13_documents_and_tables.ipynb` | **Start here.** Two mappings in one ontology, then a document, a table, a document and a table, in that order, and finally a corrected version of the first table. It stops after each stage so the graph can be inspected: the employee export arrives before the organizations it points at, so you can watch the reference nodes get filled in rather than duplicated. |
-| `examples/11_structured_ingestion.py` | The whole path: two CSVs, a document, resolution, the declared ontology, all three classes of question, and a re-ingest that corrects a row, adds one and drops one. |
-| `examples/14_research_group_knowledge_base/` | A realistic corpus that fits the design about 80%: twelve CSVs written by different people (inconsistent keys, a bare junction table, an undeclared file), six arXiv PDFs of which two connect only through prose and one must stay an island, two notes and a JSON dump. Separate scripts build the graph, verify it against the CSVs with Cypher, ask 18 aggregate/hybrid/lookup questions and load six deliberately faulty files. Its README records what the SDK does and does not do with such data. |
+`examples/11_structured_ingestion.py` runs the whole path against a local FalkorDB: two CSVs declared on the ontology, a document, `finalize()` resolving the note's "Acme Corp" onto the CSV's row, the ontology the mappings declared, a structured question, a prose question and one that needs both halves, and a re-ingest that corrects a row, adds one and drops one.

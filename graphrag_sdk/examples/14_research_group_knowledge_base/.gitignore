@@ -1,5 +1,0 @@
-# The six arXiv PDFs are fetched by download_pdfs.py (15 MB) and not committed.
-data/docs/*.pdf
-__pycache__/
-results/
-.env

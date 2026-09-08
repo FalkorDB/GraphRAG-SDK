@@ -207,23 +207,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type re-writes the source instead of no-opping on unchanged content and leaving
   the old typing in place.
 
-- **`examples/13_documents_and_tables.ipynb`** — a notebook that loads a PDF, a
-  CSV, another PDF and another CSV into one graph, then a corrected version of
-  the first CSV. It stops at each stage with an entity and relationship count and
-  a query to paste into the FalkorDB browser, so the reference nodes created by a
-  forward pointer can be seen before the source that names them arrives. Covers
-  the declared ontology, signed properties, the join at `finalize()`, a
-  relational question and an aggregate one, and the re-sync that promotes one
-  person, removes another and adds a third.
-
-- **`examples/14_research_group_knowledge_base/`** — a reproducible, realistic
-  corpus: twelve CSVs with inconsistent keys, a junction table and an undeclared
-  file, six arXiv PDFs (two connected only by prose, one unrelated), two notes
-  and a JSON dump. `ingest.py` builds the graph, `verify.py` checks 29
-  CSV-derived expectations with Cypher, `ask.py` runs 18 questions and prints
-  which sources each answer used, `dirty_files.py` loads six single-fault files.
-  The README lists the limitations the corpus exposes.
-
 - See `examples/11_structured_ingestion.py` and the
   [Structured Ingestion](https://docs.falkordb.com/graphrag/structured-ingestion)
   docs page.
