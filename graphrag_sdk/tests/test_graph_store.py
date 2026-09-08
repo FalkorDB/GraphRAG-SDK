@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,6 +28,7 @@ def upsert_calls(mock_connection):
         c for c in mock_connection.query.call_args_list
         if "CREATE INDEX" not in c[0][0]
     ]
+import re
 
 
 class TestGraphStoreUpsertNodes:
@@ -100,7 +100,6 @@ class TestGraphStoreUpsertNodes:
         assert fallback_params["id"] == "id"
         assert fallback_params["properties"]["t"] == "AB"
 
-
 class TestGraphStoreUpsertRelationships:
     async def test_upsert_relationship(self, graph_store, mock_connection):
         rels = [
@@ -167,7 +166,6 @@ class TestGraphStoreUpsertRelationships:
         result = await graph_store.upsert_relationships(rels)
         assert result == 1  # only R2 batch succeeded
 
-
 class TestGraphStoreGetConnectedEntities:
     async def test_get_entities(self, graph_store, mock_connection):
         result_mock = MagicMock()
@@ -201,7 +199,6 @@ class TestGraphStoreGetConnectedEntities:
         cypher = mock_connection.query.call_args[0][0]
         assert "*1..3" in cypher
 
-
 class TestGraphStoreQueryRaw:
     async def test_raw_query(self, graph_store, mock_connection):
         await graph_store.query_raw("MATCH (n) RETURN n LIMIT 10")
@@ -210,7 +207,6 @@ class TestGraphStoreQueryRaw:
     async def test_raw_query_with_params(self, graph_store, mock_connection):
         await graph_store.query_raw("MATCH (n {id: $id})", {"id": "test"})
         mock_connection.query.assert_called_once_with("MATCH (n {id: $id})", {"id": "test"})
-
 
 class TestGraphStoreDeleteAll:
     async def test_delete_all(self, graph_store, mock_connection):
@@ -224,7 +220,6 @@ class TestGraphStoreDeleteAll:
         await graph_store.delete_all()
         cypher = mock_connection.query.call_args[0][0]
         assert "DETACH DELETE" in cypher
-
 
 class TestCleanProperties:
     def test_removes_none(self):
@@ -255,7 +250,6 @@ class TestCleanProperties:
 
     def test_empty_dict(self):
         assert GraphStore._clean_properties({}) == {}
-
 
 class TestRelationshipLabelHints:
     async def test_known_rel_type_uses_label_hints(self, graph_store, mock_connection):
@@ -301,7 +295,6 @@ class TestRelationshipLabelHints:
         cypher = mock_connection.query.call_args[0][0]
         assert "`__Entity__`" in cypher
         assert "`Chunk`" in cypher
-
 
 class TestGraphStoreDocumentLifecycle:
     """v1.1.0: Cypher-layer methods used by GraphRAG.update() / delete_document()."""
@@ -611,7 +604,6 @@ class TestGraphStoreDocumentLifecycle:
         assert n == 6
         assert mock_connection.query.await_count == 3
 
-
 class TestGraphStoreIdIndex:
     """Bug #9 — range index on ``id`` for every label we MERGE/MATCH by id.
 
@@ -684,6 +676,9 @@ class TestGraphStoreIdIndex:
         mock_connection.query = AsyncMock(side_effect=side_effect)
         result = await graph_store.upsert_nodes(
             [GraphNode(id="n1", label="Person", properties={})]
+        )
+        assert result == 1
+
 class TestMergedLabelsBecomeRealLabels:
     """Labels absorbed during resolution must be queryable as Cypher labels.
 
