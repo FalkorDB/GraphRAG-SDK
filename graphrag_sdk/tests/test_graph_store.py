@@ -6,10 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import GraphNode, GraphRelationship
-from graphrag_sdk.storage.graph_store import GraphStore
+from graphrag_sdk.storage.graph_store import GraphStore, ReferenceNode
 
 
 @pytest.fixture
@@ -105,6 +104,146 @@ class TestGraphStoreUpsertNodes:
         fallback_params = fallback[0][0][1]
         assert fallback_params["id"] == "id"
         assert fallback_params["properties"]["t"] == "AB"
+
+
+class TestUpsertNodesKeepsProvenance:
+    """Entity-level ``source_chunk_ids`` is a union across writes, never a replace.
+
+    Two documents mentioning one entity both leave their chunks on it; the
+    ``MENTIONED_IN`` edges already said so and the property must agree.
+    """
+
+    async def test_an_entity_write_unions_source_chunk_ids(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="acme", label="Organization", properties={"source_chunk_ids": ["c2"]})]
+        )
+        cypher = _upsert_queries(mock_connection)[0][0][0]
+        assert "coalesce(n.source_chunk_ids, []) AS old" in cypher
+        assert "SET n += item.properties" in cypher
+        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in cypher
+        assert "old + [c IN contrib WHERE NOT c IN old]" in cypher
+        assert cypher.index("SET n += item.properties") < cypher.index("n.source_chunk_ids = CASE")
+
+    async def test_a_structural_write_replaces_as_before(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c1", label="Chunk", properties={"source_chunk_ids": ["c1"]})]
+        )
+        cypher = _upsert_queries(mock_connection)[0][0][0]
+        assert "SET n += item.properties" in cypher
+        assert "source_chunk_ids = CASE" not in cypher
+
+    async def test_the_per_item_fallback_unions_too(self, graph_store, mock_connection):
+        async def fail_the_batch(cypher, params=None):
+            if "UNWIND" in cypher:
+                raise Exception("batch fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_the_batch)
+        await graph_store.upsert_nodes(
+            [GraphNode(id="acme", label="Organization", properties={"name": "Acme"})]
+        )
+        fallback = [
+            call[0][0]
+            for call in mock_connection.query.call_args_list
+            if "UNWIND" not in call[0][0] and "CREATE INDEX" not in call[0][0]
+        ]
+        assert len(fallback) == 1
+        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in fallback[0]
+
+
+class TestUpsertReferenceNodes:
+    """A link's target is keyed always and named only ON CREATE."""
+
+    REFERENCE = ReferenceNode(
+        "acme",
+        "Organization",
+        "Acme",
+        {
+            "employees__org_id": "O1",
+            "entity_key": "O1",
+            "is_stub": True,
+            "source_chunk_ids": ["rows"],
+        },
+    )
+
+    async def test_an_existing_node_gets_the_key_and_keeps_its_name(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.upsert_reference_nodes([self.REFERENCE])
+        cypher, params = mock_connection.query.call_args[0]
+        assert "ON CREATE SET n += item.properties" in cypher
+        assert "ON MATCH SET n += item.claims" in cypher
+        assert "n.entity_key = coalesce(n.entity_key, item.properties.entity_key)" in cypher
+        assert "n.is_stub = coalesce(n.is_stub, true)" in cypher
+        item = params["batch"][0]
+        assert item["name"] == "Acme"
+        assert item["claims"] == {"employees__org_id": "O1"}, (
+            "the one claim a reference may add to an existing node is its signed key: never"
+            " the name, not the unsigned identity it gets via coalesce, and not provenance,"
+            " which is unioned like every other write's"
+        )
+        assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in cypher
+
+    async def test_empty_input_writes_nothing(self, graph_store, mock_connection):
+        assert await graph_store.upsert_reference_nodes([]) == 0
+        mock_connection.query.assert_not_called()
+
+
+class TestStripStaleProvenance:
+    async def test_removes_the_deleted_chunks_from_the_candidates(
+        self, graph_store, mock_connection
+    ):
+        result_mock = MagicMock()
+        result_mock.result_set = [[3]]
+        mock_connection.query = AsyncMock(return_value=result_mock)
+
+        trimmed = await graph_store.strip_stale_provenance(["e1", "e2"], ["c1", "c2"])
+
+        assert trimmed == 3
+        cypher, params = mock_connection.query.call_args[0]
+        assert "UNWIND $ids AS eid" in cypher
+        assert "any(c IN e.source_chunk_ids WHERE c IN $old_chunks)" in cypher
+        assert (
+            "SET e.source_chunk_ids = [c IN e.source_chunk_ids WHERE NOT c IN $old_chunks]"
+        ) in cypher
+        assert params["ids"] == ["e1", "e2"]
+        assert params["old_chunks"] == ["c1", "c2"]
+
+    async def test_nothing_to_do_is_no_query(self, graph_store, mock_connection):
+        assert await graph_store.strip_stale_provenance([], ["c1"]) == 0
+        assert await graph_store.strip_stale_provenance(["e1"], []) == 0
+        mock_connection.query.assert_not_called()
+
+
+class TestReleaseEntityKeys:
+    async def test_identity_goes_unless_another_table_still_keys_the_node(
+        self, graph_store, mock_connection
+    ):
+        removed, demoted = MagicMock(result_set=[[2]]), MagicMock(result_set=[[1]])
+        mock_connection.query = AsyncMock(side_effect=[removed, demoted])
+
+        released = await graph_store.release_entity_keys(
+            "Organization", owned_by=["orgs__org_id"], referenced_by=["grants__org_id"]
+        )
+
+        assert released == 3
+        remove, demote = [call[0][0] for call in mock_connection.query.call_args_list]
+        assert "n.entity_key IS NOT NULL" in remove
+        assert "n.`orgs__org_id` IS NULL AND n.`grants__org_id` IS NULL" in remove
+        assert "REMOVE n.entity_key, n.is_stub" in remove
+        assert "n.is_stub = false" in demote
+        assert "n.`orgs__org_id` IS NULL" in demote
+        assert "grants__org_id" not in demote, "a link elsewhere does not keep a node a row"
+        assert "SET n.is_stub = true" in demote
+
+    async def test_no_other_table_means_every_keyed_node_is_released(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.release_entity_keys("Organization", owned_by=[], referenced_by=[])
+        remove, demote = [call[0][0] for call in mock_connection.query.call_args_list]
+        assert "REMOVE n.entity_key, n.is_stub" in remove
+        assert " AND n." not in remove.split("WHERE", 1)[1].split("REMOVE")[0]
+        assert "SET n.is_stub = true" in demote
 
 
 class TestGraphStoreUpsertRelationships:

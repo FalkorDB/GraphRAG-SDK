@@ -230,7 +230,7 @@ Link("WORKS_AT", to="Organization", by="org_id",
 | `name`      | The display name column — what a person, and a document, calls this thing. It is what joins a row to a mention in prose (see [Bridging](#bridging-the-two-halves)), and, unless `key` is given, it is also the row's identity. |
 | `key`       | **Optional.** The column that identifies the row when that is *not* the name. Defaults to `name`, and for most tables that is right: the node id is then exactly what prose extraction computes for the same name, so the two halves share an id outright. Declare a separate key when names can repeat (two John Smiths), when a name can change while the row persists (a rename), or when other tables `Link` into this one by an id column rather than by name. Must be unique per row either way: see below. |
 | `properties`| `{property_name: Column}`, or a bare string for `STRING`. Declared types are enforced at ingest, so a bad cell fails the ingest instead of writing a wrong type. |
-| `links`     | Columns that point at other entities. Each becomes a reference node plus an edge, written **ON CREATE only**, so a pointer can never overwrite real data. That is what makes the order of two files irrelevant. Two links to the same label are kept apart automatically. |
+| `links`     | Columns that point at other entities. Each becomes a reference node plus an edge. A pointer creates the target if it is missing and only **adds its key** if it is there, so it can never overwrite real data. That is what makes the order of two files irrelevant. Two links to the same label are kept apart automatically. |
 | `standalone`| Says out loud that a new label genuinely relates to nothing, so an unconnected island is something you declared rather than something a typo produced. Only meaningful when the label is new and there are no links. |
 
 Column types: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`.
@@ -350,8 +350,8 @@ the file said, with nothing in the result to tell the two apart.
 
 A row in `employees.csv` says the organization exists and gives its key. It does not know the organization's name or headcount, and a `Link` writes that honestly:
 
-- The target is created **ON CREATE only** — a pointer never overwrites what the owning source supplied.
-- It carries its key, so it is joinable by the same column the mapping declared.
+- The target is created if it is missing; if it is there already — a row of another table, or an entity a document mentioned — the pointer adds only its key. It never overwrites what the owning source supplied.
+- It carries its key, so it is joinable by the same column the mapping declared, whichever source created the node.
 - It is flagged `is_stub: true` until the source that owns the entity arrives and fills it in.
 - The edge is a `RELATES` edge carrying the link's `type` as its `rel_type`, which is how every data edge is stored.
 - The edge's own declared properties are signed with the declaring source, with no exemptions at all — `since` on `WORKS_AT` from `employees.csv` is `employees__since`.

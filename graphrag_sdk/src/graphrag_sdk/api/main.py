@@ -1016,7 +1016,10 @@ class GraphRAG:
            which also removes any entity that only those rows mentioned;
         2. every property the table signed on entities that survive — an
            ``Organization`` a document also mentions keeps its name and prose
-           facts and loses ``orgs__hq_country``;
+           facts and loses ``orgs__hq_country`` and ``orgs__org_id`` — and the
+           identity it gave them: ``entity_key`` and ``is_stub`` go unless
+           another table still keys the node, in which case it is that table's
+           row, or that table's placeholder, as if this one had never arrived;
         3. the stored mapping, so the next ``ingest()`` of that filename proposes
            afresh rather than reusing the old reading.
 
@@ -1053,17 +1056,39 @@ class GraphRAG:
         for property_name in sorted(mapping.signed_name(p) for p in mapping.typed_properties):
             touched += await self._graph_store.drop_node_property(mapping.label, property_name)
             await self._ontology_store.drop_entity_property(mapping.label, property_name)
+        # The key columns the table signed, on its own label and on every label
+        # its links point at, then the unsigned identity those keys justified.
+        # Which other tables still key each label decides what ``entity_key``
+        # and ``is_stub`` become; the write path's own reading of each mapping
+        # is what says which signed property is whose.
+        own = record_mapping_for(mapping)
+        others = [
+            record_mapping_for(other)
+            for other in self._global_ontology.tables
+            if other.source != mapping.source
+        ]
+        released = 0
+        for node in own.nodes:
+            key_property = node.signed(node.key_property)
+            touched += await self._graph_store.drop_node_property(node.label, key_property)
+            await self._ontology_store.drop_entity_property(node.label, key_property)
+            peers = [n for other in others for n in other.nodes if n.label == node.label]
+            released += await self._graph_store.release_entity_keys(
+                node.label,
+                owned_by=[n.signed(n.key_property) for n in peers if not n.reference],
+                referenced_by=[n.signed(n.key_property) for n in peers if n.reference],
+            )
         await self._ontology_store.drop_table_mapping(mapping.source)
         self._natural_mappings.pop(wanted, None)
         self._mapping_changes.discard(mapping.source)
         logger.info(
             "drop_table %s: %d record chunk(s) and %d orphaned entit(y/ies) deleted, "
-            "signed properties removed from %d %s node(s)",
+            "signed properties removed from %d node(s), identity released on %d",
             wanted,
             deleted.chunks_deleted,
             deleted.entities_deleted,
             touched,
-            mapping.label,
+            released,
         )
         return await self._refresh_global_ontology()
 
@@ -2556,9 +2581,11 @@ class GraphRAG:
         Steps (all idempotent):
           1. ``delete_stale_relationships`` — drop RELATES facts whose
              only chunk-provenance was the cutover-deleted chunks.
-          2. ``delete_orphan_entities`` — drop entity nodes whose
+          2. ``strip_stale_provenance`` — take the deleted chunks' ids off
+             the surviving entities' ``source_chunk_ids``.
+          3. ``delete_orphan_entities`` — drop entity nodes whose
              MENTIONED_IN went to zero after cutover.
-          3. ``clear_cleanup_state`` — remove the recovery-state
+          4. ``clear_cleanup_state`` — remove the recovery-state
              properties so future Phase-0 calls don't reprocess.
 
         Returns ``(stale_relates_deleted, orphan_entities_deleted)``.
@@ -2577,12 +2604,14 @@ class GraphRAG:
         stale_deleted = await self._graph_store.delete_stale_relationships(
             candidate_ids, old_chunk_ids
         )
+        trimmed = await self._graph_store.strip_stale_provenance(candidate_ids, old_chunk_ids)
         orphans_deleted = await self._graph_store.delete_orphan_entities(candidate_ids)
         await self._graph_store.clear_cleanup_state(document_id)
-        if stale_deleted or orphans_deleted:
+        if stale_deleted or trimmed or orphans_deleted:
             ctx.log(
                 f"post-cutover cleanup: {document_id} — "
                 f"removed {stale_deleted} stale RELATES, "
+                f"trimmed provenance on {trimmed} entities, "
                 f"{orphans_deleted} orphan entities"
             )
         return (stale_deleted, orphans_deleted)

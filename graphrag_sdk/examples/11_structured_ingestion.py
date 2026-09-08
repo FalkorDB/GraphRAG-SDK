@@ -112,9 +112,9 @@ ORGS = TableMapping(
 #   name   the display name. A table carrying both key and name also publishes
 #          the id an extractor would compute for the same thing, which is what
 #          lets this node and a node from prose become one.
-#   links  a column pointing at another entity. The target is written ON CREATE
-#          only, so a pointer can never overwrite the name orgs.csv supplied,
-#          and the two files can arrive in either order.
+#   links  a column pointing at another entity. The target is named only when
+#          the pointer creates it, so it can never overwrite the name orgs.csv
+#          supplied, and the two files can arrive in either order.
 EMPLOYEES = TableMapping(
     source="employees.csv",
     label="Person",

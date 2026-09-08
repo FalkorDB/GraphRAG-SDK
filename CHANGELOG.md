@@ -113,9 +113,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a paragraph is. Records are deliberately not chained with `NEXT_CHUNK`: rows
   have no reading order.
 
-- **A link's target is written ON CREATE only,** carrying its key so it is
-  joinable and flagged `is_stub` until the source that owns the entity arrives.
-  Order between sources does not matter.
+- **A link's target is keyed, never named.** A pointer creates the target if
+  it is missing — carrying its key so it is joinable and flagged `is_stub` until
+  the source that owns the entity arrives — and adds only its key to a node that
+  already exists, whether that node is another table's row or an entity a
+  document mentioned. Order between sources does not matter.
 
 - **Documents and tables land on one node.** `finalize()` groups entities by
   `(display name, label)` and merges each group, carrying the typed columns onto
@@ -227,6 +229,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs page.
 
 ### Fixed
+
+- **A foreign key now lands on a node that already exists.** A link's target was
+  written `ON CREATE` only, so an `Organization` a document had mentioned before
+  `employees.csv` arrived never received `entity_key`, `is_stub` or the signed
+  `employees__org_id`: every row pointing at it was joined by edge, but the node
+  itself was not findable by key and the next table keyed on the same column
+  raised a duplicate. Measured on one corpus of eleven documents and four tables,
+  22 of the link targets that had a prose mention were in that state. A reference
+  now adds its key claims to an existing node and still never touches its name,
+  description or any property another source supplied.
+
+- **Provenance on a shared node is a union, not the last writer.** The
+  entity-level `source_chunk_ids` list was overwritten by each ingest and by each
+  resolver merge, so an entity mentioned in two documents remembered only the
+  second — 34 of 34 such entities in the same corpus. The `MENTIONED_IN` edges
+  were always right; the property now agrees with them: each write appends the
+  chunks it does not have, a merge keeps both nodes' chunks, and `update()` or
+  `delete_document()` removes the chunks it deleted from every entity the
+  document had touched.
+
+- **`drop_table()` takes the identity it gave.** Dropping a table removed its
+  typed properties but left the signed key column, `entity_key` and `is_stub` on
+  every node the table had created or keyed, so a node that survived because a
+  document mentioned it still looked like a row of a table that no longer
+  existed, and the key column stayed in the ontology. The key column now goes
+  from the graph and the ontology on every label the table wrote, and
+  `entity_key` and `is_stub` are released unless another table still keys the
+  node — in which case the node becomes that table's row, or that table's
+  placeholder, exactly as if the dropped table had never arrived.
 
 - **A table no longer rewrites what a label means.** The ontology fragment a
   mapping contributes describes a label it did not create only by what the table

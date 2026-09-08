@@ -59,9 +59,10 @@ class NodeMapping:
             thing land on one node with no merge step. The key is kept beside it
             as ``entity_key`` for links and re-sync.
         reference: ``True`` when the record only points at the entity by id and
-            does not describe it, as a foreign key does. Reference nodes are
-            written ON CREATE only, so they can never overwrite a name or a
-            property that a dimension source supplied.
+            does not describe it, as a foreign key does. A reference writes its
+            key and nothing else onto a node that already exists, so it can
+            never overwrite a name or a property that a dimension source
+            supplied.
         alias: A handle unique within the record, so one record can carry two
             entities of the same label. Edges address aliases, never labels.
             Defaults to ``label``.

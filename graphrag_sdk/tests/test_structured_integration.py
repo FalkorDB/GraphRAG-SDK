@@ -459,6 +459,123 @@ class TestTheTwoHalvesBecomeOneGraph:
         assert rows[0][1] == 34, "and the table's typed column must survive it too"
 
 
+class TestASharedNodeKeepsWhatEachSourceGave:
+    """One node, two writers. What the second one adds must not cost the first.
+
+    The three faults these pin were found by a loss audit of a mixed corpus: a
+    pointer that never keyed a node a document had created, a provenance list
+    that remembered only the last document, and a dropped table that left its
+    identity behind. Each is a store-level rule, so each is pinned against the
+    real store.
+    """
+
+    # The link denormalises the target's name, so the pointer's id is the
+    # name's — the same id a document's mention of "Acme Corp" derives.
+    EMPLOYEES_NAMING_THEIR_ORG = TableMapping(
+        source="employees.csv",
+        label="Person",
+        key="employee_id",
+        name="full_name",
+        properties={"age": Column("age", "INTEGER")},
+        links=[Link("WORKS_AT", to="Organization", by="org_id", name="org_name")],
+    )
+
+    @pytest.fixture
+    def employees_naming_their_org_csv(self, tmp_path):
+        path = tmp_path / "employees.csv"
+        path.write_text(
+            "employee_id,full_name,age,org_id,org_name\n"
+            "E-1,Alice Smith,34,ORG-42,Acme Corp\n"
+            "E-2,Bob Jones,45,ORG-42,Acme Corp\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    async def test_a_pointer_keys_the_entity_a_document_mentioned_first(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, employees_naming_their_org_csv
+    ):
+        """The note creates Acme Corp; employees.csv then points at it as ORG-42.
+
+        Written ON CREATE only, the pointer found the node and left it exactly as
+        the note had it: no ``entity_key``, no signed key, so nothing joinable and
+        the next table keyed on ORG-42 would raise a placeholder beside it. The
+        node must come out keyed, flagged as not yet owned, and otherwise as the
+        note wrote it.
+        """
+        llm = scripted_llm([("Acme Corp", "Organization", "Reported a revenue miss")])
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=_ontology(self.EMPLOYEES_NAMING_THEIR_ORG)
+        )
+        await rag.ingest(
+            text="Acme Corp reported a Q3 revenue miss.",
+            document_id="board_note.txt",
+            resolver=resolver,
+        )
+        await rag.ingest(employees_naming_their_org_csv)
+
+        rows = await _rows(
+            rag,
+            "MATCH (o:Organization) RETURN o.name, o.description, o.entity_key, o.is_stub, "
+            "o.employees__org_id ORDER BY o.name",
+        )
+        assert rows == [["Acme Corp", "Reported a revenue miss", "ORG-42", True, "ORG-42"]], (
+            "one node: the note's name and description, the pointer's key on top"
+        )
+        # Keyed means the row's edge landed on the same node the note created.
+        via = await _rows(
+            rag,
+            "MATCH (p:Person)-[r:RELATES {rel_type:'WORKS_AT'}]->"
+            "(o:Organization {entity_key:'ORG-42'}) RETURN p.name ORDER BY p.name",
+        )
+        assert [r[0] for r in via] == ["Alice Smith", "Bob Jones"]
+        await rag.close()
+
+    async def test_the_second_document_adds_its_chunks_instead_of_replacing_the_first(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, employees_csv
+    ):
+        """Two notes mention the row's Alice. ``source_chunk_ids`` must name both;
+        deleting one note must take only that note's chunk back out."""
+        llm = scripted_llm(
+            [("Alice Smith", "Person", "Presented the plan")],
+            [("Alice Smith", "Person", "Was promoted")],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(EMPLOYEES))
+        await rag.ingest(employees_csv)
+        await rag.ingest(
+            text="Alice Smith presented the plan.", document_id="note1.txt", resolver=resolver
+        )
+        await rag.ingest(
+            text="Alice Smith was promoted.", document_id="note2.txt", resolver=resolver
+        )
+
+        async def provenance():
+            rows = await _rows(
+                rag,
+                "MATCH (p:Person {name:'Alice Smith'}) "
+                "OPTIONAL MATCH (p)-[:MENTIONED_IN]->(c:Chunk)<-[:PART_OF]-(d:Document) "
+                "WHERE NOT d.id ENDS WITH '.csv' "
+                "RETURN p.employees__age, p.source_chunk_ids, collect(c.id), collect(d.id)",
+            )
+            assert len(rows) == 1, "the row and both notes are one node"
+            age, listed, mentioned, docs = rows[0]
+            return age, sorted(listed or []), sorted(mentioned), sorted(docs)
+
+        age, listed, mentioned, docs = await provenance()
+        assert age == 34
+        assert docs == ["note1.txt", "note2.txt"]
+        assert listed == mentioned, "the property must agree with the MENTIONED_IN edges"
+        assert len(listed) == 2
+
+        await rag.delete_document("note2.txt")
+
+        age, listed, mentioned, docs = await provenance()
+        assert age == 34
+        assert docs == ["note1.txt"]
+        assert listed == mentioned, "note2's chunk is gone from the list, note1's is not"
+        assert len(listed) == 1
+        await rag.close()
+
+
 class TestReSyncingAStructuredSource:
     """A table is a snapshot, so the graph has to follow it downwards too.
 

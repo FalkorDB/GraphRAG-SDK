@@ -296,7 +296,8 @@ class Link:
         properties: Optional columns written onto the edge itself, e.g. the date
             an employment started.
 
-    The target is written **ON CREATE only**. This row says the organization
+    The target is created if it is missing and **keyed, never named** if it is
+    there already. This row says the organization
     exists and gives its key; it does not claim to describe it, so it can never
     overwrite what the source that owns the organization supplied. That is what
     makes the order of two files irrelevant.

@@ -34,7 +34,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.storage.deduplicator import _clusters
+from graphrag_sdk.storage.deduplicator import _clusters, union_chunk_ids
 
 from .conftest import MockLLM
 
@@ -595,3 +595,14 @@ class TestClusters:
     def test_a_cycle_terminates(self):
         by_id = {"a": {"id": "a", "label": "X"}, "b": {"id": "b", "label": "X"}}
         assert len(_clusters({"a": "b", "b": "a"}, by_id)) <= 1
+
+
+class TestUnionChunkIds:
+    def test_keeps_order_and_adds_only_what_is_missing(self):
+        assert union_chunk_ids(["c1", "c2"], ["c2", "c3", "c1"]) == ["c1", "c2", "c3"]
+
+    def test_anything_that_is_not_a_list_of_strings_counts_as_empty(self):
+        assert union_chunk_ids(None, ["c1"]) == ["c1"]
+        assert union_chunk_ids(["c1"], "c2") == ["c1"]
+        assert union_chunk_ids(["c1", 7, None], [3]) == ["c1"]
+        assert union_chunk_ids(None, None) == []

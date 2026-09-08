@@ -652,10 +652,17 @@ class TestATableNobodyDeclaredGetsAProposedMapping:
 
         assert ontology_after.tables == []
         assert (await rag.query("MATCH (d:Document) RETURN d.id")) == [["note.txt"]]
-        people_left = await rag.query("MATCH (p:Person) RETURN p.name, p.employees__age")
-        assert people_left == [["Maya Ellison", None]], "kept by the note, minus the table's value"
+        people_left = await rag.query(
+            "MATCH (p:Person) RETURN p.name, p.employees__age, p.employees__employee_id, "
+            "p.entity_key, p.is_stub"
+        )
+        assert people_left == [["Maya Ellison", None, None, None, None]], (
+            "kept by the note, minus the table's value, its key and the identity it gave her"
+        )
         person = next(e for e in ontology_after.entities if e.label == "Person")
-        assert "employees__age" not in {prop.name for prop in person.properties}
+        declared = {prop.name for prop in person.properties}
+        assert "employees__age" not in declared
+        assert "employees__employee_id" not in declared, "the key column leaves with the table"
         with pytest.raises(ValueError, match="No table named 'employees.csv'"):
             await rag.drop_table("employees.csv")
         await rag.close()

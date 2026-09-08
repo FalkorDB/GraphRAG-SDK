@@ -146,8 +146,8 @@ def _ambiguous_names(batch: RecordBatch, mapping: RecordMapping) -> set[tuple[st
 def _unique_references(references: list[ReferenceNode]) -> list[ReferenceNode]:
     """First occurrence of each referenced id, in order.
 
-    Order matters: a reference is written ON CREATE, so the first entry is the one
-    whose name and key land on a node that does not exist yet.
+    Order matters: a reference names a node only ON CREATE, so the first entry is
+    the one whose name lands on a node that does not exist yet.
     """
     seen: set[str] = set()
     unique: list[ReferenceNode] = []
@@ -395,7 +395,8 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
     2. **Validate** — check the mapping against the source's real header
     3. **Lexical graph** — a Document, and one Chunk per record
     4. **Map** — declared columns become typed entity nodes and RELATES edges
-    5. **Write** — entities, then references ON CREATE, then edges
+    5. **Write** — entities, then references (keyed always, named ON CREATE),
+       then edges
 
     The same input always produces the same graph, because identity comes from a
     declared key and every property type is declared rather than inferred.
@@ -513,7 +514,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         await self.graph_store.upsert_nodes(nodes)
         # One entry per row arrives here, but a foreign key repeats: 25k rows
         # pointing at 50 organizations produced 25k MERGEs for 50 nodes. They are
-        # ON CREATE only, so every repeat after the first is pure waste.
+        # idempotent, so every repeat after the first is pure waste.
         await self.graph_store.upsert_reference_nodes(_unique_references(references))
         await self.graph_store.upsert_relationships(edges)
 

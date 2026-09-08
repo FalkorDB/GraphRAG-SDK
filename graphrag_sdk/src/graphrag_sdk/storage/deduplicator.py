@@ -105,6 +105,18 @@ _REMAP_QUERIES = [
 ]
 
 
+def union_chunk_ids(existing: Any, incoming: Any) -> list[str]:
+    """``existing`` followed by every id in ``incoming`` it lacks, order kept.
+
+    The Python side of the union the RELATES queries above do in Cypher, for
+    the places that read both nodes' properties before writing — a merge's
+    property carry. Anything that is not a list of strings counts as empty.
+    """
+    old = [c for c in existing if isinstance(c, str)] if isinstance(existing, list) else []
+    new = [c for c in incoming if isinstance(c, str)] if isinstance(incoming, list) else []
+    return old + [c for c in new if c not in old]
+
+
 def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> list[dict]:
     """Drop candidates a mapping already said are a *different* thing.
 
@@ -916,7 +928,10 @@ class EntityDeduplicator:
         typed value a structured source supplied.
 
         keep_existing: a value already on the survivor always wins, so a merge
-        can never overwrite what the survivor knew.
+        can never overwrite what the survivor knew. ``source_chunk_ids`` is the
+        exception that follows from the same rule: the survivor was mentioned
+        wherever either node was, so it gets the union, as its remapped
+        ``MENTIONED_IN`` edges already say.
         """
         try:
             res = await self._graph.query_raw(
@@ -937,6 +952,11 @@ class EntityDeduplicator:
             and value is not None
             and keep_props.get(key) in (None, "", [])
         }
+        provenance = union_chunk_ids(
+            keep_props.get("source_chunk_ids"), dup_props.get("source_chunk_ids")
+        )
+        if provenance and provenance != keep_props.get("source_chunk_ids"):
+            carry["source_chunk_ids"] = provenance
         if not carry:
             return 0
         try:
