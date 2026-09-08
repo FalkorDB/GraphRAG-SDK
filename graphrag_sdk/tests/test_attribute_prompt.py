@@ -117,7 +117,8 @@ class TestStructuredAttributesStayWithTheirTable:
         # extractable declarations, so a stray structured key is dropped.
         from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import _prose_extractable
 
-        declared = {p.name: p for p in self._schema().entities[0].properties if _prose_extractable(p)}
+        properties = self._schema().entities[0].properties
+        declared = {p.name: p for p in properties if _prose_extractable(p)}
         out = _coerce_attributes({"employees__age": 35, "age": 35}, declared)
         assert out == {"age": 35}
 

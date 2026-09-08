@@ -500,7 +500,7 @@ class NearPairEmbedder(Embedder):
     def embed_query(self, text: str, **kwargs) -> list[float]:
         vector = [0.0] * 16
         if text in self.close:
-            vector[0], vector[1] = ((1.0, 0.0) if text == self.close[0] else (0.9, 0.436))
+            vector[0], vector[1] = (1.0, 0.0) if text == self.close[0] else (0.9, 0.436)
         else:
             vector[2 + self.seen.setdefault(text, len(self.seen)) % 14] = 1.0
         return vector
@@ -516,9 +516,7 @@ class TestTheBetterConnectedProseNodeKeepsItsName:
     Cypher's ``WHERE c.name CONTAINS 'Austria'`` found nothing afterwards.
     """
 
-    async def test_the_hub_survives_and_the_citation_folds_into_it(
-        self, real_falkordb_rag_factory
-    ):
+    async def test_the_hub_survives_and_the_citation_folds_into_it(self, real_falkordb_rag_factory):
         llm = MockLLM(["YES — Republik Österreich is Austria's official name"], strict=True)
         rag = real_falkordb_rag_factory(
             llm=llm,
