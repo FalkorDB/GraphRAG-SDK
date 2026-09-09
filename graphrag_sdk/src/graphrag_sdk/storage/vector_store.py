@@ -181,7 +181,7 @@ class VectorStore:
 
     # ── Indexing ─────────────────────────────────────────────────
 
-    async def index_chunks(self, chunks: TextChunks) -> int:
+    async def index_chunks(self, chunks: TextChunks) -> int | None:
         """Embed and store vectors for all chunks.
 
         Uses batch embedding (``aembed_documents``) for efficiency,
@@ -191,11 +191,16 @@ class VectorStore:
             chunks: TextChunks collection to embed and index.
 
         Returns:
-            Number of chunks indexed.
+            Number of chunks indexed, or ``None`` when no embedder is
+            configured and indexing was not attempted. ``0`` means every
+            embedding was attempted and failed; the ingestion pipeline
+            treats that as an incomplete write and withholds the
+            Document's ``content_hash``, whereas ``None`` (nothing to do)
+            leaves the run complete.
         """
         if not self._embedder:
             logger.warning("No embedder configured — skipping chunk indexing")
-            return 0
+            return None
 
         if not chunks.chunks:
             return 0

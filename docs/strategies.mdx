@@ -133,7 +133,7 @@ Splits at sentence boundaries (never mid-sentence) and enforces a hard token cap
 from graphrag_sdk.ingestion.chunking_strategies.sentence_token_cap import SentenceTokenCapChunking
 
 chunker = SentenceTokenCapChunking(
-    max_tokens=512,         # max tokens per chunk (default: 512)
+    max_tokens=384,         # max tokens per chunk (default: 384)
     overlap_sentences=2,    # sentences shared between chunks (default: 2)
     encoding_name="cl100k_base",  # tiktoken encoding (default: cl100k_base)
 )
@@ -148,7 +148,7 @@ from graphrag_sdk.ingestion.chunking_strategies.contextual_chunking import Conte
 
 chunker = ContextualChunking(
     llm=my_llm,
-    max_tokens=512,              # token cap per chunk (default: 512)
+    max_tokens=384,              # token cap per chunk (default: 384)
     overlap_sentences=2,         # sentence overlap (default: 2)
     max_document_tokens=16_000,  # truncation limit for the doc reference in prompts (default: 16000)
 )
@@ -177,7 +177,7 @@ Groups content by heading hierarchy into token-bounded chunks. Each chunk stores
 from graphrag_sdk.ingestion.chunking_strategies.structural_chunking import StructuralChunking
 
 chunker = StructuralChunking(
-    max_tokens=512,  # max tokens per chunk (default: 512)
+    max_tokens=384,  # max tokens per chunk (default: 384)
     overlap_sentences=2,  # sentences shared between chunks (default: 2)
 )
 ```

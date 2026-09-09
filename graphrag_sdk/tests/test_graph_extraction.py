@@ -1085,7 +1085,203 @@ class TestFailedChunkReporting:
         result = await strategy.extract(chunks, Ontology(), ctx)
         assert len(result.nodes) > 0
         assert result.chunks_attempted == 1
+        assert result.chunks_skipped == 0
         assert result.failed_chunks == []
+        assert result.relation_failed_chunks == []
+        assert result.extraction_failed is False
+
+
+class _FlakyBatchLLM(MockLLM):
+    """MockLLM whose ``abatch_invoke`` fails (or returns nothing) for chosen
+    prompt indices, the way a timed-out provider call surfaces through
+    ``LLMBatchItem``."""
+
+    def __init__(self, response: str, *, fail: tuple[int, ...] = (), none: tuple[int, ...] = ()):
+        super().__init__(responses=[response])
+        self._fail = set(fail)
+        self._none = set(none)
+
+    async def abatch_invoke(self, prompts, **kwargs):
+        from graphrag_sdk.core.providers.base import LLMBatchItem
+
+        items = []
+        for i, prompt in enumerate(prompts):
+            if i in self._fail:
+                items.append(LLMBatchItem(index=i, error=RuntimeError(f"timeout on {i}")))
+            elif i in self._none:
+                items.append(LLMBatchItem(index=i, response=None))
+            else:
+                items.append(LLMBatchItem(index=i, response=self.invoke(prompt)))
+        return items
+
+
+_STEP1_JSON = json.dumps(
+    [{"name": "Alice", "type": "Person", "description": "An engineer"}]
+)
+_STEP2_JSON = json.dumps(
+    {
+        "entities": [{"name": "Alice", "type": "Person", "description": "An engineer"}],
+        "relationships": [],
+    }
+)
+# Step 2 verifying nothing makes the strategy fall back to step-1 entities,
+# so per-chunk node counts below reflect what step 1 produced.
+_STEP2_EMPTY_JSON = json.dumps({"entities": [], "relationships": []})
+
+
+class TestLLMExtractorStep1FailureIsRecorded:
+    """Review finding: only the local-extractor branch recorded step-1
+    failures. On the default ``LLMExtractor`` path a timed-out NER call was
+    appended as ``[]`` and the chunk reported clean."""
+
+    async def test_not_ok_item_lands_in_failed_chunks(self, ctx):
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, fail=(1, 3))
+        strategy = GraphExtraction(
+            llm=MockLLM(responses=[_STEP2_JSON]),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c.", "d."), Ontology(), ctx)
+        assert result.chunks_attempted == 4
+        assert result.failed_chunks == ["chunk-1", "chunk-3"]
+        assert result.extraction_failed is False
+
+    async def test_none_response_lands_in_failed_chunks(self, ctx):
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, none=(0,))
+        strategy = GraphExtraction(
+            llm=MockLLM(responses=[_STEP2_JSON]),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b."), Ontology(), ctx)
+        assert result.failed_chunks == ["chunk-0"]
+
+    async def test_all_llm_step1_failures_is_total_failure(self, ctx):
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, fail=(0, 1))
+        strategy = GraphExtraction(
+            llm=MockLLM(responses=[_STEP2_JSON]),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b."), Ontology(), ctx)
+        assert result.extraction_failed is True
+
+
+class TestRelationFailureIsSeparateFromExtractionFailure:
+    """Review finding: a step-2 failure used to land in ``failed_chunks``, so
+    ``extraction_failed`` was True for a run that wrote a complete node set."""
+
+    class _Entities(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            return [
+                ExtractedEntity(
+                    name=f"E{source_chunk_id}",
+                    type="Person",
+                    description="",
+                    source_chunk_ids=[source_chunk_id],
+                )
+            ]
+
+    async def test_step2_failure_keeps_entities_and_is_not_extraction_failed(self, ctx):
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_EMPTY_JSON, fail=(0, 1, 2)),
+            entity_extractor=self._Entities(),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c."), Ontology(), ctx)
+        # Every chunk lost its relations...
+        assert result.relation_failed_chunks == ["chunk-0", "chunk-1", "chunk-2"]
+        # ...but every chunk's entities are in the graph.
+        assert len(result.nodes) == 3
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_partial_step2_failure(self, ctx):
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_EMPTY_JSON, fail=(1,)),
+            entity_extractor=self._Entities(),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c."), Ontology(), ctx)
+        assert result.relation_failed_chunks == ["chunk-1"]
+        assert result.failed_chunks == []
+        assert len(result.nodes) == 3
+
+    async def test_step1_failure_is_not_double_counted_as_relation_failure(self, ctx):
+        """A chunk that already failed step 1 and then fails step 2 belongs in
+        ``failed_chunks`` only; the two lists stay disjoint."""
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, fail=(0,))
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_JSON, fail=(0,)),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b."), Ontology(), ctx)
+        assert result.failed_chunks == ["chunk-0"]
+        assert result.relation_failed_chunks == []
+
+    async def test_relation_failure_warning_does_not_claim_nothing_contributed(self, ctx, caplog):
+        import logging
+
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_JSON, fail=(0,)),
+            entity_extractor=self._Entities(),
+        )
+        with caplog.at_level(logging.WARNING):
+            await strategy.extract(_make_chunks("a."), Ontology(), ctx)
+        text = " ".join(r.getMessage() for r in caplog.records)
+        assert "contributed nothing" not in text
+        assert "relationship" in text
+
+
+class _TruncatingContext(Context):
+    """Context whose budget runs out after ``allow`` ``budget_exceeded`` reads,
+    so the truncation path can be exercised without wall-clock timing."""
+
+    allow: int = 0
+
+    @property
+    def budget_exceeded(self) -> bool:  # type: ignore[override]
+        if self.allow > 0:
+            self.allow -= 1
+            return False
+        return True
+
+
+class TestBudgetTruncationIsReported:
+    """Review finding: ``chunks_attempted`` was the post-truncation count, so a
+    40-chunk document cut to 3 by the budget looked like a healthy 3-chunk one."""
+
+    async def test_truncated_run_reports_skipped_chunks(self):
+        ctx = _TruncatingContext()
+        ctx.allow = 3
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        chunks = _make_chunks(*[f"chunk {i}." for i in range(10)])
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        assert result.chunks_attempted == 3
+        assert result.chunks_skipped == 7
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_truncated_run_is_distinguishable_from_short_document(self, ctx):
+        truncated_ctx = _TruncatingContext()
+        truncated_ctx.allow = 3
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        truncated = await strategy.extract(
+            _make_chunks(*[f"c{i}." for i in range(10)]), Ontology(), truncated_ctx
+        )
+        healthy = await strategy.extract(_make_chunks("c0.", "c1.", "c2."), Ontology(), ctx)
+        assert truncated.chunks_attempted == healthy.chunks_attempted == 3
+        assert (truncated.chunks_skipped, healthy.chunks_skipped) == (7, 0)
+
+    async def test_budget_exhausted_before_start_reports_everything_skipped(self):
+        ctx = Context(latency_budget_ms=0.0)
+        assert ctx.budget_exceeded
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c."), Ontology(), ctx)
+        assert result.nodes == []
+        assert result.chunks_attempted == 0
+        assert result.chunks_skipped == 3
         assert result.extraction_failed is False
 
 

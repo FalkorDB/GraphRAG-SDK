@@ -461,9 +461,13 @@ class GLiNERExtractor(EntityExtractor):
     Default extractor — no API calls, fast. Returns entities with
     confidence scores and character spans.
 
-    The model is loaded lazily on first use and protected by a lock
-    so a single instance can be safely shared across concurrent
-    ``asyncio.to_thread`` calls (e.g. parallel doc ingestion).
+    The model is loaded lazily on first use from a process-wide cache
+    (one copy per model name, shared by every instance) and that load is
+    guarded by the class-level ``_CACHE_LOCK``. Inference itself takes no
+    lock: GLiNER inference mutates no model state, so a single instance can
+    be shared across concurrent ``asyncio.to_thread`` calls (e.g. parallel
+    doc ingestion) and they genuinely run in parallel. See ``_predict_sync``
+    for the measurements behind both decisions.
 
     GLiNER has a hard input limit (``config.max_len``) and truncates anything
     beyond it: the library emits a ``UserWarning`` ("Sentence of length N has
@@ -605,12 +609,6 @@ class GLiNERExtractor(EntityExtractor):
             )
         self._candidate_threshold = candidate_threshold
         self._model: Any = None
-        # Retained only so callers/tests that swap in a context manager to
-        # A/B the removed inference lock keep working. Nothing in this class
-        # acquires it any more; model loading uses the class-level
-        # ``_CACHE_LOCK`` and inference deliberately takes no lock at all.
-        # See ``_predict_sync`` for the thread-safety evidence.
-        self._lock = threading.Lock()
         if window_tokens is not None and not (_is_int(window_tokens) and window_tokens > 0):
             # ``words[begin:begin + 0]`` is empty on the first iteration, so a
             # non-positive window would return zero entities with no error; a
@@ -789,7 +787,7 @@ class GLiNERExtractor(EntityExtractor):
 
         # No lock here, deliberately.
         #
-        # Bug #8: this whole block used to run under ``self._lock`` while the
+        # Bug #8: this whole block used to run under an instance lock while the
         # caller dispatched it through ``asyncio.to_thread`` — the SDK paid for
         # threads and then serialised them anyway. Concurrent documents queued
         # behind each other in NER.
@@ -806,18 +804,6 @@ class GLiNERExtractor(EntityExtractor):
         # locked 3.75 s / 3.54 s versus unlocked 2.21 s / 2.46 s = **1.56x**.
         # Note issue #71 claimed 3.44x; the honest measured figure is 1.56x,
         # because torch's own intra-op threading already uses the cores.
-        return self._predict_body(model, text, labels, window, floor)
-
-    def _predict_body(
-        self,
-        model: Any,
-        text: str,
-        labels: list[str],
-        window: int,
-        floor: float,
-    ) -> list[dict[str, Any]]:
-        """Windowed inference. Split out from :meth:`_predict_sync` so the
-        lock removal above could be A/B tested by wrapping one call site."""
         words = self._word_spans(model, text)
 
         # Fast path: fits in one window, identical to unwindowed behaviour.

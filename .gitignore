@@ -59,6 +59,7 @@ debug_*.py
 # No trailing slash: also ignore a .venv symlink, which `.venv/` does not match.
 graphrag_sdk/.venv
 .venv-*/
+graphrag_sdk/.venv
 venv/
 
 # Build / dist

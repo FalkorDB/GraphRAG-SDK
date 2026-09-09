@@ -1057,6 +1057,36 @@ class TestInfrastructureErrorsPropagate:
         assert strategy.cached_chunk_count == 0
 
 
+class TestMergePreservesExtractionReport:
+    """Review finding: ``_merge`` rebuilt ``GraphData`` field-by-field, so the
+    inner strategy's ``chunks_attempted`` / ``failed_chunks`` never reached
+    ``update()``. The cached part reports nothing attempted; the fresh part's
+    numbers must come through unchanged."""
+
+    def test_report_fields_are_summed_across_parts(self):
+        cached = GraphData(nodes=[], relationships=[])
+        fresh = GraphData(
+            nodes=[],
+            relationships=[],
+            chunks_attempted=3,
+            chunks_skipped=2,
+            failed_chunks=["n1"],
+            relation_failed_chunks=["n2"],
+        )
+        merged = CachedChunkExtraction._merge([cached, fresh])
+        assert merged.chunks_attempted == 3
+        assert merged.chunks_skipped == 2
+        assert merged.failed_chunks == ["n1"]
+        assert merged.relation_failed_chunks == ["n2"]
+        assert merged.extraction_failed is False
+
+    def test_total_failure_survives_merge(self):
+        cached = GraphData(nodes=[], relationships=[])
+        fresh = GraphData(chunks_attempted=2, failed_chunks=["n1", "n2"])
+        merged = CachedChunkExtraction._merge([cached, fresh])
+        assert merged.extraction_failed is True
+
+
 class TestRelationshipMergeUnion:
     """A fact carried by both a cached and a freshly extracted chunk must
     survive as ONE edge with both provenances.
