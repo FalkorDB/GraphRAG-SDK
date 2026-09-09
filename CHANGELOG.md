@@ -28,6 +28,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Re-ingesting the same file no longer duplicates its chunks. Chunk ids are
+  now derived from document id + position + text instead of a fresh
+  `uuid4()`, so `MERGE` finds the existing node (17 → 17 → 17 chunks across
+  three ingests, previously 17 → 34 → 51). `ContextualChunking` hashes the
+  original chunk text, not the LLM-enriched one. Applies to
+  `IngestionPipeline.run()` directly as well as through `GraphRAG.ingest()`:
+  when no `document_info` is supplied the pipeline now derives a stable
+  Document id from the source (normalised filesystem path; URIs kept
+  verbatim), and in text mode from a hash
+  of the text. `GraphRAG.ingest(text=...)` without `document_id` uses the
+  same text hash (previously a fresh `text-<uuid>` per call), so ingesting
+  identical text twice is now one document and a no-op the second time; pass
+  `document_id` to store identical text as distinct documents.
+  **Breaking:** code that called `ingest(text=...)` once per record and
+  relied on every call creating its own Document now gets one Document per
+  distinct text and a zero-result `skipped_unchanged` no-op for each
+  duplicate — pass a `document_id` per record to keep the old behaviour.
+  A caller-supplied `document_info` is merged field by field using
+  `model_fields_set`, so `DocumentInfo(path=...)` without an explicit `uid`
+  takes the derived id instead of the model's random default. Ids the
+  pipeline derives from a source path are checked for the reserved
+  `__pending__` marker (`ValueError`), the same rule `GraphRAG` applies to
+  explicit ids.
+  **Upgrade note:** graphs built before this change hold random chunk
+  ids; the first re-ingest of an existing document adds one more copy of its
+  chunk layer (matching nothing), and is stable from the second re-ingest on.
+  Because position is part of the id, inserting a paragraph into an edited
+  document re-ids every later chunk; only byte-identical files are a no-op.
+  Chunks written by `update()` are keyed on its transient pending id (the
+  pending and live documents must not share chunk nodes during the
+  cutover); the `content_hash` the cutover records is what keeps a later
+  `ingest()` of that content a no-op.
+- Re-ingesting an unchanged document is now a true no-op. The pipeline hashes
+  the loaded text and, if the stored Document carries the same
+  `content_hash`, returns before chunking with
+  `IngestionResult.metadata["skipped_unchanged"] = True` and
+  `chunks_indexed = 0` — no chunker, NER, LLM or graph calls (measured: 33
+  provider calls and ~30 s → 0 and 0.01 s). The hash is written only after a
+  run completes with every write reported in full: a failed extraction, a
+  `RELATES`/`MENTIONED_IN` edge the graph store dropped after a transient
+  error, or a chunk left without an embedding by a rate-limited embedder all
+  withhold the hash (`IngestionResult.metadata["incomplete_writes"]` lists
+  the shortfalls), so the next ingest repairs the document instead of
+  skipping it. `update()` applies the same gate: its cutover promotes the
+  pending Document without a hash when the pipeline reported a shortfall
+  (and crash recovery of such a pending rolls forward uncertified rather
+  than refusing). Deployments without an embedder are not penalised —
+  `VectorStore.index_chunks` now returns `None` (nothing attempted) instead
+  of `0` (every embedding failed) when no embedder is configured, so
+  graph-only ingests still record the hash. Graph-store adapters without
+  `get_document_record` keep working — the pipeline skips the check instead
+  of raising.
+- `GraphRAG.update(..., force=True)` re-extracts a document whose content
+  hash is unchanged. With `ingest()` now skipping unchanged documents, this
+  is the supported way to re-chunk or re-extract existing text after
+  changing the ontology, chunker, extractor or model (for example to adopt
+  the new 384-token default below); `update_sync()` takes the same flag.
+
+- **`redis` 8.1 broke the first query on every fresh install** —
+  `falkordb`'s cluster probe forwarded async-pool kwargs to the sync
+  `redis.Redis()` constructor, which rejects them. Fixed upstream in
+  `falkordb` 1.7.0, so the floor moves to `falkordb>=1.7` — the old
+  `>=1.0` still allowed 1.6.x to resolve against the broken redis.
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.
 - Finalize-time entity deduplication no longer creates empty ghost `__Entity__`
@@ -52,6 +115,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default `similarity_threshold` raised from `0.9` to `0.95`: at `0.9` the
   name-embedding tier merged 2 of 33 deliberate hard-negative pairs for no
   added recall.
+- `GraphExtraction` now ships a default relation vocabulary,
+  `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels: `LOCATED_IN`,
+  `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...), the counterpart of
+  `DEFAULT_ENTITY_TYPES`, exposed as a new `relation_types=` kwarg. Without a
+  declared ontology the step-2 prompt now lists these as *Preferred
+  Relationships* and asks the LLM to prefer one, falling back to a descriptive
+  `UPPER_SNAKE_CASE` label when none fits; nothing prunes off-list edges. This
+  changes the default extraction output for every user without an ontology:
+  on the benchmark corpus the label vocabulary shrank from 447 distinct
+  `rel_type` strings to ~100 and exact triple F1 doubled. Pass
+  `relation_types=[]` to restore the previous open-vocabulary behaviour. A
+  declared `Ontology.relations` still overrides it and is still enforced
+  (*Allowed Relationships*, MUST, pruned). Blank relation labels are rejected.
+- The relation extraction prompt no longer stops early: it now states that the
+  task is exhaustive and not a summary, that there is no maximum, and that a
+  dense paragraph often yields 20 or more relationships. Measured: +15 %
+  relations for +4 % ingest time. The endpoint instruction also names the
+  *verified* entity list the model returns rather than the pre-extracted
+  input, so relationships are not anchored to entities that step 1 removed.
+- Default chunk size lowered from 512 to 384 tokens in
+  `SentenceTokenCapChunking`, `StructuralChunking`, `ContextualChunking` and
+  the documented `CallableChunking` example. Measured on the benchmark corpus:
+  entity F1 0.574 vs 0.563 and relation F1 0.237 vs 0.223 against 768; with
+  the current extraction prompt, exact relation F1 2.2× and answer accuracy
+  27 → 32 % for the full stack. **Cost:** more extraction LLM calls per
+  ingest — 103 → 157 (+52 %) on the 11-document benchmark corpus, +35 % on a
+  53k-token corpus — and ~19 % more input tokens, since the per-call
+  instructions are re-sent once per chunk. Pass
+  `max_tokens=512` to keep the old size.
 - Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
   published at <https://docs.falkordb.com/graphrag>, where GraphRAG SDK now
   appears as a product in the FalkorDB docs product switcher. Pages moved from

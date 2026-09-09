@@ -146,10 +146,13 @@ class TestVectorStoreIndexChunks:
         params = mock_connection.query.call_args[0][1]
         assert len(params["batch"]) == 2
 
-    async def test_index_chunks_no_embedder(self, vector_store_no_embedder):
+    async def test_index_chunks_no_embedder(self, vector_store_no_embedder, mock_connection):
+        """No embedder → ``None`` (not attempted), distinct from ``0`` (all
+        failed) so the ingestion pipeline does not read it as a shortfall."""
         chunks = TextChunks(chunks=[TextChunk(text="Hi", index=0)])
         result = await vector_store_no_embedder.index_chunks(chunks)
-        assert result == 0
+        assert result is None
+        mock_connection.query.assert_not_awaited()
 
     async def test_index_chunks_batch_fallback(self, vector_store, mock_connection, embedder):
         """When UNWIND batch fails, should fall back to individual queries."""

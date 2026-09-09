@@ -38,6 +38,9 @@ from graphrag_sdk.core.models import (
     RagResult,
     RetrieverResult,
     UpdateResult,
+    ensure_no_pending_marker,
+    reject_reserved_labels,
+    stable_document_id,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.discovery import SchemaExtensionProposal, suggest_extensions
@@ -1019,6 +1022,9 @@ class GraphRAG:
         nothing else.
         """
         await self._ensure_ontology_initialized()
+        # A reserved label that reached the ontology (e.g. persisted before the
+        # register-time guard existed) must not become real ``:Document`` nodes.
+        reject_reserved_labels([label])
         entity = next(
             (e for e in self._global_ontology.entities if e.label == label),
             None,
@@ -1059,6 +1065,10 @@ class GraphRAG:
             or "(none)"
         )
         target_desc_line = f"- description: {entity.description}\n" if entity.description else ""
+        # The date gate keys off the whole ontology, not the label being filled:
+        # backfilling ``Product`` in a graph that declares ``Date`` must keep
+        # "747" exactly as the normal extraction path does.
+        ontology_labels = [e.label for e in self._global_ontology.entities]
 
         def _prompt(ctx: ChunkContext) -> str:
             return BACKFILL_ENTITY_PROMPT.format(
@@ -1083,10 +1093,12 @@ class GraphRAG:
             new_mentions: list[GraphRelationship] = []
             for ent in parsed:
                 ent_name = (ent.get("name") or "").strip()
-                if not is_valid_entity_name(ent_name):
+                if not is_valid_entity_name(ent_name, ontology_labels):
                     skipped += 1
                     continue
-                ent_id = compute_entity_id(label, ent_name)
+                # (name, type) -- the same id the extraction path assigns, so a
+                # backfilled entity merges with its extracted twin.
+                ent_id = compute_entity_id(ent_name, label)
                 props: dict[str, Any] = {
                     "name": ent_name,
                     "description": ent.get("description", ""),
@@ -1354,11 +1366,24 @@ class GraphRAG:
 
         - **File mode** — pass ``source`` (single path or list of paths).
           The loader reads from disk; ``document_id`` is optional and,
-          when omitted, defaults to ``os.path.normpath(source)`` so the
-          path itself is the stable handle for ``update()`` later.
+          when omitted, defaults to the normalised path (a source with a
+          URI scheme such as ``https://`` or ``s3://`` is used verbatim)
+          so the path itself is the stable handle for ``update()`` later.
         - **Text mode** — pass ``text`` directly. Optionally pass
-          ``document_id`` to label the document; if omitted, an
-          identifier is generated. ``source`` and ``loader`` are rejected.
+          ``document_id`` to label the document; if omitted, the id is
+          ``text-<16hex>``, a SHA-256 prefix of the text. ``source`` and
+          ``loader`` are rejected.
+
+        Re-ingesting a document whose text is byte-identical to what the
+        graph already holds is a no-op: the call returns before chunking
+        with ``chunks_indexed=0`` and ``metadata["skipped_unchanged"]=True``
+        and makes no provider calls. Consequently, in text mode two calls
+        with the same text and no ``document_id`` address the *same*
+        Document — the second is the no-op — rather than one new document
+        per call as previously. Pass a distinct ``document_id`` per call to
+        keep identical texts as separate documents. To re-extract
+        unchanged content under a new ontology, chunker or extractor use
+        ``update(..., force=True)``.
 
         Note:
             Call :meth:`finalize` once after all sources are ingested to run
@@ -1369,10 +1394,13 @@ class GraphRAG:
 
         Uses sensible defaults for any unspecified strategy:
         - Loader: auto-detected from file extension (PDF or text)
-        - Chunker: SentenceTokenCapChunking(max_tokens=512, overlap_sentences=2)
+        - Chunker: SentenceTokenCapChunking(max_tokens=384, overlap_sentences=2)
           — sentence-aware, never splits entity names at chunk boundaries.
-          Override with ``chunker=FixedSizeChunking(...)`` if you need
-          character-window chunking.
+          384 is the measured best size for relationship extraction, which
+          returns a roughly fixed number of facts per call — smaller chunks
+          mean more calls and more facts. Override with
+          ``chunker=FixedSizeChunking(...)``
+          if you need character-window chunking.
         - Extractor: GraphExtraction with configured LLM
         - Resolver: ExactMatchResolution
 
@@ -1380,8 +1408,10 @@ class GraphRAG:
             source: File path (or list of paths) — file mode only.
             text: Raw text — text mode only.
             document_id: Stable identifier used as the Document node's
-                ``id``. In file mode, defaults to ``os.path.normpath(source)``.
-                In text mode, defaults to a generated ``text-<8hex>`` id.
+                ``id``. In file mode, defaults to the normalised path (URI
+                sources verbatim). In text mode, defaults to
+                ``text-<16hex>`` derived from the text. Must not contain
+                the reserved substring ``__pending__``.
                 Pass an explicit value when you want a different identity
                 scheme (e.g. content-hash, repo-relative path, slug).
             loader: Custom loader strategy. File mode only.
@@ -1416,7 +1446,7 @@ class GraphRAG:
         if isinstance(source, list) and document_id is not None:
             raise ValueError(
                 "'document_id' cannot be set on batch ingest (list source). "
-                "Each file's id defaults to os.path.normpath(path); pass an "
+                "Each file's id defaults to its normalised path; pass an "
                 "explicit document_id only for single-source calls."
             )
         if text is not None and loader is not None:
@@ -1475,14 +1505,11 @@ class GraphRAG:
         leftover pending of ``foo`` — leading to either silent rollback
         of the user's real document or a destructive rollforward against
         a node that was never an actual pending.
+
+        The rule itself lives in ``core.models.ensure_no_pending_marker`` so
+        ``IngestionPipeline.run()`` applies it to derived ids too.
         """
-        if "__pending__" in document_id:
-            raise ValueError(
-                f"document_id '{document_id}' contains the reserved substring "
-                "'__pending__' which is used internally by the update() "
-                "state-machine cutover. Pick a different id (or rename the "
-                "source file) to avoid prefix-collision with pending nodes."
-            )
+        ensure_no_pending_marker(document_id)
 
     @staticmethod
     def _resolve_document_id(
@@ -1493,21 +1520,25 @@ class GraphRAG:
         """Compute the stable Document node id for an ingest/update call.
 
         - explicit ``document_id`` → used verbatim
-        - file mode (source given, no id) → ``os.path.normpath(source)``
-        - text mode (no id) → generated ``text-<8hex>``
+        - file mode (source given, no id) → ``stable_document_id(source)``:
+          the normalised path, or the URI verbatim
+        - text mode (no id) → ``text-<16hex>`` derived from the text
 
         Path normalization collapses ``./``, ``../``, and double slashes
         so the same logical path always yields the same id, regardless of
-        how the caller spelled it.
+        how the caller spelled it; sources with a URI scheme are not
+        touched, since ``normpath`` would rewrite them. Text mode hashes the text (SHA-256, 64
+        bits) so ingesting the same text twice is the same document — and
+        therefore a no-op on the second call, like a file — instead of a
+        fresh random ``text-<uuid>`` per call. Two different texts collide
+        with probability ~2 in 10^11 at 10K ingests; pass ``document_id``
+        when you need to ingest identical text as distinct documents.
         """
         if document_id is not None:
             return document_id
         if text is None and source is not None:
-            return os.path.normpath(source)
-        # 64-bit suffix — at 32 bits (the original [:8]), 10K text-mode
-        # ingests in one session collide with ~12% probability. 64 bits
-        # pushes that to roughly 2 in 10^11 for the same volume.
-        return f"text-{uuid4().hex[:16]}"
+            return stable_document_id(source)
+        return f"text-{hashlib.sha256((text or '').encode('utf-8')).hexdigest()[:16]}"
 
     async def _ingest_single(
         self,
@@ -1892,34 +1923,40 @@ class GraphRAG:
                     f"update: detected COMMITTED pending '{prior_pending_id}' "
                     f"from a prior crash — rolling forward"
                 )
-                # The pending node carries the "real" path/hash (set just
-                # before we crashed). Look those up before rollforward so the
-                # canonical Document ends up with the right metadata.
+                # The pending node carries the "real" path (set just before
+                # we crashed) and, if the pipeline run was complete, its
+                # hash. Look those up before rollforward so the canonical
+                # Document ends up with the right metadata.
                 pending_record = await self._graph_store.get_document_record(prior_pending_id)
-                # A committed pending without persisted path metadata is a
-                # corruption signal — the pipeline must have completed step 7
-                # (write-graph) for the marker to be set, so the path/hash
-                # MUST be there. Refuse to silently default to the canonical
-                # id (would write a non-filesystem path) or to "" hash (would
-                # break future no-op short-circuits forever).
-                # Both path AND content_hash are required for a COMMITTED
-                # pending — pipeline must have completed step 7 to write
-                # them. Refusing to fall back to ``""`` on either: a
-                # non-filesystem path is wrong, and an empty hash would
-                # permanently disable the no-op short-circuit on future
-                # updates (no real SHA-256 will ever match ``""``).
-                roll_hash = prior_hash or (pending_record.content_hash if pending_record else None)
-                if pending_record is None or not pending_record.path or not roll_hash:
+                # A committed pending without a persisted path is a
+                # corruption signal — the pipeline must have completed step 3
+                # (lexical graph) for the marker to be set, so the path MUST
+                # be there. Refuse to silently default to the canonical id
+                # (would write a non-filesystem path).
+                if pending_record is None or not pending_record.path:
                     raise DatabaseError(
                         f"Phase 0 rollforward: COMMITTED pending "
                         f"'{prior_pending_id}' has incomplete metadata "
-                        f"(path={pending_record.path if pending_record else None!r}, "
-                        f"hash={roll_hash!r}). Graph state is inconsistent — "
-                        "possible corruption or partial write before the "
-                        "commit marker. Refusing to proceed; manual "
-                        "intervention required."
+                        f"(path={pending_record.path if pending_record else None!r}). "
+                        "Graph state is inconsistent — possible corruption or "
+                        "partial write before the commit marker. Refusing to "
+                        "proceed; manual intervention required."
                     )
                 roll_path = pending_record.path
+                # A missing hash is NOT corruption: the pipeline withholds
+                # ``content_hash`` when a write came up short (see
+                # ``IngestionPipeline.run``), and the interrupted update()
+                # would have promoted the pending without one. Roll forward
+                # the same way — never fall back to ``""`` (no real SHA-256
+                # matches it, so the no-op short-circuit would be disabled
+                # for good) and never invent a hash the run did not earn.
+                roll_hash = prior_hash or pending_record.content_hash or None
+                if roll_hash is None:
+                    ctx.log(
+                        f"update: COMMITTED pending '{prior_pending_id}' carries no "
+                        "content_hash (prior run reported incomplete writes); "
+                        "promoting it uncertified so the document stays eligible for repair"
+                    )
                 # Belt-and-braces: if the pending doesn't carry cleanup
                 # state (e.g. it was committed by pre-fix code, or by a
                 # test simulation that wrote the marker directly), snapshot
@@ -1968,6 +2005,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
+        force: bool = False,
         ctx: Context | None = None,
     ) -> UpdateResult:
         """Re-sync a previously-ingested document into the graph.
@@ -1981,7 +2019,14 @@ class GraphRAG:
         SHA-256 content-hash short-circuits no-op updates: if the new
         text matches the stored ``Document.content_hash``, no extraction
         runs and the call is essentially a single Cypher lookup. This is
-        the win for touch-only PRs (CRLF, formatter-only changes).
+        the win for touch-only PRs (CRLF, formatter-only changes). Pass
+        ``force=True`` to re-extract anyway — the only way to re-process
+        unchanged content after changing the ontology, chunker, extractor
+        or model, since ``ingest()`` skips unchanged documents too. The
+        hash is recorded only when the pipeline reported every write in
+        full; if ``UpdateResult.metadata["incomplete_writes"]`` is present
+        the document is promoted without one, so the next ``ingest()`` or
+        ``update()`` re-runs and repairs it instead of skipping.
 
         State-machine cutover (crash-safe). Columns:
         ``pend`` = pending Document exists;
@@ -2023,7 +2068,8 @@ class GraphRAG:
             text: Raw text. Skips the loader. Mutually exclusive with
                 ``source``.
             document_id: Stable id of the Document node to update. In
-                file mode, defaults to ``os.path.normpath(source)`` so
+                file mode, defaults to the same id ``ingest(path)`` derives
+                (the normalised path; a URI source verbatim) so
                 ``update(path)`` matches the corresponding ``ingest(path)``
                 with no extra plumbing. Required in text mode.
             loader / chunker / extractor / resolver: Per-call strategy
@@ -2048,6 +2094,13 @@ class GraphRAG:
             if_missing: ``"error"`` (default) raises ``DocumentNotFoundError``
                 when the id is unknown. ``"ingest"`` falls through to
                 ``ingest()`` for upsert semantics.
+            force: Re-extract even when the content hash is unchanged.
+                Default ``False`` returns ``UpdateResult(no_op=True)`` on
+                identical content; ``True`` runs the full replace so a new
+                ontology, chunker, extractor or model is applied to
+                existing text. Combine with ``cache_unchanged_chunks=False``
+                (the default) — the cache would otherwise hand back the
+                previous extraction for every chunk.
             ctx: Execution context.
 
         Returns:
@@ -2144,11 +2197,18 @@ class GraphRAG:
             )
 
         if existing.content_hash == new_hash:
-            ctx.log(f"update: content hash matches for '{resolved_id}', no-op")
-            return UpdateResult(
-                document_info=DocumentInfo(uid=resolved_id, path=existing.path or doc_path),
-                no_op=True,
-                replaced_existing=True,
+            if not force:
+                ctx.log(
+                    f"update: content hash matches for '{resolved_id}', no-op "
+                    f"(pass force=True to re-extract unchanged content)"
+                )
+                return UpdateResult(
+                    document_info=DocumentInfo(uid=resolved_id, path=existing.path or doc_path),
+                    no_op=True,
+                    replaced_existing=True,
+                )
+            ctx.log(
+                f"update: content hash matches for '{resolved_id}' but force=True; re-extracting"
             )
 
         # ── Phase 2: snapshot entity candidates AND old chunk ids BEFORE
@@ -2242,11 +2302,31 @@ class GraphRAG:
             )
 
         # ── Phase 5: rollforward cutover (idempotent) ──
+        # The cutover is what stamps ``content_hash`` on the canonical
+        # Document, so it must honour the same complete-writes gate as
+        # ``ingest()``: if the pipeline reported a shortfall (a dropped
+        # RELATES edge, an unembedded chunk — see
+        # ``IngestionPipeline.run``), promote the pending without a hash so
+        # the document stays eligible for repair instead of being skipped
+        # as unchanged forever (galshubeli on #309).
+        incomplete_writes = pipeline_result.metadata.get("incomplete_writes")
+        cutover_hash: str | None = None if incomplete_writes else new_hash
+        if incomplete_writes:
+            ctx.log(
+                "update: some writes were reported incomplete "
+                f"({'; '.join(incomplete_writes)}); content_hash not recorded — "
+                "the next ingest/update of this document re-runs in full"
+            )
+            logger.warning(
+                "update of '%s' left incomplete writes (%s); not marking content_hash",
+                resolved_id,
+                "; ".join(incomplete_writes),
+            )
         chunks_deleted = await self._graph_store.rollforward_cutover(
             pending_id=pending_id,
             real_id=resolved_id,
             path=doc_path,
-            content_hash=new_hash,
+            content_hash=cutover_hash,
         )
 
         # ── Phase 6: unified post-cutover cleanup (recoverable) ──
@@ -3232,6 +3312,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
+        force: bool = False,
         ctx: Context | None = None,
     ) -> UpdateResult:
         """Synchronous update convenience method.
@@ -3256,6 +3337,7 @@ class GraphRAG:
                 resolver=resolver,
                 cache_unchanged_chunks=cache_unchanged_chunks,
                 if_missing=if_missing,
+                force=force,
                 ctx=ctx,
             )
         )
