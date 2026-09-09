@@ -599,13 +599,57 @@ class Ontology(DataModel):
 
 
 class GraphData(DataModel):
-    """Entities and relationships extracted from text."""
+    """Entities and relationships extracted from text.
+
+    The report fields exist because a per-chunk extraction failure is
+    otherwise invisible: failures are swallowed, so a document where every
+    call failed returns exactly what a document containing no entities
+    returns — same type, same empty lists, no exception. Callers had no way
+    to tell "nothing to find" from "found nothing because everything broke",
+    and a *partial* failure silently shipped a half-empty graph that looked
+    successful.
+
+    - ``chunks_attempted``: chunks that were sent to extraction.
+    - ``chunks_skipped``: chunks never attempted because the latency budget
+      ran out first. A truncated run is *not* a healthy short one; this is
+      how the caller tells them apart.
+    - ``failed_chunks``: uids whose entity extraction (step 1) raised. These
+      chunks produced no entities of their own.
+    - ``relation_failed_chunks``: uids whose entity extraction succeeded but
+      whose relationship extraction (step 2) failed. Their entities are in
+      the graph; their edges are not. Disjoint from ``failed_chunks``.
+
+    Read the lists, not the entity counts: a successful extraction can
+    legitimately yield zero entities (``chunks_attempted > 0``,
+    ``failed_chunks == []``), and a run with every chunk in
+    ``relation_failed_chunks`` has a complete node set and no edges. Both
+    lists carry chunk uids so the caller can retry just those (see
+    ``BackfillExecutor``, which follows the same convention) rather than
+    re-ingesting the document.
+    """
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
     mentions: list[EntityMention] = Field(default_factory=list)
     extracted_entities: list[ExtractedEntity] = Field(default_factory=list)
     extracted_relations: list[ExtractedRelation] = Field(default_factory=list)
+    chunks_attempted: int = 0
+    chunks_skipped: int = 0
+    failed_chunks: list[str] = Field(default_factory=list)
+    relation_failed_chunks: list[str] = Field(default_factory=list)
+
+    @property
+    def extraction_failed(self) -> bool:
+        """True when entity extraction failed for every attempted chunk.
+
+        This is the "no chunk produced entities" signal. Step-2 (relationship)
+        failures do not count: those chunks still contributed their nodes, so
+        a caller that aborts or retries on this flag would otherwise discard a
+        good entity extraction. Check ``relation_failed_chunks`` for lost
+        edges. A genuinely empty document reports ``chunks_attempted == 0``
+        and is not a failure.
+        """
+        return self.chunks_attempted > 0 and len(self.failed_chunks) == self.chunks_attempted
 
 
 class ExtractedEntity(DataModel):
@@ -747,7 +791,15 @@ class RagResult(DataModel):
 
 
 class IngestionResult(DataModel):
-    """Result from an ingestion pipeline run."""
+    """Result from an ingestion pipeline run.
+
+    ``metadata["extraction"]`` carries the per-chunk extraction report
+    computed by the extraction strategy (see ``GraphData``):
+    ``chunks_attempted``, ``chunks_skipped``, ``failed_chunks``,
+    ``relation_failed_chunks`` and ``extraction_failed``. Read it to tell an
+    empty document from one whose extraction calls failed or were cut short
+    by the latency budget.
+    """
 
     document_info: DocumentInfo = Field(default_factory=DocumentInfo)
     nodes_created: int = 0
