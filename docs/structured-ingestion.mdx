@@ -641,17 +641,20 @@ Unsigned schema handed to the same path instead looked for an entity named
 
 Two sources disagreeing about one thing is not a failure and nothing is lost.
 Both values stay on the node under their own signatures, neither source is
-preferred, and there is deliberately no precedence rule. `finalize()` reports it,
-because it is also the thing that makes a question ambiguous — asked for "the
-grade", a query has to pick a source, and it will pick one silently:
+preferred, and there is deliberately no precedence rule. `finalize()` reports
+every property two tables both supply — with how many entities hold a value from
+more than one of them, and on how many of those the values differ — because the
+overlap is also the thing that makes a question ambiguous: asked for "the grade",
+a query has to pick a source, and it will pick one silently:
 
 ```python
 summary = await rag.finalize()
 summary.property_conflicts
-# ["Person.grade — supplied by finance.csv, hr.csv"]
+# ["Person.grade — supplied by finance.csv, hr.csv; 1 of 2 entities hold different values"]
 ```
 
 That is how you find out there is a disagreement to go and settle at the source.
+A value of another type counts as different: `3` and `"3"` are two answers.
 
 ### Two files, one signature, refused
 

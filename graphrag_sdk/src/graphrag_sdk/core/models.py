@@ -851,10 +851,16 @@ class FinalizeResult(DataModel):
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
     property_conflicts: list[str] = Field(default_factory=list)
-    """One logical property supplied by more than one table.
+    """One logical property supplied by more than one table, measured on the graph.
 
-    Signing keeps both values — ``hr__grade`` and ``finance__grade`` — so this is
-    not a failure and nothing was lost. It is reported because it is also the
+    Signing keeps every value — ``hr__grade`` and ``finance__grade`` — so this is
+    not a failure and nothing was lost. Each entry names the property, the
+    tables supplying it, how many entities hold a value from more than one of
+    them and on how many of those the values differ::
+
+        "Person.grade — supplied by finance.csv, hr.csv; 1 of 2 entities hold different values"
+
+    Reported even when every value agrees, because the overlap is also the
     thing that makes a question ambiguous: asked for "the grade", a query has to
     pick a source, and it will pick one silently.
 

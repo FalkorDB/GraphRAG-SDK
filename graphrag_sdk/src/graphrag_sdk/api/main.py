@@ -2471,9 +2471,9 @@ class GraphRAG:
         if document_id:
             candidates.insert(0, os.path.basename(os.path.normpath(document_id)))
         for candidate in candidates:
-            for mapping in self._global_ontology.tables:
-                if os.path.basename(os.path.normpath(mapping.source)) == candidate:
-                    return mapping
+            for declared in self._global_ontology.tables:
+                if os.path.basename(os.path.normpath(declared.source)) == candidate:
+                    return declared
 
         # Memoized: resolving is idempotent, but proposing a mapping reads and
         # profiles the whole file and asks the model, and the warning below
@@ -4484,20 +4484,30 @@ class GraphRAG:
 
         # One logical property offered by more than one table. Signing keeps both
         # values, so nothing is lost — but a question asking for "the grade" still
-        # has to pick one, and it will pick silently.
-        by_slot: dict[tuple[str, str], list[str]] = {}
+        # has to pick one, and it will pick silently. Each overlap is measured on
+        # the graph: how many entities hold more than one of the values, and on
+        # how many of those the values differ.
+        by_slot: dict[tuple[str, str], list[TableMapping]] = {}
         for mapping in self._global_ontology.tables:
             for declared in mapping.typed_properties:
-                by_slot.setdefault((mapping.label, declared), []).append(mapping.source)
-        property_conflicts = [
-            f"{label}.{declared} — supplied by {', '.join(sorted(sources))}"
-            for (label, declared), sources in sorted(by_slot.items())
-            if len(sources) > 1
-        ]
+                by_slot.setdefault((mapping.label, declared), []).append(mapping)
+        property_conflicts: list[str] = []
+        for (label, declared), mappings in sorted(by_slot.items()):
+            if len(mappings) < 2:
+                continue
+            shared, differing = await self._graph_store.count_shared_property_values(
+                label, [mapping.signed_name(declared) for mapping in mappings]
+            )
+            sources = ", ".join(sorted(mapping.source for mapping in mappings))
+            if shared:
+                measured = f"{differing} of {shared} entities hold different values"
+            else:
+                measured = "no entity holds more than one"
+            property_conflicts.append(f"{label}.{declared} — supplied by {sources}; {measured}")
         if property_conflicts:
             report(
                 f"finalize: {len(property_conflicts)} property/properties come from more "
-                "than one table. Both values are kept and signed; a question over them "
+                "than one table. Every value is kept and signed; a question over them "
                 "picks one. See FinalizeResult.property_conflicts"
             )
 

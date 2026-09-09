@@ -76,7 +76,8 @@ class TestPropertyConflicts:
         self, real_falkordb_rag_factory, llm, resolver, tmp_path
     ):
         """Nothing was lost — both values are signed and kept. What is reported is
-        that a question asking for "the grade" now has to choose."""
+        that a question asking for "the grade" now has to choose, and on how many
+        entities the two answers actually differ."""
         ontology = Ontology(
             entities=[Entity(label="Person")],
             tables=[
@@ -91,21 +92,23 @@ class TestPropertyConflicts:
             ],
         )
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
-        for source, grade in (("hr.csv", "P4"), ("finance.csv", "L5")):
+        # Maya's grade differs between the two; Omar's agrees.
+        for source, maya in (("hr.csv", "P4"), ("finance.csv", "L5")):
             await _load(
                 rag,
                 tmp_path / source,
-                f"employee_id,full_name,grade\nE-1,Maya Ellison,{grade}\n",
+                f"employee_id,full_name,grade\nE-1,Maya Ellison,{maya}\nE-2,Omar Haddad,P2\n",
             )
         summary = await rag.finalize()
 
-        assert len(summary.property_conflicts) == 1
-        reported = summary.property_conflicts[0]
-        assert "Person.grade" in reported
-        assert "hr.csv" in reported and "finance.csv" in reported
+        assert summary.property_conflicts == [
+            "Person.grade — supplied by finance.csv, hr.csv; 1 of 2 entities hold different values"
+        ]
 
         # and both values really are still there
-        props = (await rag.query("MATCH (p:Person) RETURN properties(p)"))[0][0]
+        props = (await rag.query("MATCH (p:Person {hr__employee_id: 'E-1'}) RETURN properties(p)"))[
+            0
+        ][0]
         assert props["hr__grade"] == "P4"
         assert props["finance__grade"] == "L5"
         await rag.close()

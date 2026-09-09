@@ -1698,6 +1698,34 @@ class GraphStore:
             if isinstance(row, list) and len(row) >= 2 and row[0]
         ]
 
+    async def count_shared_property_values(
+        self, label: str, properties: Sequence[str]
+    ) -> tuple[int, int]:
+        """How often the sources behind one logical property meet on an entity.
+
+        ``properties`` are the signed names two or more tables store the same
+        declared property under — ``hr__grade`` and ``finance__grade``. Signing
+        keeps every value, so nothing here is lost; what is measured is how many
+        entities carry more than one of them, and on how many of those the
+        values differ. A value of another type counts as different: ``3`` and
+        ``"3"`` are two answers to the same question.
+
+        Returns ``(entities holding two or more, entities where they differ)``.
+        """
+        safe_label = sanitize_cypher_label(label)
+        refs = ", ".join(f"e.`{sanitize_cypher_label(prop)}`" for prop in properties)
+        result = await self._conn.query(
+            f"MATCH (e:`{safe_label}`) "
+            f"WITH [v IN [{refs}] WHERE v IS NOT NULL] AS vals "
+            f"WHERE size(vals) > 1 "
+            f"RETURN count(*) AS shared, "
+            f"count(CASE WHEN any(v IN vals WHERE v <> vals[0]) THEN 1 END) AS differing"
+        )
+        rows = getattr(result, "result_set", None) or []
+        if not rows or not isinstance(rows[0], list) or len(rows[0]) < 2:
+            return 0, 0
+        return int(rows[0][0] or 0), int(rows[0][1] or 0)
+
     async def drop_node_property(
         self, label: str, prop: str, *, ids: Sequence[str] | None = None
     ) -> int:

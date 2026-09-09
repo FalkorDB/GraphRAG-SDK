@@ -61,8 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   overwrite each other, an extracted property (always unsigned) cannot collide
   with a declared one, and a signed property is left out of the extraction
   prompt so a document cannot write under a table's name. Where two sources
-  disagree the conflict is kept, reported in `finalize().property_conflicts`,
-  and never resolved for you. A header that is not an identifier (`id`,
+  supply one property both values are kept, and `finalize().property_conflicts`
+  reports the overlap with how many entities hold differing values — never
+  resolved for you. A header that is not an identifier (`id`,
   `hq country`) is stored under a `col_` name; property names and relationship
   types must be identifiers because generated Cypher writes them bare, and a
   label the sanitiser would rewrite is refused rather than silently changed.
@@ -288,6 +289,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`find_near_misses` logs a label it skipped** for exceeding the per-label
   bound, so an empty report reads as "not checked" rather than "clean".
+
+- **`property_conflicts` measures the disagreement it names.** Each entry for
+  a property two tables both supply now says how many entities hold a value
+  from more than one of them and on how many the values differ
+  (`Person.grade — supplied by finance.csv, hr.csv; 1 of 2 entities hold
+  different values`); before, it listed the declared overlap only.
 
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
