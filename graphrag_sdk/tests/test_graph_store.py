@@ -685,3 +685,63 @@ class TestGraphStoreIdIndex:
             [GraphNode(id="n1", label="Person", properties={})]
         )
         assert result == 1
+
+    async def test_index_failure_is_retried_on_next_write(
+        self, graph_store, mock_connection
+    ):
+        """A transient CREATE INDEX failure must not disable indexing for the
+        life of the store — the label is memoised only once the query succeeds."""
+        attempts = {"n": 0}
+
+        def side_effect(cypher, params=None):
+            if "CREATE INDEX" in cypher:
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise Exception("connection blip")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=side_effect)
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c1", label="Chunk", properties={})]
+        )
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c2", label="Chunk", properties={})]
+        )
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c3", label="Chunk", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        # First attempt failed, second succeeded, third was served from the memo.
+        assert idx.count("CREATE INDEX FOR (n:`Chunk`) ON (n.id)") == 2
+
+    async def test_delete_all_resets_index_memo(self, graph_store, mock_connection):
+        """GRAPH.DELETE drops the indexes, so a re-ingest on the same store
+        must recreate them."""
+        mock_connection.delete_graph = AsyncMock()
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={})]
+        )
+        await graph_store.delete_all()
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n2", label="Person", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`__Entity__`) ON (n.id)") == 2
+
+    async def test_delete_all_fallback_also_resets_index_memo(
+        self, graph_store, mock_connection
+    ):
+        """Clearing on the DETACH DELETE fallback is harmless (one idempotent
+        round trip per label) and keeps the two paths behaving the same."""
+        mock_connection.delete_graph = AsyncMock(side_effect=Exception("no GRAPH.DELETE"))
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={})]
+        )
+        await graph_store.delete_all()
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n2", label="Person", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
+        assert any("DETACH DELETE" in c[0][0] for c in mock_connection.query.call_args_list)

@@ -222,4 +222,42 @@ class TestGLiNERModelSharing:
         code = "\n".join(
             line for line in src.splitlines() if not line.strip().startswith("#")
         )
-        assert "self._lock" not in code
+        assert "_lock" not in code.lower()
+        assert "with " not in code
+        # The A/B scaffolding (instance lock + ``_predict_body`` split) is gone.
+        extractor = GLiNERExtractor()
+        assert not hasattr(extractor, "_lock")
+        assert not hasattr(extractor, "_predict_body")
+
+    def test_two_inferences_run_concurrently(self, monkeypatch):
+        """Behavioral form of the guard: two ``_predict_sync`` calls must be
+        inside ``predict_entities`` at the same time. With a lock, the second
+        would wait for the first and the barrier below would time out."""
+        import threading
+
+        from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
+
+        barrier = threading.Barrier(2, timeout=2.0)
+
+        class FakeModel:
+            def predict_entities(self, text, labels, threshold):
+                barrier.wait()  # both threads must reach here together
+                return []
+
+        monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {"m": FakeModel()}, raising=False)
+        extractor = ee.GLiNERExtractor(model_name="m")
+
+        errors: list[BaseException] = []
+
+        def run():
+            try:
+                extractor._predict_sync("text", ["Person"])
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+        assert errors == [], f"inference was serialised: {errors!r}"

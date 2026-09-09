@@ -282,6 +282,16 @@ class IngestionPipeline:
                     "raw_nodes": len(graph_data.nodes),
                     "raw_relationships": len(graph_data.relationships),
                     "mention_edges_created": mentions_written,
+                    # Per-chunk extraction report (see ``GraphData``). Lives
+                    # in metadata so it also survives ``GraphRAG.update()``,
+                    # which forwards metadata but rebuilds the typed fields.
+                    "extraction": {
+                        "chunks_attempted": graph_data.chunks_attempted,
+                        "chunks_skipped": graph_data.chunks_skipped,
+                        "failed_chunks": list(graph_data.failed_chunks),
+                        "relation_failed_chunks": list(graph_data.relation_failed_chunks),
+                        "extraction_failed": graph_data.extraction_failed,
+                    },
                 },
             )
             ctx.log(
@@ -463,13 +473,9 @@ class IngestionPipeline:
                 sample,
             )
 
-        return GraphData(
-            nodes=pruned_nodes,
-            relationships=pruned_rels,
-            mentions=graph_data.mentions,
-            extracted_entities=graph_data.extracted_entities,
-            extracted_relations=graph_data.extracted_relations,
-        )
+        # ``model_copy`` rather than rebuilding field-by-field, so report
+        # fields (``chunks_attempted``, ``failed_chunks``, ...) survive.
+        return graph_data.model_copy(update={"nodes": pruned_nodes, "relationships": pruned_rels})
 
     def _filter_quality(self, graph_data: GraphData) -> GraphData:
         """Remove nodes with empty IDs or labels, and dangling relationships."""
@@ -483,14 +489,7 @@ class IngestionPipeline:
             for r in graph_data.relationships
             if r.start_node_id in valid_ids and r.end_node_id in valid_ids
         ]
-        new_gd = GraphData(
-            nodes=valid_nodes,
-            relationships=valid_rels,
-            mentions=graph_data.mentions,
-            extracted_entities=graph_data.extracted_entities,
-            extracted_relations=graph_data.extracted_relations,
-        )
-        return new_gd
+        return graph_data.model_copy(update={"nodes": valid_nodes, "relationships": valid_rels})
 
     @staticmethod
     def _remap_mentions(graph_data: GraphData, remap: dict[str, str]) -> GraphData:

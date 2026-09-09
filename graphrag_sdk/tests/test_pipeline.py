@@ -406,6 +406,119 @@ class TestIngestionPipeline:
         assert mention_rels[0].end_node_id == "chunk-0"
 
 
+class TestExtractionReportReachesCaller:
+    """Review finding: ``chunks_attempted`` / ``failed_chunks`` were computed
+    by the extractor but ``_filter_quality`` and ``_prune`` rebuilt
+    ``GraphData`` field-by-field and dropped them, and ``IngestionResult``
+    had nowhere to carry them. Every real ingest reported a clean run."""
+
+    class _ReportingExtractor(ExtractionStrategy):
+        async def extract(self, chunks, ontology, ctx):
+            return GraphData(
+                nodes=[GraphNode(id="e1", label="Entity", properties={"name": "Test"})],
+                relationships=[],
+                chunks_attempted=len(chunks.chunks),
+                chunks_skipped=4,
+                failed_chunks=[chunks.chunks[0].uid],
+                relation_failed_chunks=[chunks.chunks[1].uid],
+            )
+
+    class _TotalFailureExtractor(ExtractionStrategy):
+        async def extract(self, chunks, ontology, ctx):
+            return GraphData(
+                chunks_attempted=len(chunks.chunks),
+                failed_chunks=[c.uid for c in chunks.chunks],
+            )
+
+    def _pipeline(self, extractor, mock_graph_store, mock_vector_store):
+        return IngestionPipeline(
+            loader=StubLoader("Alice works at Acme. Bob is her colleague. Carol too."),
+            chunker=StubChunker(),
+            extractor=extractor,
+            resolver=StubResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(),
+        )
+
+    async def test_run_exposes_report_in_result_metadata(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        pipeline = self._pipeline(self._ReportingExtractor(), mock_graph_store, mock_vector_store)
+        result = await pipeline.run("doc.txt", ctx)
+        report = result.metadata["extraction"]
+        assert report == {
+            "chunks_attempted": 3,
+            "chunks_skipped": 4,
+            "failed_chunks": ["chunk-0"],
+            "relation_failed_chunks": ["chunk-1"],
+            "extraction_failed": False,
+        }
+
+    async def test_run_exposes_total_failure(self, ctx, mock_graph_store, mock_vector_store):
+        pipeline = self._pipeline(
+            self._TotalFailureExtractor(), mock_graph_store, mock_vector_store
+        )
+        result = await pipeline.run("doc.txt", ctx)
+        report = result.metadata["extraction"]
+        assert report["chunks_attempted"] == 3
+        assert report["failed_chunks"] == ["chunk-0", "chunk-1", "chunk-2"]
+        assert report["extraction_failed"] is True
+
+    async def test_run_clean_extraction_reports_no_failures(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        class _Clean(ExtractionStrategy):
+            async def extract(self, chunks, ontology, ctx):
+                return GraphData(chunks_attempted=len(chunks.chunks))
+
+        pipeline = self._pipeline(_Clean(), mock_graph_store, mock_vector_store)
+        result = await pipeline.run("doc.txt", ctx)
+        report = result.metadata["extraction"]
+        assert report["chunks_attempted"] == 3
+        assert report["failed_chunks"] == []
+        assert report["extraction_failed"] is False
+
+    def _reported(self):
+        return GraphData(
+            nodes=[
+                GraphNode(id="ok", label="Person", properties={}),
+                GraphNode(id="", label="Person", properties={}),
+            ],
+            relationships=[],
+            chunks_attempted=5,
+            chunks_skipped=1,
+            failed_chunks=["c1"],
+            relation_failed_chunks=["c2"],
+        )
+
+    def _pipeline_for_units(self, mock_graph_store, mock_vector_store):
+        return IngestionPipeline(
+            loader=StubLoader(),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(entities=[Entity(label="Person")]),
+        )
+
+    def test_filter_quality_preserves_report(self, mock_graph_store, mock_vector_store):
+        pipeline = self._pipeline_for_units(mock_graph_store, mock_vector_store)
+        out = pipeline._filter_quality(self._reported())
+        assert len(out.nodes) == 1  # the filter still did its job
+        assert (out.chunks_attempted, out.chunks_skipped) == (5, 1)
+        assert out.failed_chunks == ["c1"]
+        assert out.relation_failed_chunks == ["c2"]
+
+    def test_prune_preserves_report(self, mock_graph_store, mock_vector_store):
+        pipeline = self._pipeline_for_units(mock_graph_store, mock_vector_store)
+        out = pipeline._prune(self._reported(), pipeline.ontology)
+        assert (out.chunks_attempted, out.chunks_skipped) == (5, 1)
+        assert out.failed_chunks == ["c1"]
+        assert out.relation_failed_chunks == ["c2"]
+
+
 class TestRemapMentionsUnit:
     """Direct unit tests for ``IngestionPipeline._remap_mentions`` covering
     the chain-following contract independently of the full pipeline."""

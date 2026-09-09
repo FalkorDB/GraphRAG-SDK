@@ -557,17 +557,29 @@ class Ontology(DataModel):
 class GraphData(DataModel):
     """Entities and relationships extracted from text.
 
-    ``chunks_attempted`` / ``failed_chunks`` exist because a per-chunk
-    extraction failure is otherwise invisible: failures are swallowed and the
-    chunk contributes nothing, so a document where every call failed returns
-    exactly what a document containing no entities returns — same type, same
-    empty lists, no exception. Callers had no way to tell "nothing to find"
-    from "found nothing because everything broke", and a *partial* failure
-    silently shipped a half-empty graph that looked successful.
+    The report fields exist because a per-chunk extraction failure is
+    otherwise invisible: failures are swallowed, so a document where every
+    call failed returns exactly what a document containing no entities
+    returns — same type, same empty lists, no exception. Callers had no way
+    to tell "nothing to find" from "found nothing because everything broke",
+    and a *partial* failure silently shipped a half-empty graph that looked
+    successful.
 
-    Read them together: ``0`` entities from ``0`` attempted chunks is an empty
-    document; ``0`` from ``14`` is a broken one. ``failed_chunks`` carries the
-    chunk uids that raised so the caller can retry just those (see
+    - ``chunks_attempted``: chunks that were sent to extraction.
+    - ``chunks_skipped``: chunks never attempted because the latency budget
+      ran out first. A truncated run is *not* a healthy short one; this is
+      how the caller tells them apart.
+    - ``failed_chunks``: uids whose entity extraction (step 1) raised. These
+      chunks produced no entities of their own.
+    - ``relation_failed_chunks``: uids whose entity extraction succeeded but
+      whose relationship extraction (step 2) failed. Their entities are in
+      the graph; their edges are not. Disjoint from ``failed_chunks``.
+
+    Read the lists, not the entity counts: a successful extraction can
+    legitimately yield zero entities (``chunks_attempted > 0``,
+    ``failed_chunks == []``), and a run with every chunk in
+    ``relation_failed_chunks`` has a complete node set and no edges. Both
+    lists carry chunk uids so the caller can retry just those (see
     ``BackfillExecutor``, which follows the same convention) rather than
     re-ingesting the document.
     """
@@ -578,14 +590,20 @@ class GraphData(DataModel):
     extracted_entities: list[ExtractedEntity] = Field(default_factory=list)
     extracted_relations: list[ExtractedRelation] = Field(default_factory=list)
     chunks_attempted: int = 0
+    chunks_skipped: int = 0
     failed_chunks: list[str] = Field(default_factory=list)
+    relation_failed_chunks: list[str] = Field(default_factory=list)
 
     @property
     def extraction_failed(self) -> bool:
-        """True when every attempted chunk failed.
+        """True when entity extraction failed for every attempted chunk.
 
-        Distinguishes total extraction failure from a genuinely empty
-        document, which reports ``chunks_attempted == 0``.
+        This is the "no chunk produced entities" signal. Step-2 (relationship)
+        failures do not count: those chunks still contributed their nodes, so
+        a caller that aborts or retries on this flag would otherwise discard a
+        good entity extraction. Check ``relation_failed_chunks`` for lost
+        edges. A genuinely empty document reports ``chunks_attempted == 0``
+        and is not a failure.
         """
         return self.chunks_attempted > 0 and len(self.failed_chunks) == self.chunks_attempted
 
@@ -729,7 +747,15 @@ class RagResult(DataModel):
 
 
 class IngestionResult(DataModel):
-    """Result from an ingestion pipeline run."""
+    """Result from an ingestion pipeline run.
+
+    ``metadata["extraction"]`` carries the per-chunk extraction report
+    computed by the extraction strategy (see ``GraphData``):
+    ``chunks_attempted``, ``chunks_skipped``, ``failed_chunks``,
+    ``relation_failed_chunks`` and ``extraction_failed``. Read it to tell an
+    empty document from one whose extraction calls failed or were cut short
+    by the latency budget.
+    """
 
     document_info: DocumentInfo = Field(default_factory=DocumentInfo)
     nodes_created: int = 0
