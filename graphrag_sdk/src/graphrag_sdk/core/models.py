@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from enum import Enum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
@@ -36,8 +37,44 @@ class DataModel(BaseModel):
 #: be used as entity types: an entity carrying one of these labels corrupts
 #: document-level queries and is never marked ``__Entity__``, so it silently
 #: disappears from deduplication and retrieval. Single source of truth for
-#: ``GraphStore._STRUCTURAL_LABELS`` and the extractor's config-time check.
+#: ``GraphStore._STRUCTURAL_LABELS``, the Cypher generator's label allow-list
+#: and :py:func:`reject_reserved_labels`.
 RESERVED_NODE_LABELS: frozenset[str] = frozenset({"Chunk", "Document"})
+
+
+def reject_reserved_labels(types: Iterable[str]) -> list[str]:
+    """Reject entity types that collide with the store's structural labels.
+
+    ``Document`` and ``Chunk`` are used by the graph store for corpus
+    bookkeeping. An extracted entity carrying one of those labels fails two
+    ways at once, both silently:
+
+    1. Document-level queries (``MATCH (p:Document) ...``) start returning
+       extracted entities, so document counts and lookups are wrong. This was
+       found in the field as an 11-document corpus reporting 106 documents.
+    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
+       label is *not* structural, so the node never receives ``__Entity__``
+       and is dropped from deduplication and retrieval. It is written, then
+       ignored.
+
+    Neither failure raises, so the graph just quietly degrades. Fail here
+    instead, before the label is persisted anywhere, where the caller can act
+    on it. The match is exact, like the store's own membership test and
+    FalkorDB's labels: ``document`` is a distinct (if confusing) label that
+    the store handles correctly, so it is not rejected.
+    """
+    types = list(types)
+    clashes = sorted({str(t).strip() for t in types if str(t).strip() in RESERVED_NODE_LABELS})
+    if clashes:
+        raise ValueError(
+            f"entity_types may not contain the reserved label(s) {clashes}. "
+            f"{sorted(RESERVED_NODE_LABELS)} are used internally for corpus "
+            "bookkeeping; reusing them silently corrupts document counts and "
+            "removes the entity from deduplication and retrieval. "
+            "Rename the type (e.g. 'Document' -> 'Publication', "
+            "'Chunk' -> 'TextSegment')."
+        )
+    return types
 
 
 class GraphNode(DataModel):

@@ -389,6 +389,46 @@ class TestBackfillEntity:
         assert rel_call[0].type == "MENTIONED_IN"
         assert rel_call[0].end_node_id == "c1"
         assert result.values_filled == 1
+        # Same (name, type) id as the extraction path, so the backfilled node
+        # merges with an extracted "Bob" instead of living in its own namespace.
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            compute_entity_id,
+        )
+
+        node = rag._graph_store.upsert_nodes.await_args.args[0][0]
+        assert node.id == compute_entity_id("Bob", "Person") == "bob__person"
+        assert rel_call[0].start_node_id == node.id
+
+    @pytest.mark.asyncio
+    async def test_date_gate_uses_the_ontology_not_the_target_label(self, rag):
+        """Backfilling `Product` in a graph whose ontology declares `Date` must
+        keep numeric names ("747") exactly as normal extraction would; only the
+        ontology as a whole says whether date-shaped names are wanted."""
+        rag._global_ontology = Ontology(
+            entities=[Entity(label="Product"), Entity(label="Date")],
+        )
+        rag.llm = MockLLM(
+            responses=[json.dumps({"entities": [{"name": "747", "attributes": {}}]})]
+        )
+        rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
+            return_value=[{"chunk_id": "c1", "chunk_text": "Boeing's 747"}]
+        )
+        rag._graph_store.upsert_nodes = AsyncMock(return_value=1)
+        rag._graph_store.upsert_relationships = AsyncMock(return_value=1)
+        result = await rag.backfill_entity("Product", scope="all")
+        assert result.values_filled == 1
+        assert result.values_skipped == 0
+
+    @pytest.mark.asyncio
+    async def test_reserved_label_is_refused(self, rag):
+        """Even if `Document` somehow reached the ontology, backfill must not
+        write real `:Document` nodes -- that is the "11 documents reported as
+        106" corruption."""
+        rag._global_ontology = Ontology(entities=[Entity(label="Document")])
+        rag._graph_store.upsert_nodes = AsyncMock()
+        with pytest.raises(ValueError, match="reserved label"):
+            await rag.backfill_entity("Document")
+        rag._graph_store.upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dry_run_returns_chunks_in_scope_without_llm(self, rag):

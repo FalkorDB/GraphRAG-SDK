@@ -282,6 +282,17 @@ class TestValidateProposal:
         )
         assert _validate_proposal(proposal) == []
 
+    def test_rejects_reserved_entity_label(self) -> None:
+        """An LLM-proposed `Document` type must be sent back for correction
+        here, in the retry loop, rather than persisted and left to break
+        every later ingest."""
+        proposal = ChunkProposal(
+            entities=[_ProposedEntity(label="Document", properties=[])],
+            relations=[],
+        )
+        errors = _validate_proposal(proposal)
+        assert any("reserved" in e and "Document" in e for e in errors)
+
     def test_rejects_bad_attribute_type(self) -> None:
         proposal = ChunkProposal(
             entities=[
