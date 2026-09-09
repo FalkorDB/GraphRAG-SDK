@@ -254,16 +254,16 @@ class TestADroppedColumnLeavesTheNodes:
         await rag.close()
 
 
-class TestAStalePropertyIsReported:
+class TestADroppedRowLeavesNothingStale:
     """One source stops mentioning a row another source still describes.
 
-    The entity survives — correctly, the orphan predicate is global — but the
-    first source's values stay on it belonging to nobody. Not removed: the graph
-    cannot tell "that source dropped the row" from "that source has not been
-    reloaded yet", and guessing would delete live data.
+    The entity survives — correctly, the orphan predicate is global — and the
+    re-sync takes the first source's columns back from it, so nothing is left
+    belonging to nobody. ``stale_signed_properties`` is the check that nothing
+    escaped, and on a graph this version wrote it is empty.
     """
 
-    async def test_it_is_reported_and_the_entity_survives(
+    async def test_the_entity_survives_without_the_dropped_sources_columns(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path
     ):
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(HR, FINANCE))
@@ -283,12 +283,40 @@ class TestAStalePropertyIsReported:
         await _load(rag, hr_path, "employee_id,full_name,age\nE-2,Tomas Reyes,47\n")
         summary = await rag.finalize()
 
+        assert summary.stale_signed_properties == []
+        rows = await rag.query(
+            "MATCH (p:Person {id:'maya_ellison__person'}) "
+            "RETURN p.hr__age, p.hr__employee_id, p.finance__grade"
+        )
+        assert rows == [[None, None, "P4"]], "finance still mentions her; HR's columns went"
+        await rag.close()
+
+    async def test_columns_a_retraction_missed_are_reported(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """A graph written before the retraction existed, or a cleanup that was
+        interrupted before it ran: the check still names what was left."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(HR, FINANCE))
+        await _load(
+            rag,
+            tmp_path / "hr.csv",
+            "employee_id,full_name,age\nE-1,Maya Ellison,34\n",
+        )
+        await _load(
+            rag,
+            tmp_path / "finance.csv",
+            "employee_id,full_name,grade\nE-1,Maya Ellison,P4\n",
+        )
+        # What an older version left behind: HR's row gone, its columns not.
+        await rag.query(
+            "MATCH (p:Person {id:'maya_ellison__person'})-[m:MENTIONED_IN]->(:Chunk)"
+            "<-[:PART_OF]-(:Document {id:'hr.csv'}) DELETE m"
+        )
+        summary = await rag.finalize()
+
         assert len(summary.stale_signed_properties) == 1
-        reported = summary.stale_signed_properties[0]
-        assert "hr__age" in reported
-        assert "hr.csv" in reported
-        ids = [row[0] for row in await rag.query("MATCH (p:Person) RETURN p.id")]
-        assert "maya_ellison__person" in ids, "finance still mentions it, so it must survive"
+        assert "hr__age" in summary.stale_signed_properties[0]
+        assert "hr.csv" in summary.stale_signed_properties[0]
         await rag.close()
 
     async def test_a_single_source_graph_reports_nothing(

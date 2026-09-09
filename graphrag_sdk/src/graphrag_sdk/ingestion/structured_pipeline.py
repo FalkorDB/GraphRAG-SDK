@@ -21,7 +21,11 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
-from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, RecordLoaderStrategy
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    RecordBatch,
+    RecordLoaderStrategy,
+    cell_text,
+)
 from graphrag_sdk.ingestion.mapping import (
     Column,
     MappingError,
@@ -111,26 +115,36 @@ def render_record(record: dict[str, Any]) -> str:
 
 
 def _ambiguous_names(batch: RecordBatch, mapping: RecordMapping) -> set[tuple[str, str]]:
-    """``(handle, lowercased name)`` for every name that two or more rows share.
+    """``(label, lowercased name)`` for every name the batch gives two different keys.
 
     A name is the entity's identity, so two rows sharing one would become one
     entity — two John Smiths collapsing into a single Person. Those rows keep
     their key as identity instead, which also means a prose mention of "John
     Smith" joins neither, correctly: it is ambiguous. Reported, so a table with
     many such names is noticed rather than silently half-joined.
+
+    Counted per label over rows *and* references, by distinct key. A reference
+    names its target too (``manager_id`` plus ``manager_name``), and two managers
+    both called John used to derive one id from the name: the edge remap then
+    held one entry for the two of them, and Alice, whose row said ``E1``, was
+    linked to ``E2``. A row and a reference sharing a name under two keys is the
+    same collision. The same key under one name twice is one entity named twice,
+    not an ambiguity.
     """
-    counts: dict[tuple[str, str], int] = {}
-    # (handle, name column) for nodes that name their rows; the filter above the
-    # comprehension is what lets mypy see the column is a str below.
-    named = [(node.handle, node.name) for node in mapping.nodes if node.name and not node.reference]
+    keys: dict[tuple[str, str], set[str]] = {}
+    # (label, key column, name column) for nodes that name what they write; the
+    # filter is what lets mypy see the name column is a str below.
+    named = [(node.label, node.key, node.name) for node in mapping.nodes if node.name]
     if not named:
         return set()
     for record in batch:
-        for handle, name_column in named:
-            display = str(record.get(name_column) or "").strip().lower()
-            if display:
-                counts[(handle, display)] = counts.get((handle, display), 0) + 1
-    ambiguous = {key for key, count in counts.items() if count > 1}
+        for label, key_column, name_column in named:
+            display = cell_text(record, name_column).lower()
+            key = record.get(key_column)
+            key = "" if key is None else str(key).strip()
+            if display and key:
+                keys.setdefault((label, display), set()).add(key)
+    ambiguous = {name for name, seen in keys.items() if len(seen) > 1}
     if ambiguous:
         sample = ", ".join(repr(name) for _, name in sorted(ambiguous)[:5])
         logger.warning(
@@ -228,7 +242,7 @@ def _walk_records(
     anchor = mapping.anchor
     occurrences: dict[str, int] = {}
     for index, record in enumerate(batch):
-        record_key = str(record.get(anchor.key) or "").strip()
+        record_key = cell_text(record, anchor.key)
         if not record_key:
             if skipped is not None:
                 skipped.append(index + 1)
@@ -277,6 +291,9 @@ class StructuredIngestionResult:
         "no_op",
         "rows_skipped",
         "rows_in_source",
+        "entities_moved",
+        "identity_moved",
+        "references_ambiguous",
     )
 
     def __init__(self, document_id: str) -> None:
@@ -293,6 +310,15 @@ class StructuredIngestionResult:
         self.no_op = False
         self.rows_skipped = 0
         self.rows_in_source = 0
+        # Nodes the write moved to the id their name now gives them: a renamed
+        # row, or a placeholder a row filled in. The map is old id -> new id,
+        # for the caller whose bookkeeping still holds the old ones.
+        self.entities_moved = 0
+        self.identity_moved: dict[str, str] = {}
+        # Foreign keys more than one existing node answers to. Each was left on
+        # a placeholder carrying the key rather than attached to whichever node
+        # the graph listed last; the (label, key) pairs are what to look at.
+        self.references_ambiguous: list[tuple[str, str]] = []
 
     def as_dict(self) -> dict[str, Any]:
         summary: dict[str, Any] = {
@@ -309,6 +335,13 @@ class StructuredIngestionResult:
         if self.rows_skipped:
             summary["rows_skipped"] = self.rows_skipped
             summary["rows_in_source"] = self.rows_in_source
+        if self.entities_moved:
+            summary["entities_moved"] = self.entities_moved
+            summary["identity_moved"] = dict(self.identity_moved)
+        if self.references_ambiguous:
+            summary["references_ambiguous"] = [
+                f"{label}:{key}" for label, key in self.references_ambiguous
+            ]
         if self.replaced_existing:
             summary["replaced_existing"] = True
             summary["chunks_deleted"] = self.chunks_deleted
@@ -445,11 +478,15 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         # The Document remembers how it was written, and update() refuses to
         # re-read a table as prose on the strength of it. Stamped here so a
         # custom loader that says nothing about it still produces a Document
-        # that can be re-synced.
+        # that can be re-synced. It also remembers *which* table, by the
+        # signature the table's columns are stored under, so a Document loaded
+        # under a caller's own id is still found by the table's cleanup and by
+        # drop_table(): matching the id to the table's filename found neither.
+        stamped: dict[str, Any] = {**dict(doc_info.metadata), "kind": "structured"}
+        if mapping.anchor.signature:
+            stamped["table"] = mapping.anchor.signature
         doc_info = DocumentInfo(
-            uid=document_id or doc_info.uid,
-            path=doc_info.path,
-            metadata={**dict(doc_info.metadata), "kind": "structured"},
+            uid=document_id or doc_info.uid, path=doc_info.path, metadata=stamped
         )
 
         problems = mapping.validate_against(batch.columns, strict=strict)
@@ -488,18 +525,46 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         # and the reference too, so its claim still lands: the signed key column
         # is how the graph knows this table points at that node, and what a
         # re-sync or a drop reads to decide whose row the node still is.
+        #
+        # A reference to a row this batch writes is left out of the lookup. The
+        # graph still holds that row under last export's id, and the lookup would
+        # point the reference -- and its edges -- back at it, just before the
+        # reconciliation below moves the row to its new id: measured as Bob
+        # reporting to a recreated placeholder of Alice's old name beside the
+        # renamed Alice. The collapse in _map_records already sent such a
+        # reference to the row's id; the row is where it must stay.
+        owned_here = {(label, key) for (label, _), rows in keyed.items() for key, _ in rows}
         resolved: dict[str, str] = {}
         by_label: dict[str, list[ReferenceNode]] = {}
         for reference in references:
+            if _reference_key(reference) in owned_here:
+                continue
             by_label.setdefault(reference.label, []).append(reference)
         for label, refs in by_label.items():
             found = await self.graph_store.resolve_by_entity_key(
                 label, [str(r.properties.get("entity_key", "")) for r in refs]
             )
             for reference in refs:
-                real = found.get(str(reference.properties.get("entity_key", "")))
-                if real and real != reference.id:
-                    resolved[reference.id] = real
+                key = str(reference.properties.get("entity_key", ""))
+                candidates = found.get(key, [])
+                if len(candidates) > 1:
+                    # Two tables numbered this label from 1, and this key means a
+                    # different row in each. The edge stays on a placeholder that
+                    # says only "the one keyed thus"; picking a node would pick one
+                    # table's row for the other's link.
+                    if (label, key) not in result.references_ambiguous:
+                        result.references_ambiguous.append((label, key))
+                    continue
+                if candidates and candidates[0] != reference.id:
+                    resolved[reference.id] = candidates[0]
+        if result.references_ambiguous:
+            logger.warning(
+                "%s: %d foreign key(s) match more than one existing node and were left "
+                "on placeholders: %s",
+                source,
+                len(result.references_ambiguous),
+                ", ".join(f"{label}:{key}" for label, key in result.references_ambiguous),
+            )
         if resolved:
             references = [r._replace(id=resolved.get(r.id, r.id)) for r in references]
             for edge in edges:
@@ -510,7 +575,10 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         # whose name changed since the last export. Both carry the key; both are
         # moved to the id the name gives them before anything is written.
         for (label, signed_key), rows in keyed.items():
-            await self.graph_store.reconcile_keyed_identity(label, signed_key, rows)
+            result.identity_moved.update(
+                await self.graph_store.reconcile_keyed_identity(label, signed_key, rows)
+            )
+        result.entities_moved = len(result.identity_moved)
 
         await self._build_lexical_graph(
             doc_info,
@@ -654,7 +722,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         list[GraphNode],
         list[ReferenceNode],
         list[GraphRelationship],
-        dict[str, list[tuple[str, str]]],
+        dict[tuple[str, str], list[tuple[str, str]]],
     ]:
         """Second pass: declared columns become nodes and edges.
 
@@ -686,16 +754,15 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
             ids: dict[str, str] = {}
 
             for node in mapping.nodes:
-                cell = record.get(node.key)
                 # Stripped, as the row key already is in _walk_records: the id
                 # derivation ignores surrounding whitespace, so a key stored
                 # with it would derive the same node as one stored without yet
                 # never match it by entity_key.
-                raw_key = "" if cell is None else str(cell).strip()
+                raw_key = cell_text(record, node.key)
                 if not raw_key:
                     continue
-                display = str(record.get(node.name) or "").strip() if node.name else ""
-                if display and (node.handle, display.lower()) not in ambiguous:
+                display = cell_text(record, node.name)
+                if display and (node.label, display.lower()) not in ambiguous:
                     node_id = compute_entity_id(display, node.label)
                 else:
                     node_id = compute_entity_id(raw_key, node.label)
@@ -710,9 +777,7 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                     # name to whoever queries it.
                     fallback = raw_key
                     if node.name:
-                        declared_name = str(record.get(node.name) or "").strip()
-                        if declared_name:
-                            fallback = declared_name
+                        fallback = cell_text(record, node.name) or raw_key
                     references.append(
                         ReferenceNode(
                             id=node_id,

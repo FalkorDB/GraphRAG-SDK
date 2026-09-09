@@ -14,8 +14,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from graphrag_sdk.core.context import Context
+from graphrag_sdk.core.models import DocumentInfo
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
-from graphrag_sdk.ingestion.loaders.record_loader import CsvRecordLoader
+from graphrag_sdk.ingestion.loaders.record_loader import CsvRecordLoader, RecordBatch
 from graphrag_sdk.ingestion.mapping import (
     Column,
     Link,
@@ -62,7 +63,7 @@ class RecordingGraphStore:
         return {}
 
     async def reconcile_keyed_identity(self, label, signed_key, rows):
-        return {"renamed": 0, "merged": 0}
+        return {}
 
     def __getattr__(self, name):
         # The lexical writer touches more of the store than this test needs.
@@ -560,3 +561,31 @@ class TestKeyWhitespace:
         alice = store.node(compute_entity_id("Alice Smith", "Person"))
         assert alice.properties["entity_key"] == "E-1"
         assert [r.properties["entity_key"] for r in store.references] == ["ORG-42"]
+
+
+class TestATypedZeroIsAKey:
+    async def test_a_loader_yielding_integer_keys_keeps_the_zero_row(self, ctx: Context):
+        """A CSV hands over ``"0"``, which is truthy. A loader reading a database
+        or JSON hands over ``0``, and ``record.get(key) or ""`` read that as no
+        key at all: the row keyed 0 was skipped as keyless, every run."""
+        rows = [
+            {"employee_id": 0, "full_name": "Zed Null", "age": 30, "job_title": "x", "org_id": 0},
+            {"employee_id": 1, "full_name": "One Uno", "age": 31, "job_title": "y", "org_id": 7},
+        ]
+
+        class TypedLoader(CsvRecordLoader):
+            async def load_records(self, source, ctx):
+                return RecordBatch(
+                    open_records=lambda: iter(rows),
+                    columns=list(rows[0]),
+                    document_info=DocumentInfo(uid="typed", path=source),
+                )
+
+        store = RecordingGraphStore()
+        pipe = StructuredIngestionPipeline(loader=TypedLoader(), graph_store=store)
+        result = await pipe.run("typed", EMPLOYEES, ctx)
+
+        assert result.records == 2 and result.rows_skipped == 0
+        zed = store.node(compute_entity_id("Zed Null", "Person"))
+        assert zed.properties["entity_key"] == "0"
+        assert sorted(r.properties["entity_key"] for r in store.references) == ["0", "7"]

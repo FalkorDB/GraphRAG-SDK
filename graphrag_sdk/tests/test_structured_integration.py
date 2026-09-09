@@ -831,6 +831,53 @@ class TestAReSyncFollowsTheExportAllTheWayDown:
         assert rows == [[None, None, None]]
         await rag.close()
 
+    async def test_a_table_loaded_under_its_own_id_is_still_cleaned_up_as_a_table(
+        self, real_falkordb_rag_factory, resolver, scripted_llm, tmp_path
+    ):
+        """``ingest("staff.csv", document_id="staff-export")`` -- the cleanup found
+        the table by matching the document id to the table's filename, so a table
+        under any other id was cleaned up as prose: its columns and identity stayed
+        on every node a note kept alive. The Document says which table it is now.
+        """
+        rag = real_falkordb_rag_factory(
+            llm=scripted_llm([("Maya Ellison", "Person", "Runs the group")]),
+            resolver=resolver,
+            ontology=_ontology(self.REPORTS),
+        )
+        source = self._write(tmp_path / "staff.csv", [self.MAYA])
+        await rag.ingest(source, document_id="staff-export")
+        await rag.ingest(text="Maya Ellison runs the group.", document_id="note.txt")
+        maya = (
+            "MATCH (p:Person {name:'Maya Ellison'}) "
+            "RETURN p.staff__age, p.entity_key, p.is_stub, p.description"
+        )
+        assert await _rows(rag, maya) == [[51, "E-1", False, "Runs the group"]]
+
+        await rag.delete_document("staff-export")
+
+        assert await _rows(rag, maya) == [[None, None, None, "Runs the group"]]
+        await rag.close()
+
+    async def test_drop_table_finds_a_table_loaded_under_its_own_id(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """Same gap from the other side: ``drop_table`` looked for the Document
+        under the table's filename and the path it was given, so a table loaded
+        under a caller's id kept its Document and every row."""
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=_ontology(self.REPORTS)
+        )
+        source = self._write(tmp_path / "staff.csv", [self.MAYA, self.NOOR])
+        await rag.ingest(source, document_id="staff-export")
+        assert await _rows(rag, "MATCH (p:Person) RETURN count(p)") == [[2]]
+
+        ontology = await rag.drop_table("staff.csv")
+
+        assert ontology.tables == []
+        assert await _rows(rag, "MATCH (p:Person) RETURN count(p)") == [[0]]
+        assert await _rows(rag, "MATCH (d:Document) RETURN count(d)") == [[0]]
+        await rag.close()
+
     async def test_a_link_the_declaration_dropped_leaves_the_nodes_and_the_schema(
         self, real_falkordb_rag_factory, resolver, scripted_llm, tmp_path
     ):
@@ -1258,6 +1305,34 @@ class TestADocumentRemembersHowItWasWritten:
 
         assert result.modified[0].error_type is None, result.modified[0].error
         assert await _rows(rag, "MATCH (o:Organization) RETURN count(o)") == [[2]]
+
+    async def test_apply_changes_adds_a_table_alongside_prose(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, orgs_csv, tmp_path
+    ):
+        """A table in ``added`` went to ``ingest(list)``, which refuses a table
+        in a batch -- so every entry in the list, prose included, came back as
+        that ValueError, and a CI sync that added one CSV ingested nothing.
+
+        Each table is written on its own now, with its entry in the slot the
+        input gave it, and the prose still goes through the batch path.
+        """
+        llm = scripted_llm([("Acme Corp", "Organization", "A company")])
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(ORGS))
+        note = tmp_path / "note.txt"
+        note.write_text("Acme Corp exists.")
+
+        result = await rag.apply_changes(added=[str(note), orgs_csv])
+
+        prose, table = result.added
+        assert prose.error is None and table.error is None, (prose.error, table.error)
+        assert prose.result.document_info.uid == str(note)
+        assert table.result.document_info.uid == "orgs.csv"
+        assert table.result.metadata["records"] == 2
+        assert table.result.metadata["entities"] == 2
+        assert await _rows(rag, "MATCH (o:Organization) RETURN count(o)") == [[2]]
+        assert await _rows(
+            rag, "MATCH (o:Organization {orgs__org_id:'ORG-42'}) RETURN o.orgs__employee_count"
+        ) == [[1200]]
 
     async def test_a_table_cannot_take_over_a_document_written_from_text(
         self, real_falkordb_rag_factory, scripted_llm, resolver, orgs_csv
@@ -1749,15 +1824,19 @@ class TestOneIdentitySchemeForBothHalves:
             "description:'led the platform team'})"
         )
         await rag.ingest(str(path))
+        await rag.finalize()
+        assert await _rows(rag, "MATCH (p:Person) RETURN p.embedding IS NOT NULL") == [[True]]
         path.write_text(
             "employee_id,full_name,age,job_title,org_id\nE-1,Alice Smith-Jones,35,Engineer,ORG-42\n"
         )
         await rag.ingest(str(path))
 
         rows = await _rows(
-            rag, "MATCH (p:Person) RETURN p.id, p.name, p.employees__age, p.description"
+            rag,
+            "MATCH (p:Person) "
+            "RETURN p.id, p.name, p.employees__age, p.description, p.embedding IS NULL",
         )
         assert rows == [
-            ["alice_smith-jones__person", "Alice Smith-Jones", 35, "led the platform team"]
-        ]
+            ["alice_smith-jones__person", "Alice Smith-Jones", 35, "led the platform team", True]
+        ], "the node followed the name; the embedding of the old name did not"
         await rag.close()

@@ -278,16 +278,26 @@ class TestReconcileKeyedIdentity:
             "Person", "hr__employee_id", [("1", "alice_smith__person")]
         )
 
-        lookup = [
+        owned, placeholders, contested = [
             call[0][0]
             for call in mock_connection.query.call_args_list
             if not _is_index_housekeeping(call[0][0])
-        ][0]
-        assert "{entity_key: it.k}" in lookup
-        assert "n.id <> it.new_id" in lookup
-        assert "(n.is_stub = true OR n.`hr__employee_id` IS NOT NULL)" in lookup, (
-            "another table numbering the same label from 1 writes the same entity_key for"
-            " a different person; without this its rows would be renamed to ours"
+        ]
+        assert "{`hr__employee_id`: it.k}" in owned and "n.id <> it.new_id" in owned, (
+            "a row is claimed by the value of the key as this table signs it. entity_key is"
+            " one slot every table writes: a person hr.csv numbers 1 and crm.csv numbers 2"
+            " holds whichever came last, and matching on it let hr.csv's row 2 take her"
+        )
+        assert "IS NOT NULL" not in owned, "existence of the signed key is not a match"
+        assert "{entity_key: it.k}" in placeholders and "n.is_stub = true" in placeholders, (
+            "a placeholder knows only the key a link gave it"
+        )
+        assert "NOT coalesce(n.is_stub, false)" in contested and (
+            "n.`hr__employee_id` IS NULL OR n.`hr__employee_id` <> it.k" in contested
+        ), (
+            "a placeholder a link parked on because two real nodes answer to the key is"
+            " not claimed for whichever table re-syncs first; this table's own row for"
+            " the key is not such a rival"
         )
 
     async def test_the_key_it_matches_on_is_indexed_first(self, graph_store, mock_connection):
@@ -304,6 +314,7 @@ class TestReconcileKeyedIdentity:
         assert indexes == [
             "CREATE INDEX FOR (n:`Person`) ON (n.id)",
             "CREATE INDEX FOR (n:`Person`) ON (n.entity_key)",
+            "CREATE INDEX FOR (n:`Person`) ON (n.`hr__employee_id`)",
         ], "both lookups run once per keyed row; indexed once per label, not per call"
 
     async def test_an_index_the_graph_already_has_is_not_created_again(
@@ -328,10 +339,7 @@ class TestReconcileKeyedIdentity:
         ]
 
     async def test_nothing_to_reconcile_touches_nothing(self, graph_store, mock_connection):
-        assert await graph_store.reconcile_keyed_identity("Person", "hr__employee_id", []) == {
-            "renamed": 0,
-            "merged": 0,
-        }
+        assert await graph_store.reconcile_keyed_identity("Person", "hr__employee_id", []) == {}
         mock_connection.query.assert_not_called()
 
 

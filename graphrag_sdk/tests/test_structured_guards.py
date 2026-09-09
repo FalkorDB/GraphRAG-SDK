@@ -244,6 +244,46 @@ class TestOnePropertyCannotBeRetyped:
         assert rows[0][0] == 5
         await rag.close()
 
+    async def test_a_refused_declaration_changes_nothing(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """The retyped declaration also drops ``title``. Neither half may land.
+
+        The checks ran after the mapping was stored and after the columns it no
+        longer named were retracted, so the rejection left the rejected mapping
+        as the table's declaration and every ``title`` gone from the nodes.
+        """
+        with_title = TableMapping(
+            source="hr.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={"grade": Column("grade", "INTEGER"), "title": "job_title"},
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology(with_title))
+        hr = tmp_path / "hr.csv"
+        hr.write_text("employee_id,full_name,grade,job_title\nE-1,Maya Ellison,5,Director\n")
+        await rag.ingest(str(hr))
+
+        retyped = real_falkordb_rag_factory(
+            llm=llm,
+            resolver=resolver,
+            ontology=ontology(graded("hr.csv", "STRING")),
+            connection=rag._conn.config,
+        )
+        with pytest.raises(OntologyContradictionError):
+            await retyped.ingest(str(hr))
+        await retyped.close()
+
+        stored = next(t for t in (await rag.get_ontology()).tables if t.source == "hr.csv")
+        assert stored.fingerprint_of_declaration == with_title.fingerprint_of_declaration, (
+            "the declaration on record is the one that was accepted"
+        )
+        assert await rag.query("MATCH (p:Person) RETURN p.hr__title, p.hr__grade") == [
+            ["Director", 5]
+        ]
+        await rag.close()
+
     async def test_two_sources_agreeing_on_a_type_is_fine(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path
     ):

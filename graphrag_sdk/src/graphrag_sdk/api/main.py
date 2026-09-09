@@ -1047,12 +1047,20 @@ class GraphRAG:
                 f"No table named {wanted!r} is in the ontology. Tables: "
                 + (", ".join(m.source for m in self._global_ontology.tables) or "none")
             )
-        table_id = self._table_document_id(mapping)
-        deleted = await self.delete_document(table_id, if_missing="ignore")
-        if deleted.chunks_deleted == 0 and os.path.normpath(source) != table_id:
-            # Loaded before ids were the table's name, or under an explicit id
-            # that happens to be the path the caller gave. One more place to look.
-            deleted = await self.delete_document(os.path.normpath(source), if_missing="ignore")
+        # Every Document stamped with this table's signature, whatever id it was
+        # loaded under, plus the two ids a Document written before the stamp
+        # could have: the table's name, or the path the caller gave.
+        doc_ids = list(
+            dict.fromkeys(
+                await self._graph_store.documents_of_table(mapping.signature)
+                + [self._table_document_id(mapping), os.path.normpath(source)]
+            )
+        )
+        chunks_deleted = entities_deleted = 0
+        for doc_id in doc_ids:
+            deleted = await self.delete_document(doc_id, if_missing="ignore")
+            chunks_deleted += deleted.chunks_deleted
+            entities_deleted += deleted.entities_deleted
         touched, released = await self._retract_table(mapping)
         for label, property_name in self._signed_properties_of(mapping):
             await self._ontology_store.drop_entity_property(label, property_name)
@@ -1063,8 +1071,8 @@ class GraphRAG:
             "drop_table %s: %d record chunk(s) and %d orphaned entit(y/ies) deleted, "
             "signed properties removed from %d node(s), identity released on %d",
             wanted,
-            deleted.chunks_deleted,
-            deleted.entities_deleted,
+            chunks_deleted,
+            entities_deleted,
             touched,
             released,
         )
@@ -1186,12 +1194,26 @@ class GraphRAG:
         )
         return touched
 
-    def _table_for_document(self, document_id: str) -> TableMapping | None:
-        """The declared table whose Document this is, if it is one."""
+    async def _table_for_document(self, document_id: str) -> TableMapping | None:
+        """The declared table whose Document this is, if it is one.
+
+        Read off the Document, which was stamped with its table's signature when
+        it was written. Matching the id to the table's filename instead meant a
+        table loaded as ``ingest("hr.csv", document_id="hr-export")`` was never
+        recognised as one: deleting or re-syncing it left its columns on every
+        node another document kept alive. Documents written before the stamp
+        are still matched the old way.
+        """
+        record = await self._graph_store.get_document_record(document_id)
+        if record is not None and record.table:
+            return self._table_signed(record.table)
         for mapping in self._global_ontology.tables:
             if self._table_document_id(mapping) == document_id:
                 return mapping
         return None
+
+    def _table_signed(self, signature: str) -> TableMapping | None:
+        return next((m for m in self._global_ontology.tables if m.signature == signature), None)
 
     # ── Group 3 internals: atomic-backfill engine ───────────────
     #
@@ -1985,11 +2007,15 @@ class GraphRAG:
         rather than silently retyping a property.
         """
         existing = await self._ontology_store.load()
+        # Refused before anything is written. The checks used to sit after the
+        # mapping was stored and the columns it dropped were retracted, so a
+        # declaration that retyped one column and dropped another was rejected
+        # with the rejected mapping persisted and the dropped column's values
+        # already gone from every node.
+        self._refuse_a_contradicting_declaration(incoming, existing)
         existing = await self._retire_superseded_proposals(incoming, existing)
         # Name -> declared type, not just the name set. Pass 2 needs the type to
-        # notice a second source redeclaring one property as something else; with
-        # names alone it silently skipped the case. See the contradiction check
-        # below.
+        # tell a property already declared from one it has to add.
         known_entity_props = {
             entity.label: {prop.name: prop.type for prop in entity.properties}
             for entity in existing.entities
@@ -2056,7 +2082,8 @@ class GraphRAG:
                 self._mapping_changes.add(mapping.source)
             await self._retract_what_the_declaration_dropped(previous, mapping, existing)
 
-        # Pass 2: extend what already existed.
+        # Pass 2: extend what already existed. A property already declared was
+        # checked for a matching type above.
         for entity in incoming.entities:
             already = known_entity_props.get(entity.label)
             if already is None:
@@ -2064,23 +2091,6 @@ class GraphRAG:
             for prop in entity.properties:
                 if prop.name not in already:
                     await self._ontology_store.add_entity_property(entity.label, prop)
-                    continue
-                # Already declared. The store's own retype check lives inside
-                # add_entity_property, which is never called on this branch, so
-                # a second source could redeclare one property as another type
-                # and be accepted: measured, hr.csv declaring grade INTEGER and
-                # finance.csv declaring it STRING both succeeded, the node held
-                # a string, and the ontology still said INTEGER — after which
-                # text-to-Cypher writes numeric predicates against a string.
-                declared = already[prop.name]
-                if declared and prop.type and declared != prop.type:
-                    raise OntologyContradictionError(
-                        f"Property '{entity.label}.{prop.name}' is already registered "
-                        f"as {declared}; a structured source declares it as "
-                        f"{prop.type}. Two sources cannot give one property two "
-                        f"types — rename one of them, or change the type "
-                        f"deliberately with drop_attribute() then add_attribute()."
-                    )
 
         for relation in incoming.relations:
             prior = known_relations.get(relation.label)
@@ -2095,20 +2105,59 @@ class GraphRAG:
                         pattern[1],
                         description=relation.description,
                     )
-            prior_props = {prop.name: prop.type for prop in prior.properties}
+            prior_props = {prop.name for prop in prior.properties}
             for prop in relation.properties:
                 if prop.name not in prior_props:
                     await self._ontology_store.add_relation_property(relation.label, prop)
-                    continue
-                declared = prior_props[prop.name]
+
+        return await self._ontology_store.load()
+
+    @staticmethod
+    def _refuse_a_contradicting_declaration(incoming: Ontology, existing: Ontology) -> None:
+        """Raise if ``incoming`` gives an already-declared property another type.
+
+        The store's own retype check lives inside ``add_entity_property``, which
+        is never called for a property that already exists, so without this a
+        second source could redeclare one property as another type and be
+        accepted: measured, hr.csv declaring grade INTEGER and finance.csv
+        declaring it STRING both succeeded, the node held a string, and the
+        ontology still said INTEGER -- after which text-to-Cypher wrote numeric
+        predicates against a string.
+
+        Pure: reads both ontologies and writes nothing, so it can run first.
+        """
+        known_entity_props = {
+            entity.label: {prop.name: prop.type for prop in entity.properties}
+            for entity in existing.entities
+        }
+        for entity in incoming.entities:
+            already = known_entity_props.get(entity.label)
+            if already is None:
+                continue
+            for prop in entity.properties:
+                declared = already.get(prop.name)
+                if declared and prop.type and declared != prop.type:
+                    raise OntologyContradictionError(
+                        f"Property '{entity.label}.{prop.name}' is already registered "
+                        f"as {declared}; a structured source declares it as "
+                        f"{prop.type}. Two sources cannot give one property two "
+                        f"types — rename one of them, or change the type "
+                        f"deliberately with drop_attribute() then add_attribute()."
+                    )
+        known_relations = {relation.label: relation for relation in existing.relations}
+        for relation in incoming.relations:
+            prior = known_relations.get(relation.label)
+            if prior is None:
+                continue
+            prior_props = {prop.name: prop.type for prop in prior.properties}
+            for prop in relation.properties:
+                declared = prior_props.get(prop.name)
                 if declared and prop.type and declared != prop.type:
                     raise OntologyContradictionError(
                         f"Property '{relation.label}.{prop.name}' on RELATES is already "
                         f"registered as {declared}; a structured source declares it as "
                         f"{prop.type}."
                     )
-
-        return await self._ontology_store.load()
 
     async def _retract_what_the_declaration_dropped(
         self, previous: TableMapping, mapping: TableMapping, existing: Ontology
@@ -2275,6 +2324,14 @@ class GraphRAG:
             resynced.edges = int(counts.get("edges", 0))
             resynced.rows_skipped = int(counts.get("rows_skipped", 0))
             resynced.rows_in_source = int(counts.get("rows_in_source", resynced.records))
+            resynced.entities_moved = int(counts.get("entities_moved", 0))
+            resynced.identity_moved = dict(counts.get("identity_moved") or {})
+            resynced.references_ambiguous = [
+                (label, key)
+                for label, _, key in (
+                    str(item).partition(":") for item in counts.get("references_ambiguous") or []
+                )
+            ]
             resynced.content_hash = str(counts.get("content_hash", "") or "")
             resynced.chunks_deleted = update_result.chunks_deleted
             resynced.entities_deleted = update_result.entities_deleted
@@ -2775,7 +2832,7 @@ class GraphRAG:
         # persisted ontology is read; without this the step below found no
         # mapping and left the table's columns on every surviving node.
         await self._ensure_ontology_initialized()
-        mapping = self._table_for_document(document_id)
+        mapping = await self._table_for_document(document_id)
         if mapping is not None:
             # A row that left the export, a foreign key that moved: the node a
             # document kept alive would otherwise still carry this table's
@@ -2783,8 +2840,9 @@ class GraphRAG:
             # on the survivors alone.
             left = await self._graph_store.entities_outside_document(candidate_ids, document_id)
             retracted, _ = await self._retract_table(mapping, ids=left)
+            gone = set(left)
             retracted += await self._retract_rows_this_table_still_points_at(
-                mapping, [eid for eid in candidate_ids if eid not in set(left)], document_id
+                mapping, [eid for eid in candidate_ids if eid not in gone], document_id
             )
         await self._graph_store.clear_cleanup_state(document_id)
         if stale_deleted or trimmed or orphans_deleted or retracted:
@@ -3291,6 +3349,16 @@ class GraphRAG:
                         "update: pending cleanup failed during exception path", exc_info=True
                     )
                 raise
+            # The write moves a renamed row to the id its new name gives it,
+            # and the candidates were read under the old one. Cleanup scoped to
+            # the snapshot would then miss the node: measured as Alicia still
+            # reporting to Robert after the export dropped the manager column,
+            # because the stale edge sat between two ids the cleanup never
+            # looked at. Rewritten before the state is persisted, so recovery
+            # after a crash works from the right ids too.
+            if structured_result.identity_moved:
+                moved = structured_result.identity_moved
+                candidate_ids = list(dict.fromkeys(moved.get(eid, eid) for eid in candidate_ids))
             return await self._finish_update(
                 resolved_id=resolved_id,
                 pending_id=pending_id,
@@ -3594,6 +3662,14 @@ class GraphRAG:
           file the graph never saw is upserted, not erroring out)
         - ``deleted`` → ``delete_document()``
 
+        A table (``.csv``, ``.tsv``, ``.psv``, ``.tab``) in ``added`` or
+        ``modified`` takes the structured path its mapping in the ontology
+        describes, one source at a time. The ``chunker``, ``extractor``,
+        ``resolver`` and ``cache_unchanged_chunks`` overrides are for the
+        prose in the batch and are not applied to it. Its entry carries the
+        structured counts (``records``, ``entities``, ``references``,
+        ``edges``) in the result's ``metadata``.
+
         Each list can independently be ``None`` or empty. Per-file errors
         are wrapped as ``BatchEntry`` entries with ``error`` (the formatted
         message) and ``error_type`` (the exception class name) set, and
@@ -3723,6 +3799,13 @@ class GraphRAG:
         async def _update_one(path: str) -> BatchEntry[UpdateResult]:
             async with update_sem:
                 try:
+                    if self._is_tabular(path, loader):
+                        # The chunker, extractor, resolver and chunk cache are
+                        # for the prose in this batch; records have no use for
+                        # them, and update() refuses them on a table.
+                        return BatchEntry.ok(
+                            await self.update(path, if_missing="ingest", ctx=ctx.child())
+                        )
                     return BatchEntry.ok(
                         await self.update(
                             path,
@@ -3748,14 +3831,21 @@ class GraphRAG:
             list(await asyncio.gather(*[_update_one(p) for p in modified])) if modified else []
         )
 
-        # ── 3. Adds (delegate to ingest's batch path for free per-file error handling) ──
-        # ingest(list) returns the legacy list[IngestionResult | Exception]
-        # shape — adapt at this boundary so the public ApplyChangesResult
-        # surface is uniformly BatchEntry.
-        added_results: list[BatchEntry[IngestionResult]] = []
-        if added:
+        # ── 3. Adds ──
+        # Prose goes through ingest's batch path for its per-file error handling;
+        # ingest(list) returns the legacy list[IngestionResult | Exception] shape,
+        # adapted here so the public ApplyChangesResult surface is uniformly
+        # BatchEntry. Tables cannot go with it: ingest(list) refuses them, since a
+        # structured source is written on its own. Each is ingested by itself, and
+        # under the update semaphore, because a table the graph already holds is
+        # re-synced through update() and so shares the orphan-cleanup invariant
+        # that serializes the modified list.
+        added_results: dict[int, BatchEntry[IngestionResult]] = {}
+        prose_adds = [(i, p) for i, p in enumerate(added) if not self._is_tabular(p, loader)]
+        table_adds = [(i, p) for i, p in enumerate(added) if self._is_tabular(p, loader)]
+        if prose_adds:
             batch_out = await self.ingest(
-                added,
+                [path for _, path in prose_adds],
                 loader=loader,
                 chunker=chunker,
                 extractor=extractor,
@@ -3765,13 +3855,38 @@ class GraphRAG:
             )
             # ``ingest(list)`` always returns a list per its overload.
             assert isinstance(batch_out, list)
-            added_results = [
-                BatchEntry.fail(item) if isinstance(item, Exception) else BatchEntry.ok(item)
-                for item in batch_out
-            ]
+            for (i, _), item in zip(prose_adds, batch_out):
+                added_results[i] = (
+                    BatchEntry.fail(item) if isinstance(item, Exception) else BatchEntry.ok(item)
+                )
+        for i, path in table_adds:
+            async with update_sem:
+                try:
+                    structured = await self.ingest(path, ctx=ctx.child())
+                except Exception as exc:
+                    logger.warning(
+                        "apply_changes: ingest failed for %r: %s: %s",
+                        path,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    added_results[i] = BatchEntry.fail(exc)
+                    continue
+            assert isinstance(structured, StructuredIngestionResult)
+            added_results[i] = BatchEntry.ok(
+                # Same shape a table takes in ``modified``: the counts a
+                # StructuredIngestionResult carries, in ``metadata``.
+                IngestionResult(
+                    document_info=DocumentInfo(uid=structured.document_id, path=path),
+                    nodes_created=structured.entities + structured.references,
+                    relationships_created=structured.edges,
+                    chunks_indexed=structured.chunks,
+                    metadata=structured.as_dict(),
+                )
+            )
 
         return ApplyChangesResult(
-            added=added_results,
+            added=[added_results[i] for i in range(len(added))],
             modified=update_results,
             deleted=delete_results,
         )

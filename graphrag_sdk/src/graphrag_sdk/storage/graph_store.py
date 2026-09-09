@@ -102,7 +102,7 @@ class GraphStore:
 
     _LABEL_INDEXED_PROPERTIES = ("id", "entity_key")
 
-    async def _ensure_label_id_index(self, label: str) -> None:
+    async def _ensure_label_id_index(self, label: str, *extra: str) -> None:
         """Range-index ``id`` and ``entity_key`` on a label before writing into it.
 
         Every node write is ``MERGE (n:`Label` {id: ...})``, and a MERGE can only
@@ -119,17 +119,19 @@ class GraphStore:
         up front and are indexed the first time they are written. What the graph
         already has is read once per instance, so reopening an existing graph
         creates nothing rather than failing a CREATE per label. Failure is not
-        fatal, it only costs speed.
+        fatal, it only costs speed. ``extra`` names further properties a caller
+        is about to look nodes up by, such as a table's signed key.
         """
         if self._indexed is None:
             self._indexed = await self._read_range_indexes()
         safe_label = sanitize_cypher_label(label)
-        for prop in self._LABEL_INDEXED_PROPERTIES:
+        for prop in (*self._LABEL_INDEXED_PROPERTIES, *extra):
             if (label, prop) in self._indexed:
                 continue
             self._indexed.add((label, prop))
+            target = prop if prop in self._LABEL_INDEXED_PROPERTIES else f"`{prop}`"
             try:
-                await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.{prop})")
+                await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.{target})")
                 logger.debug("Created range index on %s.%s", safe_label, prop)
             except Exception as exc:
                 # Another instance got there first, or the graph refused.
@@ -269,27 +271,38 @@ class GraphStore:
             {"id": document_id, "path": path},
         )
 
-    async def resolve_by_entity_key(self, label: str, keys: Sequence[str]) -> dict[str, str]:
-        """``key_value -> id`` for every node under ``label`` already carrying that key.
+    async def resolve_by_entity_key(self, label: str, keys: Sequence[str]) -> dict[str, list[str]]:
+        """``key_value -> ids`` of every node under ``label`` already carrying that key.
 
         Every structured node — real or placeholder — carries ``entity_key``, the
         value its row is keyed by, whoever wrote it. A foreign key arriving
         *after* its target's source must find the real node rather than create a
         placeholder beside it; this is that lookup. One batched query.
+
+        A key is returned with **every** node holding it, not the last one the
+        graph happened to list: two tables that both number ``Person`` from 1
+        leave two nodes with ``entity_key = "1"``, and a third table's foreign
+        key ``1`` cannot tell which it means. The caller decides what to do with
+        more than one; choosing here would choose arbitrarily.
         """
         if not keys:
             return {}
         await self._ensure_label_id_index(label)
         safe_label = sanitize_cypher_label(label)
         found = await self.query_raw(
-            f"UNWIND $keys AS k MATCH (n:`{safe_label}` {{entity_key: k}}) RETURN k, n.id",
+            f"UNWIND $keys AS k MATCH (n:`{safe_label}` {{entity_key: k}}) "
+            f"RETURN k, collect(DISTINCT n.id)",
             {"keys": list(dict.fromkeys(keys))},
         )
-        return {row[0]: row[1] for row in getattr(found, "result_set", None) or [] if row[1]}
+        return {
+            row[0]: [node_id for node_id in row[1] if node_id]
+            for row in getattr(found, "result_set", None) or []
+            if row[1]
+        }
 
     async def reconcile_keyed_identity(
         self, label: str, signed_key: str, rows: Sequence[tuple[str, str]]
-    ) -> dict[str, int]:
+    ) -> dict[str, str]:
         """Point every node carrying one of these keys at the id its name now gives it.
 
         An entity's id comes from its **name**, for a table row exactly as for a
@@ -304,57 +317,134 @@ class GraphStore:
           than be orphaned with its prose description.
 
         Only nodes this table is entitled to move are considered: a placeholder
-        (``is_stub = true``) or a node carrying ``signed_key``, the key property
-        as this table signs it. A second table that owns the same label from its
-        own key space — ``hr.csv`` and ``crm.csv`` both numbering people from 1 —
-        writes the same ``entity_key`` values for different people, and without
-        that guard each export would rename the other's rows to its own names.
+        (``is_stub = true``) carrying the key as ``entity_key``, or a row whose
+        ``signed_key`` -- the key property as this table signs it -- **equals**
+        the key. ``entity_key`` alone cannot decide: it is one slot every table
+        writes, so a person ``hr.csv`` numbers ``1`` and ``crm.csv`` numbers ``2``
+        holds whichever key was written last, and matching on it would let
+        ``hr.csv``'s row ``2`` claim that person's node -- measured: Alice's CRM
+        email and record provenance moved onto Bob. The signed key is the one
+        value only this table writes, under this table's meaning of the key.
 
         ``rows`` are ``(entity_key, new_id)``. A qualifying node under ``label``
         with that key and a different id is **renamed in place** when nothing is
         at ``new_id`` (edges stay on the node), or **merged** into what is (edges
         remapped, properties carried, old node deleted). One batched lookup.
+
+        Returns ``old_id -> new_id`` for every node moved either way. A caller
+        holding ids it read before this ran -- ``update()`` snapshots the live
+        document's entities for its cleanup -- has to apply it, or the cleanup
+        looks for nodes under ids that no longer exist and the stale edges
+        between renamed rows outlive the export that dropped them.
         """
         if not rows:
-            return {"renamed": 0, "merged": 0}
-        await self._ensure_label_id_index(label)
+            return {}
+        await self._ensure_label_id_index(label, signed_key)
         safe_label = sanitize_cypher_label(label)
         safe_key = sanitize_cypher_label(signed_key)
-        found = await self.query_raw(
+        params = {"rows": [{"k": key, "new_id": new_id} for key, new_id in rows]}
+        # Two patterns rather than one OR, so each can use its index.
+        owned = await self.query_raw(
+            f"UNWIND $rows AS it "
+            f"MATCH (n:`{safe_label}` {{`{safe_key}`: it.k}}) "
+            f"WHERE n.id <> it.new_id "
+            f"RETURN it.new_id AS new_id, collect(DISTINCT n.id) AS old_ids",
+            params,
+        )
+        placeholders = await self.query_raw(
             f"UNWIND $rows AS it "
             f"MATCH (n:`{safe_label}` {{entity_key: it.k}}) "
-            f"WHERE n.id <> it.new_id AND (n.is_stub = true OR n.`{safe_key}` IS NOT NULL) "
+            f"WHERE n.id <> it.new_id AND n.is_stub = true "
             f"RETURN it.new_id AS new_id, collect(DISTINCT n.id) AS old_ids",
-            {"rows": [{"k": key, "new_id": new_id} for key, new_id in rows]},
+            params,
         )
-        counts = {"renamed": 0, "merged": 0}
-        for new_id, old_ids in getattr(found, "result_set", None) or []:
-            for old_id in old_ids:
-                exists = await self.query_raw(
-                    "MATCH (n:__Entity__ {id: $id}) RETURN count(n)", {"id": new_id}
-                )
-                if not (exists.result_set and exists.result_set[0][0]):
-                    await self.query_raw(
-                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $new",
-                        {"old": old_id, "new": new_id},
+        # A placeholder is "the row keyed thus", and a link was parked on one
+        # because more than one real node answered to the key (two tables
+        # numbering this label from 1). Claiming it here for whichever table
+        # re-syncs first would make the choice the link refused to make. A
+        # real node under another table's key is such an owner; this table's
+        # own row for the key -- possibly still under last export's id -- is not.
+        contested = await self.query_raw(
+            f"UNWIND $rows AS it "
+            f"MATCH (n:`{safe_label}` {{entity_key: it.k}}) "
+            f"WHERE n.id <> it.new_id AND NOT coalesce(n.is_stub, false) "
+            f"AND (n.`{safe_key}` IS NULL OR n.`{safe_key}` <> it.k) "
+            f"RETURN DISTINCT it.new_id",
+            params,
+        )
+        contested_ids = {row[0] for row in getattr(contested, "result_set", None) or []}
+        to_move: dict[str, list[str]] = {}
+        for result, skip in ((owned, frozenset()), (placeholders, contested_ids)):
+            for new_id, old_ids in getattr(result, "result_set", None) or []:
+                if new_id in skip:
+                    logger.warning(
+                        "%s: placeholder for a key another table's row also carries left "
+                        "in place rather than claimed for %s",
+                        label,
+                        new_id,
                     )
-                    counts["renamed"] += 1
                     continue
-                # Something already sits at new_id — a prose mention of the same
-                # name, typically. Fold the old node into it.
-                for query in _REMAP_QUERIES:
-                    await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
-                await self._carry_then_delete(old_id, new_id)
-                counts["merged"] += 1
-        if counts["renamed"] or counts["merged"]:
+                seen = to_move.setdefault(new_id, [])
+                seen.extend(old_id for old_id in old_ids if old_id not in seen)
+        moved: dict[str, str] = {}
+        renamed = merged = 0
+        # Two rows that swapped names: each one's new id is the other's current
+        # id. Moving either directly would merge it into a node that is itself
+        # about to leave. Such a node steps aside under a transient id first and
+        # takes its place once the other has gone.
+        movers = {old_id for old_ids in to_move.values() for old_id in old_ids}
+        deferred: list[tuple[str, str]] = []
+        for new_id, old_ids in to_move.items():
+            for old_id in old_ids:
+                moved[old_id] = new_id
+                if new_id in movers:
+                    aside = f"{old_id}__swapping"
+                    await self.query_raw(
+                        "MATCH (n:__Entity__ {id: $old}) SET n.id = $aside",
+                        {"old": old_id, "aside": aside},
+                    )
+                    deferred.append((aside, new_id))
+                    continue
+                renamed_here, merged_here = await self._move_entity(old_id, new_id)
+                renamed += renamed_here
+                merged += merged_here
+        for aside, new_id in deferred:
+            renamed_here, merged_here = await self._move_entity(aside, new_id)
+            renamed += renamed_here
+            merged += merged_here
+        if moved:
             logger.info(
                 "%s: %d node(s) renamed to their name-derived id, %d merged into an "
                 "existing node of that name",
                 label,
-                counts["renamed"],
-                counts["merged"],
+                renamed,
+                merged,
             )
-        return counts
+        return moved
+
+    async def _move_entity(self, old_id: str, new_id: str) -> tuple[int, int]:
+        """Rename the node at ``old_id`` to ``new_id``, or fold it into what is there.
+
+        Returns ``(renamed, merged)`` -- one of them 1.
+        """
+        exists = await self.query_raw(
+            "MATCH (n:__Entity__ {id: $id}) RETURN count(n)", {"id": new_id}
+        )
+        if not (exists.result_set and exists.result_set[0][0]):
+            # The embedding is of the old name; left on the node, vector search
+            # kept finding the row under a name it no longer has. finalize()
+            # embeds every node without one.
+            await self.query_raw(
+                "MATCH (n:__Entity__ {id: $old}) SET n.id = $new REMOVE n.embedding",
+                {"old": old_id, "new": new_id},
+            )
+            return 1, 0
+        # Something already sits at new_id — a prose mention of the same name,
+        # typically. Fold the old node into it.
+        for query in _REMAP_QUERIES:
+            await self.query_raw(query, {"dup_id": old_id, "survivor_id": new_id})
+        await self._carry_then_delete(old_id, new_id)
+        return 0, 1
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
     # ``True`` must not land on the node first and then have to be undone.
@@ -751,7 +841,7 @@ class GraphStore:
         """
         result = await self._conn.query(
             "MATCH (d:Document {id: $id}) RETURN d.path AS path, "
-            "d.content_hash AS content_hash, d.kind AS kind LIMIT 1",
+            "d.content_hash AS content_hash, d.kind AS kind, d.table AS table LIMIT 1",
             {"id": document_id},
         )
         if not result.result_set:
@@ -761,7 +851,21 @@ class GraphStore:
             path=row[0],
             content_hash=row[1],
             kind=row[2] if len(row) > 2 else None,
+            table=row[3] if len(row) > 3 else None,
         )
+
+    async def documents_of_table(self, signature: str) -> list[str]:
+        """Ids of the live Documents written from the table signed ``signature``.
+
+        Pending copies an interrupted update left behind are not Documents of
+        the table; recovery deals with those under their real id.
+        """
+        result = await self._conn.query(
+            "MATCH (d:Document {table: $table}) "
+            "WHERE NOT d.id CONTAINS '__pending__' RETURN d.id ORDER BY d.id",
+            {"table": signature},
+        )
+        return [row[0] for row in result.result_set]
 
     async def get_document_entity_candidates(self, document_id: str) -> list[str]:
         """Return ids of entities mentioned in this document's chunks.
@@ -1547,13 +1651,14 @@ class GraphStore:
 
         When a row disappears from one export but another source still describes
         the same entity, the entity correctly survives — the orphan predicate is
-        global, so a remaining mention from any source keeps it. What is left
-        behind is the *first* source's signed properties, belonging to nobody and
-        looking current.
+        global, so a remaining mention from any source keeps it. The re-sync
+        takes the first source's signed properties back from it; this is the
+        check that nothing escaped — a graph written before that retraction
+        existed, a cleanup interrupted before it ran.
 
-        Not fixed automatically: the difference between "this source dropped the
-        row" and "this source has not been reloaded yet" is not visible from the
-        graph, and guessing would delete live data. Reported instead.
+        Not fixed here: the difference between "this source dropped the row" and
+        "this source has not been reloaded yet" is not visible from the graph,
+        and guessing would delete live data. Reported instead.
 
         Returns ``(entity_id, [orphaned property names])`` pairs.
         """

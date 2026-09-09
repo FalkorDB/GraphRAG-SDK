@@ -140,6 +140,13 @@ class DocumentRecord(DataModel):
     written before this field existed, and on every extracted document, so treat
     ``None`` as "prose".
     """
+    table: str | None = None
+    """The signature of the table a structured Document was written from.
+
+    The prefix that table's columns are stored under (``hr`` for ``hr__grade``),
+    which is how a Document loaded under a caller's own id is traced back to its
+    declaration. ``None`` on prose, and on tables written before it was stamped.
+    """
 
 
 class ChunkEntityRow(DataModel):
@@ -895,9 +902,12 @@ class FinalizeResult(DataModel):
     stale_signed_properties: list[str] = Field(default_factory=list)
     """Signed properties left on an entity by a source that no longer mentions it.
 
-    When one export stops listing a row that another export still describes, the
-    entity survives — correctly, it is still mentioned — but the first source's
-    values stay on it, belonging to nobody and reading as current.
+    A re-sync, ``delete_document()`` and ``drop_table()`` all take a table's
+    columns back from the rows it stopped listing, so on a graph this version
+    wrote the list is empty. What it catches is a graph written before that
+    retraction existed, or a cleanup interrupted before it ran: the entity
+    survives -- another source still mentions it -- with the first source's
+    values on it, belonging to nobody and reading as current.
 
     Reported rather than removed: the graph cannot tell "that source dropped the
     row" from "that source has not been reloaded yet", and guessing would delete
@@ -930,7 +940,8 @@ class FinalizeResult(DataModel):
     same way it does within a document; the merge kept the node a table wrote,
     so the entity is still the one the table's next re-sync finds, and every
     typed value the table signed onto it. What prose knew — description, mentions,
-    relationships — moved onto it. Empty when no resolver was passed.
+    relationships — moved onto it. Empty when resolution was disabled
+    (``finalize(resolve=False)``) or the resolver judged no pair one thing.
     """
 
     rejected_duplicates: list[str] = Field(default_factory=list)
@@ -940,7 +951,8 @@ class FinalizeResult(DataModel):
     so the next ``finalize()`` neither asks about the pair again nor merges it
     on a threshold, and so the pair leaves ``probable_duplicates``: it is decided.
     The memory goes with either node — delete or re-read the document and the
-    pair is judged afresh. Empty when no resolver was passed.
+    pair is judged afresh. Empty when resolution was disabled
+    (``finalize(resolve=False)``) or the resolver judged no pair two things.
     """
 
     unmerged_name_collisions: dict[str, list[str]] = Field(default_factory=dict)
@@ -1037,6 +1049,10 @@ class ApplyChangesResult(DataModel):
     failures are wrapped as ``BatchEntry`` with ``error`` set; the batch
     never raises. Callers branch on ``entry.is_success`` (or check
     ``entry.error_type`` for specific failures).
+
+    A table in ``added`` or ``modified`` is reported in the same result type
+    as a prose file, with the structured counts -- ``records``, ``entities``,
+    ``references``, ``edges`` -- in ``result.metadata``.
     """
 
     added: list[BatchEntry[IngestionResult]] = Field(default_factory=list)

@@ -104,6 +104,174 @@ class TestNothingIsDeletedWithoutSaying:
         assert rows == [["E-1", 34], ["E-7", 52]]
         await rag.close()
 
+    async def test_a_mention_of_a_name_two_rows_share_is_not_given_to_either(
+        self, real_falkordb_rag_factory, scripted_llm, resolver, tmp_path
+    ):
+        """A note about "John Smith", and two rows called that.
+
+        The two rows were kept apart, but the note's John was then folded into
+        whichever of them ranked first -- by degree, description length or id,
+        none of which say which John the note meant. The wrong employee got the
+        note's facts and the note got his key. The mention stays its own node and
+        the pair is reported for a resolver or the reader to decide.
+        """
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="people.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"age": Column("age", "INTEGER")},
+                    standalone=True,
+                )
+            ],
+        )
+        llm = scripted_llm([("John Smith", "Person", "Presented the roadmap")])
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
+        path = tmp_path / "people.csv"
+        path.write_text("employee_id,full_name,age\nE-1,John Smith,34\nE-7,John Smith,52\n")
+        await rag.ingest(str(path))
+        await rag.ingest(text="John Smith presented the roadmap.", document_id="note.txt")
+
+        # No resolver: this is about what the name rule alone may do.
+        summary = await rag.finalize(resolve=False)
+
+        rows = await rag.query(
+            "MATCH (p:Person {name:'John Smith'}) RETURN p.people__employee_id, p.description"
+        )
+        assert sorted(rows, key=str) == [
+            ["E-1", None],
+            ["E-7", None],
+            [None, "Presented the roadmap"],
+        ], "neither row took the note, and the note kept its own node"
+        assert summary.entities_deduplicated == 0
+        reported = [line for line in summary.probable_duplicates if "2 keyed rows" in line]
+        assert len(reported) == 2, summary.probable_duplicates
+        await rag.close()
+
+    @staticmethod
+    def _reporting_ontology() -> Ontology:
+        return Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="staff.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    links=[Link("REPORTS_TO", to="Person", by="manager_id", name="manager_name")],
+                )
+            ],
+        )
+
+    async def test_two_managers_sharing_a_name_are_told_apart_by_key(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """Alice reports to ``E1``; ``E1`` and ``E2`` are both called John.
+
+        Two references naming the same person derived one id from the name, so
+        the remap that follows a same-batch row held one entry for both, and the
+        last one written won: Alice's edge went to ``E2``. Two keys under one
+        name is ambiguous for a reference exactly as it is for a row, and both
+        fall back to the key.
+        """
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=self._reporting_ontology()
+        )
+        path = tmp_path / "staff.csv"
+        path.write_text(
+            "employee_id,full_name,manager_id,manager_name\n"
+            "E1,John Park,,\n"
+            "E2,John Vance,,\n"
+            "E3,Alice Smith,E1,John\n"
+            "E4,Bob Jones,E2,John\n"
+        )
+        await rag.ingest(str(path))
+
+        rows = await rag.query(
+            "MATCH (p:Person)-[r:RELATES {rel_type:'REPORTS_TO'}]->(m:Person) "
+            "RETURN p.name, m.staff__employee_id ORDER BY p.name"
+        )
+        assert rows == [["Alice Smith", "E1"], ["Bob Jones", "E2"]]
+        assert await rag.query("MATCH (p:Person) RETURN count(p)") == [[4]], (
+            "no placeholder named John beside the two rows"
+        )
+        await rag.close()
+
+    async def test_renaming_a_row_someone_reports_to_leaves_no_placeholder_behind(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """``E1`` Alice becomes Alice New, and Bob's ``manager_name`` says so too.
+
+        Bob's reference was looked up in the graph by key before Alice's row was
+        moved to its new id, so it -- and Bob's edge -- pointed at her *old* id;
+        the write then recreated that id as a placeholder beside the renamed
+        row. A reference to a row this batch writes is not looked up: the row
+        is where it belongs.
+        """
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=self._reporting_ontology()
+        )
+        path = tmp_path / "staff.csv"
+        path.write_text(
+            "employee_id,full_name,manager_id,manager_name\n"
+            "E1,Alice Smith,,\n"
+            "E2,Bob Jones,E1,Alice Smith\n"
+        )
+        await rag.ingest(str(path))
+        path.write_text(
+            "employee_id,full_name,manager_id,manager_name\n"
+            "E1,Alice New,,\n"
+            "E2,Bob Jones,E1,Alice New\n"
+        )
+        await rag.ingest(str(path))
+
+        people = await rag.query(
+            "MATCH (p:Person) RETURN p.name, p.staff__employee_id, p.is_stub ORDER BY p.name"
+        )
+        assert people == [["Alice New", "E1", False], ["Bob Jones", "E2", False]]
+        assert await rag.query(
+            "MATCH (:Person {name:'Bob Jones'})-[:RELATES {rel_type:'REPORTS_TO'}]->(m) "
+            "RETURN m.name"
+        ) == [["Alice New"]]
+        await rag.close()
+
+    async def test_an_edge_between_two_renamed_rows_goes_when_the_export_drops_it(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """Alice and Bob become Alicia and Robert, and Bob stops reporting to her.
+
+        ``update()`` reads the live document's entities before the write and
+        scopes its cleanup to them; the write then moved both rows to the ids
+        their new names give them, so the cleanup looked for the stale edge
+        between two ids that no longer existed and left it. ``Alicia REPORTS_TO
+        Robert`` survived an export that said no such thing.
+        """
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=self._reporting_ontology()
+        )
+        path = tmp_path / "staff.csv"
+        path.write_text(
+            "employee_id,full_name,manager_id,manager_name\n"
+            "E1,Alice Smith,,\n"
+            "E2,Bob Jones,E1,Alice Smith\n"
+        )
+        await rag.ingest(str(path))
+        path.write_text(
+            "employee_id,full_name,manager_id,manager_name\nE1,Alicia Smith,,\nE2,Robert Jones,,\n"
+        )
+        result = await rag.ingest(str(path))
+
+        assert result.as_dict()["entities_moved"] == 2
+        assert await rag.query("MATCH ()-[r:RELATES]->() RETURN count(r)") == [[0]]
+        assert await rag.query("MATCH (p:Person) RETURN p.name ORDER BY p.name") == [
+            ["Alicia Smith"],
+            ["Robert Jones"],
+        ]
+        await rag.close()
+
     async def test_rows_without_a_key_are_counted_and_reported(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path, caplog
     ):
@@ -194,6 +362,42 @@ class TestTwoTablesOwningOneLabelStayApart:
         assert rows == [["Alice Smith", "1", None], ["Bob Jones", None, "1"]]
         await rag.close()
 
+    async def test_one_person_two_tables_two_keys_is_not_a_reason_to_merge_a_third(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """HR knows Alice as 1 and Bob as 2; CRM knows Alice as 2.
+
+        Alice's node then holds ``entity_key = "2"`` -- the slot every table
+        writes, last writer wins -- next to ``hr__employee_id = "1"``. The
+        re-sync used to claim any node with this table's key *present* and the
+        shared key *equal*, so HR's row 2 found Alice and folded her into Bob:
+        her CRM email and her record chunks moved onto him. A row is claimed by
+        the value of the key as this table signs it, nothing less.
+        """
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self._ontology())
+        hr = tmp_path / "hr.csv"
+        hr.write_text("employee_id,full_name\n1,Alice Smith\n2,Bob Jones\n")
+        crm = tmp_path / "crm.csv"
+        crm.write_text("contact_id,contact_name\n2,Alice Smith\n")
+
+        await rag.ingest(str(hr))
+        await rag.ingest(str(crm))
+        # A changed export, so the re-sync runs rather than short-circuiting on
+        # an unchanged content hash.
+        hr.write_text("employee_id,full_name\n1,Alice Smith\n2,Bob Jones\n3,Carol White\n")
+        await rag.ingest(str(hr))
+
+        rows = await rag.query(
+            "MATCH (p:Person) RETURN p.name, p.hr__employee_id, p.crm__contact_id, "
+            "size((p)-[:MENTIONED_IN]->()) ORDER BY p.name"
+        )
+        assert rows == [
+            ["Alice Smith", "1", "2", 2],
+            ["Bob Jones", "2", None, 1],
+            ["Carol White", "3", None, 1],
+        ]
+        await rag.close()
+
     async def test_fuzzy_dedup_leaves_two_keyed_rows_alone(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path, embedder
     ):
@@ -217,6 +421,94 @@ class TestTwoTablesOwningOneLabelStayApart:
         assert merged == 0
         rows = await rag.query("MATCH (p:Person) RETURN p.hr__employee_id ORDER BY p.name")
         assert rows == [["2"], ["1"]]
+        await rag.close()
+
+    async def test_a_foreign_key_two_rows_answer_to_is_given_to_neither(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """HR's 1 is Alice, CRM's 1 is Bob; ``tickets.csv`` says the assignee is 1.
+
+        The lookup that attaches a foreign key to an existing node returned one
+        id per key -- whichever the graph listed last -- so the ticket landed on
+        Alice or on Bob depending on nothing the caller could see, and the load
+        reported success. Two matches is not a match: the edge stays on a
+        placeholder that says only "Person keyed 1", and the result says so.
+        """
+        ontology = self._ontology()
+        ontology.tables.append(
+            TableMapping(
+                source="tickets.csv",
+                label="Ticket",
+                key="ticket_id",
+                name="ticket_id",
+                links=[Link("ASSIGNED_TO", to="Person", by="assignee_id")],
+            )
+        )
+        ontology.entities.append(Entity(label="Ticket"))
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
+        (tmp_path / "hr.csv").write_text("employee_id,full_name\n1,Alice Smith\n")
+        (tmp_path / "crm.csv").write_text("contact_id,contact_name\n1,Bob Jones\n")
+        (tmp_path / "tickets.csv").write_text("ticket_id,assignee_id\nT-1,1\n")
+        await rag.ingest(str(tmp_path / "hr.csv"))
+        await rag.ingest(str(tmp_path / "crm.csv"))
+
+        result = await rag.ingest(str(tmp_path / "tickets.csv"))
+
+        assert result.references_ambiguous == [("Person", "1")]
+        assert result.as_dict()["references_ambiguous"] == ["Person:1"]
+        rows = await rag.query(
+            "MATCH (:Ticket)-[:RELATES {rel_type:'ASSIGNED_TO'}]->(p:Person) "
+            "RETURN p.name, p.is_stub, p.entity_key"
+        )
+        assert rows == [["1", True, "1"]], f"the ticket was given to one of them: {rows}"
+
+        # The next export of either table must not make the choice the link
+        # refused to: the placeholder is not a row of hr.csv to claim.
+        (tmp_path / "hr.csv").write_text("employee_id,full_name\n1,Alice Smith\n2,Carol White\n")
+        resynced = await rag.ingest(str(tmp_path / "hr.csv"))
+        assert resynced.entities_moved == 0
+        assert await rag.query(
+            "MATCH (:Ticket)-[:RELATES {rel_type:'ASSIGNED_TO'}]->(p:Person) "
+            "RETURN p.name, p.is_stub"
+        ) == [["1", True]], "hr.csv's re-sync took the ticket for Alice"
+
+        # And the report survives the re-sync path, which ingest() routes
+        # through update() and rebuilds from its metadata.
+        (tmp_path / "tickets.csv").write_text("ticket_id,assignee_id\nT-1,1\nT-2,1\n")
+        again = await rag.ingest(str(tmp_path / "tickets.csv"))
+        assert again.replaced_existing and again.references_ambiguous == [("Person", "1")]
+        await rag.close()
+
+    async def test_two_rows_that_swap_names_stay_two_rows(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """A corrected export: row 1 was really Bob and row 2 really Alice.
+
+        Each row's new id is the other's current id. Moved one at a time, the
+        first found a node at its destination and was folded into it -- Alice's
+        facts onto Bob, Bob's description gone -- and the second then renamed
+        the merged node. One person left of two, ``entities_moved: 2``.
+        """
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self._ontology())
+        hr = tmp_path / "hr.csv"
+        hr.write_text("employee_id,full_name\n1,Alice Smith\n2,Bob Jones\n")
+        await rag.ingest(str(hr))
+        await rag.query(
+            "MATCH (p:Person {id:'alice_smith__person'}) SET p.description = 'led platform' "
+            "WITH p MATCH (q:Person {id:'bob_jones__person'}) SET q.description = 'led sales'"
+        )
+
+        hr.write_text("employee_id,full_name\n1,Bob Jones\n2,Alice Smith\n")
+        result = await rag.ingest(str(hr))
+
+        assert result.entities_moved == 2
+        rows = await rag.query(
+            "MATCH (p:Person) RETURN p.id, p.name, p.hr__employee_id, p.description ORDER BY p.id"
+        )
+        assert rows == [
+            ["alice_smith__person", "Alice Smith", "2", "led sales"],
+            ["bob_jones__person", "Bob Jones", "1", "led platform"],
+        ], "the node keyed 1 is still the one keyed 1, whatever it is now called"
         await rag.close()
 
 
