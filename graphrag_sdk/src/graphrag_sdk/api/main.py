@@ -38,6 +38,7 @@ from graphrag_sdk.core.models import (
     RagResult,
     RetrieverResult,
     UpdateResult,
+    reject_reserved_labels,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.discovery import SchemaExtensionProposal, suggest_extensions
@@ -1019,6 +1020,9 @@ class GraphRAG:
         nothing else.
         """
         await self._ensure_ontology_initialized()
+        # A reserved label that reached the ontology (e.g. persisted before the
+        # register-time guard existed) must not become real ``:Document`` nodes.
+        reject_reserved_labels([label])
         entity = next(
             (e for e in self._global_ontology.entities if e.label == label),
             None,
@@ -1059,6 +1063,10 @@ class GraphRAG:
             or "(none)"
         )
         target_desc_line = f"- description: {entity.description}\n" if entity.description else ""
+        # The date gate keys off the whole ontology, not the label being filled:
+        # backfilling ``Product`` in a graph that declares ``Date`` must keep
+        # "747" exactly as the normal extraction path does.
+        ontology_labels = [e.label for e in self._global_ontology.entities]
 
         def _prompt(ctx: ChunkContext) -> str:
             return BACKFILL_ENTITY_PROMPT.format(
@@ -1083,10 +1091,12 @@ class GraphRAG:
             new_mentions: list[GraphRelationship] = []
             for ent in parsed:
                 ent_name = (ent.get("name") or "").strip()
-                if not is_valid_entity_name(ent_name, [label]):
+                if not is_valid_entity_name(ent_name, ontology_labels):
                     skipped += 1
                     continue
-                ent_id = compute_entity_id(label, ent_name)
+                # (name, type) -- the same id the extraction path assigns, so a
+                # backfilled entity merges with its extracted twin.
+                ent_id = compute_entity_id(ent_name, label)
                 props: dict[str, Any] = {
                     "name": ent_name,
                     "description": ent.get("description", ""),

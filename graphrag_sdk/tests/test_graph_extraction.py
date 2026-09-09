@@ -601,16 +601,36 @@ class TestNoiseFiltering:
     def test_generic_short_tokens_rejected(self, name):
         assert not is_valid_entity_name(name)
 
-    @pytest.mark.parametrize("name", ["AI", "US", "UK", "Go", "EU", "UN"])
+    @pytest.mark.parametrize("name", ["AI", "US", "UK", "Go", "EU", "UN", "IT"])
     def test_real_acronyms_kept(self, name):
         """The filter must not take widely-recognised acronyms with it."""
         assert is_valid_entity_name(name)
 
+    @pytest.mark.parametrize(
+        "name",
+        ["CD", "LS", "RM", "PS", "CAT", "ENV", "ETC", "VAR", "BIN", "USR", "SED", "AWK"],
+    )
+    def test_uppercase_shell_tokens_still_rejected(self, name):
+        """The acronym exemption excuses a token from the *pronoun* rows only.
+
+        Before, `is_acronym` skipped the whole stoplist, so an all-caps heading
+        or OCR'd text put `CD`/`ETC` straight into the graph and the shell-token
+        filter was defeated for uppercase input.
+        """
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["ONE", "MAN", "BOY"])
+    def test_uppercase_generic_nouns_still_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["us", "it", "he", "we"])
+    def test_lowercase_pronouns_still_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
     @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
-    def test_specific_dates_rejected_without_date_type(self, name):
+    def test_specific_dates_rejected_when_ontology_lacks_date_type(self, name):
         """A date pins down a moment; unless the ontology asks for Date nodes it
         is an attribute, not an entity."""
-        assert not is_valid_entity_name(name)
         assert not is_valid_entity_name(name, ["Person", "Location"])
 
     @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
@@ -618,6 +638,83 @@ class TestNoiseFiltering:
         """An ontology that declares Date (the defaults do) keeps date nodes."""
         assert is_valid_entity_name(name, DEFAULT_ENTITY_TYPES)
         assert is_valid_entity_name(name, ["Person", "date"])
+
+    @pytest.mark.parametrize("name", ["1823.", "(14 January 1904)", "1957,", "'1003 ce'"])
+    def test_specific_dates_with_edge_punctuation_still_rejected(self, name):
+        """Extraction leaves sentence punctuation on a date at a boundary;
+        that must not let it past the gate as a "different" name."""
+        assert not is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("name", ["Bronze Age", "1990s", "Victorian era", "Ming dynasty"])
+    def test_periods_kept_when_ontology_lacks_date_type(self, name):
+        """A span of time is a topic, not a moment, and stays an entity."""
+        assert is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("word", ["baggage", "package", "opera", "camera"])
+    def test_period_words_match_whole_words_only(self, word):
+        """`age`/`era` need a leading boundary too, or any word ending in them
+        is misread as a period and exempted from the date rule."""
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            _DATE_PERIOD_RE,
+        )
+
+        assert _DATE_PERIOD_RE.search(word) is None
+
+    @pytest.mark.parametrize("name", ["1823", "1984", "747"])
+    def test_dates_kept_without_an_ontology(self, name):
+        """No ontology, no date rule: the caller has not said dates are unwanted.
+
+        This is what lets grounded discovery see "1984" and "747" -- it has no
+        ontology yet, that is the point of discovery.
+        """
+        assert is_valid_entity_name(name)
+        assert is_valid_entity_name(name, None)
+
+    @pytest.mark.parametrize("name", ["1984", "747", "1969"])
+    def test_ner_anchor_labels_do_not_drive_the_date_gate(self, name):
+        """Grounded discovery hands NER its broad anchor labels, not an
+        ontology. Those must not make the parser drop numeric-looking mentions
+        before catalog linking, or `Book`/`Aircraft` never get discovered."""
+        from graphrag_sdk.discovery.pipeline import _NER_ANCHOR_LABELS
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            _parse_predictions,
+        )
+
+        preds = [{"text": name, "label": "event", "score": 0.9, "start": 0, "end": 4}]
+        parsed = _parse_predictions(preds, _NER_ANCHOR_LABELS, "chunk-0", 0.5)
+        assert [e.name for e in parsed] == [name]
+        llm_parsed = LLMExtractor._parse_response(
+            json.dumps([{"name": name, "type": "event"}]), _NER_ANCHOR_LABELS, "chunk-0"
+        )
+        assert [e.name for e in llm_parsed] == [name]
+
+    async def test_extraction_applies_date_gate_to_step1_output(self, ctx):
+        """Extractors no longer know the ontology, so GraphExtraction must
+        apply the date rule itself -- including to step-1 entities that fall
+        through unverified when step 2 fails."""
+
+        class _DateExtractor(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return [
+                    ExtractedEntity(name=n, type=t, source_chunk_ids=[source_chunk_id])
+                    for n, t in (("Alice", "Person"), ("1823", "Date"))
+                ]
+
+        async def _names(ontology: Ontology) -> set[str]:
+            # Step 2 returns garbage, so the step-1 entities are used as-is.
+            strategy = GraphExtraction(
+                llm=MockLLM(responses=["not json"]), entity_extractor=_DateExtractor()
+            )
+            result = await strategy.extract(_make_chunks("Alice was born in 1823."), ontology, ctx)
+            return {n.properties["name"] for n in result.nodes}
+
+        no_date = await _names(
+            Ontology(entities=[Entity(label="Person"), Entity(label="Location")])
+        )
+        assert "Alice" in no_date and "1823" not in no_date
+
+        with_date = await _names(Ontology(entities=[Entity(label="Person"), Entity(label="Date")]))
+        assert {"Alice", "1823"} <= with_date
 
     @pytest.mark.parametrize("name", ["1820s", "19th century", "Abbasid era"])
     def test_periods_kept(self, name):
@@ -1001,7 +1098,7 @@ class TestReservedNodeLabels:
     the entity vanished from dedup and retrieval without any error.
     """
 
-    @pytest.mark.parametrize("bad", ["Document", "Chunk", "document", "cHuNk"])
+    @pytest.mark.parametrize("bad", ["Document", "Chunk"])
     def test_reserved_entity_type_is_rejected(self, bad):
         llm = MockLLM()
         with pytest.raises(ValueError, match="reserved label"):
@@ -1010,6 +1107,18 @@ class TestReservedNodeLabels:
                 entity_extractor=LLMExtractor(llm),
                 entity_types=["Person", bad],
             )
+
+    @pytest.mark.parametrize("ok", ["document", "chunk", "DOCUMENT"])
+    def test_match_is_exact_like_the_store(self, ok):
+        """FalkorDB labels are case-sensitive and `GraphStore._write_nodes`
+        tests membership exactly, so `document` is a distinct label the store
+        handles correctly (it gets `__Entity__`; `MATCH (d:Document)` never
+        sees it). Rejecting it would break configs that used to work."""
+        llm = MockLLM()
+        extractor = GraphExtraction(
+            llm=llm, entity_extractor=LLMExtractor(llm), entity_types=["Person", ok]
+        )
+        assert ok in extractor.entity_types
 
     def test_error_names_the_offending_label(self):
         llm = MockLLM()
@@ -1036,5 +1145,10 @@ class TestReservedNodeLabels:
             _reject_reserved_labels(["Person", "Document"])
 
     def test_store_and_extractor_share_one_definition(self):
-        """Two hardcoded copies would drift; the bug returns when they do."""
+        """Hardcoded copies would drift; the bug returns when they do."""
+        from graphrag_sdk.retrieval.strategies import cypher_generation
+
         assert GraphStore._STRUCTURAL_LABELS is RESERVED_NODE_LABELS
+        # The Cypher generator's allow-list is the third copy; it adds the
+        # `__Entity__` marker on top of the store's structural labels.
+        assert cypher_generation._STRUCTURAL_LABELS == RESERVED_NODE_LABELS | {"__Entity__"}

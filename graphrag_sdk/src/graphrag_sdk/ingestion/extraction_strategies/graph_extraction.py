@@ -13,7 +13,6 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
-    RESERVED_NODE_LABELS,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -24,6 +23,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
     TextChunks,
+    reject_reserved_labels,
 )
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
@@ -338,35 +338,15 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
 
 
 def _reject_reserved_labels(types: list[str]) -> list[str]:
-    """Reject entity types that collide with the store's structural labels.
+    """Reject ``Document``/``Chunk`` as entity types; see ``reject_reserved_labels``.
 
-    ``Document`` and ``Chunk`` are used by the graph store for corpus
-    bookkeeping. An extracted entity carrying one of those labels fails two
-    ways at once, both silently:
-
-    1. Document-level queries (``MATCH (p:Document) ...``) start returning
-       extracted entities, so document counts and lookups are wrong. This was
-       found in the field as an 11-document corpus reporting 106 documents.
-    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
-       label is *not* structural, so the node never receives ``__Entity__``
-       and is dropped from deduplication and retrieval. It is written, then
-       ignored.
-
-    Neither failure raises, so the graph just quietly degrades. Fail here
-    instead, at configuration time, where the caller can act on it.
+    The primary guard lives in ``OntologyStore.register`` (so a reserved label
+    is refused before it is persisted) and in discovery's proposal validator.
+    This is the extractor-level backstop for ``entity_types`` passed directly
+    to the constructor and for ontologies handed to ``extract`` without going
+    through the store.
     """
-    reserved = {label.casefold(): label for label in RESERVED_NODE_LABELS}
-    clashes = [t for t in types if str(t).strip().casefold() in reserved]
-    if clashes:
-        raise ValueError(
-            f"entity_types may not contain the reserved label(s) {sorted(set(clashes))}. "
-            f"{sorted(RESERVED_NODE_LABELS)} are used internally for corpus "
-            "bookkeeping; reusing them silently corrupts document counts and "
-            "removes the entity from deduplication and retrieval. "
-            "Rename the type (e.g. 'Document' -> 'Publication', "
-            "'Chunk' -> 'TextSegment')."
-        )
-    return list(types)
+    return reject_reserved_labels(types)
 
 
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
@@ -475,9 +455,9 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: ontology overrides instance default
         if ontology.entities:
-            # Ontology labels bypass the constructor, so re-check here: an
-            # ontology declaring a reserved label must fail as loudly as
-            # passing one to entity_types would.
+            # Ontology labels bypass the constructor. OntologyStore.register
+            # already refuses reserved labels, but ``extract`` can be handed an
+            # ontology that never went through the store, so re-check here.
             entity_types = _reject_reserved_labels([e.label for e in ontology.entities])
             entity_type_descs: dict[str, str] = {
                 e.label: e.description for e in ontology.entities if e.description
@@ -581,6 +561,17 @@ class GraphExtraction(ExtractionStrategy):
                     chunk_entities.append([])
                 else:
                     chunk_entities.append(result)
+
+        # Extractors filter names without knowing the ontology (their label
+        # list is not always one: grounded discovery passes NER anchors), so
+        # the ontology-dependent rules -- currently the specific-date gate --
+        # are applied here, where ``entity_types`` really is the ontology.
+        # Step 2 re-applies them to the LLM's output; this pass covers the
+        # step-1 entities that survive a step-2 failure unverified.
+        chunk_entities = [
+            [e for e in ents if is_valid_entity_name(e.name, entity_types)]
+            for ents in chunk_entities
+        ]
 
         # ── Step 2: LLM verify + relationship extraction ──
         step2_prompts: list[str] = []
