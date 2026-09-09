@@ -173,13 +173,23 @@ class LLMVerifiedResolution(ResolutionStrategy):
         )
 
         # ── Phase 1: Normalized name exact-match merge ────────────────────────
+        # A node the caller declared distinct from another, or already decided
+        # a pair about, is not merged on its name: two keyed rows called Alice
+        # Smith are two rows, and a mention between them is not either. Those
+        # nodes go straight to the embedding phase, which honours the hints.
+        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
+        protected = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ()) | {
+            node_id for pair in skip_pairs for node_id in pair
+        }
+        held_out = [node for node in graph_data.nodes if node.id in protected]
         deduplicated_nodes, id_remap, merged_count = await exact_match_merge(
-            graph_data.nodes,
+            [node for node in graph_data.nodes if node.id not in protected],
             self.llm,
             force_summary_threshold=self.force_summary_threshold,
             max_summary_tokens=self.max_summary_tokens,
             cross_label_merge=True,
         )
+        deduplicated_nodes = held_out + deduplicated_nodes
         ctx.log(
             f"Phase 1 (exact-match): {merged_count} merged, {len(deduplicated_nodes)} surviving"
         )

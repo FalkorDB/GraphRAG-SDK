@@ -108,6 +108,13 @@ class NodeMapping:
         # ``typed_properties`` is the accessor that states that.
         normalised: dict[str, Column | str] = dict(_as_columns(self.properties))
         self.properties = normalised
+        if self.key_property in normalised:
+            raise MappingError(
+                f"NodeMapping({self.label!r}) maps a property {self.key_property!r}, "
+                f"but that is where the key column {self.key!r} is stored, and the "
+                f"property would overwrite the row's identity. Store it under "
+                f"another name."
+            )
         if self.alias is None:
             self.alias = self.label
 

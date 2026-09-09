@@ -16,6 +16,7 @@ import csv
 import hashlib
 import math
 import re
+from collections.abc import Container
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -88,6 +89,22 @@ def _one_underscore(slug: str) -> str:
     table's columns with it.
     """
     return re.sub(r"_{2,}", "_", slug)
+
+
+def unclaimed_property_name(property_name: str, taken: Container[str]) -> str:
+    """``property_name``, or the first ``property_name_2``, ``_3``... not in ``taken``.
+
+    :func:`safe_property_name` is not injective: ``HQ Country`` and ``hq-country``
+    both store as ``col_hq_country``, and a dict assignment silently keeps the
+    later column and loses the earlier one. Suffixed in header order, so the same
+    export always yields the same names.
+    """
+    if property_name not in taken:
+        return property_name
+    ordinal = 2
+    while f"{property_name}_{ordinal}" in taken:
+        ordinal += 1
+    return f"{property_name}_{ordinal}"
 
 
 _GROUPED = re.compile(r"^-?\d{1,3}(,\d{3})+$")
@@ -516,6 +533,14 @@ class TableMapping:
         # Normalise the input contract (a bare string means STRING) exactly once,
         # so every reader after this point sees Columns.
         self.properties = dict(_as_columns(self.properties))
+        key_slot = safe_property_name(self.key_column)
+        if key_slot in self.properties:
+            raise MappingError(
+                f"TableMapping({self.source!r}) maps a property {key_slot!r}, but that "
+                f"is where the key column {self.key_column!r} is stored, and the "
+                f"property would overwrite the row's identity. Store it under "
+                f"another name."
+            )
 
     @property
     def key_column(self) -> str:

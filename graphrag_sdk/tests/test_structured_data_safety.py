@@ -24,6 +24,8 @@ from graphrag_sdk import (
 )
 from graphrag_sdk.ingestion.mapping import MappingError
 
+from .conftest import MockLLM
+
 
 @pytest.fixture
 def resolver():
@@ -104,6 +106,41 @@ class TestNothingIsDeletedWithoutSaying:
         assert rows == [["E-1", 34], ["E-7", 52]]
         await rag.close()
 
+    async def test_names_that_differ_only_where_the_id_flattens_them_stay_apart(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """``John Smith`` and ``John_Smith`` are two rows, and became one node.
+
+        Collisions were looked for on the lowercased name, but the node id also
+        turns spaces into underscores, so these two spelled the same id and the
+        second row overwrote the first in place -- E1 gone without a word.
+        Collisions are looked for on the id the rows would actually get.
+        """
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="people.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    standalone=True,
+                )
+            ],
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
+        path = tmp_path / "people.csv"
+        path.write_text("employee_id,full_name\nE1,John Smith\nE2,John_Smith\n")
+        await rag.ingest(str(path))
+        await rag.finalize()
+
+        rows = await rag.query(
+            "MATCH (p:Person) RETURN p.id, p.people__employee_id, p.name "
+            "ORDER BY p.people__employee_id"
+        )
+        assert rows == [["e1__person", "E1", "John Smith"], ["e2__person", "E2", "John_Smith"]]
+        await rag.close()
+
     async def test_a_mention_of_a_name_two_rows_share_is_not_given_to_either(
         self, real_falkordb_rag_factory, scripted_llm, resolver, tmp_path
     ):
@@ -147,6 +184,61 @@ class TestNothingIsDeletedWithoutSaying:
             [None, "Presented the roadmap"],
         ], "neither row took the note, and the note kept its own node"
         assert summary.entities_deduplicated == 0
+        reported = [line for line in summary.probable_duplicates if "2 keyed rows" in line]
+        assert len(reported) == 2, summary.probable_duplicates
+        await rag.close()
+
+    async def test_the_default_finalize_does_not_give_the_mention_to_either_row_either(
+        self, real_falkordb_rag_factory, resolver, tmp_path
+    ):
+        """The same note and rows, under ``finalize()`` as shipped.
+
+        ``resolve=False`` kept the three nodes; the default did not. The resolver
+        it builds merges identical names before it asks anything, and the merge
+        loop accepted the mention-to-row assignment the exact phase had just
+        refused -- so the note's facts and provenance landed on one Alice Smith,
+        chosen by rank. The refusal has to hold in every phase: the resolver is
+        told the pairs are settled, and a merge it returns anyway is dropped.
+        """
+        ontology = Ontology(
+            entities=[Entity(label="Person")],
+            tables=[
+                TableMapping(
+                    source="people.csv",
+                    label="Person",
+                    key="employee_id",
+                    name="full_name",
+                    properties={"title": "title"},
+                    standalone=True,
+                )
+            ],
+        )
+        extraction = (
+            '{"entities": [{"name": "Alice Smith", "type": "Person", '
+            '"description": "Presented the plan"}], "relationships": []}'
+        )
+        # Would say YES to anything, so a merge here can only mean it was asked.
+        llm = MockLLM([extraction, "YES", "YES", "YES"], strict=True)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
+        path = tmp_path / "people.csv"
+        path.write_text(
+            "employee_id,full_name,title\nE-1,Alice Smith,Engineer\nE-2,Alice Smith,Designer\n"
+        )
+        await rag.ingest(str(path))
+        await rag.ingest(text="Alice Smith presented the plan.", document_id="board.txt")
+
+        summary = await rag.finalize()
+
+        rows = await rag.query(
+            "MATCH (p:Person) RETURN p.id, p.people__employee_id, p.description ORDER BY p.id"
+        )
+        assert rows == [
+            ["alice_smith__person", None, "Presented the plan"],
+            ["e-1__person", "E-1", None],
+            ["e-2__person", "E-2", None],
+        ], "three nodes in, three nodes out; the note is nobody's until something says whose"
+        assert summary.resolved_duplicates == [] and summary.entities_deduplicated == 0
+        assert llm._call_index == 1, "extraction only: the pairs were never put to the model"
         reported = [line for line in summary.probable_duplicates if "2 keyed rows" in line]
         assert len(reported) == 2, summary.probable_duplicates
         await rag.close()

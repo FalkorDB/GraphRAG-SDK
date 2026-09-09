@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 
 from graphrag_sdk.core.models import Ontology
 from graphrag_sdk.core.providers.base import LLMInterface
-from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES, Link
+from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES, Link, unclaimed_property_name
 from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, cell_text
 from graphrag_sdk.ingestion.mapping import (
     Column,
@@ -172,11 +172,17 @@ def natural_mapping(batch: RecordBatch, source: str) -> tuple[TableMapping, list
         f"key {key_profile.name!r} — unique and complete across {key_profile.total} row(s)"
     )
 
+    # The key column's slot is spoken for before any property is named: a
+    # column ``col_id`` beside a key ``id`` would otherwise be stored where the
+    # key is, and the row's identity with it.
+    key_slot = safe_property_name(key_profile.name)
     properties: dict[str, Column | str] = {}
     for profile in profiles:
         if profile.name == key_profile.name:
             continue
-        property_name = _unclaimed(safe_property_name(profile.name), properties)
+        property_name = unclaimed_property_name(
+            safe_property_name(profile.name), {key_slot, *properties}
+        )
         properties[property_name] = Column(profile.name, profile.inferred_type)
         if property_name != profile.name:
             notes.append(f"column {profile.name!r} stored as {property_name!r}")
@@ -203,22 +209,6 @@ def natural_mapping(batch: RecordBatch, source: str) -> tuple[TableMapping, list
         ),
         notes,
     )
-
-
-def _unclaimed(property_name: str, taken: dict[str, Column | str]) -> str:
-    """``property_name``, or the first ``property_name_2``, ``_3``... not in ``taken``.
-
-    ``safe_property_name`` is not injective: ``HQ Country`` and ``hq-country``
-    both store as ``col_hq_country``, and the dict assignment silently kept the
-    later column and lost the earlier one. Suffixed in header order so the same
-    export always proposes the same names.
-    """
-    if property_name not in taken:
-        return property_name
-    ordinal = 2
-    while f"{property_name}_{ordinal}" in taken:
-        ordinal += 1
-    return f"{property_name}_{ordinal}"
 
 
 def table_name(source: str) -> str:
@@ -507,6 +497,10 @@ def _mapping_from_proposal(
             taken.setdefault(link.name_column, "link name")
         links.append(Link(link.type, to=link.to, by=link.column, name=link.name_column))
 
+    # Where the row's identity is stored; no property may be named into it.
+    # Whichever column identifies the row (``key``, else ``name``) is the one
+    # ``TableMapping`` will key on, so the slot is derived the same way.
+    key_slot = safe_property_name(key if key is not None else str(name))
     properties: dict[str, Column | str] = {}
     for prop in proposal.properties:
         profile = column("property", prop.column)
@@ -519,6 +513,11 @@ def _mapping_from_proposal(
         property_name = safe_property_name(prop.property or prop.column)
         if property_name in properties:
             raise MappingError(f"two columns are stored as property {property_name!r}")
+        if property_name == key_slot:
+            raise MappingError(
+                f"property {property_name!r} is where the key column is stored; give "
+                f"column {prop.column!r} another property name."
+            )
         chosen: str = prop.type
         if chosen not in profile.parses_as:
             notes.append(
@@ -534,8 +533,9 @@ def _mapping_from_proposal(
         if profile.name in taken:
             continue
         property_name = safe_property_name(profile.name)
-        if property_name in properties or property_name in RESERVED_PROPERTY_NAMES:
+        if property_name in RESERVED_PROPERTY_NAMES:
             property_name = safe_property_name(f"col {profile.name}")
+        property_name = unclaimed_property_name(property_name, {key_slot, *properties})
         properties[property_name] = Column(profile.name, profile.inferred_type)
         notes.append(f"{profile.name} was not mentioned; kept as {profile.inferred_type}")
 

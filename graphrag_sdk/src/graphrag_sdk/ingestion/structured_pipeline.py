@@ -19,6 +19,7 @@ from graphrag_sdk.core.models import (
     TextChunk,
     TextChunks,
 )
+from graphrag_sdk.core.tables import unclaimed_property_name
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
 from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
 from graphrag_sdk.ingestion.loaders.record_loader import (
@@ -114,14 +115,20 @@ def render_record(record: dict[str, Any]) -> str:
     return ", ".join(parts) + "." if parts else ""
 
 
-def _ambiguous_names(batch: RecordBatch, mapping: RecordMapping) -> set[tuple[str, str]]:
-    """``(label, lowercased name)`` for every name the batch gives two different keys.
+def _ambiguous_names(batch: RecordBatch, mapping: RecordMapping) -> set[str]:
+    """The node id of every name the batch gives two different keys.
 
     A name is the entity's identity, so two rows sharing one would become one
     entity — two John Smiths collapsing into a single Person. Those rows keep
     their key as identity instead, which also means a prose mention of "John
     Smith" joins neither, correctly: it is ambiguous. Reported, so a table with
     many such names is noticed rather than silently half-joined.
+
+    Collisions are found on the id the name would derive, not on the name: the
+    derivation folds case and turns spaces into underscores, so ``John Smith``
+    and ``John_Smith`` are two spellings of one id. Compared as lowercased
+    names they looked distinct, and the two rows wrote to one node in turn,
+    the second silently replacing the first.
 
     Counted per label over rows *and* references, by distinct key. A reference
     names its target too (``manager_id`` plus ``manager_name``), and two managers
@@ -131,7 +138,8 @@ def _ambiguous_names(batch: RecordBatch, mapping: RecordMapping) -> set[tuple[st
     same collision. The same key under one name twice is one entity named twice,
     not an ambiguity.
     """
-    keys: dict[tuple[str, str], set[str]] = {}
+    keys: dict[str, set[str]] = {}
+    names: dict[str, str] = {}
     # (label, key column, name column) for nodes that name what they write; the
     # filter is what lets mypy see the name column is a str below.
     named = [(node.label, node.key, node.name) for node in mapping.nodes if node.name]
@@ -139,14 +147,16 @@ def _ambiguous_names(batch: RecordBatch, mapping: RecordMapping) -> set[tuple[st
         return set()
     for record in batch:
         for label, key_column, name_column in named:
-            display = cell_text(record, name_column).lower()
+            display = cell_text(record, name_column)
             key = record.get(key_column)
             key = "" if key is None else str(key).strip()
             if display and key:
-                keys.setdefault((label, display), set()).add(key)
-    ambiguous = {name for name, seen in keys.items() if len(seen) > 1}
+                node_id = compute_entity_id(display, label)
+                keys.setdefault(node_id, set()).add(key)
+                names.setdefault(node_id, display)
+    ambiguous = {node_id for node_id, seen in keys.items() if len(seen) > 1}
     if ambiguous:
-        sample = ", ".join(repr(name) for _, name in sorted(ambiguous)[:5])
+        sample = ", ".join(repr(names[node_id]) for node_id in sorted(ambiguous)[:5])
         logger.warning(
             "%d name(s) appear on more than one row (e.g. %s). Entity identity is the "
             "name, so those rows are keyed on their declared key instead and a document "
@@ -258,12 +268,19 @@ def record_cells(record: dict[str, Any]) -> dict[str, Any]:
     The typed projection lives on the entity, where queries and aggregation read
     it. This is the faithful record of what the source said, so the original row
     is recoverable from the graph without parsing the rendered sentence.
+
+    Names are allocated over every header, filled or not, so two headers that
+    sanitise alike — ``HQ Country`` and ``HQ-Country`` — get the same two names
+    on every row of the export, and neither cell overwrites the other.
     """
     cells: dict[str, Any] = {}
+    taken: set[str] = set()
     for key, value in record.items():
+        name = unclaimed_property_name(safe_property_name(key, _CHUNK_RESERVED), taken)
+        taken.add(name)
         if value in (None, ""):
             continue
-        cells[safe_property_name(key, _CHUNK_RESERVED)] = value
+        cells[name] = value
     return cells
 
 
@@ -762,9 +779,8 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
                 if not raw_key:
                     continue
                 display = cell_text(record, node.name)
-                if display and (node.label, display.lower()) not in ambiguous:
-                    node_id = compute_entity_id(display, node.label)
-                else:
+                node_id = compute_entity_id(display, node.label) if display else ""
+                if not node_id or node_id in ambiguous:
                     node_id = compute_entity_id(raw_key, node.label)
                 if not node_id:
                     continue

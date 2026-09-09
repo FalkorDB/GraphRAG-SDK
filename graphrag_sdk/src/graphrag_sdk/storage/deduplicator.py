@@ -330,7 +330,8 @@ class EntityDeduplicator:
         # Pairs the last run judged probably-the-same and deliberately left alone.
         self.near_misses: list[NearMiss] = []
         # Extracted nodes the exact phase would not fold into one of several rows
-        # sharing their name. Folded into near_misses by _report_near_misses.
+        # sharing their name. Folded into near_misses by _report_near_misses, and
+        # held apart through the later phases (see _undecidable_pairs).
         self._ambiguous_mentions: list[NearMiss] = []
         # Merges the resolver decided on the last run, as "label 'dup' -> 'survivor'".
         self.resolved_pairs: list[str] = []
@@ -373,6 +374,22 @@ class EntityDeduplicator:
 
         logger.info(f"EntityDeduplicator total: {total} duplicates merged")
         return total
+
+    @property
+    def _undecidable_pairs(self) -> set[frozenset[str]]:
+        """``(mention, row)`` pairs the exact phase found no way to decide.
+
+        A mention whose name two keyed rows share fits both equally, and the
+        later phases would otherwise settle it on the one evidence phase 1 had
+        already rejected: identical names embed identically, so a cosine cut or
+        a resolver's hard-merge band folds the mention into whichever row ranks
+        higher. Measured as default ``finalize()`` attaching a passage's facts
+        and provenance to one of two Alice Smiths that ``resolve=False`` had
+        correctly left alone. These pairs are skipped in every phase and
+        reported instead; a name shared by two rows is not disambiguated by
+        looking at the name harder.
+        """
+        return {frozenset((miss.id_a, miss.id_b)) for miss in self._ambiguous_mentions}
 
     async def _report_near_misses(self, batch_size: int) -> None:
         """Record surviving entities that probably denote one thing.
@@ -541,10 +558,11 @@ class EntityDeduplicator:
         if len(all_ids) < 2:
             return 0
 
-        # The same two refusals the exact phase makes. Two keyed nodes are two
-        # rows whatever their names embed like, and a pair the resolver already
-        # judged distinct is not re-decided by a cosine score.
-        decided = await self._fetch_distinct_pairs()
+        # The same refusals the exact phase makes. Two keyed nodes are two rows
+        # whatever their names embed like, a pair the resolver already judged
+        # distinct is not re-decided by a cosine score, and a mention two rows
+        # could own is not handed to either by one.
+        decided = await self._fetch_distinct_pairs() | self._undecidable_pairs
 
         raw_vectors = await self._embedder.aembed_documents(all_names)
         valid = [
@@ -664,10 +682,12 @@ class EntityDeduplicator:
         graph_data = GraphData(nodes=nodes, relationships=relationships)
 
         # What this class knows and the resolver cannot: the pairs a previous run
-        # already decided against, and the pairs a name rule says look like one
-        # thing — "M. Ellison" beside "Maya Ellison" — which an embedding cut
-        # tuned for one document's spellings would not surface.
+        # already decided against, the pairs phase 1 found undecidable, and the
+        # pairs a name rule says look like one thing — "M. Ellison" beside "Maya
+        # Ellison" — which an embedding cut tuned for one document's spellings
+        # would not surface.
         decided = await self._fetch_distinct_pairs()
+        undecidable = self._undecidable_pairs
         # Two keyed nodes are two rows, and :func:`_keep_declared_identities_apart`
         # would refuse the merge anyway; saying so up front saves the resolver a
         # call per pair, and for a table of n rows that is most of the calls.
@@ -676,11 +696,12 @@ class EntityDeduplicator:
             frozenset((miss.id_a, miss.id_b))
             for miss in find_near_misses(entities)
             if frozenset((miss.id_a, miss.id_b)) not in decided
+            and frozenset((miss.id_a, miss.id_b)) not in undecidable
             and not {miss.id_a, miss.id_b} <= keyed
         }
         ctx = Context(
             metadata={
-                RESOLUTION_SKIP_PAIRS: decided,
+                RESOLUTION_SKIP_PAIRS: decided | undecidable,
                 RESOLUTION_DISTINCT_IDS: keyed,
                 RESOLUTION_ASK_PAIRS: near,
             }
@@ -704,6 +725,7 @@ class EntityDeduplicator:
             members.sort(key=_survivor_rank, reverse=True)
             survivor = members[0]
             duplicates = _keep_declared_identities_apart(survivor, members[1:])
+            duplicates = self._keep_undecidable_mentions_apart(survivor, duplicates, members)
             for dup in duplicates:
                 if not await self._remap_entity_edges(dup["id"], survivor["id"]):
                     logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
@@ -724,6 +746,39 @@ class EntityDeduplicator:
 
         logger.info(f"EntityDeduplicator phase 3 (resolver): merged {merged} duplicates")
         return merged
+
+    def _keep_undecidable_mentions_apart(
+        self,
+        survivor: dict[str, Any],
+        duplicates: list[dict[str, Any]],
+        members: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Drop mentions the resolver put on a row without saying which row.
+
+        The hints in ``ctx.metadata`` are advisory, and a strategy is free to
+        ignore them; the refusal has to hold here too. A mention is kept apart
+        when phase 1 found it between two rows, or when the cluster itself holds
+        two keyed rows and the mention — the same ambiguity, found by a resolver
+        that clustered all three. What remains is a mention the resolver paired
+        with exactly one row, which is a decision, not a coin toss.
+        """
+        undecidable = self._undecidable_pairs
+        if not undecidable and len({m["id"] for m in members if m.get("is_stub") is not None}) < 2:
+            return duplicates
+        held = {miss.id_a for miss in _mentions_two_rows_could_own(survivor, members)}
+        kept: list[dict[str, Any]] = []
+        for dup in duplicates:
+            if dup["id"] in held or frozenset((dup["id"], survivor["id"])) in undecidable:
+                logger.info(
+                    "Not merging %s into %s: the name %r belongs to more than one keyed "
+                    "row and nothing says which. Reported in probable_duplicates",
+                    dup["id"],
+                    survivor["id"],
+                    dup.get("name"),
+                )
+                continue
+            kept.append(dup)
+        return kept
 
     async def _describe_structured_entities(self, by_id: dict[str, dict[str, Any]]) -> None:
         """Give each structured entity a description made of its signed values.

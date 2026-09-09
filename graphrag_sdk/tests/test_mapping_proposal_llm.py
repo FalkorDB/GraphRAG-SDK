@@ -216,6 +216,34 @@ class TestTheDataHasTheLastWord:
         mapping, _ = await _propose(_llm(answer))
         assert "col_age_years" in mapping.typed_properties
 
+    async def test_a_property_the_model_names_into_the_key_slot_is_sent_back(self):
+        """Key ``id`` is stored as ``col_id``; a property named ``col_id`` would
+        be written over it and take the row's identity with it."""
+        rows = "id,legacy_id,full_name\n1,L-9,Alice\n2,L-7,Bob\n"
+        wrong = {
+            "label": "Person",
+            "name": "full_name",
+            "key": "id",
+            "properties": [{"column": "legacy_id", "property": "col_id"}],
+        }
+        right = dict(wrong, properties=[{"column": "legacy_id"}])
+        llm = _llm(wrong, right)
+        mapping, _ = await _propose(llm, text=rows)
+
+        assert mapping.key == "id"
+        assert set(mapping.typed_properties) == {"legacy_id"}
+        assert "'col_id' is where the key column is stored" in _feedback(llm)
+
+    async def test_a_forgotten_column_named_like_the_key_slot_is_kept_beside_it(self):
+        """The model left ``col_id`` out; the fallback must not store it where
+        the key ``id`` lives either."""
+        rows = "id,col_id,full_name\n1,L-9,Alice\n2,L-7,Bob\n"
+        answer = {"label": "Person", "name": "full_name", "key": "id", "properties": []}
+        mapping, notes = await _propose(_llm(answer), text=rows)
+
+        assert mapping.typed_properties["col_id_2"].name == "col_id"
+        assert any("col_id was not mentioned" in note for note in notes)
+
 
 class TestWhenTheModelCannotAnswer:
     async def test_running_out_of_retries_raises_so_the_caller_can_fall_back(self):

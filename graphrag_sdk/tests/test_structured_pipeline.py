@@ -143,6 +143,19 @@ class TestHelpers:
         cells = record_cells({"text": "hello", "age": "34"})
         assert cells == {"col_text": "hello", "age": "34"}
 
+    def test_record_cells_keeps_two_headers_that_sanitise_alike(self):
+        """``HQ Country`` and ``HQ-Country`` both store as ``col_hq_country``.
+
+        The typed properties on the entity were already kept apart; the chunk's
+        raw cells were not, and the second header overwrote the first on every
+        row -- ``US`` gone, ``UK`` kept, nothing said. Names are allocated over
+        every header, so a blank cell does not shift the next header's name.
+        """
+        cells = record_cells({"id": "1", "HQ Country": "US", "HQ-Country": "UK"})
+        assert cells == {"col_id": "1", "col_hq_country": "US", "col_hq_country_2": "UK"}
+        blank_first = record_cells({"id": "2", "HQ Country": "", "HQ-Country": "NO"})
+        assert blank_first == {"col_id": "2", "col_hq_country_2": "NO"}
+
 
 class TestStructuredIngest:
     async def test_each_record_becomes_one_chunk(self, pipeline, employees_csv, ctx: Context):

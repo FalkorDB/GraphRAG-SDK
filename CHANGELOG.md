@@ -238,6 +238,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fall back to key-derived ids and split. When two keyed rows do share a name, a
   prose mention of it is left unmerged by `finalize()` and reported in
   `probable_duplicates` rather than handed to whichever row was listed first.
+  That held for `finalize(resolve=False)` only: the resolver's own exact-name
+  pass merged the mention into a row regardless. The undecidable mention/row
+  pairs are now passed to the resolver as settled (`RESOLUTION_SKIP_PAIRS`),
+  `LLMVerifiedResolution` keeps hinted nodes out of its name-merge phase, and
+  the merge loop refuses such a pair from a resolver that ignores hints — so
+  the default `finalize()` keeps the three nodes too.
+
+- **A name collision is looked for on the id the rows would get.** Node ids
+  lower-case the name *and* turn spaces into underscores, but the collision
+  check only lower-cased, so `John Smith` and `John_Smith` in one table were
+  written to a single node and the second row overwrote the first. Rows that
+  would collide on the derived id now fall back to their key-derived ids.
+
+- **A property cannot be named into the key's slot.** A key column `id` is
+  stored as `col_id`; `properties={"col_id": ...}` was accepted and written
+  after the key, replacing the row's identity with another column's value so a
+  later re-sync could not find its rows. `TableMapping` and `NodeMapping` now
+  refuse it at declaration, `natural_mapping` and the LLM proposal keep the
+  slot spoken for (a colliding column is stored as `col_id_2`, or sent back to
+  the model when it named the collision itself).
+
+- **Two headers that sanitise to one name both reach the record chunk.**
+  `HQ Country` and `HQ-Country` were already kept apart as typed properties,
+  but the raw cells on the row's chunk both wrote `col_hq_country` and the
+  second silently won. Chunk cells now use the same suffix scheme
+  (`col_hq_country_2`), allocated over every header so a blank cell does not
+  shift the next header's name between rows.
 
 - **A foreign key two nodes answer to is given to neither.** `entity_key` is one
   unsigned slot, so two tables numbering `Person` from 1 leave two nodes with

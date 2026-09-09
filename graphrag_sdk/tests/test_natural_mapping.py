@@ -70,6 +70,19 @@ class TestWhatItDerives:
         assert stored == {"col_hq_country": "HQ Country", "col_hq_country_2": "hq-country"}
         assert any("'hq-country' stored as 'col_hq_country_2'" in note for note in notes)
 
+    async def test_a_column_named_like_the_key_slot_does_not_take_it(self):
+        """The key ``id`` is stored as ``col_id``. A column literally called
+        ``col_id`` was stored there too and replaced the row's identity, so a
+        later run of the same file could not find its rows. The key's slot is
+        spoken for before any property is named."""
+        batch = await _batch("id,col_id,full_name\n1,legacy-9,Alice\n2,legacy-7,Bob\n")
+        mapping, notes = natural_mapping(batch, "employees.csv")
+
+        assert mapping.key == "id"
+        stored = {name: column.name for name, column in mapping.typed_properties.items()}
+        assert stored == {"col_id_2": "col_id", "full_name": "full_name"}
+        assert any("'col_id' stored as 'col_id_2'" in note for note in notes)
+
     @pytest.mark.parametrize(
         ("source", "label"),
         [

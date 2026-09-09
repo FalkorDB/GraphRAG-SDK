@@ -231,6 +231,54 @@ class TestTheResolverDecidesAndTheTableRowSurvives:
         )
         await rag.close()
 
+    async def test_a_mention_two_rows_could_own_is_not_the_resolvers_to_hand_out(
+        self, real_falkordb_rag_factory, tmp_path
+    ):
+        """Two Priya Ramans in the table and a note about "Priya Raman".
+
+        The exact phase left the note between the rows and said so. A resolver
+        is then told the pairs are settled, but the hints are advisory: this one
+        ignores them and hands the note to E-3. The merge loop drops that, as it
+        does a row-to-row merge -- the note fits E-4 exactly as well, and the
+        resolver produced nothing that says otherwise.
+        """
+        llm = MockLLM(
+            [
+                '{"entities": [{"name": "Priya Raman", "type": "Person", '
+                '"description": "Told the regulator the filing would be late"}], '
+                '"relationships": []}'
+            ],
+            strict=True,
+        )
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=ExactMatchResolution(resolve_property="name"), ontology=ontology()
+        )
+        path = tmp_path / "employees.csv"
+        path.write_text(
+            "employee_id,full_name,age,title\n"
+            "E-3,Priya Raman,39,Head of Regulatory\n"
+            "E-4,Priya Raman,52,Facilities\n"
+        )
+        await rag.ingest(str(path))
+        await rag.ingest(text="Priya Raman told the regulator.", document_id="note.txt")
+
+        resolver = SaysTheyAreOne({PRIYA: "e-3__person", "e-4__person": "e-3__person"})
+        result = await rag.finalize(resolver=resolver)
+
+        skip = resolver.ctx.metadata[RESOLUTION_SKIP_PAIRS]
+        assert {frozenset((PRIYA, "e-3__person")), frozenset((PRIYA, "e-4__person"))} <= skip, (
+            "the resolver was told the note is undecidable against either row"
+        )
+        assert result.resolved_duplicates == [] and result.entities_deduplicated == 0
+        rows = await rag.query("MATCH (p:Person) RETURN p.id, p.description ORDER BY p.id")
+        assert rows == [
+            ["e-3__person", None],
+            ["e-4__person", None],
+            [PRIYA, "Told the regulator the filing would be late"],
+        ], "the note kept its own node and neither row took its description"
+        assert len([m for m in result.probable_duplicates if "2 keyed rows" in m]) == 2
+        await rag.close()
+
     async def test_without_a_resolver_the_pair_is_reported_as_before(
         self, real_falkordb_rag_factory, tmp_path
     ):

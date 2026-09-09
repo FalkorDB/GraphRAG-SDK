@@ -302,6 +302,13 @@ the original header in the description, so generated Cypher can address it. On a
 entity the stored name is then signed like any other, so `HQ Country` from
 `orgs.csv` is `orgs__col_hq_country`.
 
+Two headers that reduce to one stored name (`HQ Country` and `HQ-Country`) are
+both kept: the second is suffixed in header order, `col_hq_country_2`, on the
+entity and on the record chunk alike. The key's slot is spoken for first — a
+column literally called `col_id` beside `key="id"` is stored as `col_id_2`, and a
+declaration that maps a property onto the key's slot is refused, because that
+property would otherwise be written over the row's identity.
+
 <Note>
 `key="id"` used to overwrite the node's graph id, which cost every row of that
 table its `MENTIONED_IN` edges — no provenance and no way to join to prose — on a

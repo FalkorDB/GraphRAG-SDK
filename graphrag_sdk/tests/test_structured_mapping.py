@@ -79,6 +79,30 @@ class TestNodeMapping:
         with pytest.raises(MappingError):
             NodeMapping(label="Person", key="e", properties={"name": "full_name"})
 
+    def test_a_property_cannot_be_named_into_the_key_slot(self):
+        """The key column ``id`` is stored as ``col_id``; a property so named
+        was written after it and replaced the row's identity with another
+        column's value. Signed-key reconciliation then could not find the row,
+        and an update to it arrived as a second Person. Refused where it is
+        declared, for the compiled form as well as the declaration."""
+        with pytest.raises(MappingError, match="where the key column 'id' is stored"):
+            NodeMapping(label="Person", key="id", properties={"col_id": "legacy_id"})
+        with pytest.raises(MappingError, match="where the key column 'id' is stored"):
+            TableMapping(
+                source="employees.csv",
+                label="Person",
+                key="id",
+                name="name",
+                properties={"col_id": "legacy_id"},
+            )
+        with pytest.raises(MappingError, match="where the key column 'employee_id' is stored"):
+            TableMapping(
+                source="employees.csv",
+                label="Person",
+                key="employee_id",
+                properties={"employee_id": Column("employee_id", "INTEGER")},
+            )
+
     def test_alias_defaults_to_the_label(self):
         assert NodeMapping(label="Person", key="e").alias == "Person"
 
