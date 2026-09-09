@@ -23,6 +23,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
     TextChunks,
+    reject_reserved_labels,
 )
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
@@ -353,6 +354,18 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
     return extra
 
 
+def _reject_reserved_labels(types: list[str]) -> list[str]:
+    """Reject ``Document``/``Chunk`` as entity types; see ``reject_reserved_labels``.
+
+    The primary guard lives in ``OntologyStore.register`` (so a reserved label
+    is refused before it is persisted) and in discovery's proposal validator.
+    This is the extractor-level backstop for ``entity_types`` passed directly
+    to the constructor and for ontologies handed to ``extract`` without going
+    through the store.
+    """
+    return reject_reserved_labels(types)
+
+
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
     """Format entity types for prompt injection.
 
@@ -448,7 +461,7 @@ class GraphExtraction(ExtractionStrategy):
         self.llm = llm
         self.entity_extractor = entity_extractor or GLiNERExtractor()
         self.coref_resolver = coref_resolver
-        self.entity_types = entity_types or list(DEFAULT_ENTITY_TYPES)
+        self.entity_types = _reject_reserved_labels(entity_types or list(DEFAULT_ENTITY_TYPES))
         self._max_concurrency = max_concurrency
 
     async def extract(
@@ -459,7 +472,10 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: ontology overrides instance default
         if ontology.entities:
-            entity_types = [e.label for e in ontology.entities]
+            # Ontology labels bypass the constructor. OntologyStore.register
+            # already refuses reserved labels, but ``extract`` can be handed an
+            # ontology that never went through the store, so re-check here.
+            entity_types = _reject_reserved_labels([e.label for e in ontology.entities])
             entity_type_descs: dict[str, str] = {
                 e.label: e.description for e in ontology.entities if e.description
             }
@@ -574,6 +590,17 @@ class GraphExtraction(ExtractionStrategy):
                     chunk_entities.append([])
                 else:
                     chunk_entities.append(result)
+
+        # Extractors filter names without knowing the ontology (their label
+        # list is not always one: grounded discovery passes NER anchors), so
+        # the ontology-dependent rules -- currently the specific-date gate --
+        # are applied here, where ``entity_types`` really is the ontology.
+        # Step 2 re-applies them to the LLM's output; this pass covers the
+        # step-1 entities that survive a step-2 failure unverified.
+        chunk_entities = [
+            [e for e in ents if is_valid_entity_name(e.name, entity_types)]
+            for ents in chunk_entities
+        ]
 
         # ── Step 2: LLM verify + relationship extraction ──
         step2_prompts: list[str] = []
@@ -789,7 +816,7 @@ class GraphExtraction(ExtractionStrategy):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
-            if not is_valid_entity_name(name):
+            if not is_valid_entity_name(name, entity_types):
                 continue
             raw_type = str(item.get("type", "")).strip()
             if "/" in raw_type or "(" in raw_type or ")" in raw_type:
@@ -824,7 +851,9 @@ class GraphExtraction(ExtractionStrategy):
             rel_type = str(item.get("type", "")).strip()
             if not source or not target or not rel_type:
                 continue
-            if not is_valid_entity_name(source) or not is_valid_entity_name(target):
+            if not is_valid_entity_name(source, entity_types) or not is_valid_entity_name(
+                target, entity_types
+            ):
                 continue
 
             description = str(item.get("description", "")).strip()

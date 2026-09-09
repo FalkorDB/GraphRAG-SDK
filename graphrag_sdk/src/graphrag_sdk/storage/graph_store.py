@@ -15,6 +15,7 @@ from typing import Any, NamedTuple
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
     ChunkEntityRow,
     ChunkRelationshipRow,
     DocumentRecord,
@@ -92,7 +93,7 @@ class GraphStore:
     # ── Write Operations ─────────────────────────────────────────
 
     _BATCH_SIZE = 500
-    _STRUCTURAL_LABELS = frozenset({"Chunk", "Document"})
+    _STRUCTURAL_LABELS = RESERVED_NODE_LABELS
     _REL_LABEL_HINTS: dict[str, tuple[str, str]] = {
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),

@@ -63,6 +63,7 @@ from graphrag_sdk.core.models import (
     Entity,
     Ontology,
     Relation,
+    reject_reserved_labels,
 )
 from graphrag_sdk.core.tables import Column, Link, TableMapping
 
@@ -340,6 +341,10 @@ class OntologyStore:
         # returning early here would silently discard every one of them.
         if not ontology.entities and not ontology.relations and not ontology.tables:
             return await self.load()
+
+        # Refuse ``Document``/``Chunk`` before anything is persisted: a stored
+        # reserved label would make every later ingest fail mid-pipeline.
+        reject_reserved_labels(e.label for e in ontology.entities)
 
         existing = await self.load()
         self._check_no_contradictions(existing, ontology)

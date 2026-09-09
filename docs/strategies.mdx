@@ -299,7 +299,9 @@ extractor = GraphExtraction(
     entity_extractor=LLMExtractor(llm),
 )
 
-# GLiNER with custom threshold
+# GLiNER with custom threshold. Spans scoring in the band just below it
+# (here 0.45–0.6) are kept as "Unknown" for the step-2 LLM to re-type or
+# drop; pass candidate_threshold=None to discard them instead.
 extractor = GraphExtraction(
     llm=llm,
     entity_extractor=GLiNERExtractor(threshold=0.6),
@@ -318,11 +320,11 @@ extractor = GraphExtraction(
 
 | Class | Description | Parameters |
 |-------|-------------|------------|
-| `GLiNERExtractor` | Local GLiNER model (default, no API calls) | `threshold=0.75`, `model_name="urchade/gliner_medium-v2.1"` |
+| `GLiNERExtractor` | Local GLiNER model (default, no API calls) | `threshold=None` (per-model default, 0.75 for `urchade/gliner_medium-v2.1`), `model_name=None` (`urchade/gliner_medium-v2.1`), `candidate_threshold` (default 25 % below `threshold`), `window_tokens=None`, `window_overlap=48` |
 | `LLMExtractor` | LLM-based NER via structured prompt | `llm` (required), `threshold=0.75` |
 | Custom subclass | Your own `EntityExtractor` subclass | Implement `extract_entities()` |
 
-All extractors share the same `threshold` behavior: entities with confidence below the threshold are labeled `"Unknown"`.
+Both extractors use `threshold` as the confidence cut-off for a typed entity, but they treat spans below it differently. `LLMExtractor` keeps every span it is given and labels those with confidence below `threshold` as `"Unknown"`. `GLiNERExtractor` only keeps spans down to `candidate_threshold` (by default 25 % under `threshold`) — those in that band are labeled `"Unknown"` and handed to step 2, and anything lower is discarded inside the model and never reaches the pipeline; see [Extraction](/extraction) for details.
 
 **Graph output:**
 - All relationships use `RELATES` edge type. The original type (e.g. `WORKS_AT`) is in `properties["rel_type"]`.

@@ -646,7 +646,7 @@ class ExtractionStrategy(ABC):
 - `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, max_concurrency=None)`
 
 **Entity Extractors** (step 1 backends for `GraphExtraction`):
-- `GLiNERExtractor(threshold=0.75, model_name="urchade/gliner_medium-v2.1")` -- default, local NER
+- `GLiNERExtractor(threshold=None, model_name=None, window_tokens=None, window_overlap=48, candidate_threshold=<25 % below threshold>)` -- default, local NER. `model_name=None` selects `urchade/gliner_medium-v2.1`; `threshold=None` selects the measured per-model value (0.75 for that model). Spans scoring between `candidate_threshold` and `threshold` are returned as `"Unknown"`; pass `candidate_threshold=None` to disable. Chunks longer than `window_tokens` (derived from the model's `max_len` when `None`) are processed as overlapping windows.
 - `LLMExtractor(llm, threshold=0.75)` -- LLM-based NER
 - Subclass `EntityExtractor` for custom backends
 
