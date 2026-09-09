@@ -1913,34 +1913,40 @@ class GraphRAG:
                     f"update: detected COMMITTED pending '{prior_pending_id}' "
                     f"from a prior crash — rolling forward"
                 )
-                # The pending node carries the "real" path/hash (set just
-                # before we crashed). Look those up before rollforward so the
-                # canonical Document ends up with the right metadata.
+                # The pending node carries the "real" path (set just before
+                # we crashed) and, if the pipeline run was complete, its
+                # hash. Look those up before rollforward so the canonical
+                # Document ends up with the right metadata.
                 pending_record = await self._graph_store.get_document_record(prior_pending_id)
-                # A committed pending without persisted path metadata is a
-                # corruption signal — the pipeline must have completed step 7
-                # (write-graph) for the marker to be set, so the path/hash
-                # MUST be there. Refuse to silently default to the canonical
-                # id (would write a non-filesystem path) or to "" hash (would
-                # break future no-op short-circuits forever).
-                # Both path AND content_hash are required for a COMMITTED
-                # pending — pipeline must have completed step 7 to write
-                # them. Refusing to fall back to ``""`` on either: a
-                # non-filesystem path is wrong, and an empty hash would
-                # permanently disable the no-op short-circuit on future
-                # updates (no real SHA-256 will ever match ``""``).
-                roll_hash = prior_hash or (pending_record.content_hash if pending_record else None)
-                if pending_record is None or not pending_record.path or not roll_hash:
+                # A committed pending without a persisted path is a
+                # corruption signal — the pipeline must have completed step 3
+                # (lexical graph) for the marker to be set, so the path MUST
+                # be there. Refuse to silently default to the canonical id
+                # (would write a non-filesystem path).
+                if pending_record is None or not pending_record.path:
                     raise DatabaseError(
                         f"Phase 0 rollforward: COMMITTED pending "
                         f"'{prior_pending_id}' has incomplete metadata "
-                        f"(path={pending_record.path if pending_record else None!r}, "
-                        f"hash={roll_hash!r}). Graph state is inconsistent — "
-                        "possible corruption or partial write before the "
-                        "commit marker. Refusing to proceed; manual "
-                        "intervention required."
+                        f"(path={pending_record.path if pending_record else None!r}). "
+                        "Graph state is inconsistent — possible corruption or "
+                        "partial write before the commit marker. Refusing to "
+                        "proceed; manual intervention required."
                     )
                 roll_path = pending_record.path
+                # A missing hash is NOT corruption: the pipeline withholds
+                # ``content_hash`` when a write came up short (see
+                # ``IngestionPipeline.run``), and the interrupted update()
+                # would have promoted the pending without one. Roll forward
+                # the same way — never fall back to ``""`` (no real SHA-256
+                # matches it, so the no-op short-circuit would be disabled
+                # for good) and never invent a hash the run did not earn.
+                roll_hash = prior_hash or pending_record.content_hash or None
+                if roll_hash is None:
+                    ctx.log(
+                        f"update: COMMITTED pending '{prior_pending_id}' carries no "
+                        "content_hash (prior run reported incomplete writes); "
+                        "promoting it uncertified so the document stays eligible for repair"
+                    )
                 # Belt-and-braces: if the pending doesn't carry cleanup
                 # state (e.g. it was committed by pre-fix code, or by a
                 # test simulation that wrote the marker directly), snapshot
@@ -2006,7 +2012,11 @@ class GraphRAG:
         the win for touch-only PRs (CRLF, formatter-only changes). Pass
         ``force=True`` to re-extract anyway — the only way to re-process
         unchanged content after changing the ontology, chunker, extractor
-        or model, since ``ingest()`` skips unchanged documents too.
+        or model, since ``ingest()`` skips unchanged documents too. The
+        hash is recorded only when the pipeline reported every write in
+        full; if ``UpdateResult.metadata["incomplete_writes"]`` is present
+        the document is promoted without one, so the next ``ingest()`` or
+        ``update()`` re-runs and repairs it instead of skipping.
 
         State-machine cutover (crash-safe). Columns:
         ``pend`` = pending Document exists;
@@ -2282,11 +2292,31 @@ class GraphRAG:
             )
 
         # ── Phase 5: rollforward cutover (idempotent) ──
+        # The cutover is what stamps ``content_hash`` on the canonical
+        # Document, so it must honour the same complete-writes gate as
+        # ``ingest()``: if the pipeline reported a shortfall (a dropped
+        # RELATES edge, an unembedded chunk — see
+        # ``IngestionPipeline.run``), promote the pending without a hash so
+        # the document stays eligible for repair instead of being skipped
+        # as unchanged forever (galshubeli on #309).
+        incomplete_writes = pipeline_result.metadata.get("incomplete_writes")
+        cutover_hash: str | None = None if incomplete_writes else new_hash
+        if incomplete_writes:
+            ctx.log(
+                "update: some writes were reported incomplete "
+                f"({'; '.join(incomplete_writes)}); content_hash not recorded — "
+                "the next ingest/update of this document re-runs in full"
+            )
+            logger.warning(
+                "update of '%s' left incomplete writes (%s); not marking content_hash",
+                resolved_id,
+                "; ".join(incomplete_writes),
+            )
         chunks_deleted = await self._graph_store.rollforward_cutover(
             pending_id=pending_id,
             real_id=resolved_id,
             path=doc_path,
-            content_hash=new_hash,
+            content_hash=cutover_hash,
         )
 
         # ── Phase 6: unified post-cutover cleanup (recoverable) ──

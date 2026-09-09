@@ -1098,8 +1098,9 @@ class TestContentHashRequiresCompleteWrites:
     async def test_unembedded_chunks_withhold_the_hash(
         self, ctx, mock_graph_store, mock_vector_store
     ):
-        """0 from ``index_chunks`` — every embedding call failed, or no
-        embedder — means the document is absent from chunk vector search."""
+        """0 from ``index_chunks`` — every embedding call failed — means the
+        document is absent from chunk vector search. (No embedder at all is
+        ``None``, covered by ``test_no_embedder_is_not_a_shortfall``.)"""
         mock_vector_store.index_chunks = AsyncMock(return_value=0)
         result = await self._pipeline(mock_graph_store, mock_vector_store).run("r.txt", ctx)
 
@@ -1138,6 +1139,23 @@ class TestContentHashRequiresCompleteWrites:
 
         assert "skipped_unchanged" not in result.metadata
         assert self._hash_written(mock_graph_store)
+
+    async def test_no_embedder_is_not_a_shortfall(self, ctx, mock_graph_store, mock_connection):
+        """Graph-only deployments: ``VectorStore.index_chunks`` returns ``None``
+        when no embedder is configured — nothing was attempted, so nothing is
+        missing — and the hash must still be recorded or the unchanged-document
+        skip would never fire for them (galshubeli on #309)."""
+        from graphrag_sdk.storage.vector_store import VectorStore
+
+        store = VectorStore(mock_connection, embedder=None)
+        result = await self._pipeline(mock_graph_store, store).run("r.txt", ctx)
+
+        assert self._hash_written(mock_graph_store)
+        assert "incomplete_writes" not in result.metadata
+        assert result.chunks_indexed == 3
+
+
+class TestDeterministicChunkUids:
     """Bug #12 — re-ingesting an unchanged document duplicated its chunks.
 
     ``TextChunk.uid`` defaulted to ``uuid4()``, so the lexical graph's

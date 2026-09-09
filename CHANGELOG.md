@@ -71,8 +71,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error, or a chunk left without an embedding by a rate-limited embedder all
   withhold the hash (`IngestionResult.metadata["incomplete_writes"]` lists
   the shortfalls), so the next ingest repairs the document instead of
-  skipping it. Graph-store adapters without `get_document_record` keep
-  working — the pipeline skips the check instead of raising.
+  skipping it. `update()` applies the same gate: its cutover promotes the
+  pending Document without a hash when the pipeline reported a shortfall
+  (and crash recovery of such a pending rolls forward uncertified rather
+  than refusing). Deployments without an embedder are not penalised —
+  `VectorStore.index_chunks` now returns `None` (nothing attempted) instead
+  of `0` (every embedding failed) when no embedder is configured, so
+  graph-only ingests still record the hash. Graph-store adapters without
+  `get_document_record` keep working — the pipeline skips the check instead
+  of raising.
 - `GraphRAG.update(..., force=True)` re-extracts a document whose content
   hash is unchanged. With `ingest()` now skipping unchanged documents, this
   is the supported way to re-chunk or re-extract existing text after

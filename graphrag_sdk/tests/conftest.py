@@ -225,8 +225,8 @@ def mock_graph_store(mock_connection: MagicMock) -> MagicMock:
     # Report every item as written, like the real store does on success —
     # the pipeline treats a short count as a partial failure and withholds
     # the Document's content_hash.
-    store.upsert_nodes = AsyncMock(side_effect=lambda nodes: len(nodes))
-    store.upsert_relationships = AsyncMock(side_effect=lambda rels: len(rels))
+    store.upsert_nodes = AsyncMock(side_effect=len)
+    store.upsert_relationships = AsyncMock(side_effect=len)
     store.get_connected_entities = AsyncMock(return_value=[])
     store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
     store.delete_all = AsyncMock()

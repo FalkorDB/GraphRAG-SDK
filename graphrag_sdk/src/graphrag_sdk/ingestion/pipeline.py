@@ -84,8 +84,10 @@ def _reported_short(reported: Any, expected: int) -> bool:
     not raise on per-item failures — they log, skip and return a count — so
     the count is the only signal that a relationship or an embedding is
     missing. Stores that return nothing (``None``, a mock) are taken at their
-    word: the pipeline cannot tell and must not refuse to ever mark a run
-    complete against a duck-typed store.
+    word: ``index_chunks`` returns ``None`` when no embedder is configured
+    (nothing was attempted, so nothing is missing), and the pipeline cannot
+    tell and must not refuse to ever mark a run complete against a
+    duck-typed store.
     """
     return isinstance(reported, int) and not isinstance(reported, bool) and reported < expected
 
@@ -400,6 +402,12 @@ class IngestionPipeline:
 
             # Step 7: Write to graph (batched)
             ctx.log("Step 7/9: Writing to graph store")
+            # ``upsert_nodes`` is deliberately not gated on its count: it
+            # raises ``DatabaseError`` on a real write failure, and the only
+            # nodes it drops silently are those whose id sanitises to empty.
+            # A re-run would drop those identically, so counting them would
+            # withhold ``content_hash`` for this document forever rather than
+            # flag something the next ingest can repair.
             await self.graph_store.upsert_nodes(resolved.nodes)
             rels_written = await self.graph_store.upsert_relationships(resolved.relationships)
             if _reported_short(rels_written, len(resolved.relationships)):

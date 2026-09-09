@@ -1552,8 +1552,8 @@ def _stub_graph_store_for_update(
     g._graph_store.mark_document_pending_delete = AsyncMock(side_effect=_mark_delete)
     g._graph_store.has_pending_delete = AsyncMock(return_value=False)
     g._graph_store.rollforward_cutover = AsyncMock(side_effect=_rollforward)
-    g._graph_store.upsert_nodes = AsyncMock(side_effect=lambda nodes: len(nodes))
-    g._graph_store.upsert_relationships = AsyncMock(side_effect=lambda rels: len(rels))
+    g._graph_store.upsert_nodes = AsyncMock(side_effect=len)
+    g._graph_store.upsert_relationships = AsyncMock(side_effect=len)
     g._vector_store.ensure_indices = AsyncMock(return_value={})
     g._vector_store.index_chunks = AsyncMock(side_effect=lambda chunks: len(chunks.chunks))
     g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
@@ -1673,6 +1673,73 @@ class TestGraphRAGUpdate:
 
         assert "force" in inspect.signature(graphrag.update_sync).parameters
         assert "force" in inspect.signature(graphrag.update).parameters
+
+    async def test_complete_writes_record_content_hash_on_cutover(self, graphrag):
+        """The cutover is where ``update()`` stamps the hash; a run with every
+        write reported in full certifies the document as complete."""
+        import hashlib
+
+        text = "Fresh content, fully written."
+        _stub_graph_store_for_update(
+            graphrag, existing_record={"path": "my-doc", "content_hash": "old-hash"}
+        )
+
+        result = await graphrag.update(text=text, document_id="my-doc")
+
+        assert "incomplete_writes" not in result.metadata
+        kwargs = graphrag._graph_store.rollforward_cutover.await_args.kwargs
+        assert kwargs["content_hash"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    async def test_incomplete_writes_promote_without_content_hash(self, graphrag):
+        """``update()`` must honour the same complete-writes gate as
+        ``ingest()``: a shortfall reported by the pipeline (here: no chunk got
+        an embedding) promotes the pending *without* a hash, so the next
+        ingest/update repairs the document instead of skipping it as unchanged
+        (galshubeli on #309)."""
+        _stub_graph_store_for_update(
+            graphrag, existing_record={"path": "my-doc", "content_hash": "old-hash"}
+        )
+        graphrag._vector_store.index_chunks = AsyncMock(return_value=0)
+
+        result = await graphrag.update(text="Fresh content, half written.", document_id="my-doc")
+
+        assert result.no_op is False
+        assert result.replaced_existing is True
+        assert any(s.startswith("chunks indexed 0/") for s in result.metadata["incomplete_writes"])
+        # The cutover still happens — crash-safety is untouched — but uncertified.
+        graphrag._graph_store.rollforward_cutover.assert_awaited_once()
+        assert graphrag._graph_store.rollforward_cutover.await_args.kwargs["content_hash"] is None
+
+    async def test_phase0_rolls_forward_committed_pending_without_hash(self, graphrag):
+        """A COMMITTED pending with a path but no ``content_hash`` is what an
+        interrupted update() with incomplete writes leaves behind — not
+        corruption. Phase 0 must replay it uncertified (``content_hash=None``),
+        never refuse, and never invent a hash."""
+        from graphrag_sdk.core.models import DocumentRecord
+
+        pending_id = "my-doc__pending__abc12345"
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": "old-hash"},
+            prior_pending=("COMMITTED", pending_id, None),
+        )
+        records = {
+            pending_id: DocumentRecord(path="my-doc", content_hash=None),
+            "my-doc": DocumentRecord(path="my-doc", content_hash="old-hash"),
+        }
+        graphrag._graph_store.get_document_record = AsyncMock(
+            side_effect=lambda doc_id: records.get(doc_id)
+        )
+
+        await graphrag.update(text="new", document_id="my-doc")
+
+        # First cutover is the Phase 0 replay, second is this update's own.
+        assert graphrag._graph_store.rollforward_cutover.await_count == 2
+        replay = graphrag._graph_store.rollforward_cutover.await_args_list[0].kwargs
+        assert replay["pending_id"] == pending_id
+        assert replay["real_id"] == "my-doc"
+        assert replay["path"] == "my-doc"
+        assert replay["content_hash"] is None
 
     async def test_doc_not_found_default_raises(self, graphrag):
         """if_missing='error' (default) raises DocumentNotFoundError."""
