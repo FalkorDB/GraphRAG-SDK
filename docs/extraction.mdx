@@ -81,16 +81,22 @@ A local transformer model that runs on your machine — no API calls needed.
 from graphrag_sdk import GLiNERExtractor
 
 extractor = GLiNERExtractor(
-    threshold=0.75,                          # confidence threshold (below = "Unknown")
-    model_name="urchade/gliner_medium-v2.1", # HuggingFace model
+    threshold=0.75,                          # at or above: typed entity (default: None = per-model value)
+    candidate_threshold=0.5625,              # band below threshold kept as "Unknown" (default: 25 % below threshold)
+    model_name="urchade/gliner_medium-v2.1", # HuggingFace model (default)
+    window_tokens=None,                      # words per inference window (default: derived from the model's max_len)
+    window_overlap=48,                       # words shared by consecutive windows
 )
 ```
 
 **How it works:**
 1. The model is loaded lazily on first use (thread-safe via `threading.Lock`)
 2. Runs inference via `asyncio.to_thread()` to avoid blocking the event loop
-3. Returns predictions with character-level spans — more precise than LLM spans
-4. Entities below the confidence threshold are labeled `"Unknown"` (not discarded)
+3. Text longer than the model's input limit (`config.max_len`, 384 words for the default model) is processed as overlapping windows and merged back into non-overlapping spans, so the tail of a long chunk is not truncated. Short text takes a single-pass fast path.
+4. Returns predictions with character-level spans — more precise than LLM spans
+5. Entities in the band just below the confidence threshold (default: 25 % below it, e.g. 0.5625–0.75) are labeled `"Unknown"` and handed to the step-2 LLM, which re-types or drops them against the text; anything below the band is discarded. Pass `candidate_threshold=None` to disable the band.
+
+Thresholds are model-specific: `threshold=None` (the default) selects the measured value for `model_name` (`0.75` for the `urchade/gliner_*` models, `0.5` for the `knowledgator/gliner-bi-*` bi-encoders); unknown models fall back to `0.5` with a warning. Invalid configurations raise `ValueError`: `threshold` outside `[0, 1]`, `candidate_threshold` outside `[0, threshold]`, `window_tokens` not a positive integer, or `window_overlap` not a non-negative integer — all at construction. `window_overlap` must also be smaller than the window; that is checked at construction when `window_tokens` is given explicitly, otherwise on the first inference call, once the window has been derived from the model.
 
 **Best for:** Production pipelines where you want fast, cheap NER without API costs.
 
@@ -198,7 +204,7 @@ Person, Organization, Technology, Product, Location,
 Date, Event, Concept, Law, Dataset, Method
 ```
 
-Entities that don't match any type (or fall below the confidence threshold) are labeled `"Unknown"`.
+Entities that don't match any type (or score in the band just below the confidence threshold) are labeled `"Unknown"`.
 
 ### Customizing the Ontology
 

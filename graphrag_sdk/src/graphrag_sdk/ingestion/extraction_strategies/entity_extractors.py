@@ -38,6 +38,15 @@ DEFAULT_ENTITY_TYPES: list[str] = [
 
 UNKNOWN_LABEL = "Unknown"
 
+#: Sentinel for "use the class default" where ``None`` is itself a valid value.
+_DEFAULT: Any = object()
+
+
+def _is_int(value: Any) -> bool:
+    """``bool`` is an ``int`` subclass; window sizes must be real integers."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 MIN_NAME_LEN = 2  # single-char names are noise
 MAX_NAME_LEN = 80  # descriptions masquerading as names
 
@@ -460,19 +469,171 @@ class GLiNERExtractor(EntityExtractor):
     doc ingestion) and they genuinely run in parallel. See ``_predict_sync``
     for the measurements behind both decisions.
 
+    GLiNER has a hard input limit (``config.max_len``) and truncates anything
+    beyond it: the library emits a ``UserWarning`` ("Sentence of length N has
+    been truncated"), raises nothing, and the tail never reaches the model.
+    Measured on ``gliner_medium-v2.1`` (the default model, ``max_len`` 384): a
+    probe entity placed at word-token 388 is always returned, at 389 never.
+    The bi-encoder models allow 2048, but real documents still exceed it —
+    disabling windowing on our benchmark corpus dropped recall from 0.805 to
+    0.621 — so windowing matters regardless of the model.
+
+    To keep long chunks fully visible, text longer than ``window_tokens`` is
+    processed as a series of overlapping windows and the results are merged.
+    Short text takes a fast path and behaves exactly as before.
+
+    **Confidence handling.** Spans scoring at or above ``threshold`` are typed.
+    Spans in the band just below it — from ``candidate_threshold`` up to
+    ``threshold`` — are kept but labelled ``"Unknown"``; anything below the band
+    is discarded inside GLiNER and never reaches this SDK. The rest of the
+    pipeline is built for the ``"Unknown"`` label: the step-2 LLM re-types or
+    drops each one against the text, ontology filtering whitelists it so
+    survivors are not pruned, and entity resolution prefers any specific type
+    over ``"Unknown"`` when merging duplicates.
+
+    By default the band is **25 % of the threshold** (``CANDIDATE_BAND``), so it
+    follows whichever model threshold is in effect: 0.5625–0.75 for
+    ``gliner_medium-v2.1``, 0.375–0.5 for the bi-encoders. Measured end to end on
+    the 11-document benchmark against the same code with the band off: NER
+    spans 1828 -> 2468, the step-2 LLM kept most of them under a real type (0
+    ``Unknown`` nodes reached the graph), entity recall 0.535 -> 0.571 at
+    precision 0.605 -> 0.572 (F1 0.568 -> 0.572), triple relaxed F1 0.228 ->
+    0.236, QA 30.4 % -> 32.4 %, ingest cost +8 %. A much wider band (floor 0.30,
+    earlier measurement) was net negative — recall +0.13 for precision -0.13,
+    F1 -0.027 — which is why this is a fraction of the threshold and not a
+    fixed low floor. Pass ``candidate_threshold=None`` to turn the band off, or
+    a number below ``threshold`` to set the floor explicitly.
+
+    **Thresholds are model-specific and are not comparable between models.**
+    ``DEFAULT_THRESHOLDS`` records the measured operating point for each known
+    model, and ``threshold=None`` (the default) looks it up. Passing an explicit
+    number that was tuned for a different model is the single easiest way to
+    break this class: the bi-encoder models return almost nothing at the 0.75
+    that suits ``gliner_medium-v2.1`` — measured at **2 entities for an entire
+    corpus**, with no error raised.
+
     Args:
-        threshold: Confidence threshold (0-1). Below this → "Unknown".
+        threshold: Confidence threshold (0-1). Spans scoring at or above it
+            are typed; spans between ``candidate_threshold`` and it are
+            labelled ``"Unknown"``; anything lower is discarded by the model.
+            ``None`` (default) selects the value measured for ``model_name``.
         model_name: HuggingFace model name for GLiNER.
+        window_tokens: Word-tokens per inference window. ``None`` derives it
+            from the model's own ``config.max_len`` minus a safety margin.
+            An explicit value must be a positive integer.
+        window_overlap: Word-tokens shared between consecutive windows. An
+            integer satisfying ``0 <= window_overlap < window_tokens`` (checked
+            against the derived window on first use when ``window_tokens`` is
+            ``None``); it should exceed the model's ``max_width`` (longest
+            representable entity, 12 words by default) or entities on a
+            boundary are lost.
+        candidate_threshold: Floor of the ``"Unknown"`` band. Default: 25 %
+            below ``threshold`` (``CANDIDATE_BAND``). ``None`` disables the
+            band (spans below ``threshold`` are discarded). Must satisfy
+            ``0 <= candidate_threshold <= threshold``.
+
+    Raises:
+        ValueError: If ``threshold`` is outside ``[0, 1]``, if
+            ``candidate_threshold`` is outside ``[0, threshold]``, or if the
+            window parameters are degenerate (``window_tokens`` or
+            ``window_overlap`` not an ``int``, ``window_tokens <= 0``,
+            ``window_overlap < 0`` or ``window_overlap >= window_tokens``).
     """
+
+    # Safety margin under config.max_len; the label prompt and special tokens
+    # share the window with the text.
+    _WINDOW_MARGIN = 34
+
+    #: Default model. ``gliner-bi-small-v2.0`` measured better on an 11-document
+    #: benchmark (ceiling recall 0.805 vs 0.709, 432MB vs 781MB on disk, 1004MB
+    #: vs 1532MB resident, ~14s vs ~29s, 2048-word window vs 384) but its score
+    #: calibration collapsed to <= 0.03 for every span under gliner 0.2.27 /
+    #: transformers 5.6 / torch 2.13 (a ``resize_embeddings`` warning on load),
+    #: returning zero entities at its 0.5 threshold with no error. The
+    #: uni-encoder ``gliner_medium-v2.1`` is unaffected and stays the default
+    #: until the bi-encoder path is stable across library versions.
+    DEFAULT_MODEL = "urchade/gliner_medium-v2.1"
+
+    #: Confidence thresholds are on different scales per model and MUST be
+    #: re-tuned when the model changes. Each value below is the measured best
+    #: end-to-end operating point, not a guess.
+    DEFAULT_THRESHOLDS: dict[str, float] = {
+        "knowledgator/gliner-bi-small-v2.0": 0.5,
+        "knowledgator/gliner-bi-base-v2.0": 0.5,
+        "urchade/gliner_medium-v2.1": 0.75,
+        "urchade/gliner_large-v2.1": 0.75,
+        "gliner-community/gliner_medium-v2.5": 0.75,
+    }
+
+    #: Used when ``model_name`` is not in ``DEFAULT_THRESHOLDS``. The GLiNER
+    #: library's own default, which is a safer guess than assuming our tuned
+    #: value transfers to an unknown model.
+    _FALLBACK_THRESHOLD = 0.5
+
+    #: Default ``candidate_threshold`` as a fraction below ``threshold``:
+    #: ``threshold * (1 - CANDIDATE_BAND)``. Relative, so it tracks the
+    #: per-model threshold instead of assuming one score scale.
+    CANDIDATE_BAND = 0.25
 
     def __init__(
         self,
-        threshold: float = 0.75,
-        model_name: str = "urchade/gliner_medium-v2.1",
+        threshold: float | None = None,
+        model_name: str | None = None,
+        window_tokens: int | None = None,
+        window_overlap: int = 48,
+        candidate_threshold: float | None | object = _DEFAULT,
     ) -> None:
+        self._model_name = model_name or self.DEFAULT_MODEL
+        if threshold is None:
+            threshold = self.DEFAULT_THRESHOLDS.get(self._model_name, self._FALLBACK_THRESHOLD)
+            if self._model_name not in self.DEFAULT_THRESHOLDS:
+                logger.warning(
+                    "No measured threshold for GLiNER model %r; falling back to "
+                    "%.2f. Thresholds are not comparable between models, so "
+                    "tune this before relying on the results.",
+                    self._model_name,
+                    self._FALLBACK_THRESHOLD,
+                )
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError(f"threshold ({threshold}) must be within [0, 1]")
         self._threshold = threshold
-        self._model_name = model_name
+        if candidate_threshold is _DEFAULT:
+            candidate_threshold = round(threshold * (1.0 - self.CANDIDATE_BAND), 4)
+        if candidate_threshold is not None and not 0.0 <= candidate_threshold <= threshold:
+            # Above ``threshold`` the floor would discard the entities the band
+            # is meant to keep; below 0 the model returns every candidate span
+            # and all of them reach step 2 as ``"Unknown"``.
+            raise ValueError(
+                f"candidate_threshold ({candidate_threshold}) must be within "
+                f"[0, threshold] = [0, {threshold}]"
+            )
+        self._candidate_threshold = candidate_threshold
         self._model: Any = None
+        if window_tokens is not None and not (_is_int(window_tokens) and window_tokens > 0):
+            # ``words[begin:begin + 0]`` is empty on the first iteration, so a
+            # non-positive window would return zero entities with no error; a
+            # non-int only fails later, inside ``range()`` at inference time.
+            raise ValueError(f"window_tokens ({window_tokens!r}) must be a positive integer")
+        if not (_is_int(window_overlap) and window_overlap >= 0):
+            # A negative overlap makes ``step > window`` and leaves word ranges
+            # that never reach the model — the silent truncation this class
+            # exists to prevent, reintroduced by configuration.
+            raise ValueError(f"window_overlap ({window_overlap!r}) must be a non-negative integer")
+        if window_tokens is not None:
+            self._check_overlap(window_overlap, window_tokens)
+        self._window_tokens = window_tokens
+        self._window_overlap = window_overlap
+
+    @staticmethod
+    def _check_overlap(overlap: int, window: int) -> None:
+        # ``overlap >= window`` collapses ``step`` to 1: a 2000-word text
+        # would run ~2000 sequential inferences instead of ~7.
+        if overlap >= window:
+            raise ValueError(
+                f"window_overlap ({overlap}) must be smaller than the window "
+                f"({window} word-tokens); consecutive windows would otherwise "
+                f"advance one word at a time"
+            )
 
     def _load_model(self) -> Any:
         if self._model is None:
@@ -516,9 +677,113 @@ class GLiNERExtractor(EntityExtractor):
                 cls._MODEL_CACHE[model_name] = cached
         return cached
 
+    def _resolve_window(self, model: Any) -> int:
+        """Window size in word-tokens, derived from the model if not set.
+
+        Both branches are validated against ``window_overlap`` so a derived
+        window (e.g. from a model with a tiny ``max_len``) cannot silently
+        collapse ``step`` to 1 any more than an explicit one can.
+        """
+        if self._window_tokens is not None:
+            window = self._window_tokens
+        else:
+            max_len = getattr(getattr(model, "config", None), "max_len", None)
+            if not isinstance(max_len, int) or max_len <= 0:
+                max_len = 384
+            window = max(64, max_len - self._WINDOW_MARGIN)
+        self._check_overlap(self._window_overlap, window)
+        return window
+
+    @staticmethod
+    def _word_spans(model: Any, text: str) -> list[tuple[str, int, int]]:
+        """Split text the same way GLiNER does, keeping char offsets.
+
+        The splitter is looked up on every call rather than cached on the
+        instance: this method runs unlocked from concurrent
+        ``asyncio.to_thread`` calls, and the extractor must not mutate shared
+        state during inference (see :meth:`_predict_sync`).
+        """
+        splitter = getattr(getattr(model, "data_processor", None), "words_splitter", None)
+        if splitter is None:
+            from gliner.data_processing import WordsSplitter
+
+            splitter = WordsSplitter()
+        return list(splitter(text))
+
+    @staticmethod
+    def _merge(preds: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Resolve predictions from overlapping windows to non-overlapping spans.
+
+        GLiNER's ``flat_ner`` guarantees non-overlapping spans within one
+        window, and downstream code relies on that shape, so the merge must
+        restore it across windows. Two rules, applied regardless of label:
+
+        1. **Nested spans lose to the span that contains them.** The failure
+           mode being fixed is truncation: a window edge clips
+           "Acme Corporation Ltd" to "Acme", and the fragment may come back
+           with a different label or a higher score than the whole entity seen
+           by the neighbouring window. Exact duplicates collapse to the
+           highest-scoring copy.
+        2. **Partially overlapping spans are resolved by score**, highest
+           first, the way ``flat_ner`` does within a window. Length must not
+           decide here: a long low-confidence span would otherwise delete the
+           disjoint high-confidence entities on either side of it.
+
+        Ties on score break by length, then by start offset, so the result
+        does not depend on the order windows emitted their predictions.
+
+        O(n log n). Rule 1 is a sweep over spans sorted by start. After it, no
+        span contains another, so spans sorted by start are also sorted by
+        end and each span can overlap at most two of the disjoint survivors —
+        the neighbour walks in rule 2 touch each span at most twice.
+        """
+        # Rule 1: sorted by start, a span is nested in (or identical to) an
+        # earlier one exactly when it ends at or before the furthest end seen.
+        chain: list[dict[str, Any]] = []
+        max_end = -1
+        for p in sorted(
+            (p for p in preds if p["end"] > p["start"]),
+            key=lambda p: (p["start"], -p["end"], -p.get("score", 0.0)),
+        ):
+            if p["end"] <= max_end:
+                continue
+            max_end = p["end"]
+            chain.append(p)
+
+        # Rule 2: greedy by score over the containment-free chain.
+        state = [0] * len(chain)  # 0 undecided, 1 kept, -1 dropped
+        by_score = sorted(
+            range(len(chain)),
+            key=lambda i: (
+                -chain[i].get("score", 0.0),
+                chain[i]["start"] - chain[i]["end"],
+                chain[i]["start"],
+            ),
+        )
+        for i in by_score:
+            if state[i]:
+                continue
+            state[i] = 1
+            start, end = chain[i]["start"], chain[i]["end"]
+            j = i - 1
+            while j >= 0 and chain[j]["end"] > start:
+                state[j] = -1
+                j -= 1
+            j = i + 1
+            while j < len(chain) and chain[j]["start"] < end:
+                state[j] = -1
+                j += 1
+        return [p for p, s in zip(chain, state) if s == 1]
+
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
         model = self._load_model()
         labels = [t.lower() for t in entity_types]
+        window = self._resolve_window(model)
+        # What we ask the MODEL for. Anything between this floor and
+        # ``self._threshold`` comes back and is demoted to ``UNKNOWN_LABEL`` by
+        # ``_parse_predictions`` rather than being discarded. When no candidate
+        # threshold is configured the two are equal and nothing is demoted.
+        floor = self._threshold if self._candidate_threshold is None else self._candidate_threshold
 
         # No lock here, deliberately.
         #
@@ -539,7 +804,40 @@ class GLiNERExtractor(EntityExtractor):
         # locked 3.75 s / 3.54 s versus unlocked 2.21 s / 2.46 s = **1.56x**.
         # Note issue #71 claimed 3.44x; the honest measured figure is 1.56x,
         # because torch's own intra-op threading already uses the cores.
-        return model.predict_entities(text, labels, threshold=self._threshold)
+        words = self._word_spans(model, text)
+
+        # Fast path: fits in one window, identical to unwindowed behaviour.
+        if len(words) <= window:
+            return model.predict_entities(text, labels, threshold=floor)
+
+        step = max(1, window - self._window_overlap)
+        out: list[dict[str, Any]] = []
+        n_windows = 0
+        for begin in range(0, len(words), step):
+            span = words[begin : begin + window]
+            if not span:
+                break
+            n_windows += 1
+            lo, hi = span[0][1], span[-1][2]
+            for p in model.predict_entities(text[lo:hi], labels, threshold=floor):
+                p = dict(p)
+                p["start"] += lo
+                p["end"] += lo
+                p["text"] = text[p["start"] : p["end"]]
+                out.append(p)
+            if begin + window >= len(words):
+                break
+
+        merged = self._merge(out)
+        logger.debug(
+            "GLiNER windowed inference: %d word-tokens -> %d windows, "
+            "%d raw predictions -> %d after merge",
+            len(words),
+            n_windows,
+            len(out),
+            len(merged),
+        )
+        return merged
 
     async def extract_entities(
         self,
