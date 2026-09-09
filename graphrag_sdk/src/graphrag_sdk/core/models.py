@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from enum import Enum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
@@ -91,6 +93,48 @@ class TextChunks(DataModel):
     """Collection of text chunks from a single document."""
 
     chunks: list[TextChunk] = Field(default_factory=list)
+
+
+_URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def stable_document_id(source: str) -> str:
+    """Document node id for a loader ``source`` when the caller gives none.
+
+    Filesystem paths are normalised (``./``, ``../``, doubled slashes) so the
+    same file spelled two ways is one document. Anything with a URI scheme
+    (``https://``, ``s3://`` …) is returned verbatim: ``os.path.normpath`` would
+    collapse ``https://`` to ``https:/`` and resolve ``..`` inside the query
+    string, merging distinct URLs into one id.
+    """
+    if _URI_SCHEME.match(source):
+        return source
+    return os.path.normpath(source)
+
+
+# Separator ``GraphRAG.update()`` uses to build the transient id of the
+# Document written during its crash-safe cutover (``<id>__pending__<8hex>``).
+# Reserved: a real Document id containing it would be picked up by the
+# ``STARTS WITH "<id>__pending__"`` recovery scan.
+PENDING_ID_MARKER = "__pending__"
+
+
+def ensure_no_pending_marker(document_id: str) -> None:
+    """Raise ``ValueError`` if ``document_id`` contains :data:`PENDING_ID_MARKER`.
+
+    Applied to every Document id that is *not* a pending id — explicit ids in
+    ``GraphRAG.ingest()`` / ``update()`` / ``delete_document()`` and ids the
+    ingestion pipeline derives from a source path — so a file called
+    ``foo__pending__bar.txt`` can never be mistaken for an interrupted update
+    of ``foo`` and rolled back or rolled forward over the real document.
+    """
+    if PENDING_ID_MARKER in document_id:
+        raise ValueError(
+            f"document_id '{document_id}' contains the reserved substring "
+            f"'{PENDING_ID_MARKER}' which is used internally by the update() "
+            "state-machine cutover. Pick a different id (or rename the "
+            "source file) to avoid prefix-collision with pending nodes."
+        )
 
 
 class DocumentInfo(DataModel):
