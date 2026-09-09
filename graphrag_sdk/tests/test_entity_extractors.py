@@ -24,10 +24,20 @@ from .conftest import MockLLM
 class TestLLMExtractor:
     @pytest.fixture
     def extractor(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "Alice", "type": "Person", "description": "A software engineer"},
-            {"name": "Acme Corp", "type": "Organization", "description": "A tech company"},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {"name": "Alice", "type": "Person", "description": "A software engineer"},
+                        {
+                            "name": "Acme Corp",
+                            "type": "Organization",
+                            "description": "A tech company",
+                        },
+                    ]
+                )
+            ]
+        )
         return LLMExtractor(llm)
 
     async def test_basic_extraction(self, extractor):
@@ -58,11 +68,17 @@ class TestLLMExtractor:
         assert entities == []
 
     async def test_filters_invalid_names(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "he", "type": "Person", "description": "A pronoun"},
-            {"name": "A", "type": "Person", "description": "Single char"},
-            {"name": "Alice", "type": "Person", "description": "Valid"},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {"name": "he", "type": "Person", "description": "A pronoun"},
+                        {"name": "A", "type": "Person", "description": "Single char"},
+                        {"name": "Alice", "type": "Person", "description": "Valid"},
+                    ]
+                )
+            ]
+        )
         extractor = LLMExtractor(llm)
         entities = await extractor.extract_entities(
             text="He and Alice", entity_types=["Person"], source_chunk_id="c0"
@@ -79,25 +95,53 @@ class TestLLMExtractor:
         assert len(entities) == 1
 
     async def test_confidence_and_spans(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "Alice", "type": "Person", "description": "Engineer",
-             "confidence": 0.95, "start": 0, "end": 5},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {
+                            "name": "Alice",
+                            "type": "Person",
+                            "description": "Engineer",
+                            "confidence": 0.95,
+                            "start": 0,
+                            "end": 5,
+                        },
+                    ]
+                )
+            ]
+        )
         extractor = LLMExtractor(llm)
         entities = await extractor.extract_entities(
-            text="Alice", entity_types=["Person"], source_chunk_id="chunk-3",
+            text="Alice",
+            entity_types=["Person"],
+            source_chunk_id="chunk-3",
         )
         assert entities[0].confidence == 0.95
         assert entities[0].spans["chunk-3"] == [{"start": 0, "end": 5}]
 
     async def test_low_confidence_becomes_unknown(self):
-        llm = MockLLM(responses=[json.dumps([
-            {"name": "Maybe", "type": "Person", "description": "Uncertain",
-             "confidence": 0.3, "start": 0, "end": 5},
-        ])])
+        llm = MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {
+                            "name": "Maybe",
+                            "type": "Person",
+                            "description": "Uncertain",
+                            "confidence": 0.3,
+                            "start": 0,
+                            "end": 5,
+                        },
+                    ]
+                )
+            ]
+        )
         extractor = LLMExtractor(llm, threshold=0.75)
         entities = await extractor.extract_entities(
-            text="Maybe", entity_types=["Person"], source_chunk_id="c0",
+            text="Maybe",
+            entity_types=["Person"],
+            source_chunk_id="c0",
         )
         assert entities[0].type == "Unknown"
 
@@ -109,6 +153,7 @@ class TestGLiNERExtractor:
     async def test_import_error_when_gliner_missing(self):
         try:
             import gliner  # noqa: F401
+
             pytest.skip("gliner is installed")
         except ImportError:
             extractor = GLiNERExtractor()
@@ -159,10 +204,14 @@ class TestEntityExtractorABC:
     def test_custom_subclass(self):
         class MyExtractor(EntityExtractor):
             async def extract_entities(self, text, entity_types, source_chunk_id):
-                return [ExtractedEntity(
-                    name="Test", type="Person", description="",
-                    source_chunk_ids=[source_chunk_id],
-                )]
+                return [
+                    ExtractedEntity(
+                        name="Test",
+                        type="Person",
+                        description="",
+                        source_chunk_ids=[source_chunk_id],
+                    )
+                ]
 
         assert isinstance(MyExtractor(), EntityExtractor)
 
@@ -191,8 +240,9 @@ class TestGLiNERModelSharing:
                 loads.append(name)
                 return object()
 
-        monkeypatch.setitem(__import__("sys").modules, "gliner",
-                            type("m", (), {"GLiNER": FakeGLiNER}))
+        monkeypatch.setitem(
+            __import__("sys").modules, "gliner", type("m", (), {"GLiNER": FakeGLiNER})
+        )
         monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {}, raising=False)
         return ee.GLiNERExtractor
 
@@ -220,9 +270,7 @@ class TestGLiNERModelSharing:
         )
 
         src = inspect.getsource(GLiNERExtractor._predict_sync)
-        code = "\n".join(
-            line for line in src.splitlines() if not line.strip().startswith("#")
-        )
+        code = "\n".join(line for line in src.splitlines() if not line.strip().startswith("#"))
         assert "_lock" not in code.lower()
         assert "with " not in code
         # The A/B scaffolding (instance lock + ``_predict_body`` split) is gone;
@@ -354,8 +402,13 @@ class _StubGLiNER:
                 continue
             for m in re.finditer(re.escape(phrase), text):
                 out.append(
-                    {"text": m.group(), "label": label, "score": score,
-                     "start": m.start(), "end": m.end()}
+                    {
+                        "text": m.group(),
+                        "label": label,
+                        "score": score,
+                        "start": m.start(),
+                        "end": m.end(),
+                    }
                 )
         return sorted(out, key=lambda p: p["start"])
 
@@ -396,8 +449,9 @@ class TestGLiNERWindowing:
         ex = self._extractor(stub)
         # 349 puts "Marie Curie" on words 349-350, straddling the edge of the
         # first 350-word window.
-        text = _long_text(1000, {5: "Marie Curie", 349: "Nobel Prize", 700: "Marie Curie",
-                                 995: "Nobel Prize"})
+        text = _long_text(
+            1000, {5: "Marie Curie", 349: "Nobel Prize", 700: "Marie Curie", 995: "Nobel Prize"}
+        )
         preds = ex._predict_sync(text, ["Person", "Award"])
         assert len(stub.calls) > 1, "text must have been windowed"
         for p in preds:
@@ -406,8 +460,17 @@ class TestGLiNERWindowing:
     def test_windowed_equals_unwindowed(self):
         stub_w = _StubGLiNER(self.PHRASES)
         stub_u = _StubGLiNER(self.PHRASES)
-        text = _long_text(2000, {5: "Marie Curie", 349: "Nobel Prize", 651: "Marie Curie",
-                                 700: "Nobel Prize", 1300: "Marie Curie", 1998: "Nobel Prize"})
+        text = _long_text(
+            2000,
+            {
+                5: "Marie Curie",
+                349: "Nobel Prize",
+                651: "Marie Curie",
+                700: "Nobel Prize",
+                1300: "Marie Curie",
+                1998: "Nobel Prize",
+            },
+        )
         windowed = self._extractor(stub_w)._predict_sync(text, ["Person", "Award"])
         unwindowed = self._extractor(stub_u, window_tokens=10_000)._predict_sync(
             text, ["Person", "Award"]
@@ -439,11 +502,18 @@ class TestGLiNERWindowing:
     def test_merge_drops_truncated_fragment_with_other_label(self):
         # Window A clipped "Acme Corporation Ltd" at its right edge and
         # returned the fragment under a different label; window B saw it whole.
-        merged = GLiNERExtractor._merge([
-            {"text": "Acme", "label": "product", "score": 0.6, "start": 100, "end": 104},
-            {"text": "Acme Corporation Ltd", "label": "organization", "score": 0.9,
-             "start": 100, "end": 120},
-        ])
+        merged = GLiNERExtractor._merge(
+            [
+                {"text": "Acme", "label": "product", "score": 0.6, "start": 100, "end": 104},
+                {
+                    "text": "Acme Corporation Ltd",
+                    "label": "organization",
+                    "score": 0.9,
+                    "start": 100,
+                    "end": 120,
+                },
+            ]
+        )
         assert [(p["text"], p["label"]) for p in merged] == [
             ("Acme Corporation Ltd", "organization")
         ]
@@ -451,45 +521,80 @@ class TestGLiNERWindowing:
     def test_merge_prefers_longer_span_even_at_lower_score(self):
         # The clipped fragment can score higher than the whole entity; the
         # failure mode is truncation, so length wins over score.
-        merged = GLiNERExtractor._merge([
-            {"text": "Corporation Ltd", "label": "organization", "score": 0.95,
-             "start": 105, "end": 120},
-            {"text": "Acme Corporation Ltd", "label": "organization", "score": 0.7,
-             "start": 100, "end": 120},
-        ])
+        merged = GLiNERExtractor._merge(
+            [
+                {
+                    "text": "Corporation Ltd",
+                    "label": "organization",
+                    "score": 0.95,
+                    "start": 105,
+                    "end": 120,
+                },
+                {
+                    "text": "Acme Corporation Ltd",
+                    "label": "organization",
+                    "score": 0.7,
+                    "start": 100,
+                    "end": 120,
+                },
+            ]
+        )
         assert [p["text"] for p in merged] == ["Acme Corporation Ltd"]
 
     def test_merge_partial_overlap_resolved_by_score(self):
         # Partially overlapping spans (not nested) collapse to one, and here
         # score decides, not length — "New York" (0.8) beats "York Times"
         # (0.7) even though it is shorter. Disjoint spans are untouched.
-        merged = GLiNERExtractor._merge([
-            {"text": "New York", "label": "location", "score": 0.8, "start": 0, "end": 8},
-            {"text": "York Times", "label": "organization", "score": 0.7, "start": 4, "end": 14},
-            {"text": "Alice", "label": "person", "score": 0.9, "start": 20, "end": 25},
-        ])
+        merged = GLiNERExtractor._merge(
+            [
+                {"text": "New York", "label": "location", "score": 0.8, "start": 0, "end": 8},
+                {
+                    "text": "York Times",
+                    "label": "organization",
+                    "score": 0.7,
+                    "start": 4,
+                    "end": 14,
+                },
+                {"text": "Alice", "label": "person", "score": 0.9, "start": 20, "end": 25},
+            ]
+        )
         assert [p["text"] for p in merged] == ["New York", "Alice"]
 
     def test_merge_long_low_score_span_does_not_delete_disjoint_neighbours(self):
         # Two windows read the shared overlap region differently. The longest
         # span is also the least confident and bridges two disjoint entities;
         # it must lose to them rather than take both out.
-        merged = GLiNERExtractor._merge([
-            {"text": "Bank of America", "label": "org", "score": 0.88, "start": 0, "end": 15},
-            {"text": "America Online Services", "label": "org", "score": 0.71,
-             "start": 8, "end": 31},
-            {"text": "Online Services Inc", "label": "org", "score": 0.85, "start": 16, "end": 35},
-        ])
+        merged = GLiNERExtractor._merge(
+            [
+                {"text": "Bank of America", "label": "org", "score": 0.88, "start": 0, "end": 15},
+                {
+                    "text": "America Online Services",
+                    "label": "org",
+                    "score": 0.71,
+                    "start": 8,
+                    "end": 31,
+                },
+                {
+                    "text": "Online Services Inc",
+                    "label": "org",
+                    "score": 0.85,
+                    "start": 16,
+                    "end": 35,
+                },
+            ]
+        )
         assert [p["text"] for p in merged] == ["Bank of America", "Online Services Inc"]
 
     def test_merge_nested_fragment_dropped_even_when_container_overlaps_more(self):
         # Containment (rule 1) is decided before partial overlaps (rule 2):
         # the nested fragment goes regardless of how the container fares.
-        merged = GLiNERExtractor._merge([
-            {"text": "Acme", "label": "product", "score": 0.99, "start": 0, "end": 4},
-            {"text": "Acme Corporation", "label": "org", "score": 0.7, "start": 0, "end": 16},
-            {"text": "Corporation Ltd", "label": "org", "score": 0.9, "start": 5, "end": 20},
-        ])
+        merged = GLiNERExtractor._merge(
+            [
+                {"text": "Acme", "label": "product", "score": 0.99, "start": 0, "end": 4},
+                {"text": "Acme Corporation", "label": "org", "score": 0.7, "start": 0, "end": 16},
+                {"text": "Corporation Ltd", "label": "org", "score": 0.9, "start": 5, "end": 20},
+            ]
+        )
         assert [p["text"] for p in merged] == ["Corporation Ltd"]
 
     def test_merge_ties_are_independent_of_input_order(self):
@@ -498,9 +603,7 @@ class TestGLiNERWindowing:
         import random
 
         spans = [(40, 50), (45, 55), (50, 60), (70, 80), (75, 85), (100, 110), (105, 115)]
-        preds = [
-            {"text": "x", "label": "t", "score": 0.8, "start": s, "end": e} for s, e in spans
-        ]
+        preds = [{"text": "x", "label": "t", "score": 0.8, "start": s, "end": e} for s, e in spans]
         rng = random.Random(0)
         outputs = set()
         for _ in range(50):
@@ -509,11 +612,13 @@ class TestGLiNERWindowing:
         assert outputs == {((40, 50), (50, 60), (70, 80), (100, 110))}
 
     def test_merge_same_span_two_labels_keeps_best_score(self):
-        merged = GLiNERExtractor._merge([
-            {"text": "Paris", "label": "person", "score": 0.6, "start": 0, "end": 5},
-            {"text": "Paris", "label": "location", "score": 0.9, "start": 0, "end": 5},
-            {"text": "Paris", "label": "location", "score": 0.8, "start": 0, "end": 5},
-        ])
+        merged = GLiNERExtractor._merge(
+            [
+                {"text": "Paris", "label": "person", "score": 0.6, "start": 0, "end": 5},
+                {"text": "Paris", "label": "location", "score": 0.9, "start": 0, "end": 5},
+                {"text": "Paris", "label": "location", "score": 0.8, "start": 0, "end": 5},
+            ]
+        )
         assert [(p["label"], p["score"]) for p in merged] == [("location", 0.9)]
 
     def test_merge_scales(self):
@@ -573,17 +678,20 @@ class TestGLiNERWindowing:
 
     # -- degenerate configurations fail in __init__ -------------------------
 
-    @pytest.mark.parametrize("kw", [
-        {"window_tokens": 0},
-        {"window_tokens": -5},
-        {"window_tokens": True},
-        {"window_tokens": 100.0},           # would only fail inside range() at inference
-        {"window_overlap": -1},
-        {"window_overlap": True},
-        {"window_overlap": 1.5},
-        {"window_tokens": 30},              # default overlap 48 >= window
-        {"window_tokens": 30, "window_overlap": 30},
-    ])
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"window_tokens": 0},
+            {"window_tokens": -5},
+            {"window_tokens": True},
+            {"window_tokens": 100.0},  # would only fail inside range() at inference
+            {"window_overlap": -1},
+            {"window_overlap": True},
+            {"window_overlap": 1.5},
+            {"window_tokens": 30},  # default overlap 48 >= window
+            {"window_tokens": 30, "window_overlap": 30},
+        ],
+    )
     def test_degenerate_window_config_rejected(self, kw):
         with pytest.raises(ValueError, match="window"):
             GLiNERExtractor(**kw)
