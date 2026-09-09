@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`redis` 8.1 broke the first query on every fresh install** —
+  `falkordb`'s cluster probe forwarded async-pool kwargs to the sync
+  `redis.Redis()` constructor, which rejects them. Fixed upstream in
+  `falkordb` 1.7.0, so the floor moves to `falkordb>=1.7` — the old
+  `>=1.0` still allowed 1.6.x to resolve against the broken redis.
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.
 
