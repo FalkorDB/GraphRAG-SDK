@@ -508,6 +508,35 @@ class TestGraphStoreDocumentLifecycle:
         # FINAL state would still report as a pending Document.
         assert "REMOVE p.ready_to_commit" in rename_cypher
 
+    async def test_rollforward_without_hash_removes_content_hash(
+        self, graph_store, mock_connection
+    ):
+        """``content_hash=None`` promotes the pending uncertified: the hash
+        is REMOVEd (never set to ``""``/null-ish) so the canonical Document
+        stays eligible for repair on the next ingest/update."""
+        results = [
+            MagicMock(result_set=[[1]]),
+            MagicMock(result_set=[[2]]),
+            MagicMock(result_set=[]),
+            MagicMock(result_set=[]),
+        ]
+        mock_connection.query = AsyncMock(side_effect=results)
+
+        chunks_removed = await graph_store.rollforward_cutover(
+            pending_id="docs/a.md__pending__abc12345",
+            real_id="docs/a.md",
+            path="docs/a.md",
+            content_hash=None,
+        )
+        assert chunks_removed == 2
+
+        rename_cypher, rename_params = mock_connection.query.await_args_list[3][0]
+        assert "SET p.id = $real_id" in rename_cypher
+        assert "p.path = $path" in rename_cypher
+        assert "p.content_hash = $hash" not in rename_cypher
+        assert "REMOVE p.ready_to_commit, p.content_hash" in rename_cypher
+        assert "hash" not in rename_params
+
     async def test_rollforward_aborts_if_pending_missing(
         self, graph_store, mock_connection
     ):
