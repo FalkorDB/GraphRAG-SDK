@@ -23,11 +23,13 @@ from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
     is_valid_entity_name,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    DEFAULT_RELATION_TYPES,
     VERIFY_EXTRACT_RELS_PROMPT,
     GraphExtraction,
     _format_entity_types,
     _format_relation_patterns,
     _reject_reserved_labels,
+    _relationship_type_instruction,
 )
 from graphrag_sdk.storage.graph_store import GraphStore
 
@@ -1348,3 +1350,188 @@ class TestReservedNodeLabels:
         # The Cypher generator's allow-list is the third copy; it adds the
         # `__Entity__` marker on top of the store's structural labels.
         assert cypher_generation._STRUCTURAL_LABELS == RESERVED_NODE_LABELS | {"__Entity__"}
+
+
+class TestDefaultRelationTypes:
+    """The shipped relation vocabulary — the counterpart to DEFAULT_ENTITY_TYPES.
+
+    Entity extraction always shipped a default type list; relations shipped
+    nothing, so the prompt asked the model to invent a label per edge. Measured
+    on an 11-document corpus that produced 447 distinct labels against 30 in
+    gold. Supplying a default list doubled exact triple F1 (0.065 -> 0.134) with
+    no loss of recall, and held across five unrelated Wikipedia domains
+    (vocabulary 2.2-2.9x smaller, 10-18% -> 66-81% of edges on the list).
+    """
+
+    def test_default_is_applied_when_nothing_is_passed(self):
+        ge = GraphExtraction(llm=MockLLM())
+        assert ge.relation_types == list(DEFAULT_RELATION_TYPES)
+        assert len(ge.relation_types) > 0
+
+    def test_explicit_list_overrides_the_default(self):
+        ge = GraphExtraction(llm=MockLLM(), relation_types=["eats", "owns"])
+        assert ge.relation_types == ["eats", "owns"]
+
+    def test_empty_list_restores_open_vocabulary(self):
+        """``[]`` is a request, not an omission.
+
+        Guards the ``is None`` check: a truthiness test would silently swap an
+        explicit open-vocabulary request for the default list.
+        """
+        ge = GraphExtraction(llm=MockLLM(), relation_types=[])
+        assert ge.relation_types == []
+
+    def test_default_list_is_not_shared_between_instances(self):
+        a = GraphExtraction(llm=MockLLM())
+        b = GraphExtraction(llm=MockLLM())
+        a.relation_types.append("mutated")
+        assert "mutated" not in b.relation_types
+        assert "mutated" not in DEFAULT_RELATION_TYPES
+
+    def test_default_labels_are_well_formed(self):
+        """UPPER_SNAKE_CASE is the ``rel_type`` convention everywhere else in
+        the repo (``Relation`` docstring, docs/graph-schema, discovery prompt,
+        the open-vocabulary instruction). ``rel_type`` is compared
+        case-sensitively in Cypher and in ``_prune``, so a lower-case default
+        would split the same predicate into two strings across runs."""
+        for label in DEFAULT_RELATION_TYPES:
+            assert label == label.upper(), f"{label} is not UPPER_SNAKE_CASE"
+            assert " " not in label, f"{label} contains a space"
+            assert label.replace("_", "").isalpha(), f"{label} has odd characters"
+        assert len(set(DEFAULT_RELATION_TYPES)) == len(DEFAULT_RELATION_TYPES)
+
+    def test_default_list_renders_as_preference_not_restriction(self):
+        """The default is guidance, not a filter, and the prompt must say so:
+        nothing prunes an off-list label on this path, so the rendered text
+        cannot claim one is required."""
+        rels = [Relation(label=lbl) for lbl in DEFAULT_RELATION_TYPES]
+        block = _format_relation_patterns(rels, strict=False)
+        assert "## Preferred Relationships" in block
+        assert "Allowed" not in block
+        for label in DEFAULT_RELATION_TYPES:
+            assert label in block
+        instruction = _relationship_type_instruction(rels, strict=False)
+        assert "prefer one of" in instruction
+        assert "MUST" not in instruction
+        # Off-list labels get the same casing rule as the open-vocabulary path.
+        assert "UPPER_SNAKE_CASE" in instruction
+
+    def test_declared_ontology_renders_as_restriction(self):
+        """``Ontology.relations`` is enforced by ``_prune``, so MUST is honest there."""
+        rels = [Relation(label="WORKS_AT")]
+        assert "## Allowed Relationships" in _format_relation_patterns(rels, strict=True)
+        assert "MUST be one of" in _relationship_type_instruction(rels, strict=True)
+
+    def test_open_vocabulary_prompt_when_list_is_empty(self):
+        assert _format_relation_patterns([]) == ""
+        assert _format_relation_patterns([], strict=False) == ""
+        assert "UPPER_SNAKE_CASE" in _relationship_type_instruction([])
+
+    def test_blank_labels_are_rejected(self):
+        """``entity_types`` is validated; a blank relation label would render
+        as a bare ``- `` bullet in the prompt."""
+        with pytest.raises(ValueError, match="blank"):
+            GraphExtraction(llm=MockLLM(), relation_types=["OWNS", "  "])
+        with pytest.raises(ValueError, match="blank"):
+            GraphExtraction(llm=MockLLM(), relation_types=[""])
+
+    def test_labels_are_stripped(self):
+        ge = GraphExtraction(llm=MockLLM(), relation_types=[" OWNS ", "EATS"])
+        assert ge.relation_types == ["OWNS", "EATS"]
+
+
+class TestRelationVocabularyInStep2Prompt:
+    """End-to-end coverage of the ``if ontology.relations:`` fork in ``extract``.
+
+    The behaviour lives in the prompt the step-2 LLM actually receives, not in
+    the helpers, so these drive ``extract`` with a capturing LLM.
+    """
+
+    @staticmethod
+    def _capture_llm(captured: list[str]) -> MockLLM:
+        class CaptureLLM(MockLLM):
+            def invoke(self, prompt, **kwargs):
+                captured.append(prompt)
+                return super().invoke(prompt, **kwargs)
+
+        return CaptureLLM(
+            responses=[
+                json.dumps([{"name": "Alice", "type": "Person", "description": "A person"}]),
+                json.dumps(
+                    {
+                        "entities": [
+                            {"name": "Alice", "type": "Person", "description": "A person"}
+                        ],
+                        "relationships": [],
+                    }
+                ),
+            ]
+        )
+
+    async def test_default_vocabulary_reaches_step2_prompt_without_ontology(self, ctx):
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), Ontology(), ctx)
+
+        assert len(captured) >= 2
+        step2 = captured[1]
+        assert "## Preferred Relationships" in step2
+        for label in DEFAULT_RELATION_TYPES:
+            assert f"- {label}\n" in step2
+        assert "prefer one of the relationship types" in step2
+        assert "MUST be one of" not in step2
+        assert "## Allowed Relationships" not in step2
+
+    async def test_ontology_relations_override_instance_relation_types(self, ctx):
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(
+            llm=llm,
+            entity_extractor=LLMExtractor(llm),
+            relation_types=["EATS", "FEARS"],
+        )
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
+        )
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), ontology, ctx)
+
+        step2 = captured[1]
+        assert "## Allowed Relationships" in step2
+        assert "- WORKS_AT (Person \u2192 Company)" in step2
+        assert "EATS" not in step2
+        assert "FEARS" not in step2
+        assert "MUST be one of" in step2
+        assert "## Preferred Relationships" not in step2
+
+    async def test_empty_relation_types_leaves_vocabulary_open(self, ctx):
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(
+            llm=llm, entity_extractor=LLMExtractor(llm), relation_types=[]
+        )
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), Ontology(), ctx)
+
+        step2 = captured[1]
+        assert "Relationships\n- " not in step2.split("## Instructions")[0]
+        assert "a descriptive relationship label in UPPER_SNAKE_CASE" in step2
+        for label in DEFAULT_RELATION_TYPES:
+            assert f"- {label}\n" not in step2
+
+    async def test_endpoints_must_come_from_the_verified_list(self, ctx):
+        """The pre-extracted list is input the model may prune or extend;
+        an endpoint that is not in the returned entities has no node and is
+        dropped downstream, so the prompt must point at the *verified* list."""
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), Ontology(), ctx)
+
+        step2 = captured[1]
+        assert "from the verified entity list you return" in step2
+        assert "from the entity list above" not in step2
