@@ -34,7 +34,11 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.storage.deduplicator import _clusters, union_chunk_ids
+from graphrag_sdk.storage.deduplicator import (
+    _clusters,
+    _mentions_two_rows_could_own,
+    union_chunk_ids,
+)
 
 from .conftest import MockLLM
 
@@ -355,8 +359,10 @@ class TestANoIsRememberedAndANameRuleIsAsked:
         # Call 1: extraction. Call 2: the one YES/NO. A third call would fail loudly.
         llm = MockLLM(
             [
-                '{"entities": [{"name": "M. Ellison", "type": "Person", '
-                '"description": "Presented the remediation plan"}], "relationships": []}',
+                (
+                    '{"entities": [{"name": "M. Ellison", "type": "Person", '
+                    '"description": "Presented the remediation plan"}], "relationships": []}'
+                ),
                 "NO — not enough to say",
             ],
             strict=True,
@@ -593,6 +599,33 @@ class TestClusters:
     def test_a_cycle_terminates(self):
         by_id = {"a": {"id": "a", "label": "X"}, "b": {"id": "b", "label": "X"}}
         assert len(_clusters({"a": "b", "b": "a"}, by_id)) <= 1
+
+
+class TestMentionsTwoRowsCouldOwn:
+    ROW_A = {"id": "e-1__person", "name": "John Smith", "label": "Person", "is_stub": False}
+    ROW_B = {"id": "e-7__person", "name": "John Smith", "label": "Person", "is_stub": False}
+    NOTE = {"id": "john_smith__person", "name": "John Smith", "label": "Person", "is_stub": None}
+
+    def test_a_mention_beside_two_rows_is_paired_with_each_and_kept(self):
+        found = _mentions_two_rows_could_own(self.ROW_A, [self.ROW_A, self.ROW_B, self.NOTE])
+
+        assert sorted((m.id_a, m.id_b) for m in found) == [
+            ("john_smith__person", "e-1__person"),
+            ("john_smith__person", "e-7__person"),
+        ]
+        assert all(m.bridges_a_declared_source for m in found)
+        assert "2 keyed rows" in found[0].reason
+
+    def test_one_row_is_the_join_the_exact_phase_exists_for(self):
+        assert _mentions_two_rows_could_own(self.ROW_A, [self.ROW_A, self.NOTE]) == []
+
+    def test_a_placeholder_is_a_declared_identity_too(self):
+        placeholder = {**self.ROW_B, "is_stub": True}
+        found = _mentions_two_rows_could_own(self.ROW_A, [self.ROW_A, placeholder, self.NOTE])
+        assert len(found) == 2
+
+    def test_two_rows_and_no_mention_is_nothing_to_report(self):
+        assert _mentions_two_rows_could_own(self.ROW_A, [self.ROW_A, self.ROW_B]) == []
 
 
 class TestUnionChunkIds:

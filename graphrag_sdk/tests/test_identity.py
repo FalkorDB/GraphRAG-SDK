@@ -176,6 +176,10 @@ _ONE_THING = [
     # "Inc" marks a legal form and nothing else, so stripping it is correct here:
     # Alphabet Inc. and Alphabet are one company.
     ("Alphabet Inc", "Alphabet"),
+    # A symbol glued to a word is read aloud as a word.
+    ("C#", "C Sharp"),
+    ("C++", "C plus plus"),
+    ("Smith + Wesson", "Smith & Wesson"),
 ]
 
 # Pairs that are two things. A merge deletes a node and cannot be undone, so
@@ -193,6 +197,13 @@ _TWO_THINGS = [
     ("Acme Holdings", "Acme Ventures"),
     ("Nordic Energy", "Nordic Gas"),
     ("A & B Ltd", "A and C Ltd"),
+    # A symbol glued to a word is part of the name. Splitting on it made these
+    # one key each and merged three programming languages into one node.
+    ("C", "C#"),
+    ("C", "C++"),
+    ("C#", "C++"),
+    ("F", "F#"),
+    ("A", "A+"),
     ("James Morgan", "Morgan James"),
     ("Grace Newman", "Newman Grace"),
     ("Stanley Morgan", "Morgan Stanley"),

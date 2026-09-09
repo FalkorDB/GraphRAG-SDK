@@ -172,6 +172,41 @@ def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> l
     return kept
 
 
+def _mentions_two_rows_could_own(survivor: dict, group: list[dict]) -> list[NearMiss]:
+    """Extracted nodes in ``group`` that cannot be given to one row.
+
+    Two keyed rows share the name and a passage mentions it: the passage fits
+    both rows equally, and the survivor rank picks one by degree, description
+    length or id -- none of which say which row the passage meant. Measured as a
+    note about one Alice Smith attaching to the other, key and columns included.
+    An extracted node in that group stays its own node and is reported, paired
+    with each row it could be, for a resolver or the user to decide.
+
+    Empty when fewer than two distinct keyed ids are in the group: with one row
+    the mention has exactly one place to go, which is the join the exact phase
+    exists for.
+    """
+    rows = {ent["id"]: ent for ent in group if ent.get("is_stub") is not None}
+    if len(rows) < 2:
+        return []
+    label = survivor.get("label", "")
+    reason = f"same name as {len(rows)} keyed rows; which one is not decidable from the name"
+    return [
+        NearMiss(
+            label=label,
+            name_a=mention.get("name", ""),
+            name_b=row.get("name", ""),
+            id_a=mention["id"],
+            id_b=row["id"],
+            reason=reason,
+            bridges_a_declared_source=True,
+        )
+        for mention in group
+        if mention.get("is_stub") is None
+        for row in rows.values()
+    ]
+
+
 def _clusters(remap: dict[str, str], by_id: dict[str, dict]) -> list[list[dict]]:
     """Groups of entities a resolver's remap says are one thing, one label each.
 
@@ -288,6 +323,9 @@ class EntityDeduplicator:
         self._declared_labels: set[str] = set()
         # Pairs the last run judged probably-the-same and deliberately left alone.
         self.near_misses: list[NearMiss] = []
+        # Extracted nodes the exact phase would not fold into one of several rows
+        # sharing their name. Folded into near_misses by _report_near_misses.
+        self._ambiguous_mentions: list[NearMiss] = []
         # Merges the resolver decided on the last run, as "label 'dup' -> 'survivor'".
         self.resolved_pairs: list[str] = []
         # Pairs the resolver judged distinct on the last run, as "label 'a' | 'b'".
@@ -315,6 +353,7 @@ class EntityDeduplicator:
         self._declared_labels = {label.strip().lower() for label in (declared_labels or set())}
         self.resolved_pairs = []
         self.rejected_pairs = []
+        self._ambiguous_mentions = []
         total = await self._deduplicate_exact(batch_size)
 
         if fuzzy:
@@ -348,9 +387,18 @@ class EntityDeduplicator:
         try:
             survivors = await self._fetch_all_entities(batch_size)
             decided = await self._fetch_distinct_pairs()
+            alive = {ent["id"] for ent in survivors}
+            # A mention left between two rows first: it is an exact name match
+            # that did not merge, which is the finding most worth a look. One a
+            # later phase (the resolver) did settle is no longer open.
+            open_mentions = [
+                miss
+                for miss in self._ambiguous_mentions
+                if miss.id_a in alive and miss.id_b in alive
+            ]
             self.near_misses = [
                 miss
-                for miss in find_near_misses(survivors)
+                for miss in open_mentions + find_near_misses(survivors)
                 if frozenset((miss.id_a, miss.id_b)) not in decided
             ]
         except Exception:
@@ -399,6 +447,19 @@ class EntityDeduplicator:
             group.sort(key=_survivor_rank, reverse=True)
             survivor = group[0]
             duplicates = _keep_declared_identities_apart(survivor, group[1:])
+            ambiguous = _mentions_two_rows_could_own(survivor, group)
+            if ambiguous:
+                # The survivor is one of the rows, and the rank chose it for
+                # reasons that say nothing about which row a mention meant.
+                self._ambiguous_mentions.extend(ambiguous)
+                duplicates = [dup for dup in duplicates if dup.get("is_stub") is not None]
+                logger.info(
+                    "Not merging %d mention(s) of %r into one of %d keyed rows: the "
+                    "name fits every row equally. Reported in probable_duplicates",
+                    len({m.id_a for m in ambiguous}),
+                    survivor.get("name"),
+                    len({m.id_b for m in ambiguous}),
+                )
 
             for dup in duplicates:
                 if not await self._remap_entity_edges(dup["id"], survivor["id"]):

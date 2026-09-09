@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 # Suffixes that name a company's legal form rather than the company. Dropped
 # from the tail only: "Group" is noise in "Kestrel Grid Group" and is the whole
@@ -119,6 +122,16 @@ _JOINERS = re.compile(r"['’ʼ]")
 # Read aloud the same way, written either way.
 _SYMBOL_WORDS = {"&": " and ", "+": " and ", "@": " at "}
 
+# A symbol glued to the end of a word is part of the name, not punctuation
+# between names: C# is not C, A+ is not A, C++ is neither. Splitting on it gave
+# all of them the key of the bare letter and merged three languages into one
+# node. Read aloud as the word, so "C sharp" and "C#" still agree.
+_GLUED_SYMBOLS = (
+    (re.compile(r"(?<=\w)\+\+(?!\w)"), " plus plus"),
+    (re.compile(r"(?<=\w)\+(?!\w)"), " plus"),
+    (re.compile(r"(?<=\w)#(?!\w)"), " sharp"),
+)
+
 
 def _uninvert(text: str) -> str:
     """Turn a single ``Surname, Given`` into ``Given Surname``.
@@ -142,6 +155,8 @@ def _uninvert(text: str) -> str:
 
 def _tokens(name: str) -> list[str]:
     text = _JOINERS.sub("", name.lower())
+    for glued, word in _GLUED_SYMBOLS:
+        text = glued.sub(word, text)
     for symbol, word in _SYMBOL_WORDS.items():
         text = text.replace(symbol, word)
     return [token for token in _WORD.split(_uninvert(text)) if token]
@@ -275,7 +290,8 @@ def find_near_misses(
 
     Cost is quadratic inside a label, so this is bounded: labels holding more
     than ``_MAX_PER_LABEL`` entities are skipped rather than allowed to dominate
-    a finalize, and the skip is reported by the caller.
+    a finalize. The skip is logged, so an empty report for such a label reads
+    as "not checked" rather than "clean".
     """
     by_label: dict[str, list[dict]] = {}
     for entity in entities:
@@ -287,6 +303,13 @@ def find_near_misses(
     found: list[NearMiss] = []
     for label, group in sorted(by_label.items()):
         if len(group) > _MAX_PER_LABEL:
+            logger.warning(
+                "%s: %d entities exceed the %d-entity bound for the near-miss check; "
+                "no probable duplicates were computed for this label",
+                label,
+                len(group),
+                _MAX_PER_LABEL,
+            )
             continue
         for left, right in _pairs(group):
             reason = why_same(left["name"], right["name"])
