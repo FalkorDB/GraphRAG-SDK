@@ -258,10 +258,10 @@ class Column:
                 # int() truncates: a JSON export's 3.7 would load as 3 and
                 # nothing would say so. Anything that does not round-trip is
                 # not an integer, whatever numeric type carried it.
-                value = int(raw)
-                if value != raw:
+                whole = int(raw)
+                if whole != raw:
                     raise ValueError(f"not a whole number: {raw!r}")
-                return value
+                return whole
             if self.type == "FLOAT":
                 value = float(raw) if not isinstance(raw, str) else float(_normalise_number(raw))
                 if not math.isfinite(value):

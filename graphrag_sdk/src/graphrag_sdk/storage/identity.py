@@ -14,6 +14,7 @@ import logging
 import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ class NearMiss:
 
 
 def find_near_misses(
-    entities: Iterable[dict],
+    entities: Iterable[dict[str, Any]],
     *,
     limit: int = 50,
 ) -> list[NearMiss]:
@@ -293,7 +294,7 @@ def find_near_misses(
     a finalize. The skip is logged, so an empty report for such a label reads
     as "not checked" rather than "clean".
     """
-    by_label: dict[str, list[dict]] = {}
+    by_label: dict[str, list[dict[str, Any]]] = {}
     for entity in entities:
         label = (entity.get("label") or "").strip()
         name = (entity.get("name") or "").strip()
@@ -338,7 +339,7 @@ def find_near_misses(
 _MAX_PER_LABEL = 5_000
 
 
-def _pairs(group: list[dict]) -> Iterator[tuple[dict, dict]]:
+def _pairs(group: list[dict[str, Any]]) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
     for index, left in enumerate(group):
         for right in group[index + 1 :]:
             yield left, right

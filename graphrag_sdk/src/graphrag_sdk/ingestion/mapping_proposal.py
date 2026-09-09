@@ -519,7 +519,7 @@ def _mapping_from_proposal(
         property_name = safe_property_name(prop.property or prop.column)
         if property_name in properties:
             raise MappingError(f"two columns are stored as property {property_name!r}")
-        chosen = prop.type
+        chosen: str = prop.type
         if chosen not in profile.parses_as:
             notes.append(
                 f"{prop.column} kept as {profile.inferred_type}, not {chosen}: not every "

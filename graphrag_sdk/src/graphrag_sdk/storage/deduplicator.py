@@ -139,7 +139,9 @@ def properties_to_carry(
     return carry
 
 
-def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> list[dict]:
+def _keep_declared_identities_apart(
+    survivor: dict[str, Any], duplicates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Drop candidates a mapping already said are a *different* thing.
 
     Grouping is by display name, and two rows of the same table can share one:
@@ -154,7 +156,7 @@ def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> l
     """
     if survivor.get("is_stub") is None:
         return duplicates
-    kept: list[dict] = []
+    kept: list[dict[str, Any]] = []
     for dup in duplicates:
         if dup.get("is_stub") is not None and dup.get("id") != survivor.get("id"):
             # Rows that share a display name are keyed apart at write time, and
@@ -172,7 +174,9 @@ def _keep_declared_identities_apart(survivor: dict, duplicates: list[dict]) -> l
     return kept
 
 
-def _mentions_two_rows_could_own(survivor: dict, group: list[dict]) -> list[NearMiss]:
+def _mentions_two_rows_could_own(
+    survivor: dict[str, Any], group: list[dict[str, Any]]
+) -> list[NearMiss]:
     """Extracted nodes in ``group`` that cannot be given to one row.
 
     Two keyed rows share the name and a passage mentions it: the passage fits
@@ -207,7 +211,9 @@ def _mentions_two_rows_could_own(survivor: dict, group: list[dict]) -> list[Near
     ]
 
 
-def _clusters(remap: dict[str, str], by_id: dict[str, dict]) -> list[list[dict]]:
+def _clusters(
+    remap: dict[str, str], by_id: dict[str, dict[str, Any]]
+) -> list[list[dict[str, Any]]]:
     """Groups of entities a resolver's remap says are one thing, one label each.
 
     ``remap`` is ``duplicate id -> survivor id`` and may chain (``a -> b``,
@@ -226,7 +232,7 @@ def _clusters(remap: dict[str, str], by_id: dict[str, dict]) -> list[list[dict]]
             seen.add(entity_id)
         return entity_id
 
-    grouped: dict[tuple[str, str], list[dict]] = {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for entity_id in set(remap) | set(remap.values()):
         entity = by_id.get(entity_id)
         if entity is None:
@@ -236,7 +242,7 @@ def _clusters(remap: dict[str, str], by_id: dict[str, dict]) -> list[list[dict]]
     return [members for members in grouped.values() if len(members) > 1]
 
 
-def _survivor_rank(entity: dict) -> tuple[int, int, int, int, int, str]:
+def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, str]:
     """Rank candidates so the most reproducible identity survives a merge.
 
     Ordered by:
@@ -432,7 +438,7 @@ class EntityDeduplicator:
         # "Globex Limited" as two organizations — one holding the address, the
         # other the revenue. See identity.canonical_key for what it does and does
         # not unify, and why word order is preserved.
-        groups: dict[tuple[str, str], list[dict]] = {}
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for ent in entities:
             key = canonical_key(ent["name"]) or ent["name"].strip().lower()
             label = ent.get("label", "").strip().lower()
@@ -719,7 +725,7 @@ class EntityDeduplicator:
         logger.info(f"EntityDeduplicator phase 3 (resolver): merged {merged} duplicates")
         return merged
 
-    async def _describe_structured_entities(self, by_id: dict[str, dict]) -> None:
+    async def _describe_structured_entities(self, by_id: dict[str, dict[str, Any]]) -> None:
         """Give each structured entity a description made of its signed values.
 
         ``employees__employee_id: E-3, employees__age: 39``
@@ -792,7 +798,7 @@ class EntityDeduplicator:
         return {frozenset((a, b)) for a, b in result.result_set or [] if a != b}
 
     async def _remember_distinct(
-        self, pairs: set[frozenset[str]], by_id: dict[str, dict], decided_by: str
+        self, pairs: set[frozenset[str]], by_id: dict[str, dict[str, Any]], decided_by: str
     ) -> None:
         """Write the resolver's NO answers to the graph, so they are not asked again.
 
@@ -833,7 +839,9 @@ class EntityDeduplicator:
 
     # ── Helpers ──
 
-    async def _adopt_into_declared_labels(self, groups: dict[tuple[str, str], list[dict]]) -> int:
+    async def _adopt_into_declared_labels(
+        self, groups: dict[tuple[str, str], list[dict[str, Any]]]
+    ) -> int:
         """Merge extracted entities into the declared entity of the same name.
 
         Matching on name *and* label is what keeps "Apple" the company apart from
@@ -927,7 +935,9 @@ class EntityDeduplicator:
                 groups.pop((norm_name, label), None)
         return merged
 
-    def _report_cross_label_names(self, groups: dict[tuple[str, str], list[dict]]) -> None:
+    def _report_cross_label_names(
+        self, groups: dict[tuple[str, str], list[dict[str, Any]]]
+    ) -> None:
         """Say when two entities share a name but not a label.
 
         Matching on name *and* label is what stops "Apple" the company merging
@@ -982,10 +992,10 @@ class EntityDeduplicator:
             sample,
         )
 
-    async def _fetch_all_entities(self, batch_size: int) -> list[dict]:
+    async def _fetch_all_entities(self, batch_size: int) -> list[dict[str, Any]]:
         """Fetch all entities in batches, including their primary label."""
         offset = 0
-        entities: list[dict] = []
+        entities: list[dict[str, Any]] = []
         for _ in range(_MAX_PAGINATION_ITERATIONS):
             result = await self._graph.query_raw(
                 "MATCH (e:__Entity__) "

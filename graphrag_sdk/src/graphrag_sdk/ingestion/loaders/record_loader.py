@@ -96,11 +96,6 @@ class RecordLoaderStrategy(ABC):
         ...
 
 
-# ``csv.DictReader`` puts the fields of a row longer than the header under this
-# key when told to; without it they are dropped.
-_OVERFLOW = object()
-
-
 class CsvRecordLoader(RecordLoaderStrategy):
     """Loads a delimited text file as one record per row.
 
@@ -156,18 +151,22 @@ class CsvRecordLoader(RecordLoaderStrategy):
         try:
             delimiter = self._sniff(path)
             with path.open("r", encoding=self._encoding, newline="") as handle:
-                reader = csv.DictReader(handle, delimiter=delimiter, restkey=_OVERFLOW)
-                columns = list(reader.fieldnames or [])
+                reader = csv.reader(handle, delimiter=delimiter)
+                columns = next(reader, [])
                 record_count = 0
-                for record_count, row in enumerate(reader, 1):
-                    if _OVERFLOW in row:
+                for row in reader:
+                    if not row:
+                        # A blank line; DictReader below skips it as well.
+                        continue
+                    record_count += 1
+                    if len(row) > len(columns):
                         # An unquoted delimiter inside a cell: every field after
                         # it is under the wrong header and the last is dropped.
-                        # DictReader discards the surplus silently by default.
+                        # DictReader discards the surplus silently.
                         raise ValueError(
-                            f"{source} row {record_count} has "
-                            f"{len(columns) + len(row[_OVERFLOW])} fields, the header "
-                            f"{len(columns)}; a cell holding {delimiter!r} must be quoted"
+                            f"{source} row {record_count} has {len(row)} fields, the "
+                            f"header {len(columns)}; a cell holding {delimiter!r} must "
+                            "be quoted"
                         )
         except UnicodeDecodeError as exc:
             raise ValueError(
