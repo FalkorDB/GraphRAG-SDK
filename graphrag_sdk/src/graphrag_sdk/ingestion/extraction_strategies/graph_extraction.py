@@ -13,7 +13,6 @@ from typing import Any
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
     _SDK_MANAGED_ATTRIBUTE_NAMES,
-    RESERVED_NODE_LABELS,
     Attribute,
     EntityMention,
     ExtractedEntity,
@@ -24,6 +23,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
     TextChunks,
+    reject_reserved_labels,
 )
 from graphrag_sdk.core.providers import LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
@@ -418,35 +418,15 @@ def _optional_extras(obj: Any) -> dict[str, Any]:
 
 
 def _reject_reserved_labels(types: list[str]) -> list[str]:
-    """Reject entity types that collide with the store's structural labels.
+    """Reject ``Document``/``Chunk`` as entity types; see ``reject_reserved_labels``.
 
-    ``Document`` and ``Chunk`` are used by the graph store for corpus
-    bookkeeping. An extracted entity carrying one of those labels fails two
-    ways at once, both silently:
-
-    1. Document-level queries (``MATCH (p:Document) ...``) start returning
-       extracted entities, so document counts and lookups are wrong. This was
-       found in the field as an 11-document corpus reporting 106 documents.
-    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
-       label is *not* structural, so the node never receives ``__Entity__``
-       and is dropped from deduplication and retrieval. It is written, then
-       ignored.
-
-    Neither failure raises, so the graph just quietly degrades. Fail here
-    instead, at configuration time, where the caller can act on it.
+    The primary guard lives in ``OntologyStore.register`` (so a reserved label
+    is refused before it is persisted) and in discovery's proposal validator.
+    This is the extractor-level backstop for ``entity_types`` passed directly
+    to the constructor and for ontologies handed to ``extract`` without going
+    through the store.
     """
-    reserved = {label.casefold(): label for label in RESERVED_NODE_LABELS}
-    clashes = [t for t in types if str(t).strip().casefold() in reserved]
-    if clashes:
-        raise ValueError(
-            f"entity_types may not contain the reserved label(s) {sorted(set(clashes))}. "
-            f"{sorted(RESERVED_NODE_LABELS)} are used internally for corpus "
-            "bookkeeping; reusing them silently corrupts document counts and "
-            "removes the entity from deduplication and retrieval. "
-            "Rename the type (e.g. 'Document' -> 'Publication', "
-            "'Chunk' -> 'TextSegment')."
-        )
-    return list(types)
+    return reject_reserved_labels(types)
 
 
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
@@ -568,9 +548,9 @@ class GraphExtraction(ExtractionStrategy):
     ) -> GraphData:
         # Resolve entity types: ontology overrides instance default
         if ontology.entities:
-            # Ontology labels bypass the constructor, so re-check here: an
-            # ontology declaring a reserved label must fail as loudly as
-            # passing one to entity_types would.
+            # Ontology labels bypass the constructor. OntologyStore.register
+            # already refuses reserved labels, but ``extract`` can be handed an
+            # ontology that never went through the store, so re-check here.
             entity_types = _reject_reserved_labels([e.label for e in ontology.entities])
             entity_type_descs: dict[str, str] = {
                 e.label: e.description for e in ontology.entities if e.description
@@ -602,12 +582,22 @@ class GraphExtraction(ExtractionStrategy):
                 break
             active_chunks.append(chunk)
 
-        if not active_chunks:
-            return GraphData(nodes=[], relationships=[])
+        # Chunks the budget cut off were never attempted. Reported separately
+        # so a 40-chunk document truncated to 3 does not look like a healthy
+        # 3-chunk document.
+        chunks_skipped = len(chunks.chunks) - len(active_chunks)
 
-        # Chunks whose extraction raised. Tracked so the caller can tell an
-        # empty document from a broken one, and retry just these uids.
+        if not active_chunks:
+            return GraphData(nodes=[], relationships=[], chunks_skipped=chunks_skipped)
+
+        # Chunks whose step 1 (entity extraction) failed: they contributed no
+        # entities. Tracked so the caller can tell an empty document from a
+        # broken one, and retry just these uids.
         failed_chunk_uids: set[str] = set()
+        # Chunks whose step 1 succeeded but step 2 (relations) failed: their
+        # entities are in the graph, their edges are not. Kept apart from
+        # ``failed_chunk_uids`` so ``extraction_failed`` stays honest.
+        relation_failed_chunk_uids: set[str] = set()
 
         # ── Optional: Coreference resolution per chunk ──
         chunk_texts: list[str] = []
@@ -646,12 +636,14 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 1 NER failed for chunk {chunk.index}: {item.error}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(chunk.uid)
                     chunk_entities.append([])
                 elif item.response is None:
                     ctx.log(
                         f"Step 1 NER returned no response for chunk {chunk.index}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(chunk.uid)
                     chunk_entities.append([])
                 else:
                     parsed = LLMExtractor._parse_response(
@@ -684,6 +676,17 @@ class GraphExtraction(ExtractionStrategy):
                 else:
                     chunk_entities.append(result)
 
+        # Extractors filter names without knowing the ontology (their label
+        # list is not always one: grounded discovery passes NER anchors), so
+        # the ontology-dependent rules -- currently the specific-date gate --
+        # are applied here, where ``entity_types`` really is the ontology.
+        # Step 2 re-applies them to the LLM's output; this pass covers the
+        # step-1 entities that survive a step-2 failure unverified.
+        chunk_entities = [
+            [e for e in ents if is_valid_entity_name(e.name, entity_types)]
+            for ents in chunk_entities
+        ]
+
         # ── Step 2: LLM verify + relationship extraction ──
         step2_prompts: list[str] = []
         step2_indices: list[int] = []  # maps prompt index -> active_chunk index
@@ -711,7 +714,6 @@ class GraphExtraction(ExtractionStrategy):
 
         all_entities: list[ExtractedEntity] = []
         all_relations: list[ExtractedRelation] = []
-        rels_by_chunk: dict[int, list[ExtractedRelation]] = {}
 
         if step2_prompts:
             step2_results = await self.llm.abatch_invoke(step2_prompts, **batch_kw2)
@@ -724,10 +726,12 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 2 verify+rels failed for chunk {chunk.index}: {item.error}",
                         logging.WARNING,
                     )
-                    # Relations for this chunk are lost even though step 1
-                    # entities survive, so it counts as failed: the caller
-                    # needs to know this chunk's edges were never extracted.
-                    failed_chunk_uids.add(chunk.uid)
+                    # Step 1 entities survive but this chunk's relations are
+                    # lost. Report it as a relation failure — not as a failed
+                    # chunk, which would claim it produced no entities. A
+                    # chunk that already failed step 1 is not double-counted.
+                    if chunk.uid not in failed_chunk_uids:
+                        relation_failed_chunk_uids.add(chunk.uid)
                     # Fall back to step 1 entities only
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
@@ -749,9 +753,6 @@ class GraphExtraction(ExtractionStrategy):
                 else:
                     # LLM returned no entities — use step 1 entities
                     all_entities.extend(chunk_entities[chunk_idx])
-                rels_by_chunk.setdefault(chunk_idx, []).extend(rels)
-
-            for rels in rels_by_chunk.values():
                 all_relations.extend(rels)
 
         # ── Aggregate across chunks ──
@@ -781,19 +782,34 @@ class GraphExtraction(ExtractionStrategy):
             extracted_entities=merged_entities,
             extracted_relations=merged_relations,
             chunks_attempted=len(active_chunks),
+            chunks_skipped=chunks_skipped,
             failed_chunks=sorted(failed_chunk_uids),
+            relation_failed_chunks=sorted(relation_failed_chunk_uids),
         )
 
         ctx.log(
             f"Extracted {len(nodes)} nodes, {len(relationships)} relationships, "
             f"{len(all_mentions)} mentions"
         )
+        # Escalate: an INFO summary saying "0 nodes" reads as an empty
+        # document. Say plainly what was lost, and from which step.
         if failed_chunk_uids:
-            # Escalate: an INFO summary saying "0 nodes" reads as an empty
-            # document. Say plainly that chunks were lost.
             ctx.log(
                 f"{len(failed_chunk_uids)} of {len(active_chunks)} chunks failed "
-                f"extraction and contributed nothing to the graph",
+                f"entity extraction and contributed no entities to the graph",
+                logging.WARNING,
+            )
+        if relation_failed_chunk_uids:
+            ctx.log(
+                f"{len(relation_failed_chunk_uids)} of {len(active_chunks)} chunks failed "
+                f"relationship extraction; their entities were kept but their "
+                f"relationships were lost",
+                logging.WARNING,
+            )
+        if chunks_skipped:
+            ctx.log(
+                f"{chunks_skipped} of {len(chunks.chunks)} chunks were never attempted "
+                f"because the latency budget ran out",
                 logging.WARNING,
             )
         return graph_data

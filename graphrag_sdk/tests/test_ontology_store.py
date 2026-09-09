@@ -168,6 +168,20 @@ class TestRegisterEntityShape:
             ("Person", "birth_place", "STRING"),
         }
 
+    @pytest.mark.asyncio
+    async def test_reserved_label_is_refused_before_anything_is_written(
+        self, store_factory, fake_graph
+    ):
+        """`Document`/`Chunk` are the data graph's bookkeeping labels. A stored
+        reserved label would make every later `ingest()` fail at the extraction
+        step, after the Document and Chunk nodes were already written, so the
+        store refuses it up front -- this also covers `GraphRAG.add_entity`."""
+        store = store_factory()
+        bad = Ontology(entities=[Entity(label="Person"), Entity(label="Document")])
+        with pytest.raises(ValueError, match="reserved label"):
+            await store.register(bad)
+        assert not [c for c in fake_graph.calls if "MERGE" in c[0]]
+
 
 # ── register — relation shape ────────────────────────────────────
 
