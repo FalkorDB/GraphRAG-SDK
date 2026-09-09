@@ -105,6 +105,17 @@ class TestVectorStoreIndex:
         result = await vector_store.create_chunk_vector_index()
         assert result is True
 
+    async def test_create_index_declares_already_indexed_as_expected(
+        self, vector_store, mock_connection
+    ):
+        """The call site, not ``FalkorDBConnection.query``, knows that CREATE
+        INDEX is idempotent -- it must say so, or the connection logs the
+        'already indexed' reply as an ERROR on every finalize()."""
+        mock_connection.query = AsyncMock(return_value=MagicMock())
+        await vector_store.create_chunk_vector_index()
+        kwargs = mock_connection.query.call_args.kwargs
+        assert set(kwargs["expected_errors"]) == {"already indexed", "already exists"}
+
     async def test_create_index_returns_false_on_real_failure(
         self, vector_store, mock_connection
     ):

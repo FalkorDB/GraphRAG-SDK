@@ -177,14 +177,14 @@ async def query(question: str, **kwargs) -> RagResult
 async def deduplicate_entities(
     *,
     fuzzy: bool = False,
-    similarity_threshold: float = 0.9,
+    similarity_threshold: float = 0.95,
     batch_size: int = 500,
 ) -> int
 ```
 
 Post-ingestion entity deduplication. Groups entities by `(normalized name, label)` to prevent cross-type merging (e.g. Person "Paris" and Location "Paris" stay separate).
 
-- **Phase 1** (always): Exact name match -- keeps longest description, remaps RELATES and MENTIONED_IN edges, deletes duplicates.
+- **Phase 1** (always): Exact name match -- folds accents, punctuation and acronyms, keeps the long form (else the longest description), merges the duplicate's description, `aliases` and `source_chunk_ids` into the survivor, remaps RELATES and MENTIONED_IN edges, deletes duplicates.
 - **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
 
 Call once after all documents are ingested.

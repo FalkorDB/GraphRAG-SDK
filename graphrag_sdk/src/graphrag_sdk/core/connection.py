@@ -162,6 +162,7 @@ class FalkorDBConnection:
         params: dict[str, Any] | None = None,
         *,
         timeout: int | None = None,
+        expected_errors: tuple[str, ...] = (),
     ) -> Any:
         """Execute a Cypher query with retry logic.
 
@@ -169,6 +170,14 @@ class FalkorDBConnection:
             cypher: The Cypher query string.
             params: Optional query parameters.
             timeout: Optional per-query timeout (ms) forwarded to FalkorDB.
+            expected_errors: Lower-case substrings identifying non-transient
+                failures the caller anticipates and handles itself (e.g.
+                ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
+                a failure still raises ``DatabaseError`` but is logged at DEBUG
+                rather than ERROR. Only the caller knows which failures are
+                expected; ``query()`` cannot tell an idempotent index creation
+                from any other statement whose error happens to say "already
+                exists", so it never downgrades on its own.
 
         Returns:
             ``QueryResult`` from the async FalkorDB driver.
@@ -200,13 +209,10 @@ class FalkorDBConnection:
                 last_exc = exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
-                    # "Already indexed / already exists" is the expected reply
-                    # to an idempotent CREATE INDEX on a graph that has one;
-                    # VectorStore treats it as success. Logging it as an error
-                    # made every finalize() print three spurious failures.
-                    level = logging.DEBUG if self._is_already_exists(exc) else logging.ERROR
+                    msg = str(exc).lower()
+                    expected = any(marker in msg for marker in expected_errors)
                     logger.log(
-                        level,
+                        logging.DEBUG if expected else logging.ERROR,
                         "Non-transient FalkorDB query failure: %s: %s",
                         type(exc).__name__,
                         exc,
@@ -257,17 +263,10 @@ class FalkorDBConnection:
         "procedure not found",
     )
 
-    _ALREADY_EXISTS_MARKERS = ("already indexed", "already exists")
-
     @classmethod
     def _is_non_transient(cls, exc: Exception) -> bool:
         msg = str(exc).lower()
         return any(marker in msg for marker in cls._NON_TRANSIENT_MARKERS)
-
-    @classmethod
-    def _is_already_exists(cls, exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return any(marker in msg for marker in cls._ALREADY_EXISTS_MARKERS)
 
     # ── Health & Admin ────────────────────────────────────────────
 
