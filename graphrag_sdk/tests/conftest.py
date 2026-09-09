@@ -222,8 +222,11 @@ def mock_graph_store(mock_connection: MagicMock) -> MagicMock:
     from graphrag_sdk.storage.graph_store import GraphStore
 
     store = MagicMock(spec=GraphStore)
-    store.upsert_nodes = AsyncMock(return_value=0)
-    store.upsert_relationships = AsyncMock(return_value=0)
+    # Report every item as written, like the real store does on success —
+    # the pipeline treats a short count as a partial failure and withholds
+    # the Document's content_hash.
+    store.upsert_nodes = AsyncMock(side_effect=len)
+    store.upsert_relationships = AsyncMock(side_effect=len)
     store.get_connected_entities = AsyncMock(return_value=[])
     store.query_raw = AsyncMock(return_value=MagicMock(result_set=[]))
     store.delete_all = AsyncMock()
@@ -241,7 +244,7 @@ def mock_vector_store(embedder: MockEmbedder) -> MagicMock:
     from graphrag_sdk.storage.vector_store import VectorStore
 
     store = MagicMock(spec=VectorStore)
-    store.index_chunks = AsyncMock(return_value=0)
+    store.index_chunks = AsyncMock(side_effect=lambda chunks: len(chunks.chunks))
     store.search_chunks = AsyncMock(return_value=[])
     store.search_entities = AsyncMock(return_value=[])
     store.search_relationships = AsyncMock(return_value=[])

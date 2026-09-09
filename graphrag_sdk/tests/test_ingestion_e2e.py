@@ -11,6 +11,8 @@ resolution are stubbed inline so each test controls only what it cares about.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 _MARKDOWN = """\
@@ -249,8 +251,10 @@ class TestMarkdownLoaderStructuralChunkingPipeline:
             for n in call[0][0]
         ]
         doc_nodes = [n for n in all_nodes if n.label == "Document"]
-        assert len(doc_nodes) == 1
+        # step-3 Document write (path) + the end-of-run content_hash write
+        assert len(doc_nodes) == 2
         assert doc_nodes[0].properties.get("path") == str(md_file)
+        assert {n.id for n in doc_nodes} == {os.path.normpath(str(md_file))}
 
     async def test_header_markup_stripped_from_chunk_text(
         self, ctx, tmp_path, mock_graph_store, mock_vector_store
