@@ -411,12 +411,12 @@ def _proposal_prompt(
             patterns = ", ".join(f"{src} -> {tgt}" for src, tgt in relation.patterns) or "any"
             lines.append(f"- {relation.label}: {patterns}")
     if ontology.tables:
-        lines += [
-            "",
+        lines.append("")
+        lines.append(
             "Tables already mapped (a column holding one of these keys is a link). A label "
             "a link points at has one key: to map rows onto a label something links to, "
-            "key them by the same column, otherwise give them another label:",
-        ]
+            "key them by the same column, otherwise give them another label:"
+        )
         for mapping in ontology.tables:
             lines.append(
                 f"- {mapping.source} -> {mapping.label}, key column {mapping.key_column!r}"

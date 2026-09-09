@@ -1754,8 +1754,9 @@ class GraphRAG:
         except Exception as exc:
             logger.warning("Ontology graph clear failed during delete_all (continuing): %s", exc)
         # Indexes were dropped along with the graph; force re-creation
-        # on the next ensure_indices() call.
+        # on the next ensure_indices() / create_id_range_indices() call.
         self._vector_store._indices_ensured = False
+        self._vector_store._id_indices_ensured = False
         # The __GraphRAGConfig__ node is gone too; re-validate next time.
         self._config_validated = False
         # Force re-registration of self.ontology next call.

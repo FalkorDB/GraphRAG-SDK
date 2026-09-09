@@ -318,6 +318,27 @@ class TestLoad:
         assert by_label["KNOWS"].patterns == [("Person", "Person")]
 
     @pytest.mark.asyncio
+    async def test_a_relation_property_is_structured_if_any_pattern_node_says_so(
+        self, store_factory, fake_graph
+    ):
+        """One property node per pattern, and the rows come back in no
+        guaranteed order: the flag must not depend on which row is first."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            patterned_relations=[
+                ["WORKS_AT", None, "Person", "Company"],
+                ["WORKS_AT", None, "Person", "Organization"],
+            ],
+            relation_properties=[
+                ["WORKS_AT", "since", "DATE", None, False],
+                ["WORKS_AT", "since", "DATE", None, True],
+            ],
+        )
+        ontology = await store.load()
+        (since,) = next(r for r in ontology.relations if r.label == "WORKS_AT").properties
+        assert since.structured is True
+
+    @pytest.mark.asyncio
     async def test_open_relation_loaded_with_empty_patterns(self, store_factory, fake_graph):
         store = store_factory()
         fake_graph.set_load_response(

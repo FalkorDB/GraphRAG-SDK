@@ -243,6 +243,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MDX/link validation in CI.
 
 ### Fixed
+- `delete_all()` forgot to reset the memo for the per-label `id` range
+  indexes. The graph drop took the indexes with it, but in the same process
+  `create_id_range_indices()` believed they still existed, so the next ingest
+  MERGEd every node into an unindexed graph — the quadratic write cost the
+  indexes exist to prevent, back silently. Both index memos now reset.
+- A relation property a table declared could read back as unstructured. Each
+  `(src, tgt)` pattern has its own `Property` node, `add_relation_pattern_node()`
+  copied `type` and `description` to the new one but not `structured`, and the
+  loader kept whichever row FalkorDB returned first. The flag is now copied
+  along with the rest and OR-ed across pattern nodes on load.
 - A structured load that failed part-way was certified complete. The
   Document's `content_hash` was written with the Document, before the rows,
   references and edges; a Person write that raised, or a `RELATES` batch the

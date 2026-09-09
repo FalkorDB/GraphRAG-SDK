@@ -241,7 +241,9 @@ class OntologyStore:
         ]
 
         # Relation properties, deduplicated per (owner, name) across all
-        # Relation nodes with the same label
+        # Relation nodes with the same label. ``structured`` is OR-ed across
+        # those nodes: the flag is only ever raised, and the row order FalkorDB
+        # returns them in is not guaranteed.
         rel_props_by_owner: dict[str, dict[str, Attribute]] = {}
         for row in _rows(rel_prop_result):
             if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1]):
@@ -249,10 +251,13 @@ class OntologyStore:
             owner, name, type_, desc = row[0], row[1], row[2], row[3]
             structured = bool(row[4]) if len(row) > 4 else False
             bucket = rel_props_by_owner.setdefault(owner, {})
-            if name not in bucket:
+            seen = bucket.get(name)
+            if seen is None:
                 bucket[name] = Attribute(
                     name=name, type=type_ or "STRING", description=desc, structured=structured
                 )
+            elif structured and not seen.structured:
+                bucket[name] = seen.model_copy(update={"structured": True})
 
         # Group patterned relations by label, collecting (src, tgt) pairs
         rel_by_label: dict[str, dict[str, Any]] = {}
@@ -973,7 +978,8 @@ class OntologyStore:
             "MATCH (new)-[:TARGET]->(t:Entity {label: $tgt}) "
             "WHERE existing <> new "
             "MERGE (new)-[:HAS_PROPERTY]->(p2:Property {label: p.label}) "
-            "SET p2.type = p.type, p2.description = p.description",
+            "SET p2.type = p.type, p2.description = p.description, "
+            "p2.structured = (coalesce(p2.structured, false) OR coalesce(p.structured, false))",
             {"rel_label": rel_label, "src": src, "tgt": tgt},
         )
 

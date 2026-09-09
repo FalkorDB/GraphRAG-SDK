@@ -178,6 +178,19 @@ class TestGraphRAGGraphAdmin:
         await g.delete_all()
         g._graph_store.delete_all.assert_awaited_once()
 
+    async def test_delete_all_forgets_every_index_it_created(self, mock_conn, embedder, llm):
+        """Dropping the graph drops its indexes. Both memo flags must reset,
+        or the next ingest in this process MERGEs into an unindexed graph."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.delete_all = AsyncMock()
+        g._vector_store._indices_ensured = True
+        g._vector_store._id_indices_ensured = True
+
+        await g.delete_all()
+
+        assert g._vector_store._indices_ensured is False
+        assert g._vector_store._id_indices_ensured is False
+
 
 class TestGraphRAGIngest:
     async def test_ingest_text_file(self, graphrag, tmp_path):

@@ -764,7 +764,7 @@ class TestTheOntologyStaysReadableAfterEvolution:
         hr_path.write_text("employee_id,full_name,org_id\nE-1,Maya Ellison,O-1\n")
         await rag.ingest(str(hr_path))
 
-        renamed = await rag.rename_entity("Person", "Human")
+        await rag.rename_entity("Person", "Human")
         renamed = await rag.rename_entity("Organization", "Company")
         by_source = {m.source: m for m in renamed.tables}
         assert by_source["hr.csv"].label == "Human"
