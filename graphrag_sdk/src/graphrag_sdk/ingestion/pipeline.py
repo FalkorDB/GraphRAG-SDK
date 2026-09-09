@@ -24,6 +24,7 @@ from graphrag_sdk.core.models import (
     IngestionResult,
     Ontology,
     TextChunks,
+    ensure_no_pending_marker,
     stable_document_id,
 )
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
@@ -37,6 +38,56 @@ logger = logging.getLogger(__name__)
 # "pattern mismatch" warning. Enough to spot the inversion; bounded
 # so a misconfigured ontology can't flood logs.
 _PATTERN_MISMATCH_SAMPLE_SIZE = 3
+
+
+def _has_explicit(info: DocumentInfo, field: str) -> bool:
+    """True when the caller set ``field`` on ``info`` (and to a non-empty value).
+
+    ``DocumentInfo.uid`` has a ``uuid4()`` default, so a truthiness test cannot
+    tell "the caller chose this id" from "nobody did"; Pydantic's
+    ``model_fields_set`` can.
+    """
+    return field in info.model_fields_set and bool(getattr(info, field))
+
+
+def _resolve_identity(
+    *,
+    loaded: DocumentInfo,
+    supplied: DocumentInfo | None,
+    derived_uid: str,
+    source: str,
+) -> DocumentInfo:
+    """Merge the loader's ``DocumentInfo`` with the caller's into the identity
+    the run will write under.
+
+    Precedence per field: caller's explicitly-set value, then the derived id
+    (for ``uid``) or the loader's value / ``source`` (for ``path``). Metadata is
+    the loader's overlaid with the caller's. The loader's own ``uid`` is never
+    used — no shipped loader sets one, so it is always the random default.
+    """
+    if supplied is not None and _has_explicit(supplied, "uid"):
+        uid = supplied.uid
+    else:
+        uid = derived_uid
+    if supplied is not None and _has_explicit(supplied, "path"):
+        path = supplied.path
+    else:
+        path = loaded.path or source
+    metadata = {**loaded.metadata, **(supplied.metadata if supplied is not None else {})}
+    return DocumentInfo(uid=uid, path=path, metadata=metadata)
+
+
+def _reported_short(reported: Any, expected: int) -> bool:
+    """True when a store reported writing fewer items than it was handed.
+
+    ``GraphStore.upsert_relationships`` and ``VectorStore.index_chunks`` do
+    not raise on per-item failures — they log, skip and return a count — so
+    the count is the only signal that a relationship or an embedding is
+    missing. Stores that return nothing (``None``, a mock) are taken at their
+    word: the pipeline cannot tell and must not refuse to ever mark a run
+    complete against a duck-typed store.
+    """
+    return isinstance(reported, int) and not isinstance(reported, bool) and reported < expected
 
 
 def _assign_deterministic_chunk_uids(doc_info: DocumentInfo, chunks: TextChunks) -> None:
@@ -77,6 +128,17 @@ def _assign_deterministic_chunk_uids(doc_info: DocumentInfo, chunks: TextChunks)
     ``doc:index`` a true position — but it means an *edited* file grows the
     lexical layer under plain ``ingest()``; only a byte-identical file is a
     no-op (see the unchanged-document short-circuit in ``run``).
+
+    ``GraphRAG.update()`` runs the pipeline under a transient
+    ``<id>__pending__<hex>`` Document, so the chunks it writes are keyed on
+    that pending id, not the final one. This is load-bearing, not an
+    oversight: the pending and live documents coexist until the cutover, and
+    the cutover deletes every chunk ``PART_OF`` the live document — chunks
+    keyed on the final id would MERGE onto the live nodes and be deleted
+    along with them. After ``update()`` the Document carries the new
+    ``content_hash``, so a later ``ingest()`` of that content is a no-op and
+    never re-derives ids; only an ``ingest()`` of *edited* content re-mints
+    them (as it does for any edited file).
     """
     doc_key = doc_info.uid or doc_info.path or ""
     for chunk in chunks.chunks:
@@ -191,60 +253,51 @@ class IngestionPipeline:
         if ctx is None:
             ctx = Context()
 
+        # Identity the pipeline will use when the caller does not pin one
+        # (no ``document_info``, or one without an explicit ``uid``). Text
+        # mode hashes the text; file mode applies ``stable_document_id``
+        # (normalised path, URIs verbatim). Computed up front so the
+        # reserved-marker check fails fast, before any I/O, and is not
+        # wrapped in ``IngestionError`` — same ``ValueError`` the facade
+        # raises for an explicit ``document_id``.
+        if text is not None:
+            derived_uid = f"text-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
+        else:
+            derived_uid = stable_document_id(source)
+        if document_info is None or not _has_explicit(document_info, "uid"):
+            # Only *derived* ids are checked: ``GraphRAG.update()`` passes
+            # its ``<id>__pending__<hex>`` DocumentInfo explicitly and must
+            # get through.
+            ensure_no_pending_marker(derived_uid)
+
         ctx.log("Pipeline starting")
 
         try:
             # Step 1: Load
             if text is not None:
-                document = DocumentOutput(
-                    text=text,
-                    document_info=document_info or DocumentInfo(path=source),
-                )
+                document = DocumentOutput(text=text, document_info=DocumentInfo(path=source))
                 ctx.log("Using provided text (loader skipped)")
-                if document_info is None:
-                    # Text mode with no caller-supplied identity: derive the
-                    # Document id from the text so the same text ingested
-                    # twice is the same document (and the chunk ids below,
-                    # which include the document id, are stable too).
-                    document.document_info = DocumentInfo(
-                        uid=f"text-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}",
-                        path=source,
-                        metadata=document.document_info.metadata,
-                    )
             else:
                 ctx.log("Step 1/9: Loading source")
                 document = await self.loader.load(source, ctx)
-                # Loaders leave ``uid`` at its ``uuid4()`` default, so
-                # without a caller-supplied ``document_info`` every run of
-                # the same file was a new Document — and, since the chunk
-                # ids include the document id, a new set of chunks. Derive
-                # the id from the source (normalised path; URIs verbatim),
-                # the same rule ``GraphRAG._resolve_document_id`` applies,
-                # so the pipeline is idempotent on its own and not only
-                # through the facade. ``update()`` always passes an
-                # explicit pending id and is unaffected.
-                if document_info is None:
-                    document.document_info = DocumentInfo(
-                        uid=stable_document_id(source),
-                        path=document.document_info.path or source,
-                        metadata=document.document_info.metadata,
-                    )
-                # When the caller supplies a ``document_info`` (e.g. for
-                # stable-id ingestion or update()), prefer its uid/path
-                # over whatever the loader produced. The loader-side
-                # metadata is preserved. Each field falls back to the
-                # loader's value when the caller's is empty/missing, so
-                # a partially-populated DocumentInfo (e.g. only ``path``
-                # set) cannot accidentally clobber the loader's uid.
-                if document_info is not None:
-                    document.document_info = DocumentInfo(
-                        uid=document_info.uid or document.document_info.uid,
-                        path=document_info.path or document.document_info.path,
-                        metadata={
-                            **document.document_info.metadata,
-                            **document_info.metadata,
-                        },
-                    )
+
+            # Loaders leave ``DocumentInfo.uid`` at its ``uuid4()`` default,
+            # so without a stable identity every run of the same file was a
+            # new Document — and, since the chunk ids include the document
+            # id, a new set of chunks. Resolve the identity here so the
+            # pipeline is idempotent on its own and not only through the
+            # facade: the caller's explicitly-set fields win, then the
+            # derived id / loader path, and metadata is merged (caller over
+            # loader). ``model_fields_set`` is what tells an explicit
+            # ``uid=`` apart from the random default — a
+            # ``DocumentInfo(path=...)`` must not clobber the derived id
+            # with a fresh uuid.
+            document.document_info = _resolve_identity(
+                loaded=document.document_info,
+                supplied=document_info,
+                derived_uid=derived_uid,
+                source=source,
+            )
 
             # Hash the loaded text. Written to the Document node at the END of
             # a successful run (step 9b) so ``GraphRAG.update()`` and the
@@ -268,18 +321,25 @@ class IngestionPipeline:
             # Same rule update() uses for its no-op: a stored Document whose
             # content_hash matches means every chunk, entity and edge is
             # already there — the hash is only written once a run has
-            # completed, so a half-finished ingest is never mistaken for a
-            # finished one. Changed text (new hash) takes the full path; a
-            # changed ontology or strategy with the same text is update()'s
-            # job.
+            # completed with every write reported in full, so a half-finished
+            # ingest is never mistaken for a finished one. Changed text (new
+            # hash) takes the full path; a changed ontology or strategy with
+            # the same text is ``GraphRAG.update(force=True)``'s job.
+            #
+            # ``graph_store`` is duck-typed (``Any`` — see ``__init__``); the
+            # pipeline only ever required ``upsert_nodes`` /
+            # ``upsert_relationships``. A store without ``get_document_record``
+            # simply never short-circuits (the previous behaviour) rather than
+            # failing every ingest with ``AttributeError``.
             doc_uid = document.document_info.uid
-            if doc_uid:
-                existing = await self.graph_store.get_document_record(doc_uid)
+            get_record = getattr(self.graph_store, "get_document_record", None)
+            if doc_uid and get_record is not None:
+                existing = await get_record(doc_uid)
                 if existing is not None and existing.content_hash == content_hash:
                     ctx.log(
                         f"Document '{doc_uid}' already ingested with identical content; "
-                        f"skipping. Use GraphRAG.update() to re-extract with a new "
-                        f"ontology or strategy."
+                        f"skipping. Use GraphRAG.update(..., force=True) to re-extract "
+                        f"unchanged content with a new ontology, chunker or extractor."
                     )
                     return IngestionResult(
                         document_info=document.document_info,
@@ -297,9 +357,17 @@ class IngestionPipeline:
 
             _assign_deterministic_chunk_uids(document.document_info, chunks)
 
+            # Writes that report a shortfall instead of raising (see
+            # ``_reported_short``). Any entry here means the graph is not a
+            # faithful copy of this document, so the content hash is *not*
+            # recorded and the next ingest repairs it by re-running.
+            incomplete_writes: list[str] = []
+
             # Step 3: Build lexical graph (MANDATORY — not a strategy).
             ctx.log("Step 3/9: Building lexical graph (provenance chain)")
-            await self._build_lexical_graph(document.document_info, chunks, ctx)
+            lexical_shortfall = await self._build_lexical_graph(document.document_info, chunks, ctx)
+            if lexical_shortfall:
+                incomplete_writes.append(lexical_shortfall)
 
             # Step 4: Extract entities & relationships
             ctx.log("Step 4/9: Extracting entities & relationships")
@@ -333,7 +401,11 @@ class IngestionPipeline:
             # Step 7: Write to graph (batched)
             ctx.log("Step 7/9: Writing to graph store")
             await self.graph_store.upsert_nodes(resolved.nodes)
-            await self.graph_store.upsert_relationships(resolved.relationships)
+            rels_written = await self.graph_store.upsert_relationships(resolved.relationships)
+            if _reported_short(rels_written, len(resolved.relationships)):
+                incomplete_writes.append(
+                    f"relationships {rels_written}/{len(resolved.relationships)}"
+                )
 
             # ╔══════════════════════════════════════════════════════════╗
             # ║  LOAD-BEARING — DO NOT MAKE STEP 8 ASYNCHRONOUS WITH     ║
@@ -361,25 +433,52 @@ class IngestionPipeline:
             # Tripwire: tests/test_integration.py::
             #     TestIncrementalUpdateInvariants::
             #     test_concurrent_updates_preserve_shared_entity
-            async def _step_mentions() -> int:
+            async def _step_mentions() -> tuple[int, str | None]:
                 ctx.log("Step 8/9: Writing mentions (uncapped)")
                 return await self._write_mentions(graph_data, ctx)
 
-            async def _step_index_chunks() -> None:
+            async def _step_index_chunks() -> str | None:
                 ctx.log("Step 9/9: Embedding & indexing chunks")
-                await self.vector_store.index_chunks(chunks)
+                indexed = await self.vector_store.index_chunks(chunks)
+                if _reported_short(indexed, len(chunks.chunks)):
+                    return f"chunks indexed {indexed}/{len(chunks.chunks)}"
+                return None
 
-            mentions_written, _ = await asyncio.gather(
+            (mentions_written, mentions_shortfall), index_shortfall = await asyncio.gather(
                 _step_mentions(),
                 _step_index_chunks(),
             )
+            incomplete_writes.extend(s for s in (mentions_shortfall, index_shortfall) if s)
 
             # Step 9b: only now record the content hash. Writing it in step 3
             # meant a failure in extraction or the graph write left a
             # Document that looked complete, and the next ingest skipped it
             # (Copilot review on #309). A partial run therefore retries in
-            # full; only a finished run is recognised as unchanged.
-            await self._mark_content_hash(document.document_info.uid, content_hash)
+            # full; only a finished run is recognised as unchanged. "Finished"
+            # includes the writes that swallow per-item errors: a RELATES
+            # edge dropped by a transient graph error or a chunk left without
+            # an embedding by a rate-limited embedder must not be certified
+            # complete, or it would never be repaired (galshubeli on #309).
+            result_metadata: dict[str, Any] = {
+                "merged_entities": resolved.merged_count,
+                "raw_nodes": len(graph_data.nodes),
+                "raw_relationships": len(graph_data.relationships),
+                "mention_edges_created": mentions_written,
+            }
+            if incomplete_writes:
+                result_metadata["incomplete_writes"] = incomplete_writes
+                ctx.log(
+                    "Some writes were reported incomplete "
+                    f"({'; '.join(incomplete_writes)}); content_hash not recorded — "
+                    "the next ingest of this document re-runs in full"
+                )
+                logger.warning(
+                    "Ingest of '%s' left incomplete writes (%s); not marking content_hash",
+                    document.document_info.uid,
+                    "; ".join(incomplete_writes),
+                )
+            else:
+                await self._mark_content_hash(document.document_info.uid, content_hash)
 
             total_rels = len(resolved.relationships) + mentions_written
             result = IngestionResult(
@@ -387,12 +486,7 @@ class IngestionPipeline:
                 nodes_created=len(resolved.nodes),
                 relationships_created=total_rels,
                 chunks_indexed=len(chunks.chunks),
-                metadata={
-                    "merged_entities": resolved.merged_count,
-                    "raw_nodes": len(graph_data.nodes),
-                    "raw_relationships": len(graph_data.relationships),
-                    "mention_edges_created": mentions_written,
-                },
+                metadata=result_metadata,
             )
             ctx.log(
                 f"Pipeline complete: {result.nodes_created} nodes, "
@@ -425,7 +519,7 @@ class IngestionPipeline:
         doc_info: DocumentInfo,
         chunks: TextChunks,
         ctx: Context,
-    ) -> None:
+    ) -> str | None:
         """Build the mandatory provenance chain.
 
         Creates:
@@ -440,6 +534,9 @@ class IngestionPipeline:
         The Document's ``content_hash`` is *not* written here; ``run`` sets
         it via :meth:`_mark_content_hash` once the whole pipeline has
         succeeded.
+
+        Returns ``None`` when every edge was reported written, else a short
+        description of the shortfall for ``run`` to record.
         """
         # Document node
         doc_props: dict[str, Any] = {
@@ -494,12 +591,16 @@ class IngestionPipeline:
             prev_chunk_id = chunk.uid
 
         await self.graph_store.upsert_nodes(chunk_nodes)
-        await self.graph_store.upsert_relationships(part_of_rels + next_chunk_rels)
+        lexical_rels = part_of_rels + next_chunk_rels
+        written = await self.graph_store.upsert_relationships(lexical_rels)
 
         ctx.log(
             f"Lexical graph: 1 Document, {len(chunk_nodes)} Chunks, "
             f"{len(part_of_rels)} PART_OF, {len(next_chunk_rels)} NEXT_CHUNK"
         )
+        if _reported_short(written, len(lexical_rels)):
+            return f"lexical edges {written}/{len(lexical_rels)}"
+        return None
 
     def _prune(self, graph_data: GraphData, ontology: Ontology) -> GraphData:
         """Filter graph data to only include ontology-conforming nodes and relationships.
@@ -644,17 +745,20 @@ class IngestionPipeline:
             rewritten.append(EntityMention(entity_id=new_id, chunk_id=m.chunk_id))
         return graph_data.model_copy(update={"mentions": rewritten})
 
-    async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> int:
+    async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> tuple[int, str | None]:
         """Write MENTIONED_IN edges linking entities to their source chunks.
 
         Every entity connects to every chunk it was extracted from (uncapped).
         With global dedup controlling entity cardinality, uncapped mentions
         provide richer entity-chunk connectivity for retrieval.
+
+        Returns ``(edges attempted, shortfall)`` where ``shortfall`` is ``None``
+        when the store reported every edge written.
         """
         mentions: list[EntityMention] = graph_data.mentions or []
 
         if not mentions:
-            return 0
+            return 0, None
 
         seen: set[tuple[str, str]] = set()
         mention_rels: list[GraphRelationship] = []
@@ -670,6 +774,8 @@ class IngestionPipeline:
                     type="MENTIONED_IN",
                 )
             )
-        await self.graph_store.upsert_relationships(mention_rels)
+        written = await self.graph_store.upsert_relationships(mention_rels)
         ctx.log(f"Wrote {len(mention_rels)} MENTIONED_IN edges (uncapped)")
-        return len(mention_rels)
+        if _reported_short(written, len(mention_rels)):
+            return len(mention_rels), f"mentions {written}/{len(mention_rels)}"
+        return len(mention_rels), None

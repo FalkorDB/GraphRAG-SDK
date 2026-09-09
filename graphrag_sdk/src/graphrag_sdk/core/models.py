@@ -112,6 +112,31 @@ def stable_document_id(source: str) -> str:
     return os.path.normpath(source)
 
 
+# Separator ``GraphRAG.update()`` uses to build the transient id of the
+# Document written during its crash-safe cutover (``<id>__pending__<8hex>``).
+# Reserved: a real Document id containing it would be picked up by the
+# ``STARTS WITH "<id>__pending__"`` recovery scan.
+PENDING_ID_MARKER = "__pending__"
+
+
+def ensure_no_pending_marker(document_id: str) -> None:
+    """Raise ``ValueError`` if ``document_id`` contains :data:`PENDING_ID_MARKER`.
+
+    Applied to every Document id that is *not* a pending id — explicit ids in
+    ``GraphRAG.ingest()`` / ``update()`` / ``delete_document()`` and ids the
+    ingestion pipeline derives from a source path — so a file called
+    ``foo__pending__bar.txt`` can never be mistaken for an interrupted update
+    of ``foo`` and rolled back or rolled forward over the real document.
+    """
+    if PENDING_ID_MARKER in document_id:
+        raise ValueError(
+            f"document_id '{document_id}' contains the reserved substring "
+            f"'{PENDING_ID_MARKER}' which is used internally by the update() "
+            "state-machine cutover. Pick a different id (or rename the "
+            "source file) to avoid prefix-collision with pending nodes."
+        )
+
+
 class DocumentInfo(DataModel):
     """Metadata about the source document."""
 

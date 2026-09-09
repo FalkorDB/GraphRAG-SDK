@@ -38,6 +38,7 @@ from graphrag_sdk.core.models import (
     RagResult,
     RetrieverResult,
     UpdateResult,
+    ensure_no_pending_marker,
     stable_document_id,
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
@@ -1355,11 +1356,24 @@ class GraphRAG:
 
         - **File mode** — pass ``source`` (single path or list of paths).
           The loader reads from disk; ``document_id`` is optional and,
-          when omitted, defaults to ``os.path.normpath(source)`` so the
-          path itself is the stable handle for ``update()`` later.
+          when omitted, defaults to the normalised path (a source with a
+          URI scheme such as ``https://`` or ``s3://`` is used verbatim)
+          so the path itself is the stable handle for ``update()`` later.
         - **Text mode** — pass ``text`` directly. Optionally pass
-          ``document_id`` to label the document; if omitted, an
-          identifier is generated. ``source`` and ``loader`` are rejected.
+          ``document_id`` to label the document; if omitted, the id is
+          ``text-<16hex>``, a SHA-256 prefix of the text. ``source`` and
+          ``loader`` are rejected.
+
+        Re-ingesting a document whose text is byte-identical to what the
+        graph already holds is a no-op: the call returns before chunking
+        with ``chunks_indexed=0`` and ``metadata["skipped_unchanged"]=True``
+        and makes no provider calls. Consequently, in text mode two calls
+        with the same text and no ``document_id`` address the *same*
+        Document — the second is the no-op — rather than one new document
+        per call as previously. Pass a distinct ``document_id`` per call to
+        keep identical texts as separate documents. To re-extract
+        unchanged content under a new ontology, chunker or extractor use
+        ``update(..., force=True)``.
 
         Note:
             Call :meth:`finalize` once after all sources are ingested to run
@@ -1384,8 +1398,10 @@ class GraphRAG:
             source: File path (or list of paths) — file mode only.
             text: Raw text — text mode only.
             document_id: Stable identifier used as the Document node's
-                ``id``. In file mode, defaults to ``os.path.normpath(source)``.
-                In text mode, defaults to a generated ``text-<8hex>`` id.
+                ``id``. In file mode, defaults to the normalised path (URI
+                sources verbatim). In text mode, defaults to
+                ``text-<16hex>`` derived from the text. Must not contain
+                the reserved substring ``__pending__``.
                 Pass an explicit value when you want a different identity
                 scheme (e.g. content-hash, repo-relative path, slug).
             loader: Custom loader strategy. File mode only.
@@ -1479,14 +1495,11 @@ class GraphRAG:
         leftover pending of ``foo`` — leading to either silent rollback
         of the user's real document or a destructive rollforward against
         a node that was never an actual pending.
+
+        The rule itself lives in ``core.models.ensure_no_pending_marker`` so
+        ``IngestionPipeline.run()`` applies it to derived ids too.
         """
-        if "__pending__" in document_id:
-            raise ValueError(
-                f"document_id '{document_id}' contains the reserved substring "
-                "'__pending__' which is used internally by the update() "
-                "state-machine cutover. Pick a different id (or rename the "
-                "source file) to avoid prefix-collision with pending nodes."
-            )
+        ensure_no_pending_marker(document_id)
 
     @staticmethod
     def _resolve_document_id(
@@ -1976,6 +1989,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
+        force: bool = False,
         ctx: Context | None = None,
     ) -> UpdateResult:
         """Re-sync a previously-ingested document into the graph.
@@ -1989,7 +2003,10 @@ class GraphRAG:
         SHA-256 content-hash short-circuits no-op updates: if the new
         text matches the stored ``Document.content_hash``, no extraction
         runs and the call is essentially a single Cypher lookup. This is
-        the win for touch-only PRs (CRLF, formatter-only changes).
+        the win for touch-only PRs (CRLF, formatter-only changes). Pass
+        ``force=True`` to re-extract anyway — the only way to re-process
+        unchanged content after changing the ontology, chunker, extractor
+        or model, since ``ingest()`` skips unchanged documents too.
 
         State-machine cutover (crash-safe). Columns:
         ``pend`` = pending Document exists;
@@ -2031,7 +2048,8 @@ class GraphRAG:
             text: Raw text. Skips the loader. Mutually exclusive with
                 ``source``.
             document_id: Stable id of the Document node to update. In
-                file mode, defaults to ``os.path.normpath(source)`` so
+                file mode, defaults to the same id ``ingest(path)`` derives
+                (the normalised path; a URI source verbatim) so
                 ``update(path)`` matches the corresponding ``ingest(path)``
                 with no extra plumbing. Required in text mode.
             loader / chunker / extractor / resolver: Per-call strategy
@@ -2056,6 +2074,13 @@ class GraphRAG:
             if_missing: ``"error"`` (default) raises ``DocumentNotFoundError``
                 when the id is unknown. ``"ingest"`` falls through to
                 ``ingest()`` for upsert semantics.
+            force: Re-extract even when the content hash is unchanged.
+                Default ``False`` returns ``UpdateResult(no_op=True)`` on
+                identical content; ``True`` runs the full replace so a new
+                ontology, chunker, extractor or model is applied to
+                existing text. Combine with ``cache_unchanged_chunks=False``
+                (the default) — the cache would otherwise hand back the
+                previous extraction for every chunk.
             ctx: Execution context.
 
         Returns:
@@ -2152,11 +2177,18 @@ class GraphRAG:
             )
 
         if existing.content_hash == new_hash:
-            ctx.log(f"update: content hash matches for '{resolved_id}', no-op")
-            return UpdateResult(
-                document_info=DocumentInfo(uid=resolved_id, path=existing.path or doc_path),
-                no_op=True,
-                replaced_existing=True,
+            if not force:
+                ctx.log(
+                    f"update: content hash matches for '{resolved_id}', no-op "
+                    f"(pass force=True to re-extract unchanged content)"
+                )
+                return UpdateResult(
+                    document_info=DocumentInfo(uid=resolved_id, path=existing.path or doc_path),
+                    no_op=True,
+                    replaced_existing=True,
+                )
+            ctx.log(
+                f"update: content hash matches for '{resolved_id}' but force=True; re-extracting"
             )
 
         # ── Phase 2: snapshot entity candidates AND old chunk ids BEFORE
@@ -3237,6 +3269,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None = None,
         cache_unchanged_chunks: bool = False,
         if_missing: Literal["error", "ingest"] = "error",
+        force: bool = False,
         ctx: Context | None = None,
     ) -> UpdateResult:
         """Synchronous update convenience method.
@@ -3261,6 +3294,7 @@ class GraphRAG:
                 resolver=resolver,
                 cache_unchanged_chunks=cache_unchanged_chunks,
                 if_missing=if_missing,
+                force=force,
                 ctx=ctx,
             )
         )

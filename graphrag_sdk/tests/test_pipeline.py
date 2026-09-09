@@ -908,7 +908,236 @@ class TestReingestIdempotencyEndToEnd:
         assert ids_a and ids_a == self._chunk_ids(mock_graph_store)
 
 
-class TestDeterministicChunkUids:
+class TestDocumentInfoIdentityMerge:
+    """A caller-supplied ``DocumentInfo`` is merged field by field, and only
+    fields the caller actually set win. ``DocumentInfo.uid`` has a ``uuid4()``
+    default, so ``DocumentInfo(path=...)`` must not smuggle a random id past
+    the derived one (Copilot / CodeRabbit on #309)."""
+
+    def _pipeline(self, mock_graph_store, mock_vector_store):
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+        return IngestionPipeline(
+            loader=StubLoader("Alice works at Acme. Bob works at Beta."),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(),
+        )
+
+    async def test_path_only_document_info_takes_the_derived_id(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        p = self._pipeline(mock_graph_store, mock_vector_store)
+        first = await p.run("./docs/../report.txt", ctx, document_info=DocumentInfo(path="docs/report.txt"))
+        second = await p.run("./docs/../report.txt", ctx, document_info=DocumentInfo(path="docs/report.txt"))
+
+        assert first.document_info.uid == second.document_info.uid == "report.txt"
+        assert first.document_info.path == "docs/report.txt"
+
+    async def test_explicit_uid_still_wins(self, ctx, mock_graph_store, mock_vector_store):
+        p = self._pipeline(mock_graph_store, mock_vector_store)
+        result = await p.run("report.txt", ctx, document_info=DocumentInfo(uid="pinned"))
+        assert result.document_info.uid == "pinned"
+        assert result.document_info.path == "report.txt", "path falls back to the loader's"
+
+    async def test_text_mode_path_only_document_info_takes_the_text_hash(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        import hashlib
+
+        p = self._pipeline(mock_graph_store, mock_vector_store)
+        text = "Alice works at Acme."
+        result = await p.run("label", ctx, text=text, document_info=DocumentInfo(path="label"))
+        assert result.document_info.uid == f"text-{hashlib.sha256(text.encode()).hexdigest()[:16]}"
+
+    async def test_metadata_is_merged_caller_over_loader(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        class MetaLoader(StubLoader):
+            async def load(self, source, ctx):
+                return DocumentOutput(
+                    text=self._text,
+                    document_info=DocumentInfo(path=source, metadata={"a": 1, "b": 1}),
+                )
+
+        p = self._pipeline(mock_graph_store, mock_vector_store)
+        p.loader = MetaLoader("Alice works at Acme.")
+        result = await p.run("r.txt", ctx, document_info=DocumentInfo(metadata={"b": 2, "c": 3}))
+        assert result.document_info.metadata == {"a": 1, "b": 2, "c": 3}
+
+    async def test_derived_id_with_pending_marker_is_rejected_before_any_io(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """Direct pipeline callers bypass ``GraphRAG``'s guard; a file called
+        ``foo__pending__bar.txt`` would otherwise be picked up by
+        ``find_pending("foo")`` and rolled back as an interrupted update."""
+        p = self._pipeline(mock_graph_store, mock_vector_store)
+        p.loader.load = AsyncMock(wraps=p.loader.load)
+
+        with pytest.raises(ValueError, match="reserved substring '__pending__'"):
+            await p.run("foo__pending__bar.txt", ctx)
+
+        p.loader.load.assert_not_called()
+        mock_graph_store.upsert_nodes.assert_not_called()
+
+    async def test_explicit_pending_id_is_still_accepted(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """``GraphRAG.update()`` passes its pending id explicitly and must get through."""
+        p = self._pipeline(mock_graph_store, mock_vector_store)
+        result = await p.run("r.txt", ctx, document_info=DocumentInfo(uid="r.txt__pending__ab12cd34"))
+        assert result.document_info.uid == "r.txt__pending__ab12cd34"
+
+
+class TestDuckTypedGraphStore:
+    """``graph_store`` is ``Any`` by design; a store that only implements the
+    write surface the pipeline always required must still work
+    (galshubeli on #309)."""
+
+    async def test_store_without_get_document_record_ingests_without_the_skip(
+        self, ctx, mock_vector_store
+    ):
+        class MinimalStore:
+            def __init__(self):
+                self.nodes = []
+                self.rels = []
+
+            async def upsert_nodes(self, nodes):
+                self.nodes.extend(nodes)
+                return len(nodes)
+
+            async def upsert_relationships(self, rels):
+                self.rels.extend(rels)
+                return len(rels)
+
+        store = MinimalStore()
+        p = IngestionPipeline(
+            loader=StubLoader("Alice works at Acme."),
+            chunker=StubChunker(),
+            extractor=StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(),
+        )
+        result = await p.run("r.txt", ctx)
+        assert result.chunks_indexed == 1
+        assert "skipped_unchanged" not in result.metadata
+        assert any("content_hash" in n.properties for n in store.nodes if n.label == "Document")
+
+
+class TestContentHashRequiresCompleteWrites:
+    """``upsert_relationships`` and ``index_chunks`` swallow per-item failures
+    and return a count. A run whose count came up short must not be stamped
+    with ``content_hash``, or the missing edges / embeddings would never be
+    repaired — every later ingest would skip the document (galshubeli on #309)."""
+
+    def _pipeline(self, mock_graph_store, mock_vector_store, extractor=None):
+        mock_graph_store.get_document_record = AsyncMock(return_value=None)
+        return IngestionPipeline(
+            loader=StubLoader("Alice works at Acme. Bob works at Beta. Carol runs Gamma."),
+            chunker=StubChunker(),
+            extractor=extractor or StubExtractor(),
+            resolver=StubResolver(),
+            graph_store=mock_graph_store,
+            vector_store=mock_vector_store,
+            ontology=Ontology(),
+        )
+
+    @staticmethod
+    def _hash_written(mock_graph_store) -> bool:
+        return any(
+            "content_hash" in n.properties
+            for call in mock_graph_store.upsert_nodes.call_args_list
+            for n in call[0][0]
+            if n.label == "Document"
+        )
+
+    async def test_complete_run_records_the_hash(self, ctx, mock_graph_store, mock_vector_store):
+        result = await self._pipeline(mock_graph_store, mock_vector_store).run("r.txt", ctx)
+        assert self._hash_written(mock_graph_store)
+        assert "incomplete_writes" not in result.metadata
+
+    async def test_short_relationship_count_withholds_the_hash(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        mock_graph_store.upsert_relationships = AsyncMock(side_effect=lambda rels: max(len(rels) - 1, 0))
+        result = await self._pipeline(mock_graph_store, mock_vector_store).run("r.txt", ctx)
+
+        assert not self._hash_written(mock_graph_store)
+        assert any(s.startswith("lexical edges") for s in result.metadata["incomplete_writes"])
+        # The run itself still reports what it attempted.
+        assert result.chunks_indexed == 3
+
+    async def test_short_mention_count_withholds_the_hash(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        from graphrag_sdk.core.models import EntityMention
+
+        class MentionExtractor(StubExtractor):
+            async def extract(self, chunks, ontology, ctx):
+                return GraphData(
+                    nodes=[GraphNode(id="e1", label="Entity", properties={"name": "Alice"})],
+                    relationships=[],
+                    mentions=[EntityMention(entity_id="e1", chunk_id=c.uid) for c in chunks.chunks],
+                )
+
+        def _drop_one_mention(rels):
+            return len(rels) - 1 if rels and rels[0].type == "MENTIONED_IN" else len(rels)
+
+        mock_graph_store.upsert_relationships = AsyncMock(side_effect=_drop_one_mention)
+        result = await self._pipeline(
+            mock_graph_store, mock_vector_store, extractor=MentionExtractor()
+        ).run("r.txt", ctx)
+
+        assert not self._hash_written(mock_graph_store)
+        assert result.metadata["incomplete_writes"] == ["mentions 2/3"]
+
+    async def test_unembedded_chunks_withhold_the_hash(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """0 from ``index_chunks`` — every embedding call failed, or no
+        embedder — means the document is absent from chunk vector search."""
+        mock_vector_store.index_chunks = AsyncMock(return_value=0)
+        result = await self._pipeline(mock_graph_store, mock_vector_store).run("r.txt", ctx)
+
+        assert not self._hash_written(mock_graph_store)
+        assert result.metadata["incomplete_writes"] == ["chunks indexed 0/3"]
+
+    async def test_stores_that_report_nothing_are_taken_at_their_word(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """Duck-typed stores returning ``None`` give no shortfall signal, so the
+        pipeline must not refuse to ever mark such a run complete."""
+        mock_graph_store.upsert_relationships = AsyncMock(return_value=None)
+        mock_vector_store.index_chunks = AsyncMock(return_value=None)
+        result = await self._pipeline(mock_graph_store, mock_vector_store).run("r.txt", ctx)
+
+        assert self._hash_written(mock_graph_store)
+        assert "incomplete_writes" not in result.metadata
+
+    async def test_next_ingest_after_a_short_run_takes_the_full_path(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
+        """The point of withholding the hash: the follow-up ingest repairs."""
+        from graphrag_sdk.core.models import DocumentRecord
+
+        mock_vector_store.index_chunks = AsyncMock(return_value=0)
+        p = self._pipeline(mock_graph_store, mock_vector_store)
+        await p.run("r.txt", ctx)
+        # The graph now holds the Document with no content_hash, as the run left it.
+        mock_graph_store.get_document_record = AsyncMock(
+            return_value=DocumentRecord(path="r.txt", content_hash=None)
+        )
+        mock_vector_store.index_chunks = AsyncMock(side_effect=lambda chunks: len(chunks.chunks))
+        mock_graph_store.upsert_nodes.reset_mock()
+
+        result = await p.run("r.txt", ctx)
+
+        assert "skipped_unchanged" not in result.metadata
+        assert self._hash_written(mock_graph_store)
     """Bug #12 — re-ingesting an unchanged document duplicated its chunks.
 
     ``TextChunk.uid`` defaulted to ``uuid4()``, so the lexical graph's

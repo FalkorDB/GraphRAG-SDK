@@ -1552,10 +1552,10 @@ def _stub_graph_store_for_update(
     g._graph_store.mark_document_pending_delete = AsyncMock(side_effect=_mark_delete)
     g._graph_store.has_pending_delete = AsyncMock(return_value=False)
     g._graph_store.rollforward_cutover = AsyncMock(side_effect=_rollforward)
-    g._graph_store.upsert_nodes = AsyncMock(return_value=0)
-    g._graph_store.upsert_relationships = AsyncMock(return_value=0)
+    g._graph_store.upsert_nodes = AsyncMock(side_effect=lambda nodes: len(nodes))
+    g._graph_store.upsert_relationships = AsyncMock(side_effect=lambda rels: len(rels))
     g._vector_store.ensure_indices = AsyncMock(return_value={})
-    g._vector_store.index_chunks = AsyncMock(return_value=0)
+    g._vector_store.index_chunks = AsyncMock(side_effect=lambda chunks: len(chunks.chunks))
     g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
 
 
@@ -1632,6 +1632,47 @@ class TestGraphRAGUpdate:
         # Pipeline write step must NOT have been invoked.
         graphrag._graph_store.upsert_nodes.assert_not_awaited()
         graphrag._graph_store.rollforward_cutover.assert_not_awaited()
+
+    async def test_force_re_extracts_unchanged_content(self, graphrag):
+        """``ingest()`` skips unchanged documents and ``update()`` no-ops on
+        them, so ``force=True`` is the only way to apply a new ontology,
+        chunker or extractor to existing text (galshubeli on #309). It runs
+        the full replace flow — pending write, commit, cutover, cleanup."""
+        import hashlib
+
+        from graphrag_sdk.core.models import DocumentRecord
+
+        text = "Stable content."
+        existing_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={"path": "my-doc", "content_hash": existing_hash},
+            candidates=["entity-1"],
+            cutover_chunks_deleted=1,
+        )
+        # Only the live id resolves; the pipeline's own unchanged-content
+        # check looks up the *pending* id, which a real store has no record of.
+        live = DocumentRecord(path="my-doc", content_hash=existing_hash)
+        graphrag._graph_store.get_document_record = AsyncMock(
+            side_effect=lambda doc_id: live if doc_id == "my-doc" else None
+        )
+
+        result = await graphrag.update(text=text, document_id="my-doc", force=True)
+
+        assert result.no_op is False
+        assert result.replaced_existing is True
+        assert result.chunks_deleted == 1
+        graphrag._graph_store.upsert_nodes.assert_awaited()
+        graphrag._graph_store.mark_pending_committed.assert_awaited_once()
+        graphrag._graph_store.rollforward_cutover.assert_awaited_once()
+        graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(["entity-1"])
+
+    def test_update_sync_forwards_force(self, graphrag):
+        """Keep ``update_sync`` in step with ``update``."""
+        import inspect
+
+        assert "force" in inspect.signature(graphrag.update_sync).parameters
+        assert "force" in inspect.signature(graphrag.update).parameters
 
     async def test_doc_not_found_default_raises(self, graphrag):
         """if_missing='error' (default) raises DocumentNotFoundError."""

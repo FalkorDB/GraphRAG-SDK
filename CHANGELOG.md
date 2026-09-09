@@ -41,19 +41,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same text hash (previously a fresh `text-<uuid>` per call), so ingesting
   identical text twice is now one document and a no-op the second time; pass
   `document_id` to store identical text as distinct documents.
+  **Breaking:** code that called `ingest(text=...)` once per record and
+  relied on every call creating its own Document now gets one Document per
+  distinct text and a zero-result `skipped_unchanged` no-op for each
+  duplicate — pass a `document_id` per record to keep the old behaviour.
+  A caller-supplied `document_info` is merged field by field using
+  `model_fields_set`, so `DocumentInfo(path=...)` without an explicit `uid`
+  takes the derived id instead of the model's random default. Ids the
+  pipeline derives from a source path are checked for the reserved
+  `__pending__` marker (`ValueError`), the same rule `GraphRAG` applies to
+  explicit ids.
   **Upgrade note:** graphs built before this change hold random chunk
   ids; the first re-ingest of an existing document adds one more copy of its
   chunk layer (matching nothing), and is stable from the second re-ingest on.
   Because position is part of the id, inserting a paragraph into an edited
   document re-ids every later chunk; only byte-identical files are a no-op.
+  Chunks written by `update()` are keyed on its transient pending id (the
+  pending and live documents must not share chunk nodes during the
+  cutover); the `content_hash` the cutover records is what keeps a later
+  `ingest()` of that content a no-op.
 - Re-ingesting an unchanged document is now a true no-op. The pipeline hashes
   the loaded text and, if the stored Document carries the same
   `content_hash`, returns before chunking with
   `IngestionResult.metadata["skipped_unchanged"] = True` and
   `chunks_indexed = 0` — no chunker, NER, LLM or graph calls (measured: 33
   provider calls and ~30 s → 0 and 0.01 s). The hash is written only after a
-  run completes, so a partially failed ingest is retried in full rather than
-  skipped.
+  run completes with every write reported in full: a failed extraction, a
+  `RELATES`/`MENTIONED_IN` edge the graph store dropped after a transient
+  error, or a chunk left without an embedding by a rate-limited embedder all
+  withhold the hash (`IngestionResult.metadata["incomplete_writes"]` lists
+  the shortfalls), so the next ingest repairs the document instead of
+  skipping it. Graph-store adapters without `get_document_record` keep
+  working — the pipeline skips the check instead of raising.
+- `GraphRAG.update(..., force=True)` re-extracts a document whose content
+  hash is unchanged. With `ingest()` now skipping unchanged documents, this
+  is the supported way to re-chunk or re-extract existing text after
+  changing the ontology, chunker, extractor or model (for example to adopt
+  the new 384-token default below); `update_sync()` takes the same flag.
 
 ### Changed
 
