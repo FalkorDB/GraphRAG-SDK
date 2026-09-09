@@ -56,6 +56,7 @@ debug_*.py
 
 # Virtual environments
 .venv/
+graphrag_sdk/.venv
 .venv-*/
 venv/
 

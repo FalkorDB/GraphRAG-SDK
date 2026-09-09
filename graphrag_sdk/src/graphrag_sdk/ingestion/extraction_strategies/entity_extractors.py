@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import bisect
 import json
 import logging
 import re
@@ -41,6 +40,12 @@ UNKNOWN_LABEL = "Unknown"
 
 #: Sentinel for "use the class default" where ``None`` is itself a valid value.
 _DEFAULT: Any = object()
+
+
+def _is_int(value: Any) -> bool:
+    """``bool`` is an ``int`` subclass; window sizes must be real integers."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
 
 MIN_NAME_LEN = 2  # single-char names are noise
 MAX_NAME_LEN = 80  # descriptions masquerading as names
@@ -475,16 +480,18 @@ class GLiNERExtractor(EntityExtractor):
     corpus**, with no error raised.
 
     Args:
-        threshold: Confidence threshold (0-1). Below this → "Unknown".
+        threshold: Confidence threshold (0-1). Spans scoring at or above it
+            are typed; spans between ``candidate_threshold`` and it are
+            labelled ``"Unknown"``; anything lower is discarded by the model.
             ``None`` (default) selects the value measured for ``model_name``.
         model_name: HuggingFace model name for GLiNER.
         window_tokens: Word-tokens per inference window. ``None`` derives it
             from the model's own ``config.max_len`` minus a safety margin.
             An explicit value must be a positive integer.
-        window_overlap: Word-tokens shared between consecutive windows. Must
-            satisfy ``0 <= window_overlap < window_tokens`` (checked against
-            the derived window on first use when ``window_tokens`` is
-            ``None``) and should exceed the model's ``max_width`` (longest
+        window_overlap: Word-tokens shared between consecutive windows. An
+            integer satisfying ``0 <= window_overlap < window_tokens`` (checked
+            against the derived window on first use when ``window_tokens`` is
+            ``None``); it should exceed the model's ``max_width`` (longest
             representable entity, 12 words by default) or entities on a
             boundary are lost.
         candidate_threshold: Floor of the ``"Unknown"`` band. Default: 25 %
@@ -495,7 +502,8 @@ class GLiNERExtractor(EntityExtractor):
     Raises:
         ValueError: If ``threshold`` is outside ``[0, 1]``, if
             ``candidate_threshold`` is outside ``[0, threshold]``, or if the
-            window parameters are degenerate (``window_tokens <= 0``,
+            window parameters are degenerate (``window_tokens`` or
+            ``window_overlap`` not an ``int``, ``window_tokens <= 0``,
             ``window_overlap < 0`` or ``window_overlap >= window_tokens``).
     """
 
@@ -574,15 +582,16 @@ class GLiNERExtractor(EntityExtractor):
         # ``_CACHE_LOCK`` and inference deliberately takes no lock at all.
         # See ``_predict_sync`` for the thread-safety evidence.
         self._lock = threading.Lock()
-        if window_tokens is not None and (isinstance(window_tokens, bool) or window_tokens <= 0):
+        if window_tokens is not None and not (_is_int(window_tokens) and window_tokens > 0):
             # ``words[begin:begin + 0]`` is empty on the first iteration, so a
-            # non-positive window would return zero entities with no error.
-            raise ValueError(f"window_tokens ({window_tokens}) must be a positive integer")
-        if window_overlap < 0:
+            # non-positive window would return zero entities with no error; a
+            # non-int only fails later, inside ``range()`` at inference time.
+            raise ValueError(f"window_tokens ({window_tokens!r}) must be a positive integer")
+        if not (_is_int(window_overlap) and window_overlap >= 0):
             # A negative overlap makes ``step > window`` and leaves word ranges
             # that never reach the model — the silent truncation this class
             # exists to prevent, reintroduced by configuration.
-            raise ValueError(f"window_overlap ({window_overlap}) must be >= 0")
+            raise ValueError(f"window_overlap ({window_overlap!r}) must be a non-negative integer")
         if window_tokens is not None:
             self._check_overlap(window_overlap, window_tokens)
         self._window_tokens = window_tokens
@@ -680,43 +689,64 @@ class GLiNERExtractor(EntityExtractor):
 
         GLiNER's ``flat_ner`` guarantees non-overlapping spans within one
         window, and downstream code relies on that shape, so the merge must
-        restore it across windows. Spans are considered longest first, ties by
-        score, and any span that overlaps an already-kept span by even one
-        character is dropped regardless of label. Longest-first because the
-        failure mode being fixed is truncation: a window edge clips
-        "Acme Corporation Ltd" to "Acme", and the clipped fragment may come
-        back with a different label or a higher score than the whole entity
-        seen by the neighbouring window. Exact duplicates collapse to the
-        highest-scoring copy.
+        restore it across windows. Two rules, applied regardless of label:
 
-        O(n log n): kept spans are held in a sorted list and each candidate
-        checks its neighbours by bisection.
+        1. **Nested spans lose to the span that contains them.** The failure
+           mode being fixed is truncation: a window edge clips
+           "Acme Corporation Ltd" to "Acme", and the fragment may come back
+           with a different label or a higher score than the whole entity seen
+           by the neighbouring window. Exact duplicates collapse to the
+           highest-scoring copy.
+        2. **Partially overlapping spans are resolved by score**, highest
+           first, the way ``flat_ner`` does within a window. Length must not
+           decide here: a long low-confidence span would otherwise delete the
+           disjoint high-confidence entities on either side of it.
+
+        Ties on score break by length, then by start offset, so the result
+        does not depend on the order windows emitted their predictions.
+
+        O(n log n). Rule 1 is a sweep over spans sorted by start. After it, no
+        span contains another, so spans sorted by start are also sorted by
+        end and each span can overlap at most two of the disjoint survivors —
+        the neighbour walks in rule 2 touch each span at most twice.
         """
-        ranked = sorted(
-            preds,
-            key=lambda p: (p["end"] - p["start"], p.get("score", 0.0)),
-            reverse=True,
+        # Rule 1: sorted by start, a span is nested in (or identical to) an
+        # earlier one exactly when it ends at or before the furthest end seen.
+        chain: list[dict[str, Any]] = []
+        max_end = -1
+        for p in sorted(
+            (p for p in preds if p["end"] > p["start"]),
+            key=lambda p: (p["start"], -p["end"], -p.get("score", 0.0)),
+        ):
+            if p["end"] <= max_end:
+                continue
+            max_end = p["end"]
+            chain.append(p)
+
+        # Rule 2: greedy by score over the containment-free chain.
+        state = [0] * len(chain)  # 0 undecided, 1 kept, -1 dropped
+        by_score = sorted(
+            range(len(chain)),
+            key=lambda i: (
+                -chain[i].get("score", 0.0),
+                chain[i]["start"] - chain[i]["end"],
+                chain[i]["start"],
+            ),
         )
-        kept: list[dict[str, Any]] = []
-        kept_starts: list[int] = []
-        kept_ends: list[int] = []
-        for p in ranked:
-            start, end = p["start"], p["end"]
-            if end <= start:
+        for i in by_score:
+            if state[i]:
                 continue
-            # Kept spans are disjoint, so the only possible overlaps are the
-            # neighbour ending after ``start`` and the neighbour starting
-            # before ``end``.
-            i = bisect.bisect_right(kept_starts, start)
-            if i > 0 and kept_ends[i - 1] > start:
-                continue
-            if i < len(kept_starts) and kept_starts[i] < end:
-                continue
-            kept_starts.insert(i, start)
-            kept_ends.insert(i, end)
-            kept.append(p)
-        kept.sort(key=lambda p: (p["start"], p["end"]))
-        return kept
+            state[i] = 1
+            start, end = chain[i]["start"], chain[i]["end"]
+            j = i - 1
+            while j >= 0 and chain[j]["end"] > start:
+                state[j] = -1
+                j -= 1
+            j = i + 1
+            while j < len(chain) and chain[j]["start"] < end:
+                state[j] = -1
+                j += 1
+        return [p for p, s in zip(chain, state) if s == 1]
 
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
         model = self._load_model()

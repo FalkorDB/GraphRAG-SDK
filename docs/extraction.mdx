@@ -96,7 +96,7 @@ extractor = GLiNERExtractor(
 4. Returns predictions with character-level spans — more precise than LLM spans
 5. Entities in the band just below the confidence threshold (default: 25 % below it, e.g. 0.5625–0.75) are labeled `"Unknown"` and handed to the step-2 LLM, which re-types or drops them against the text; anything below the band is discarded. Pass `candidate_threshold=None` to disable the band.
 
-Thresholds are model-specific: `threshold=None` (the default) selects the measured value for `model_name` (`0.75` for the `urchade/gliner_*` models, `0.5` for the `knowledgator/gliner-bi-*` bi-encoders); unknown models fall back to `0.5` with a warning. Invalid configurations raise `ValueError` at construction: `threshold` outside `[0, 1]`, `candidate_threshold` outside `[0, threshold]`, `window_tokens <= 0`, or `window_overlap` negative or not smaller than the window.
+Thresholds are model-specific: `threshold=None` (the default) selects the measured value for `model_name` (`0.75` for the `urchade/gliner_*` models, `0.5` for the `knowledgator/gliner-bi-*` bi-encoders); unknown models fall back to `0.5` with a warning. Invalid configurations raise `ValueError`: `threshold` outside `[0, 1]`, `candidate_threshold` outside `[0, threshold]`, `window_tokens` not a positive integer, or `window_overlap` not a non-negative integer — all at construction. `window_overlap` must also be smaller than the window; that is checked at construction when `window_tokens` is given explicitly, otherwise on the first inference call, once the window has been derived from the model.
 
 **Best for:** Production pipelines where you want fast, cheap NER without API costs.
 
