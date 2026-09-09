@@ -1,4 +1,7 @@
-# Getting Started with GraphRAG SDK
+---
+title: "Getting Started"
+description: "A step-by-step tutorial for building a knowledge graph from documents and querying it with natural language."
+---
 
 A step-by-step tutorial for building a knowledge graph from documents and querying it with natural language.
 
@@ -104,9 +107,9 @@ rag = GraphRAG(
 
 The default is `256` (matched-Matryoshka dimensions of `text-embedding-3-large`). If your embedding model produces a different dimensionality (e.g., 1024, 1536, or 3072), set `embedding_dimension` accordingly.
 
-`ConnectionConfig` accepts additional parameters such as `port`, `username`, `password`, and `query_timeout_ms`. See [docs/configuration.md](configuration.md) for the full list.
+`ConnectionConfig` accepts additional parameters such as `port`, `username`, `password`, and `query_timeout_ms`. See [Configuration](/configuration) for the full list.
 
-> **Alternative providers:** The SDK also exports `OpenRouterLLM` and `OpenRouterEmbedder` for use with OpenRouter. See [docs/configuration.md](configuration.md) for details.
+> **Alternative providers:** The SDK also exports `OpenRouterLLM` and `OpenRouterEmbedder` for use with OpenRouter. See [Configuration](/configuration) for details.
 
 ---
 
@@ -231,9 +234,9 @@ This step is important for query accuracy. It merges duplicate entities (e.g., "
 
 ## 11. Next Steps
 
-- [docs/configuration.md](configuration.md) -- Tuning connection settings, chunking parameters, and retrieval options.
-- [docs/strategies.md](strategies.md) -- Custom extraction and resolution strategies.
-- [docs/benchmark.md](benchmark.md) -- Reproducing benchmark results on the GraphRAG-Bench Novel corpus (20 novels, 2,010 questions).
+- [Configuration](/configuration) -- Tuning connection settings, chunking parameters, and retrieval options.
+- [Strategies](/strategies) -- Custom extraction and resolution strategies.
+- [Benchmark](/benchmark) -- Reproducing benchmark results on the GraphRAG-Bench Novel corpus (20 novels, 2,010 questions).
 
 ---
 

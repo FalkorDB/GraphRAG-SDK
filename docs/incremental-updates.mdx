@@ -1,4 +1,7 @@
-# Incremental Updates — Keeping the Graph in Sync
+---
+title: "Incremental Updates"
+description: "Update, delete, and re-index documents in an existing graph without a full re-ingest."
+---
 
 Once a graph has been ingested, real corpora keep changing: documents get edited, replaced, or removed. Re-running a full ingest on every change is expensive and discards the existing graph. The v1.1.0 incremental update primitives let you mutate an already-built graph in place, with crash-safe semantics and scoped orphan cleanup.
 
@@ -290,7 +293,7 @@ Steps 2 and 3 are why `apply_changes()` does not call it automatically: they sca
 
 ## End-to-End Example
 
-A full runnable example lives in [`graphrag_sdk/examples/07_incremental_updates.py`](../graphrag_sdk/examples/07_incremental_updates.py). It exercises:
+A full runnable example lives in [`graphrag_sdk/examples/07_incremental_updates.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/07_incremental_updates.py). It exercises:
 
 - Initial ingest with a stable `document_id`
 - No-op update (content-hash short-circuit)
@@ -304,8 +307,8 @@ A full runnable example lives in [`graphrag_sdk/examples/07_incremental_updates.
 
 ## See Also
 
-- [Ingestion](ingestion.md) — the underlying 9-step pipeline that `ingest()` and `update()` both drive.
-- [Storage](storage.md) — node/edge shapes, including why MERGE makes re-ingestion idempotent.
-- [Configuration](configuration.md) — `finalize()` reference and post-ingestion knobs.
-- [Ontology Discovery](ontology-discovery.md) — if you're updating against a corpus and don't have a schema yet, or want to propose schema additions from new documents via `suggest_schema_extensions`.
-- [Ontology Evolution](ontology-evolution.md) — if your schema needs to change between updates (`add_entity`, `add_attribute`, `rename_*`, etc.) — these are the mutation primitives that the discovery proposal hands off to.
+- [Ingestion](/ingestion) — the underlying 9-step pipeline that `ingest()` and `update()` both drive.
+- [Storage](/storage) — node/edge shapes, including why MERGE makes re-ingestion idempotent.
+- [Configuration](/configuration) — `finalize()` reference and post-ingestion knobs.
+- [Ontology Discovery](/ontology-discovery) — if you're updating against a corpus and don't have a schema yet, or want to propose schema additions from new documents via `suggest_schema_extensions`.
+- [Ontology Evolution](/ontology-evolution) — if your schema needs to change between updates (`add_entity`, `add_attribute`, `rename_*`, etc.) — these are the mutation primitives that the discovery proposal hands off to.

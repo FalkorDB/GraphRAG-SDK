@@ -37,7 +37,7 @@ dependencies = [
     # falkordb owns the redis dependency, so it isn't declared here.
     "falkordb>=1.7,<2",
     "numpy>=1.24,<3",
-    "python-dotenv>=1.0",
+    "python-dotenv>=1.2.2",
     "tiktoken>=0.5,<1.0",
     "gliner>=0.2,<1",
     "hnswlib>=0.8",
@@ -49,12 +49,12 @@ openai = ["openai>=1.0,<3.0"]
 anthropic = ["anthropic>=0.20,<1.0"]
 cohere = ["cohere>=5.0"]
 sentence-transformers = ["sentence-transformers>=2.0"]
-pdf = ["pypdf>=6.9.2"]
+pdf = ["pypdf>=6.15.0"]
 markdown = ["markdown-it-py>=3.0.0"]
 # Optional faster/table-aware PDF backend. PyMuPDF is AGPL-3.0 — if that is
 # incompatible with your project's license, stick with the default `pdf` extra.
 pdf-fast = ["pymupdf>=1.24"]
-litellm = ["litellm>=1.83.0,<2.0"]
+litellm = ["litellm>=1.84.0,<2.0"]
 openrouter = ["openai>=1.0,<3.0"]
 fastcoref = ["fastcoref>=2.0"]
 spacy = ["spacy>=3.0"]
@@ -63,11 +63,11 @@ all = [
     "anthropic>=0.20,<1.0",
     "cohere>=5.0",
     "sentence-transformers>=2.0",
-    "pypdf>=6.9.2",
-    "litellm>=1.83.0,<2.0",
+    "pypdf>=6.15.0",
+    "litellm>=1.84.0,<2.0",
 ]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
     "ruff>=0.4",
@@ -76,7 +76,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/FalkorDB/GraphRAG-SDK"
-Documentation = "https://falkordb.github.io/GraphRAG-SDK/"
+Documentation = "https://docs.falkordb.com/graphrag"
 Repository = "https://github.com/FalkorDB/GraphRAG-SDK"
 "Bug Tracker" = "https://github.com/FalkorDB/GraphRAG-SDK/issues"
 Changelog = "https://github.com/FalkorDB/GraphRAG-SDK/blob/main/CHANGELOG.md"

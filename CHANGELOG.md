@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New documentation page **Reducing LLM Hallucinations**
+  (`docs/reducing-llm-hallucinations.mdx`) — the guide to grounded retrieval,
+  `MENTIONED_IN` source provenance, inspecting the evidence trail with
+  `return_context=True`, and defining an explicit abstention path.
+  Cross-linked from the index, architecture, retrieval and benchmark pages.
+- New documentation page **Reliability and Grounding**
+  (`docs/reliability-and-grounding.mdx`), the API-level reference behind that
+  guide: it maps grounded retrieval, source provenance, evidence trails,
+  relationship-aware retrieval, metadata filtering, confidence thresholds,
+  abstention behavior, unsupported claims, retrieval validation and factual
+  accuracy to the SDK APIs that implement them.
+- New example `graphrag_sdk/examples/grounded_answers_with_abstention.py`
+  showing a retrieval gate that returns an explicit evidence-insufficient
+  response — before the generation call — plus the citations
+  behind a grounded answer. Covered by
+  `graphrag_sdk/tests/test_grounded_abstention.py`.
+
 ### Fixed
 
 - **`redis` 8.1 broke the first query on every fresh install** —
@@ -14,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `redis.Redis()` constructor, which rejects them. Fixed upstream in
   `falkordb` 1.7.0, so the floor moves to `falkordb>=1.7` — the old
   `>=1.0` still allowed 1.6.x to resolve against the broken redis.
+- Fixed vector-search ordering so chunk, entity, and relationship searches use
+  similarity scores, with higher values indicating closer matches.
+
+### Changed
+
+- Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
+  published at <https://docs.falkordb.com/graphrag>, where GraphRAG SDK now
+  appears as a product in the FalkorDB docs product switcher. Pages moved from
+  `docs/*.md` to `docs/*.mdx`, navigation is declared in `docs/docs.json`, and
+  `mkdocs.yml` plus the GitHub Pages deploy workflow were removed in favour of
+  MDX/link validation in CI.
 
 ## [1.4.0] - 2026-08-10
 

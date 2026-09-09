@@ -1,6 +1,9 @@
-# Ontology Discovery
+---
+title: "Ontology Discovery"
+description: "Bootstrap an ontology from a corpus and propose schema additions as new documents arrive."
+---
 
-How to bootstrap an ontology from a corpus and how to propose schema additions as new documents arrive — the *discovery* side of the ontology lifecycle. The complement to [Ontology Evolution](ontology-evolution.md), which covers safely *changing* an ontology that already exists.
+How to bootstrap an ontology from a corpus and how to propose schema additions as new documents arrive — the *discovery* side of the ontology lifecycle. The complement to [Ontology Evolution](/ontology-evolution), which covers safely *changing* an ontology that already exists.
 
 If you've never built an ontology by hand and you don't know where to start, start here.
 
@@ -13,7 +16,7 @@ There are four places an ontology can come from:
 1. **The built-in default.** If you construct `GraphRAG` without an `ontology=` argument and no ontology has been previously persisted to the graph, the SDK seeds the ontology graph with `DEFAULT_ENTITY_TYPES` (`Person`, `Organization`, `Technology`, `Product`, `Location`, `Date`, `Event`, `Concept`, `Law`, `Dataset`, `Method`) so extraction has something to anchor on.
 2. **Hand-authored.** You write `Ontology(entities=[...], relations=[...])` because you already know what your knowledge graph should look like. The fastest path when the domain is well understood.
 3. **Discovered from a corpus.** You point the SDK at some documents and ask it to draft one. Use when you're exploring an unfamiliar corpus, or when manually enumerating types upfront is brittle.
-4. **Discovered and then evolved.** The realistic workflow: draft once with discovery, ingest with that draft, then as new documents arrive use `suggest_schema_extensions` to propose additions you review and apply via the [evolution API](ontology-evolution.md).
+4. **Discovered and then evolved.** The realistic workflow: draft once with discovery, ingest with that draft, then as new documents arrive use `suggest_schema_extensions` to propose additions you review and apply via the [evolution API](/ontology-evolution).
 
 This page is about (3) and (4). The same data model (`Ontology`) is used end-to-end — you can mix and match.
 
@@ -175,7 +178,7 @@ for owner, attribute in proposal.new_attributes:
     await rag.add_attribute(owner, attribute)   # atomic, LLM-backfilled
 ```
 
-See [Ontology Evolution](ontology-evolution.md) for the invariants `add_attribute` enforces. Discovery never commits anything itself — the existing evolution machinery stays the single commit surface.
+See [Ontology Evolution](/ontology-evolution) for the invariants `add_attribute` enforces. Discovery never commits anything itself — the existing evolution machinery stays the single commit surface.
 
 **On `new_attributes` for relation owners:** the v1 mutation API does not yet apply attributes to relations (see "What's Not in the API" in Ontology Evolution — `add_attribute` raises `NotImplementedError` for relation owners). Proposals may include them so you see what discovery found, but applying them requires either waiting for the relation-attribute path to land or hand-managing it via `delete_all()` + re-`ingest()` with the updated schema. The diff still surfaces them so the proposal is honest about what discovery saw.
 
@@ -340,5 +343,5 @@ Each call is bounded by `max_retries + 1`. Concurrency is capped by the `concurr
 
 ## See Also
 
-- [Ontology Evolution](ontology-evolution.md) — what to do with the schema once you've discovered it
-- [Graph Schema](graph-schema.md) — the structural reference for `Ontology`, `Entity`, `Relation`, `Attribute`
+- [Ontology Evolution](/ontology-evolution) — what to do with the schema once you've discovered it
+- [Graph Schema](/graph-schema) — the structural reference for `Ontology`, `Entity`, `Relation`, `Attribute`

@@ -64,3 +64,7 @@ dist/
 build/
 *.egg-info/
 *.egg
+
+# Docs tooling (npm deps for scripts/check_mdx.mjs)
+node_modules/
+package-lock.json

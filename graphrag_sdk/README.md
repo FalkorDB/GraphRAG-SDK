@@ -9,6 +9,8 @@
 
 GraphRAG SDK builds knowledge graphs from documents and answers questions over them using retrieval-augmented generation. Every algorithmic concern (chunking, extraction, resolution, retrieval, reranking) is a swappable strategy behind an abstract interface. The default pipeline scores **~85% accuracy** on a 100-question benchmark using GPT-4.1.
 
+It is designed to **reduce LLM hallucinations**: answers are grounded in context retrieved from the knowledge graph and remain traceable to their source chunks via `MENTIONED_IN` provenance edges, and your application can abstain when the graph holds no supporting evidence. See the [Reducing LLM Hallucinations guide](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations).
+
 ## Quick Start
 
 ```python
@@ -164,7 +166,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Questions** | 2,010 across 20 novels |
 | **Medical ACC** | 76.87 (#1) |
 
-See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) for methodology and reproduction.
+See the [benchmark page](https://docs.falkordb.com/graphrag/benchmark) for methodology and reproduction.
 
 ## Examples
 
@@ -175,16 +177,22 @@ See [docs/benchmark.md](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/
 | 3 | [`03_custom_strategies.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/03_custom_strategies.py) | Composing ingestion strategies explicitly |
 | 4 | [`04_custom_provider.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/04_custom_provider.py) | Custom LLM/Embedder |
 | 5 | [`05_notebook_demo.ipynb`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/05_notebook_demo.ipynb) | Interactive notebook walkthrough |
+| ★ | [`grounded_answers_with_abstention.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/examples/grounded_answers_with_abstention.py) | Cited answers, and abstention when evidence is insufficient |
 
 ## Documentation
 
-- [Getting Started](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/getting-started.md) -- Install to first query
-- [Architecture](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/architecture.md) -- Pipeline design and graph schema
-- [Configuration](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/configuration.md) -- Connection and provider reference
-- [Strategies](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/strategies.md) -- All ABCs and built-in implementations
-- [Providers](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/providers.md) -- LLM & embedder configuration
-- [Benchmark](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/benchmark.md) -- Methodology and reproduction
-- [API Reference](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/docs/api-reference.md) -- Full API documentation
+Full documentation: **<https://docs.falkordb.com/graphrag>**
+
+- [Getting Started](https://docs.falkordb.com/graphrag/getting-started) -- Install to first query
+- [Architecture](https://docs.falkordb.com/graphrag/architecture) -- Pipeline design and graph schema
+- [Reducing LLM Hallucinations](https://docs.falkordb.com/graphrag/reducing-llm-hallucinations) -- Grounded retrieval, provenance, and abstention
+- [Configuration](https://docs.falkordb.com/graphrag/configuration) -- Connection and provider reference
+- [Strategies](https://docs.falkordb.com/graphrag/strategies) -- All ABCs and built-in implementations
+- [Providers](https://docs.falkordb.com/graphrag/providers) -- LLM & embedder configuration
+- [Reliability and Grounding](https://docs.falkordb.com/graphrag/reliability-and-grounding) -- Grounding and abstention mapped to the APIs that implement them
+- [Benchmark](https://docs.falkordb.com/graphrag/benchmark) -- Methodology and reproduction
+- [Accuracy Benchmark: FalkorDB vs Vector RAG](https://docs.falkordb.com/graphrag/graphrag-accuracy-benchmark) -- 71.48 vs 55.39, limitations, how to cite
+- [API Reference](https://docs.falkordb.com/graphrag/api-reference) -- Full API documentation
 
 ## License
 
