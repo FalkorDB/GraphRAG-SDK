@@ -56,7 +56,6 @@ class LexicalGraphWriter:
         chunks: TextChunks,
         ctx: Context,
         *,
-        content_hash: str | None = None,
         link_sequential: bool = True,
     ) -> str | None:
         """Build the mandatory provenance chain.
@@ -76,28 +75,20 @@ class LexicalGraphWriter:
         model NEXT_CHUNK means "the next sequential Chunk", so chaining unrelated
         rows would assert a sequence that does not exist.
 
-        ``content_hash`` is the SHA-256 of the loaded source. When present it
-        is written to the Document node so ``GraphRAG.update()`` can
-        short-circuit no-op updates without re-running the write. The prose
-        pipeline leaves it ``None`` and records the hash last, once every
-        write has been reported complete; the structured pipeline writes it
-        here because its Document is the table's state and a re-sync to a
-        Document without a hash cannot complete its cutover.
+        The Document is written without its ``content_hash``. Both pipelines
+        record the hash last, through :meth:`_mark_content_hash`, once every
+        write has been reported complete: written here, it certified a
+        Document whose entities or edges then failed to write, and the next
+        ingest of the same content skipped it as unchanged.
 
         Returns ``None`` when every edge was reported written, else a short
         description of the shortfall for the caller to record.
         """
         # Document node
-        doc_props: dict[str, Any] = {
-            "path": doc_info.path or "",
-            **doc_info.metadata,
-        }
-        if content_hash is not None:
-            doc_props["content_hash"] = content_hash
         doc_node = GraphNode(
             id=doc_info.uid,
             label="Document",
-            properties=doc_props,
+            properties={"path": doc_info.path or "", **doc_info.metadata},
         )
         await self.graph_store.upsert_nodes([doc_node])
 
@@ -152,6 +143,19 @@ class LexicalGraphWriter:
         if _reported_short(written, len(lexical_rels)):
             return f"lexical edges {written}/{len(lexical_rels)}"
         return None
+
+    async def _mark_content_hash(self, doc_uid: str, content_hash: str) -> None:
+        """Record ``content_hash`` on an existing Document node.
+
+        The last step of a run whose every write was reported complete, and
+        what a later ``ingest()`` of the same content short-circuits on.
+        ``upsert_nodes`` merges on id, so this only adds the property; the
+        Document node and its ``path`` / metadata were written by
+        :meth:`_build_lexical_graph`.
+        """
+        await self.graph_store.upsert_nodes(
+            [GraphNode(id=doc_uid, label="Document", properties={"content_hash": content_hash})]
+        )
 
     async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> tuple[int, str | None]:
         """Write MENTIONED_IN edges linking entities to their source chunks.

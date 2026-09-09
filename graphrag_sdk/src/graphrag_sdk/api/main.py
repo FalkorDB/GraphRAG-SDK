@@ -2444,6 +2444,7 @@ class GraphRAG:
                 )
             ]
             resynced.content_hash = str(counts.get("content_hash", "") or "")
+            resynced.incomplete_writes = list(counts.get("incomplete_writes") or [])
             resynced.chunks_deleted = update_result.chunks_deleted
             resynced.entities_deleted = update_result.entities_deleted
             resynced.replaced_existing = True
@@ -3637,7 +3638,8 @@ class GraphRAG:
         # ``IngestionPipeline.run``), promote the pending without a hash so
         # the document stays eligible for repair instead of being skipped
         # as unchanged forever (galshubeli on #309). The structured path
-        # reports no shortfall, so its metadata carries no such key.
+        # reports the same key for a short edge write (see
+        # ``StructuredIngestionPipeline.run``).
         incomplete_writes = result_metadata.get("incomplete_writes")
         cutover_hash: str | None = None if incomplete_writes else new_hash
         if incomplete_writes:

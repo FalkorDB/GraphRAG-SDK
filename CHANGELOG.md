@@ -243,6 +243,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MDX/link validation in CI.
 
 ### Fixed
+- A structured load that failed part-way was certified complete. The
+  Document's `content_hash` was written with the Document, before the rows,
+  references and edges; a Person write that raised, or a `RELATES` batch the
+  store logged and skipped, left a hash saying "all here", and the retry of
+  the identical file was a `no_op` against the missing data. The hash is now
+  the last write and is withheld when any edge write came up short, exactly
+  as the prose pipeline does; the shortfall is reported as
+  `incomplete_writes` on the result, the re-sync cutover honours it, and an
+  ordinary retry repairs the table.
 - `rename_entity()` on a label a table maps rows to left the stored ontology
   reading `entities=[Human]`, `tables=[hr.csv -> Person]` — a shape the
   validator refuses on every later `load()`, from every entry point, in every

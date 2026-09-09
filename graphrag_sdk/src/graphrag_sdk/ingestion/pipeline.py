@@ -19,7 +19,6 @@ from graphrag_sdk.core.models import (
     DocumentOutput,
     EntityMention,
     GraphData,
-    GraphNode,
     GraphRelationship,
     IngestionResult,
     Ontology,
@@ -519,17 +518,6 @@ class IngestionPipeline(LexicalGraphWriter):
             logger.error("Pipeline failed with unexpected error: %s", exc)
             logger.debug("Pipeline failure details", exc_info=True)
             raise IngestionError(f"Pipeline failed: {exc}") from exc
-
-    async def _mark_content_hash(self, doc_uid: str, content_hash: str) -> None:
-        """Record ``content_hash`` on an existing Document node.
-
-        Called as the last step of a successful ``run``. ``upsert_nodes``
-        merges on id, so this only adds the property; the Document node and
-        its ``path`` / metadata were written by ``_build_lexical_graph``.
-        """
-        await self.graph_store.upsert_nodes(
-            [GraphNode(id=doc_uid, label="Document", properties={"content_hash": content_hash})]
-        )
 
     def _prune(self, graph_data: GraphData, ontology: Ontology) -> GraphData:
         """Filter graph data to only include ontology-conforming nodes and relationships.

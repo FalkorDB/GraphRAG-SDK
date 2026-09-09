@@ -21,7 +21,7 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.tables import unclaimed_property_name
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import compute_entity_id
-from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter
+from graphrag_sdk.ingestion.lexical_graph import LexicalGraphWriter, _reported_short
 from graphrag_sdk.ingestion.loaders.record_loader import (
     RecordBatch,
     RecordLoaderStrategy,
@@ -311,6 +311,7 @@ class StructuredIngestionResult:
         "entities_moved",
         "identity_moved",
         "references_ambiguous",
+        "incomplete_writes",
     )
 
     def __init__(self, document_id: str) -> None:
@@ -336,6 +337,10 @@ class StructuredIngestionResult:
         # a placeholder carrying the key rather than attached to whichever node
         # the graph listed last; the (label, key) pairs are what to look at.
         self.references_ambiguous: list[tuple[str, str]] = []
+        # Writes the store reported short instead of raising on. Any entry
+        # means the graph is not this export, so the Document's content hash
+        # is withheld and the next ingest of the file re-runs in full.
+        self.incomplete_writes: list[str] = []
 
     def as_dict(self) -> dict[str, Any]:
         summary: dict[str, Any] = {
@@ -359,6 +364,8 @@ class StructuredIngestionResult:
             summary["references_ambiguous"] = [
                 f"{label}:{key}" for label, key in self.references_ambiguous
             ]
+        if self.incomplete_writes:
+            summary["incomplete_writes"] = list(self.incomplete_writes)
         if self.replaced_existing:
             summary["replaced_existing"] = True
             summary["chunks_deleted"] = self.chunks_deleted
@@ -526,13 +533,12 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
         chunks = self._record_chunks(batch, mapping, doc_info, result)
         if not chunks.chunks:
             # Still a state of the table — the one with no rows. The Document is
-            # written with its hash so a re-sync to it completes its cutover and
-            # takes the previous rows out, instead of failing on a pending
-            # Document that was never written.
+            # written so a re-sync to it completes its cutover and takes the
+            # previous rows out, instead of failing on a pending Document that
+            # was never written; with nothing else to write, its hash follows.
             ctx.log(f"{source} produced no records; Document written, nothing else")
-            await self._build_lexical_graph(
-                doc_info, chunks, ctx, content_hash=result.content_hash, link_sequential=False
-            )
+            await self._build_lexical_graph(doc_info, chunks, ctx, link_sequential=False)
+            await self._mark_content_hash(doc_info.uid, result.content_hash)
             return result
         nodes, references, edges, keyed = self._map_records(batch, mapping, doc_info, result)
 
@@ -597,25 +603,48 @@ class StructuredIngestionPipeline(LexicalGraphWriter):
             )
         result.entities_moved = len(result.identity_moved)
 
-        await self._build_lexical_graph(
-            doc_info,
-            chunks,
-            ctx,
-            content_hash=result.content_hash,
-            link_sequential=link_sequential,
+        # The content hash is what a later ingest of this file short-circuits
+        # on, so it is the last thing written, and only when every write before
+        # it was reported complete. Written with the Document up front, it
+        # certified the table before a row or an edge existed: a Person write
+        # that raised, or a RELATES batch the store logged and skipped, left a
+        # Document whose hash said "all here", and the retry of the identical
+        # file was a no-op against the missing data. The node writes raise on
+        # failure; the edge writes return a count instead, which is checked.
+        lexical_shortfall = await self._build_lexical_graph(
+            doc_info, chunks, ctx, link_sequential=link_sequential
         )
+        if lexical_shortfall:
+            result.incomplete_writes.append(lexical_shortfall)
         await self.graph_store.upsert_nodes(nodes)
         await self._retract_blank_cells(nodes)
         # One entry per row arrives here, but a foreign key repeats: 25k rows
         # pointing at 50 organizations produced 25k MERGEs for 50 nodes. They are
         # idempotent, so every repeat after the first is pure waste.
         await self.graph_store.upsert_reference_nodes(_unique_references(references))
-        await self.graph_store.upsert_relationships(edges)
+        edges_written = await self.graph_store.upsert_relationships(edges)
+        if _reported_short(edges_written, len(edges)):
+            result.incomplete_writes.append(f"edges {edges_written}/{len(edges)}")
+
+        if result.incomplete_writes:
+            logger.warning(
+                "%s: some writes were reported incomplete (%s); content_hash not recorded, "
+                "so the next ingest of this file re-runs in full",
+                doc_info.uid,
+                "; ".join(result.incomplete_writes),
+            )
+        else:
+            await self._mark_content_hash(doc_info.uid, result.content_hash)
 
         ctx.log(
             f"Structured ingest of {doc_info.uid}: {result.records} records, "
             f"{result.entities} entities, {result.references} references, "
             f"{result.edges} edges"
+            + (
+                f"; incomplete: {'; '.join(result.incomplete_writes)}"
+                if result.incomplete_writes
+                else ""
+            )
         )
         return result
 

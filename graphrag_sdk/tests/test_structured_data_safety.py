@@ -663,6 +663,148 @@ class TestAFailedLoadWritesNothing:
         await rag.close()
 
 
+class TestAnIncompleteLoadIsNotCertified:
+    """The content hash is the last write, and only after every other one held.
+
+    Written with the Document up front, it certified the table before a row or
+    an edge existed. A Person write that raised, or a RELATES batch the store
+    logged and skipped, left a Document whose hash said "all here" — and the
+    retry of the identical file routed through ``update()``, matched the hash,
+    and returned ``no_op=True`` against the missing data. (Naseem77 on #328.)
+
+    The node writes raise; the edge writes return a count the store may have
+    come up short on. Each is failed here in turn, on a first write and on a
+    re-sync, and the identical file is ingested again.
+    """
+
+    ONTOLOGY = Ontology(
+        entities=[Entity(label="Person"), Entity(label="Organization")],
+        tables=[
+            TableMapping(
+                source="staff.csv",
+                label="Person",
+                key="employee_id",
+                name="full_name",
+                links=[Link("WORKS_AT", to="Organization", by="org_id")],
+            )
+        ],
+    )
+    ROW = "employee_id,full_name,org_id\nE-1,Maya Ellison,O-1\n"
+
+    @staticmethod
+    def _failing_node_write(store, label: str):
+        """``upsert_nodes`` that raises when handed a node of ``label``."""
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        real = store.upsert_nodes
+
+        async def upsert_nodes(nodes):
+            if any(node.label == label for node in nodes):
+                raise DatabaseError(f"injected: {label} write failed")
+            return await real(nodes)
+
+        return upsert_nodes
+
+    @staticmethod
+    def _short_edge_write(store, rel_type: str):
+        """``upsert_relationships`` that drops every edge of ``rel_type``.
+
+        What the store does on a failed batch: logs, skips, and returns the
+        count of what it did write — so the count is the only signal.
+        """
+        real = store.upsert_relationships
+
+        async def upsert_relationships(relationships):
+            kept = [rel for rel in relationships if rel.type != rel_type]
+            return await real(kept)
+
+        return upsert_relationships
+
+    async def _count(self, rag, pattern: str) -> int:
+        return (await rag.query(f"MATCH {pattern} RETURN count(*)"))[0][0]
+
+    @pytest.mark.parametrize("rel_type", ["PART_OF", "RELATES"])
+    async def test_a_short_edge_write_withholds_the_hash_and_the_retry_repairs_it(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path, monkeypatch, rel_type
+    ):
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self.ONTOLOGY)
+        path = tmp_path / "staff.csv"
+        path.write_text(self.ROW)
+        store = rag._graph_store
+        pattern = f"()-[:{rel_type}]->()"
+
+        monkeypatch.setattr(store, "upsert_relationships", self._short_edge_write(store, rel_type))
+        first = await rag.ingest(str(path))
+        expected = "lexical edges 0/1" if rel_type == "PART_OF" else "edges 2/3"
+        assert first.incomplete_writes == [expected]
+        assert first.as_dict()["incomplete_writes"] == [expected]
+        assert await self._count(rag, pattern) == 0
+        assert (await rag.query("MATCH (d:Document) RETURN d.content_hash")) == [[None]]
+
+        monkeypatch.undo()
+        again = await rag.ingest(str(path))
+        assert again.replaced_existing and not again.no_op, "an identical file re-ran"
+        assert again.incomplete_writes == []
+        assert await self._count(rag, pattern) == 1
+        assert (await rag.query("MATCH (d:Document) RETURN d.content_hash")) != [[None]]
+
+        # And now that it is certified, the identical file is a no-op.
+        assert (await rag.ingest(str(path))).no_op is True
+        await rag.close()
+
+    async def test_a_failed_entity_write_raises_and_the_retry_writes_it(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path, monkeypatch
+    ):
+        from graphrag_sdk.core.exceptions import DatabaseError
+
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self.ONTOLOGY)
+        path = tmp_path / "staff.csv"
+        path.write_text(self.ROW)
+        store = rag._graph_store
+
+        monkeypatch.setattr(store, "upsert_nodes", self._failing_node_write(store, "Person"))
+        with pytest.raises(DatabaseError, match="injected"):
+            await rag.ingest(str(path))
+        assert await self._count(rag, "(:Person)") == 0
+        assert await self._count(rag, "(:Document)") == 1, "the provenance chain was written"
+        assert (await rag.query("MATCH (d:Document) RETURN d.content_hash")) == [[None]]
+
+        monkeypatch.undo()
+        again = await rag.ingest(str(path))
+        assert not again.no_op, "an explicitly failed ingest was retried as a no-op"
+        assert await self._count(rag, "(:Person)") == 1
+        assert await self._count(rag, "(:Person)-[:RELATES {rel_type: 'WORKS_AT'}]->()") == 1
+        await rag.close()
+
+    async def test_a_re_sync_that_comes_up_short_is_not_certified_either(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path, monkeypatch
+    ):
+        """The cutover stamps the hash on the canonical Document; it honours
+        the same gate, so a short re-sync stays eligible for repair."""
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=self.ONTOLOGY)
+        path = tmp_path / "staff.csv"
+        path.write_text(self.ROW)
+        await rag.ingest(str(path))
+        store = rag._graph_store
+
+        path.write_text(self.ROW + "E-2,Lene Holm,O-1\n")
+        monkeypatch.setattr(store, "upsert_relationships", self._short_edge_write(store, "RELATES"))
+        short = await rag.ingest(str(path))
+        assert short.replaced_existing and not short.no_op
+        assert short.incomplete_writes == ["edges 4/6"], "two WORKS_AT dropped, four mentions kept"
+        assert (await rag.query("MATCH (d:Document) RETURN d.id, d.content_hash")) == [
+            ["staff.csv", None]
+        ]
+        assert await self._count(rag, "(:Person)-[:RELATES]->()") == 0
+
+        monkeypatch.undo()
+        repaired = await rag.ingest(str(path))
+        assert repaired.replaced_existing and not repaired.no_op
+        assert await self._count(rag, "(:Person)-[:RELATES]->()") == 2
+        assert (await rag.ingest(str(path))).no_op is True
+        await rag.close()
+
+
 class TestEveryDeclaredColumnIsQueryable:
     async def test_a_key_named_id_keeps_its_provenance(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path

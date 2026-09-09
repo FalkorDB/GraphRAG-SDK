@@ -560,6 +560,8 @@ A node that survives that way stops being the table's row, though. The re-sync t
 
 <Note>
 The re-sync short-circuits when nothing changed: an unchanged source returns `no_op=True` without writing. The content hash covers the **mapping** as well as the rows, so changing a declared type or adding a column re-writes the source instead of being mistaken for unchanged data.
+
+The hash is written **last**, and only when every write before it held. A write that raises leaves the Document without one; an edge write the store logged and came up short on is reported as `incomplete_writes` on the result and withholds it too. Either way the next `ingest()` of the same file is not a no-op — it re-runs in full and repairs the table — so a load that failed part-way is never mistaken for a finished one.
 </Note>
 
 A document remembers how it was written, and nothing may change its mind: re-reading a CSV as prose would replace its record chunks with one text chunk and take every entity with them. So `update()` refuses to change a document's kind — a `.csv` cannot be updated as prose, nor a text document as records — while a table in `apply_changes(modified=[...])` is re-synced through its stored mapping like any other `update()`.
