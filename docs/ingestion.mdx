@@ -247,6 +247,48 @@ stats = await rag.finalize()
 
 ---
 
+## Ingesting Many Documents Efficiently
+
+Pass a list of sources to one `ingest()` call to enable document-level
+parallelism. Calling `ingest()` once per file waits for each complete pipeline
+run before starting the next file.
+
+```python
+sources = ["docs/one.pdf", "docs/two.pdf", "docs/three.pdf"]
+
+# Runs up to three document pipelines at once (the default).
+results = await rag.ingest(sources, max_concurrency=3)
+
+# Inspect per-source failures: a batch returns an IngestionResult or Exception
+# for every source, in input order.
+failures = [result for result in results if isinstance(result, Exception)]
+```
+
+Increase `max_concurrency` gradually when the document loader, LLM provider,
+and FalkorDB deployment have capacity. A higher value increases simultaneous
+document pipelines and their memory use; it does not make one document's
+pipeline run in parallel.
+
+This is separate from extraction concurrency. `GraphExtraction` limits the
+parallel LLM calls made for chunks *within* each document; the configured LLM
+provider also has its own `max_concurrency` limit. Tune document-level and
+LLM-level concurrency together, and lower either value if the provider starts
+returning rate-limit errors.
+
+```python
+from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
+
+extractor = GraphExtraction(llm=llm, max_concurrency=6)
+results = await rag.ingest(sources, extractor=extractor, max_concurrency=3)
+```
+
+For incremental refreshes, `apply_changes()` has the same
+`max_concurrency` control for newly added documents. Keep
+`update_concurrency` at its default of `1` unless you have verified that
+concurrent updates are safe for your workload.
+
+---
+
 ## Configuration Quick Reference
 
 ### Chunking
