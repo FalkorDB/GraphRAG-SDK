@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import json
 import logging
 import re
@@ -431,10 +432,11 @@ class GLiNERExtractor(EntityExtractor):
     ``asyncio.to_thread`` calls (e.g. parallel doc ingestion).
 
     GLiNER has a hard input limit (``config.max_len``) and truncates anything
-    beyond it **silently** — no exception, no warning, the tail simply never
-    reaches the model. Measured on ``gliner_medium-v2.1`` (``max_len`` 384): a
+    beyond it: the library emits a ``UserWarning`` ("Sentence of length N has
+    been truncated"), raises nothing, and the tail never reaches the model.
+    Measured on ``gliner_medium-v2.1`` (the default model, ``max_len`` 384): a
     probe entity placed at word-token 388 is always returned, at 389 never.
-    The default model's limit is 2048, but real documents still exceed it —
+    The bi-encoder models allow 2048, but real documents still exceed it —
     disabling windowing on our benchmark corpus dropped recall from 0.805 to
     0.621 — so windowing matters regardless of the model.
 
@@ -478,13 +480,23 @@ class GLiNERExtractor(EntityExtractor):
         model_name: HuggingFace model name for GLiNER.
         window_tokens: Word-tokens per inference window. ``None`` derives it
             from the model's own ``config.max_len`` minus a safety margin.
+            An explicit value must be a positive integer.
         window_overlap: Word-tokens shared between consecutive windows. Must
-            exceed the model's ``max_width`` (longest representable entity,
-            12 words by default) or entities on a boundary are lost.
+            satisfy ``0 <= window_overlap < window_tokens`` (checked against
+            the derived window on first use when ``window_tokens`` is
+            ``None``) and should exceed the model's ``max_width`` (longest
+            representable entity, 12 words by default) or entities on a
+            boundary are lost.
         candidate_threshold: Floor of the ``"Unknown"`` band. Default: 25 %
             below ``threshold`` (``CANDIDATE_BAND``). ``None`` disables the
-            band (spans below ``threshold`` are discarded). Must not exceed
-            ``threshold``.
+            band (spans below ``threshold`` are discarded). Must satisfy
+            ``0 <= candidate_threshold <= threshold``.
+
+    Raises:
+        ValueError: If ``threshold`` is outside ``[0, 1]``, if
+            ``candidate_threshold`` is outside ``[0, threshold]``, or if the
+            window parameters are degenerate (``window_tokens <= 0``,
+            ``window_overlap < 0`` or ``window_overlap >= window_tokens``).
     """
 
     # Safety margin under config.max_len; the label prompt and special tokens
@@ -541,14 +553,18 @@ class GLiNERExtractor(EntityExtractor):
                     self._model_name,
                     self._FALLBACK_THRESHOLD,
                 )
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError(f"threshold ({threshold}) must be within [0, 1]")
         self._threshold = threshold
         if candidate_threshold is _DEFAULT:
             candidate_threshold = round(threshold * (1.0 - self.CANDIDATE_BAND), 4)
-        if candidate_threshold is not None and candidate_threshold > threshold:
+        if candidate_threshold is not None and not 0.0 <= candidate_threshold <= threshold:
+            # Above ``threshold`` the floor would discard the entities the band
+            # is meant to keep; below 0 the model returns every candidate span
+            # and all of them reach step 2 as ``"Unknown"``.
             raise ValueError(
-                f"candidate_threshold ({candidate_threshold}) must be <= "
-                f"threshold ({threshold}); a candidate floor above the demotion "
-                f"line would discard the very entities it is meant to keep"
+                f"candidate_threshold ({candidate_threshold}) must be within "
+                f"[0, threshold] = [0, {threshold}]"
             )
         self._candidate_threshold = candidate_threshold
         self._model: Any = None
@@ -558,9 +574,30 @@ class GLiNERExtractor(EntityExtractor):
         # ``_CACHE_LOCK`` and inference deliberately takes no lock at all.
         # See ``_predict_sync`` for the thread-safety evidence.
         self._lock = threading.Lock()
+        if window_tokens is not None and (isinstance(window_tokens, bool) or window_tokens <= 0):
+            # ``words[begin:begin + 0]`` is empty on the first iteration, so a
+            # non-positive window would return zero entities with no error.
+            raise ValueError(f"window_tokens ({window_tokens}) must be a positive integer")
+        if window_overlap < 0:
+            # A negative overlap makes ``step > window`` and leaves word ranges
+            # that never reach the model — the silent truncation this class
+            # exists to prevent, reintroduced by configuration.
+            raise ValueError(f"window_overlap ({window_overlap}) must be >= 0")
+        if window_tokens is not None:
+            self._check_overlap(window_overlap, window_tokens)
         self._window_tokens = window_tokens
         self._window_overlap = window_overlap
-        self._splitter: Any = None
+
+    @staticmethod
+    def _check_overlap(overlap: int, window: int) -> None:
+        # ``overlap >= window`` collapses ``step`` to 1: a 2000-word text
+        # would run ~2000 sequential inferences instead of ~7.
+        if overlap >= window:
+            raise ValueError(
+                f"window_overlap ({overlap}) must be smaller than the window "
+                f"({window} word-tokens); consecutive windows would otherwise "
+                f"advance one word at a time"
+            )
 
     def _load_model(self) -> Any:
         if self._model is None:
@@ -605,53 +642,79 @@ class GLiNERExtractor(EntityExtractor):
         return cached
 
     def _resolve_window(self, model: Any) -> int:
-        """Window size in word-tokens, derived from the model if not set."""
+        """Window size in word-tokens, derived from the model if not set.
+
+        Both branches are validated against ``window_overlap`` so a derived
+        window (e.g. from a model with a tiny ``max_len``) cannot silently
+        collapse ``step`` to 1 any more than an explicit one can.
+        """
         if self._window_tokens is not None:
-            return self._window_tokens
-        max_len = getattr(getattr(model, "config", None), "max_len", None)
-        if not isinstance(max_len, int) or max_len <= 0:
-            max_len = 384
-        return max(64, max_len - self._WINDOW_MARGIN)
+            window = self._window_tokens
+        else:
+            max_len = getattr(getattr(model, "config", None), "max_len", None)
+            if not isinstance(max_len, int) or max_len <= 0:
+                max_len = 384
+            window = max(64, max_len - self._WINDOW_MARGIN)
+        self._check_overlap(self._window_overlap, window)
+        return window
 
-    def _word_spans(self, model: Any, text: str) -> list[tuple[str, int, int]]:
-        """Split text the same way GLiNER does, keeping char offsets."""
-        if self._splitter is None:
-            splitter = getattr(getattr(model, "data_processor", None), "words_splitter", None)
-            if splitter is None:
-                from gliner.data_processing import WordsSplitter
+    @staticmethod
+    def _word_spans(model: Any, text: str) -> list[tuple[str, int, int]]:
+        """Split text the same way GLiNER does, keeping char offsets.
 
-                splitter = WordsSplitter()
-            self._splitter = splitter
-        return list(self._splitter(text))
+        The splitter is looked up on every call rather than cached on the
+        instance: this method runs unlocked from concurrent
+        ``asyncio.to_thread`` calls, and the extractor must not mutate shared
+        state during inference (see :meth:`_predict_sync`).
+        """
+        splitter = getattr(getattr(model, "data_processor", None), "words_splitter", None)
+        if splitter is None:
+            from gliner.data_processing import WordsSplitter
+
+            splitter = WordsSplitter()
+        return list(splitter(text))
 
     @staticmethod
     def _merge(preds: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Deduplicate predictions from overlapping windows.
+        """Resolve predictions from overlapping windows to non-overlapping spans.
 
-        Identical spans found in two windows collapse to the highest-scoring
-        copy. A span that is strictly contained in a longer span of the same
-        label is dropped: it is the truncated remains of an entity clipped by a
-        window edge, which the neighbouring window saw whole.
+        GLiNER's ``flat_ner`` guarantees non-overlapping spans within one
+        window, and downstream code relies on that shape, so the merge must
+        restore it across windows. Spans are considered longest first, ties by
+        score, and any span that overlaps an already-kept span by even one
+        character is dropped regardless of label. Longest-first because the
+        failure mode being fixed is truncation: a window edge clips
+        "Acme Corporation Ltd" to "Acme", and the clipped fragment may come
+        back with a different label or a higher score than the whole entity
+        seen by the neighbouring window. Exact duplicates collapse to the
+        highest-scoring copy.
+
+        O(n log n): kept spans are held in a sorted list and each candidate
+        checks its neighbours by bisection.
         """
-        best: dict[tuple[int, int, str], dict[str, Any]] = {}
-        for p in preds:
-            key = (p["start"], p["end"], p["label"])
-            prev = best.get(key)
-            if prev is None or p.get("score", 0.0) > prev.get("score", 0.0):
-                best[key] = p
-
+        ranked = sorted(
+            preds,
+            key=lambda p: (p["end"] - p["start"], p.get("score", 0.0)),
+            reverse=True,
+        )
         kept: list[dict[str, Any]] = []
-        for p in best.values():
-            contained = any(
-                q is not p
-                and q["label"] == p["label"]
-                and q["start"] <= p["start"]
-                and p["end"] <= q["end"]
-                and (q["end"] - q["start"]) > (p["end"] - p["start"])
-                for q in best.values()
-            )
-            if not contained:
-                kept.append(p)
+        kept_starts: list[int] = []
+        kept_ends: list[int] = []
+        for p in ranked:
+            start, end = p["start"], p["end"]
+            if end <= start:
+                continue
+            # Kept spans are disjoint, so the only possible overlaps are the
+            # neighbour ending after ``start`` and the neighbour starting
+            # before ``end``.
+            i = bisect.bisect_right(kept_starts, start)
+            if i > 0 and kept_ends[i - 1] > start:
+                continue
+            if i < len(kept_starts) and kept_starts[i] < end:
+                continue
+            kept_starts.insert(i, start)
+            kept_ends.insert(i, end)
+            kept.append(p)
         kept.sort(key=lambda p: (p["start"], p["end"]))
         return kept
 
@@ -704,10 +767,12 @@ class GLiNERExtractor(EntityExtractor):
 
         step = max(1, window - self._window_overlap)
         out: list[dict[str, Any]] = []
+        n_windows = 0
         for begin in range(0, len(words), step):
             span = words[begin : begin + window]
             if not span:
                 break
+            n_windows += 1
             lo, hi = span[0][1], span[-1][2]
             for p in model.predict_entities(text[lo:hi], labels, threshold=floor):
                 p = dict(p)
@@ -723,7 +788,7 @@ class GLiNERExtractor(EntityExtractor):
             "GLiNER windowed inference: %d word-tokens -> %d windows, "
             "%d raw predictions -> %d after merge",
             len(words),
-            (len(words) - 1) // step + 1,
+            n_windows,
             len(out),
             len(merged),
         )
