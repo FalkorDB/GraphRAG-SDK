@@ -57,6 +57,7 @@ debug_*.py
 # Virtual environments
 .venv/
 .venv-*/
+graphrag_sdk/.venv
 venv/
 
 # Build / dist

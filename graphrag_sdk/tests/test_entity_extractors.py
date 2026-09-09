@@ -237,7 +237,9 @@ class TestGLiNERModelSharing:
 
         from graphrag_sdk.ingestion.extraction_strategies import entity_extractors as ee
 
-        barrier = threading.Barrier(2, timeout=2.0)
+        # Generous timeout: the test detects serialisation (a locked second
+        # call never reaches the barrier), not scheduler latency under CI load.
+        barrier = threading.Barrier(2, timeout=10.0)
 
         class FakeModel:
             def predict_entities(self, text, labels, threshold):
@@ -247,17 +249,18 @@ class TestGLiNERModelSharing:
         monkeypatch.setattr(ee.GLiNERExtractor, "_MODEL_CACHE", {"m": FakeModel()}, raising=False)
         extractor = ee.GLiNERExtractor(model_name="m")
 
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
 
         def run():
             try:
                 extractor._predict_sync("text", ["Person"])
-            except BaseException as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 
         threads = [threading.Thread(target=run) for _ in range(2)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=5.0)
+            t.join(timeout=15.0)
+        assert all(not t.is_alive() for t in threads), "worker thread did not finish"
         assert errors == [], f"inference was serialised: {errors!r}"
