@@ -167,8 +167,10 @@ def _validate_proposal(
     # Entity-level attribute checks.
     for e in proposal.entities:
         # Returned as an error rather than raised so the retry loop can ask
-        # the LLM for a different label instead of aborting discovery.
-        if e.label in RESERVED_NODE_LABELS:
+        # the LLM for a different label instead of aborting discovery.  Strip
+        # first so "Document " is caught here rather than raised from
+        # ``reject_reserved_labels`` (which strips) past the retry loop.
+        if e.label.strip() in RESERVED_NODE_LABELS:
             errors.append(
                 f"Entity label '{e.label}' is reserved for the graph store's "
                 f"own bookkeeping nodes ({', '.join(sorted(RESERVED_NODE_LABELS))}) "

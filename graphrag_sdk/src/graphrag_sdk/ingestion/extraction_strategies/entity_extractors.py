@@ -200,8 +200,16 @@ _SPECIFIC_DATE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# Overrides the rule above: these name a span of time, not a moment.
-_DATE_PERIOD_RE = re.compile(r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age\b", re.IGNORECASE)
+# Overrides the rule above: these name a span of time, not a moment.  "era"
+# and "age" are whole words so "opera" and "package" are not periods.
+_DATE_PERIOD_RE = re.compile(
+    r"\d{3,4}s\b|centur|\bera\b|dynasty|period|decade|\bage\b", re.IGNORECASE
+)
+
+# Punctuation that extraction can leave on a date at a sentence boundary
+# ("1823.", "(14 January 1904)"); stripped before the date regexes run so it
+# cannot smuggle a date past the gate.
+_DATE_EDGE_PUNCTUATION = ".,;:!?()[]{}\"'"
 
 
 def is_specific_date(name: str) -> bool:
@@ -216,7 +224,7 @@ def is_specific_date(name: str) -> bool:
     positives against zero true positives on the benchmark corpus, but it is
     the first thing to revisit if a domain uses numeric product names.
     """
-    stripped = name.strip()
+    stripped = name.strip().strip(_DATE_EDGE_PUNCTUATION)
     if _DATE_PERIOD_RE.search(stripped):
         return False
     return bool(_SPECIFIC_DATE_RE.match(stripped))
@@ -247,7 +255,9 @@ def is_valid_entity_name(name: str, entity_types: list[str] | None = None) -> bo
     # conflates them. An all-caps short token is an acronym, not a pronoun --
     # but that only excuses it from the *pronoun* rows of the stoplist. "CD",
     # "ETC" or "MAN" in an all-caps heading are still the shell tokens and
-    # generic nouns they are in lower case.
+    # generic nouns they are in lower case.  The residual cost is that other
+    # all-caps pronouns ("HE", "WE", "MY") also pass: they cannot be told
+    # apart from "US" and "IT" without context, so the exemption keeps them.
     lowered = stripped.lower()
     is_acronym = len(stripped) <= 3 and stripped.isupper() and stripped.isalpha()
     if lowered in _ENTITY_STOPLIST and not (is_acronym and lowered in _PRONOUNS):

@@ -639,6 +639,27 @@ class TestNoiseFiltering:
         assert is_valid_entity_name(name, DEFAULT_ENTITY_TYPES)
         assert is_valid_entity_name(name, ["Person", "date"])
 
+    @pytest.mark.parametrize("name", ["1823.", "(14 January 1904)", "1957,", "'1003 ce'"])
+    def test_specific_dates_with_edge_punctuation_still_rejected(self, name):
+        """Extraction leaves sentence punctuation on a date at a boundary;
+        that must not let it past the gate as a "different" name."""
+        assert not is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("name", ["Bronze Age", "1990s", "Victorian era", "Ming dynasty"])
+    def test_periods_kept_when_ontology_lacks_date_type(self, name):
+        """A span of time is a topic, not a moment, and stays an entity."""
+        assert is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("word", ["baggage", "package", "opera", "camera"])
+    def test_period_words_match_whole_words_only(self, word):
+        """`age`/`era` need a leading boundary too, or any word ending in them
+        is misread as a period and exempted from the date rule."""
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            _DATE_PERIOD_RE,
+        )
+
+        assert _DATE_PERIOD_RE.search(word) is None
+
     @pytest.mark.parametrize("name", ["1823", "1984", "747"])
     def test_dates_kept_without_an_ontology(self, name):
         """No ontology, no date rule: the caller has not said dates are unwanted.

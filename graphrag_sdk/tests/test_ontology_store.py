@@ -167,6 +167,7 @@ class TestRegisterEntityShape:
             ("Person", "age", "INTEGER"),
             ("Person", "birth_place", "STRING"),
         }
+
     @pytest.mark.asyncio
     async def test_reserved_label_is_refused_before_anything_is_written(
         self, store_factory, fake_graph

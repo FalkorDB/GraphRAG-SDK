@@ -67,8 +67,8 @@ def reject_reserved_labels(types: Iterable[str]) -> list[str]:
     clashes = sorted({str(t).strip() for t in types if str(t).strip() in RESERVED_NODE_LABELS})
     if clashes:
         raise ValueError(
-            f"entity_types may not contain the reserved label(s) {clashes}. "
-            f"{sorted(RESERVED_NODE_LABELS)} are used internally for corpus "
+            f"Entity label(s) {clashes} clash with the reserved label(s) "
+            f"{sorted(RESERVED_NODE_LABELS)}, which are used internally for corpus "
             "bookkeeping; reusing them silently corrupts document counts and "
             "removes the entity from deduplication and retrieval. "
             "Rename the type (e.g. 'Document' -> 'Publication', "

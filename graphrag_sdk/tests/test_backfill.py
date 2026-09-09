@@ -407,9 +407,7 @@ class TestBackfillEntity:
         rag._global_ontology = Ontology(
             entities=[Entity(label="Product"), Entity(label="Date")],
         )
-        rag.llm = MockLLM(
-            responses=[json.dumps({"entities": [{"name": "747", "attributes": {}}]})]
-        )
+        rag.llm = MockLLM(responses=[json.dumps({"entities": [{"name": "747", "attributes": {}}]})])
         rag._graph_store.list_chunks_for_entity_backfill = AsyncMock(
             return_value=[{"chunk_id": "c1", "chunk_text": "Boeing's 747"}]
         )
