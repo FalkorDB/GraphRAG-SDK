@@ -96,6 +96,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `GraphExtraction` now ships a default relation vocabulary,
+  `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels: `LOCATED_IN`,
+  `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...), the counterpart of
+  `DEFAULT_ENTITY_TYPES`, exposed as a new `relation_types=` kwarg. Without a
+  declared ontology the step-2 prompt now lists these as *Preferred
+  Relationships* and asks the LLM to prefer one, falling back to a descriptive
+  `UPPER_SNAKE_CASE` label when none fits; nothing prunes off-list edges. This
+  changes the default extraction output for every user without an ontology:
+  on the benchmark corpus the label vocabulary shrank from 447 distinct
+  `rel_type` strings to ~100 and exact triple F1 doubled. Pass
+  `relation_types=[]` to restore the previous open-vocabulary behaviour. A
+  declared `Ontology.relations` still overrides it and is still enforced
+  (*Allowed Relationships*, MUST, pruned). Blank relation labels are rejected.
+- The relation extraction prompt no longer stops early: it now states that the
+  task is exhaustive and not a summary, that there is no maximum, and that a
+  dense paragraph often yields 20 or more relationships. Measured: +15 %
+  relations for +4 % ingest time. The endpoint instruction also names the
+  *verified* entity list the model returns rather than the pre-extracted
+  input, so relationships are not anchored to entities that step 1 removed.
 - Default chunk size lowered from 512 to 384 tokens in
   `SentenceTokenCapChunking`, `StructuralChunking`, `ContextualChunking` and
   the documented `CallableChunking` example. Measured on the benchmark corpus:

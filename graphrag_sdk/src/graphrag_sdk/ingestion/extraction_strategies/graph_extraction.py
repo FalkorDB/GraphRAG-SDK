@@ -61,50 +61,58 @@ logger = logging.getLogger(__name__)
 # default worth having.
 #
 # This list is deliberately domain-neutral and pairs with DEFAULT_ENTITY_TYPES.
-# It is *guidance*, not a filter: exactly like ``entity_types``, it steers the
-# prompt, and a relation the model labels outside this list is still kept. The
-# hard-filtering path is ``Ontology.relations``, which prunes non-conforming
-# edges in ``IngestionPipeline._prune``. Users who want that stricter behaviour
-# should declare an ontology; users who want none of it can pass
-# ``relation_types=[]``.
+# It is *guidance*, not a filter, and the prompt says so: on this path the
+# model is told to *prefer* a label from the list and to fall back to a
+# descriptive UPPER_SNAKE_CASE label when none fits, and nothing downstream
+# rejects an off-list label. The hard-filtering path is ``Ontology.relations``:
+# there the prompt says MUST and ``IngestionPipeline._prune`` drops
+# non-conforming edges. Users who want that stricter behaviour should declare
+# an ontology; users who want none of it can pass ``relation_types=[]``.
+#
+# Labels are UPPER_SNAKE_CASE because that is the ``rel_type`` convention
+# everywhere else (``Relation`` docstring, docs/graph-schema, the discovery
+# prompt, and the open-vocabulary instruction below). ``rel_type`` is compared
+# case-sensitively in Cypher and in ``_prune``, so a lower-case default would
+# have made ``relation_types=[]`` and the default disagree on casing for the
+# same predicate.
 DEFAULT_RELATION_TYPES: list[str] = [
     # structure / place
-    "located_in",
-    "part_of",
-    "contains",
-    "occurred_in",
+    "LOCATED_IN",
+    "PART_OF",
+    "CONTAINS",
+    "OCCURRED_IN",
     # affiliation
-    "member_of",
-    "employed_at",
-    "founded",
-    "owns",
-    "subsidiary_of",
+    "MEMBER_OF",
+    "EMPLOYED_AT",
+    "FOUNDED",
+    "OWNS",
+    "SUBSIDIARY_OF",
     # creation & production
-    "created",
-    "authored",
-    "designed_by",
-    "developed_by",
-    "manufactured",
-    "published_in",
-    "supplied_to",
+    "CREATED",
+    "AUTHORED",
+    "DESIGNED_BY",
+    "DEVELOPED_BY",
+    "MANUFACTURED",
+    "PUBLISHED_IN",
+    "SUPPLIED_TO",
     # people
-    "born_in",
-    "died_in",
-    "married_to",
-    "child_of",
-    "sibling_of",
-    "student_of",
-    "colleague_of",
+    "BORN_IN",
+    "DIED_IN",
+    "MARRIED_TO",
+    "CHILD_OF",
+    "SIBLING_OF",
+    "STUDENT_OF",
+    "COLLEAGUE_OF",
     # activity & influence
-    "participated_in",
-    "directed",
-    "awarded",
-    "named_after",
-    "succeeded_by",
-    "influenced",
+    "PARTICIPATED_IN",
+    "DIRECTED",
+    "AWARDED",
+    "NAMED_AFTER",
+    "SUCCEEDED_BY",
+    "INFLUENCED",
     # technical
-    "uses",
-    "based_on",
+    "USES",
+    "BASED_ON",
 ]
 
 # This prompt asks for entity verification AND descriptions AND relations.
@@ -137,7 +145,11 @@ VERIFY_EXTRACT_RELS_PROMPT = (
     "embedded for semantic search.\n\n"
     "### Relationships\n"
     "- Extract ALL factual connections stated or implied in the text.\n"
-    "- source and target must be entity names from the entity list above.\n"
+    # "verified", not "above": the list above is the pre-extracted input, which
+    # the model may prune or extend in step 1. Endpoints that are not in the
+    # returned entities have no node and are dropped downstream.
+    "- source and target must be entity names from the verified entity list "
+    "you return, not from the pre-extracted list.\n"
     # Measured (P5.6): "ALL" above is not enough on its own -- the model treats
     # the task as a summary, returns ~12 relations per chunk and stops while
     # using 2.5k of a 16k reply budget.  Giving it twice the text grew the reply
@@ -429,6 +441,25 @@ def _reject_reserved_labels(types: list[str]) -> list[str]:
     return reject_reserved_labels(types)
 
 
+def _clean_relation_labels(types: list[str]) -> list[str]:
+    """Strip ``relation_types`` and refuse blank labels.
+
+    The counterpart of ``_reject_reserved_labels`` for ``entity_types``: a
+    blank or whitespace-only label would otherwise render as a bare ``- ``
+    bullet in the prompt's relationship list.
+    """
+    cleaned: list[str] = []
+    for t in types:
+        label = str(t).strip()
+        if not label:
+            raise ValueError(
+                "relation_types must not contain blank labels; "
+                "pass relation_types=[] for open-vocabulary extraction"
+            )
+        cleaned.append(label)
+    return cleaned
+
+
 def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) -> str:
     """Format entity types for prompt injection.
 
@@ -448,14 +479,19 @@ def _format_entity_types(types: list[str], descs: dict[str, str] | None = None) 
     return "\n".join(parts)
 
 
-def _format_relation_patterns(relations: list[Relation]) -> str:
-    """Format allowed relationships for prompt injection.
+def _format_relation_patterns(relations: list[Relation], *, strict: bool = True) -> str:
+    """Format the relationship vocabulary for prompt injection.
 
     Returns an empty string when no relations are defined (open ontology),
     so the prompt section collapses cleanly.  Relations without declared
     patterns render as ``- LABEL: description`` — the directional list is
     only emitted when the ontology actually constrains it, so we don't burn
     prompt tokens on ``(any)`` noise.
+
+    ``strict`` selects the heading: a declared ontology is enforced downstream
+    by ``IngestionPipeline._prune`` and is headed *Allowed*; the
+    ``relation_types`` default only steers the model and is headed
+    *Preferred*, so the prompt does not claim a restriction nothing enforces.
     """
     if not relations:
         return ""
@@ -468,19 +504,29 @@ def _format_relation_patterns(relations: list[Relation]) -> str:
         else:
             desc = f": {rt.description}" if rt.description else ""
             lines.append(f"- {rt.label}{desc}")
-    return "## Allowed Relationships\n" + "\n".join(lines) + "\n\n"
+    heading = "## Allowed Relationships" if strict else "## Preferred Relationships"
+    return f"{heading}\n" + "\n".join(lines) + "\n\n"
 
 
-def _relationship_type_instruction(relations: list[Relation]) -> str:
+def _relationship_type_instruction(relations: list[Relation], *, strict: bool = True) -> str:
     """Return the type instruction line for the relationships section.
 
-    When the ontology defines allowed relations the LLM is told to restrict
-    to those types; otherwise it may use any descriptive label.
+    Three cases: a declared ontology (``strict``) restricts the LLM to the
+    listed types, which ``_prune`` then enforces; the ``relation_types``
+    default (not ``strict``) asks it to prefer the listed types and fall back
+    to a descriptive label, matching the fact that nothing prunes off-list
+    edges on that path; no relations at all leaves the vocabulary open.
     """
-    if relations:
+    if relations and strict:
         return (
             "- type: MUST be one of the relationship types listed in "
             "the Allowed Relationships section above.\n"
+        )
+    if relations:
+        return (
+            "- type: prefer one of the relationship types listed in the "
+            "Preferred Relationships section above. If none fits, use a "
+            "descriptive relationship label in UPPER_SNAKE_CASE.\n"
         )
     return (
         "- type: a descriptive relationship label in UPPER_SNAKE_CASE "
@@ -511,10 +557,13 @@ class GraphExtraction(ExtractionStrategy):
             Overridden by ontology.entities if present.
         relation_types: Relation labels offered to the LLM. Default:
             DEFAULT_RELATION_TYPES. This is the exact counterpart of
-            ``entity_types`` — guidance for the prompt, not a filter, so a
-            relation labelled outside the list is still kept. Overridden by
-            ``ontology.relations`` when one is declared, and that path *does*
-            prune non-conforming edges. Pass ``[]`` to restore the old
+            ``entity_types`` — guidance for the prompt, not a filter: the
+            model is asked to *prefer* these labels and to fall back to a
+            descriptive UPPER_SNAKE_CASE label when none fits, and a relation
+            labelled outside the list is still kept. Blank labels are
+            rejected. Overridden by ``ontology.relations`` when one is
+            declared, and that path *does* restrict the prompt and prune
+            non-conforming edges. Pass ``[]`` to restore the old
             open-vocabulary behaviour where the model invents every label.
         max_concurrency: Maximum parallel LLM calls.
     """
@@ -535,7 +584,7 @@ class GraphExtraction(ExtractionStrategy):
         self.entity_types = _reject_reserved_labels(entity_types or list(DEFAULT_ENTITY_TYPES))
         # `is None` rather than falsy: relation_types=[] is a meaningful request
         # for open-vocabulary mode, not an omission.
-        self.relation_types = (
+        self.relation_types = _clean_relation_labels(
             list(DEFAULT_RELATION_TYPES) if relation_types is None else list(relation_types)
         )
         self._max_concurrency = max_concurrency
@@ -560,10 +609,11 @@ class GraphExtraction(ExtractionStrategy):
             entity_type_descs = {}
 
         # Relation vocabulary. A declared ontology wins, and that path also
-        # prunes non-conforming edges downstream. Otherwise fall back to the
-        # instance default, which only steers the prompt — nothing is pruned,
-        # mirroring how entity_types behaves.
-        if ontology.relations:
+        # prunes non-conforming edges downstream, so the prompt says MUST.
+        # Otherwise fall back to the instance default, which only steers the
+        # prompt — nothing is pruned, so the prompt says "prefer".
+        strict_relations = bool(ontology.relations)
+        if strict_relations:
             prompt_relations = list(ontology.relations)
         else:
             prompt_relations = [Relation(label=lbl) for lbl in self.relation_types]
@@ -698,9 +748,13 @@ class GraphExtraction(ExtractionStrategy):
             has_attrs = _ontology_has_attributes(ontology)
             prompt = VERIFY_EXTRACT_RELS_PROMPT.format(
                 entity_types=_format_entity_types(entity_types, entity_type_descs),
-                relation_patterns=_format_relation_patterns(prompt_relations),
+                relation_patterns=_format_relation_patterns(
+                    prompt_relations, strict=strict_relations
+                ),
                 attribute_block=_render_attribute_block(ontology),
-                relationship_type_instruction=_relationship_type_instruction(prompt_relations),
+                relationship_type_instruction=_relationship_type_instruction(
+                    prompt_relations, strict=strict_relations
+                ),
                 entities_json=entities_json,
                 text=text,
                 json_example=_JSON_EXAMPLE_WITH_ATTRS if has_attrs else _DEFAULT_JSON_EXAMPLE,
