@@ -56,7 +56,6 @@ _PRONOUNS: set[str] = {
     "i",
     "we",
     "you",
-    "one",
     "me",
     "us",
     "my",
@@ -67,47 +66,94 @@ _PRONOUNS: set[str] = {
     "its",
 }
 
-_ENTITY_STOPLIST: set[str] = _PRONOUNS | {
-    # Generic/anonymous references
-    "narrator",
-    "the narrator",
-    "author",
-    "the author",
-    "reader",
-    "the reader",
-    "speaker",
-    "the speaker",
-    "listener",
-    "the listener",
-    "the man",
-    "the woman",
-    "the boy",
-    "the girl",
-    "the child",
-    "man",
-    "woman",
-    "boy",
-    "girl",
-    "child",
-    "people",
-    "person",
-    "someone",
-    "somebody",
-    "everyone",
-    "everybody",
-    "mistress",
-    "master",
-    # Meta-textual
-    "story",
-    "chapter",
-    "passage",
-    "book",
-    "text",
-    "narrative",
-    "paragraph",
-    "section",
-    "document",
-}
+# Shell and system abbreviations that read as entities to an NER model but name
+# nothing in any document domain.  Ported here from the extraction prompt, which
+# used to ask the LLM to remove them: a fixed list costs nothing, cannot vary
+# between runs, and cannot be quietly skipped the way the prompt instruction was
+# (see RESULTS.md P2.10).  Well-known two-letter acronyms - AI, US, UK, EU, UN,
+# Go - are deliberately absent and stay.
+_SHELL_TOKENS: frozenset[str] = frozenset(
+    {
+        "sh",
+        "cd",
+        "ls",
+        "rm",
+        "cp",
+        "mv",
+        "dt",
+        "bg",
+        "fg",
+        "fn",
+        "df",
+        "du",
+        "ps",
+        "cat",
+        "pwd",
+        "echo",
+        "mkdir",
+        "rmdir",
+        "chmod",
+        "chown",
+        "grep",
+        "awk",
+        "sed",
+        "env",
+        "sudo",
+        "ssh",
+        "tmp",
+        "var",
+        "usr",
+        "bin",
+        "etc",
+    }
+)
+
+_ENTITY_STOPLIST: set[str] = (
+    _PRONOUNS
+    | _SHELL_TOKENS
+    | {
+        # Generic/anonymous references
+        "one",
+        "narrator",
+        "the narrator",
+        "author",
+        "the author",
+        "reader",
+        "the reader",
+        "speaker",
+        "the speaker",
+        "listener",
+        "the listener",
+        "the man",
+        "the woman",
+        "the boy",
+        "the girl",
+        "the child",
+        "man",
+        "woman",
+        "boy",
+        "girl",
+        "child",
+        "people",
+        "person",
+        "someone",
+        "somebody",
+        "everyone",
+        "everybody",
+        "mistress",
+        "master",
+        # Meta-textual
+        "story",
+        "chapter",
+        "passage",
+        "book",
+        "text",
+        "narrative",
+        "paragraph",
+        "section",
+        "document",
+    }
+)
 
 
 # ── Entity Utility Functions ─────────────────────────────────────
@@ -127,14 +173,104 @@ def _normalize_type_label(raw: str) -> str:
     return re.sub(r"[\s_\-/]+", "", s)
 
 
-def is_valid_entity_name(name: str) -> bool:
-    """Return True if name passes quality gates for entity extraction."""
+# A date that pins down a single moment is an *attribute* of an event ("the
+# lamp was installed in 1823"), not something you can hold a conversation
+# about.  A date that names a *period* ("the 1820s", "the Abbasid era") is a
+# thing facts get attached to, so it stays.
+#
+# This only applies when ``Date`` is not an entity type in the ontology.  An
+# ontology that declares ``Date`` has asked for date nodes and gets them; one
+# that leaves it out gets no date nodes.  DEFAULT_ENTITY_TYPES declares
+# ``Date``, so on the out-of-the-box path this rule never fires: it is a gain
+# for custom ontologies that omit ``Date``, not for the default configuration.
+#
+# Measured on the 11-document benchmark with an ontology that omits ``Date``:
+# specific dates were 63 of 274 false positive entities (23%).  Removing them
+# lifted entity precision 0.577 -> 0.642 with recall unchanged at 0.644 (F1
+# 0.609 -> 0.643) and cost nothing, because every gold Date entity is a
+# decade.  This also stops the graph accumulating "X happened_in 1957" edges
+# that carry no answerable content.
+_SPECIFIC_DATE_RE = re.compile(
+    r"""^(?:
+        (?:c\.?\s*|circa\s+|ca\.?\s*)?\d{3,4}\s*(?:ce|bce|ad|bc)?   # 1823, 1003 ce, c. 1200
+      | \d{1,2}\s+[a-z]+\s+\d{4}                                     # 14 january 1904
+      | [a-z]+\s+\d{1,2},?\s+\d{4}                                    # january 14, 1904
+      | \d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?                              # 1904-01-14
+    )$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Overrides the rule above: these name a span of time, not a moment.  "era"
+# and "age" are whole words so "opera" and "package" are not periods.
+_DATE_PERIOD_RE = re.compile(
+    r"\d{3,4}s\b|centur|\bera\b|dynasty|period|decade|\bage\b", re.IGNORECASE
+)
+
+# Punctuation that extraction can leave on a date at a sentence boundary
+# ("1823.", "(14 January 1904)"); stripped before the date regexes run so it
+# cannot smuggle a date past the gate.
+_DATE_EDGE_PUNCTUATION = ".,;:!?()[]{}\"'"
+
+
+def is_specific_date(name: str) -> bool:
+    """True if name pins down one moment in time rather than naming a period.
+
+    Specific dates are rejected as entity names unless the ontology declares a
+    ``Date`` type (see ``is_valid_entity_name``): when the ontology has no
+    ``Date`` type they belong on the relation that mentions them, not as nodes
+    of their own.  Note the deliberate gap --
+    a product genuinely named for a number ("747", "1984") is indistinguishable
+    from a year here and will be dropped.  That trade was worth 63 false
+    positives against zero true positives on the benchmark corpus, but it is
+    the first thing to revisit if a domain uses numeric product names.
+    """
+    stripped = name.strip().strip(_DATE_EDGE_PUNCTUATION)
+    if _DATE_PERIOD_RE.search(stripped):
+        return False
+    return bool(_SPECIFIC_DATE_RE.match(stripped))
+
+
+def _ontology_has_date_type(entity_types: list[str]) -> bool:
+    return any(_normalize_type_label(t) == "date" for t in entity_types)
+
+
+def is_valid_entity_name(name: str, entity_types: list[str] | None = None) -> bool:
+    """Return True if name passes quality gates for entity extraction.
+
+    ``entity_types`` is the ontology's entity labels, when the caller has an
+    ontology.  Specific dates ("1823") are rejected when it is given and does
+    not contain ``Date``; when it does, the ontology has asked for date nodes
+    and they are kept.  With ``entity_types=None`` there is no ontology to
+    consult and dates pass: NER extractors receive a label list that is not
+    always an ontology (grounded discovery passes broad anchor labels), so
+    they call this without types and ``GraphExtraction`` applies the date
+    rule itself once the ontology is known.
+    """
     if not name or not name.strip():
         return False
     stripped = name.strip()
     if len(stripped) < MIN_NAME_LEN or len(stripped) > MAX_NAME_LEN:
         return False
-    if stripped.lower() in _ENTITY_STOPLIST:
+    # "US" is a country, "us" is a pronoun, and casefolding the stoplist check
+    # conflates them. An all-caps short token is an acronym, not a pronoun --
+    # but that only excuses it from the *pronoun* rows of the stoplist. "CD",
+    # "ETC" or "MAN" in an all-caps heading are still the shell tokens and
+    # generic nouns they are in lower case.  The residual cost is that other
+    # all-caps pronouns ("HE", "WE", "MY") also pass: they cannot be told
+    # apart from "US" and "IT" without context, so the exemption keeps them.
+    lowered = stripped.lower()
+    is_acronym = len(stripped) <= 3 and stripped.isupper() and stripped.isalpha()
+    if lowered in _ENTITY_STOPLIST and not (is_acronym and lowered in _PRONOUNS):
+        return False
+    if (
+        entity_types is not None
+        and not _ontology_has_date_type(entity_types)
+        and is_specific_date(stripped)
+    ):
+        return False
+    # Operator and punctuation tokens (+=, ->, ==, !=). A name with no letter or
+    # digit anywhere in it cannot be the name of anything.
+    if not any(ch.isalnum() for ch in stripped):
         return False
     return True
 
@@ -208,6 +344,9 @@ def _parse_predictions(
         if not isinstance(pred, dict):
             continue
         name = str(pred.get("text", "")).strip()
+        # No date gate here: ``entity_types`` may be NER anchor labels rather
+        # than the ontology (grounded discovery), so GraphExtraction applies
+        # the ontology-dependent rule after step 1.
         if not is_valid_entity_name(name):
             continue
         raw_type = str(pred.get("label", "")).strip()

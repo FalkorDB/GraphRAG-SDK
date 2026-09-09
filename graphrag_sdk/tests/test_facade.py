@@ -18,6 +18,7 @@ from graphrag_sdk.core.models import (
     ApplyChangesResult,
     ChatMessage,
     DeleteDocumentResult,
+    GraphData,
     IngestionResult,
     RagResult,
     RawSearchResult,
@@ -1676,15 +1677,25 @@ class TestGraphRAGUpdate:
 
     async def test_complete_writes_record_content_hash_on_cutover(self, graphrag):
         """The cutover is where ``update()`` stamps the hash; a run with every
-        write reported in full certifies the document as complete."""
+        write reported in full certifies the document as complete.
+
+        Extraction is stubbed: a per-chunk extraction failure is itself an
+        incomplete write (#318 + #309), and the default GLiNER extractor
+        cannot load its tokenizer on every CI runner."""
         import hashlib
+
+        from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+
+        class _CleanExtractor(ExtractionStrategy):
+            async def extract(self, chunks, ontology, ctx):
+                return GraphData(chunks_attempted=len(chunks.chunks))
 
         text = "Fresh content, fully written."
         _stub_graph_store_for_update(
             graphrag, existing_record={"path": "my-doc", "content_hash": "old-hash"}
         )
 
-        result = await graphrag.update(text=text, document_id="my-doc")
+        result = await graphrag.update(text=text, document_id="my-doc", extractor=_CleanExtractor())
 
         assert "incomplete_writes" not in result.metadata
         kwargs = graphrag._graph_store.rollforward_cutover.await_args.kwargs
