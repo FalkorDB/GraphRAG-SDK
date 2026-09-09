@@ -37,7 +37,7 @@ Three node types, connected like a schema diagram::
 
     (:Entity   {label, description})
     (:Relation {label, description})
-    (:Property {label, type, description})
+    (:Property {label, type, description, structured})
 
     (:Entity)-[:HAS_PROPERTY]->(:Property)
     (:Relation)-[:SOURCE]->(:Entity)
@@ -162,7 +162,7 @@ class OntologyStore:
             rel_prop_result = await self._query(
                 "MATCH (r:Relation)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN r.label AS owner, p.label AS name, p.type AS type, "
-                "p.description AS description"
+                "p.description AS description, p.structured AS structured"
             )
         except Exception as exc:
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
@@ -245,10 +245,13 @@ class OntologyStore:
         for row in _rows(rel_prop_result):
             if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1]):
                 continue
-            owner, name, type_, desc = row
+            owner, name, type_, desc = row[0], row[1], row[2], row[3]
+            structured = bool(row[4]) if len(row) > 4 else False
             bucket = rel_props_by_owner.setdefault(owner, {})
             if name not in bucket:
-                bucket[name] = Attribute(name=name, type=type_ or "STRING", description=desc)
+                bucket[name] = Attribute(
+                    name=name, type=type_ or "STRING", description=desc, structured=structured
+                )
 
         # Group patterned relations by label, collecting (src, tgt) pairs
         rel_by_label: dict[str, dict[str, Any]] = {}
@@ -716,7 +719,10 @@ class OntologyStore:
             "-[:TARGET]->(t:Entity {label: $tgt}) "
             "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            "p.description = coalesce($description, p.description), "
+            # Sticky, as for entity properties: a link column a table signs
+            # stays out of the extraction prompt after a reload.
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "rel_label": rel_label,
                 "src": src,
@@ -724,6 +730,7 @@ class OntologyStore:
                 "name": prop.name,
                 "type": prop.type,
                 "description": prop.description,
+                "structured": bool(prop.structured),
             },
         )
 
@@ -734,12 +741,14 @@ class OntologyStore:
             "WHERE NOT (r)-[:SOURCE]->() "
             "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            "p.description = coalesce($description, p.description), "
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "rel_label": rel_label,
                 "name": prop.name,
                 "type": prop.type,
                 "description": prop.description,
+                "structured": bool(prop.structured),
             },
         )
 
@@ -813,12 +822,14 @@ class OntologyStore:
             "MATCH (r:Relation {label: $rel_label}) "
             "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "ON CREATE SET p.type = $type "
-            "SET p.description = coalesce($description, p.description)",
+            "SET p.description = coalesce($description, p.description), "
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "rel_label": rel_label,
                 "name": attribute.name,
                 "type": attribute.type,
                 "description": attribute.description,
+                "structured": bool(attribute.structured),
             },
         )
 

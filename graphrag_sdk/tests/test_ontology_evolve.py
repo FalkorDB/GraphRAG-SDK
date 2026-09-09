@@ -142,6 +142,7 @@ class TestAddRelationProperty:
             "name": "since",
             "type": "DATE",
             "description": None,
+            "structured": False,
         }
 
 

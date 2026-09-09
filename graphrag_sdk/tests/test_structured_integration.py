@@ -1205,6 +1205,30 @@ class TestTheTableOwnsItsColumns:
             "process that happened to run the ingest"
         )
 
+    async def test_ownership_of_a_link_column_is_recorded_too(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """A column a Link signs onto the edge is owned the same way. Loaded
+        without the flag, the extractor would offer ``employees__since`` to the
+        model as something to extract from prose, onto a table's edge."""
+        mapping = TableMapping(
+            source="employees.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            links=[Link("WORKS_AT", to="Organization", by="org_id", properties={"since": "since"})],
+        )
+        path = tmp_path / "employees.csv"
+        path.write_text(
+            "employee_id,full_name,org_id,since\nE-1,Alice Smith,ORG-42,2019\n", encoding="utf-8"
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=_ontology(mapping))
+        await rag.ingest(str(path))
+        reloaded = await rag.get_ontology()
+        works_at = next(r for r in reloaded.relations if r.label == "WORKS_AT")
+        since = next(p for p in works_at.properties if p.name == "employees__since")
+        assert since.structured, "a signed link column has to come back owned"
+
 
 class TestAggregationThroughThePublicApi:
     """The payoff, reached the documented way.

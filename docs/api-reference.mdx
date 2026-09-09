@@ -85,7 +85,7 @@ A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mappin
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `source` | `str \| list[str]` | required | File path (or list of paths) for ingestion |
+| `source` | `str \| list[str] \| None` | `None` | File path (or list of paths) for ingestion. Required unless `text=` is given |
 | `text` | `str \| None` | `None` | Raw text (single source only; skips loader) |
 | `document_id` | `str \| None` | `None` | Stable handle for `update()`/`delete_document()`. Defaults to the normalised path for a document and to the table's name for a table; `ingest("employees_2026Q3.csv", document_id="employees.csv")` re-syncs `employees.csv`. |
 | `record_loader` | `RecordLoaderStrategy \| None` | `None` | How a table is read (`CsvRecordLoader` if None). Tables only. |

@@ -290,6 +290,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`find_near_misses` logs a label it skipped** for exceeding the per-label
   bound, so an empty report reads as "not checked" rather than "clean".
 
+- **A link column's ownership survives a reload.** `OntologyStore` stored
+  `structured` for entity properties only, so a column a `Link` signs onto the
+  edge (`employees__since`) came back extractable after reopening the graph and
+  was offered to the model as something to read from prose. Relation
+  properties now carry the flag the same sticky way.
+
 - **`property_conflicts` measures the disagreement it names.** Each entry for
   a property two tables both supply now says how many entities hold a value
   from more than one of them and on how many the values differ
