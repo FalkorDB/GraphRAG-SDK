@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from graphrag_sdk.core.models import Ontology
 from graphrag_sdk.core.providers.base import LLMInterface
 from graphrag_sdk.core.tables import RESERVED_PROPERTY_NAMES, Link
-from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch
+from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch, cell_text
 from graphrag_sdk.ingestion.mapping import (
     Column,
     MappingError,
@@ -114,7 +114,7 @@ def profile_columns(
             break
         total += 1
         for column in batch.columns:
-            seen[column].append(str(record.get(column, "") or ""))
+            seen[column].append(cell_text(record, column))
 
     profiles = []
     for column, values in seen.items():
@@ -176,7 +176,7 @@ def natural_mapping(batch: RecordBatch, source: str) -> tuple[TableMapping, list
     for profile in profiles:
         if profile.name == key_profile.name:
             continue
-        property_name = safe_property_name(profile.name)
+        property_name = _unclaimed(safe_property_name(profile.name), properties)
         properties[property_name] = Column(profile.name, profile.inferred_type)
         if property_name != profile.name:
             notes.append(f"column {profile.name!r} stored as {property_name!r}")
@@ -203,6 +203,22 @@ def natural_mapping(batch: RecordBatch, source: str) -> tuple[TableMapping, list
         ),
         notes,
     )
+
+
+def _unclaimed(property_name: str, taken: dict[str, Column | str]) -> str:
+    """``property_name``, or the first ``property_name_2``, ``_3``... not in ``taken``.
+
+    ``safe_property_name`` is not injective: ``HQ Country`` and ``hq-country``
+    both store as ``col_hq_country``, and the dict assignment silently kept the
+    later column and lost the earlier one. Suffixed in header order so the same
+    export always proposes the same names.
+    """
+    if property_name not in taken:
+        return property_name
+    ordinal = 2
+    while f"{property_name}_{ordinal}" in taken:
+        ordinal += 1
+    return f"{property_name}_{ordinal}"
 
 
 def table_name(source: str) -> str:
@@ -386,7 +402,7 @@ def _proposal_prompt(
         columns = [profile.name for profile in profiles]
         lines += ["", "First rows:", ",".join(columns)]
         for row in rows:
-            lines.append(",".join(str(row.get(column, "") or "") for column in columns))
+            lines.append(",".join(cell_text(row, column) for column in columns))
 
     entities = sorted(ontology.entities, key=lambda entity: -entity_counts.get(entity.label, 0))
     if entities:

@@ -72,10 +72,22 @@ def safe_property_name(column: str, owned: frozenset[str] | None = None) -> str:
     chunk owns different ones than an entity does.
     """
     reserved = RESERVED_PROPERTY_NAMES if owned is None else owned
-    if _IDENTIFIER.match(column) and column not in reserved:
+    if _IDENTIFIER.match(column) and column not in reserved and "__" not in column:
         return column
-    slug = re.sub(r"[^A-Za-z0-9_]+", "_", column.strip()).strip("_").lower()
+    slug = _one_underscore(re.sub(r"[^A-Za-z0-9_]+", "_", column.strip()).strip("_").lower())
     return f"{_SAFE_PREFIX}{slug}" if slug else f"{_SAFE_PREFIX}unnamed"
+
+
+def _one_underscore(slug: str) -> str:
+    """Collapse runs of underscores: ``__`` is the signed-name separator.
+
+    A stored name is ``<signature>__<property>``, and the table's cleanup finds
+    its columns by that prefix. A signature or property with ``__`` inside it
+    makes the name ambiguous -- ``hr__old__grade`` is ``hr``'s ``old__grade`` as
+    much as ``hr__old``'s ``grade`` -- so dropping ``hr`` would take the other
+    table's columns with it.
+    """
+    return re.sub(r"_{2,}", "_", slug)
 
 
 _GROUPED = re.compile(r"^-?\d{1,3}(,\d{3})+$")
@@ -135,6 +147,13 @@ def _check_identifier(kind: str, value: str) -> str:
             "or underscore and contain only letters, digits and underscores. "
             "Give it a usable name in the mapping and point it at the column, "
             'e.g. properties={"hq_country": Column("HQ Country")}.'
+        )
+    if "__" in value:
+        raise MappingError(
+            f"{kind} {value!r} cannot contain a double underscore: '__' separates a "
+            "source's signature from the property in every stored name "
+            "(hr__grade), and a name with one inside is read as another source's. "
+            f"Use a single underscore: {value.replace('__', '_')!r}."
         )
     return value
 
@@ -234,9 +253,15 @@ class Column:
             return [part.strip() for part in parts if part.strip()]
         try:
             if self.type == "INTEGER":
-                if not isinstance(raw, str):
-                    return int(raw)
-                return int(_normalise_number(raw, integral=True))
+                if isinstance(raw, str):
+                    return int(_normalise_number(raw, integral=True))
+                # int() truncates: a JSON export's 3.7 would load as 3 and
+                # nothing would say so. Anything that does not round-trip is
+                # not an integer, whatever numeric type carried it.
+                value = int(raw)
+                if value != raw:
+                    raise ValueError(f"not a whole number: {raw!r}")
+                return value
             if self.type == "FLOAT":
                 value = float(raw) if not isinstance(raw, str) else float(_normalise_number(raw))
                 if not math.isfinite(value):
@@ -264,7 +289,7 @@ class Column:
                 if text.endswith(("Z", "z")):
                     text = text[:-1] + "+00:00"
                 return datetime.fromisoformat(text).date().isoformat()
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             # Keep the cause's own words when it has any: the number and boolean
             # paths raise messages that say which reading was ambiguous and what
             # to do, and a bare "declares FLOAT but holds '1,234'" throws that
@@ -364,7 +389,7 @@ def signature_for(source: str) -> str:
     stem = source.replace("\\", "/").rsplit("/", 1)[-1]
     if "." in stem:
         stem = stem[: stem.rindex(".")]
-    slug = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_").lower()
+    slug = _one_underscore(re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_").lower())
     if not slug:
         return "source"
     return slug if _IDENTIFIER.match(slug) else f"s_{slug}"

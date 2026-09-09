@@ -52,6 +52,19 @@ class RecordBatch:
         return self.open_records()
 
 
+def cell_text(record: dict[str, Any], column: str | None) -> str:
+    """A cell as stripped text; ``""`` when the column is absent or the cell is None.
+
+    Not ``str(record.get(column) or "")``: a loader that yields typed values
+    (a database row, a JSON document) hands over a key of ``0`` or ``0.0`` and
+    ``or`` reads it as no key at all, so the row is skipped as keyless.
+    """
+    if column is None:
+        return ""
+    value = record.get(column)
+    return "" if value is None else str(value).strip()
+
+
 class RecordLoaderStrategy(ABC):
     """Abstract base class for structured source loaders.
 
@@ -81,6 +94,11 @@ class RecordLoaderStrategy(ABC):
             A :class:`RecordBatch`.
         """
         ...
+
+
+# ``csv.DictReader`` puts the fields of a row longer than the header under this
+# key when told to; without it they are dropped.
+_OVERFLOW = object()
 
 
 class CsvRecordLoader(RecordLoaderStrategy):
@@ -131,12 +149,26 @@ class CsvRecordLoader(RecordLoaderStrategy):
         path = Path(source)
         if not path.is_file():
             raise FileNotFoundError(f"structured source not found: {source}")
+        # One pass over the file before anything is written, so a bad byte or a
+        # malformed row is refused here with a line to point at, rather than
+        # surfacing halfway through the pipeline's mapping pass as a bare decode
+        # error. The pass streams; it costs a read, not memory.
         try:
             delimiter = self._sniff(path)
             with path.open("r", encoding=self._encoding, newline="") as handle:
-                reader = csv.DictReader(handle, delimiter=delimiter)
+                reader = csv.DictReader(handle, delimiter=delimiter, restkey=_OVERFLOW)
                 columns = list(reader.fieldnames or [])
-                record_count = sum(1 for _ in reader)
+                record_count = 0
+                for record_count, row in enumerate(reader, 1):
+                    if _OVERFLOW in row:
+                        # An unquoted delimiter inside a cell: every field after
+                        # it is under the wrong header and the last is dropped.
+                        # DictReader discards the surplus silently by default.
+                        raise ValueError(
+                            f"{source} row {record_count} has "
+                            f"{len(columns) + len(row[_OVERFLOW])} fields, the header "
+                            f"{len(columns)}; a cell holding {delimiter!r} must be quoted"
+                        )
         except UnicodeDecodeError as exc:
             raise ValueError(
                 f"{source} is not {self._encoding}: {exc.reason} at byte {exc.start}. "

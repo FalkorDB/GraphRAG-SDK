@@ -13,6 +13,9 @@ write path consumes, and it is where a link's own faults surface.
 
 from __future__ import annotations
 
+from decimal import Decimal
+from fractions import Fraction
+
 import pytest
 
 from graphrag_sdk.ingestion.mapping import (
@@ -325,6 +328,17 @@ class TestCastingRefusesValuesThatPoisonQueries:
         nothing in the result to point at the row that caused it."""
         with pytest.raises(MappingError):
             Column("score", "FLOAT").cast(raw)
+
+    @pytest.mark.parametrize("raw", [3.7, Decimal("2.5"), Fraction(7, 2), float("inf")])
+    def test_a_fractional_number_is_not_an_integer(self, raw):
+        """A JSON export's ``3.7`` under an INTEGER column loaded as ``3``:
+        ``int()`` truncates, and nothing said so."""
+        with pytest.raises(MappingError, match="'headcount' declares INTEGER"):
+            Column("headcount", "INTEGER").cast(raw)
+
+    @pytest.mark.parametrize(("raw", "expected"), [(3.0, 3), (Decimal("12"), 12), (True, 1)])
+    def test_a_whole_number_in_any_numeric_type_is_an_integer(self, raw, expected):
+        assert Column("headcount", "INTEGER").cast(raw) == expected
 
     def test_a_quoted_list_element_may_contain_a_comma(self):
         """Splitting on commas turns one value into several, silently."""

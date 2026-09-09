@@ -522,7 +522,9 @@ class OntologyStore:
         # (source, link type, link by) -> {property: Column}
         link_columns: dict[tuple[str, str, str], dict[str, Column]] = {}
         for row in link_column_rows:
-            if not (isinstance(row, list) and len(row) >= 6 and row[0] and row[1] and row[3]):
+            if not (
+                isinstance(row, list) and len(row) >= 6 and row[0] and row[1] and row[2] and row[3]
+            ):
                 continue
             link_columns.setdefault((row[0], row[1], row[2]), {})[row[3]] = Column(
                 name=row[4],
@@ -532,7 +534,11 @@ class OntologyStore:
 
         links_by_source: dict[str, list[Link]] = {}
         for row in link_rows:
-            if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1] and row[2]):
+            # ``by`` too: Link() refuses an empty one, and this runs outside the
+            # handler that turns a broken table row into a skipped one.
+            if not (
+                isinstance(row, list) and len(row) >= 4 and row[0] and row[1] and row[2] and row[3]
+            ):
                 continue
             links_by_source.setdefault(row[0], []).append(
                 Link(

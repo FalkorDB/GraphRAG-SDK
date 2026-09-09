@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from graphrag_sdk import Column, Entity, Link, Ontology
-from graphrag_sdk.core.tables import TableMapping, signature_for
+from graphrag_sdk.core.tables import MappingError, TableMapping, safe_property_name, signature_for
 from graphrag_sdk.discovery.pipeline import _ensure_sdk_managed_attributes
 
 HR = TableMapping(
@@ -73,8 +73,8 @@ class TestEveryFieldIsPersisted:
 
         from graphrag_sdk.storage import ontology_store
 
-        source = ontology_store.__file__
-        text = open(source).read()
+        with open(ontology_store.__file__) as source:
+            text = source.read()
         skip = {"properties", "links"}  # their own nodes, not scalar properties
         missing = [
             field.name
@@ -133,10 +133,37 @@ class TestSignatureCollisionsAreRefused:
             ("./hr.csv", "hr"),
             ("hr-final(1).csv", "hr_final_1"),
             ("2024_hr.csv", "s_2024_hr"),
+            # '__' is the separator between signature and property in a stored
+            # name; a signature holding one would make hr__old__grade read as
+            # hr's column, and dropping hr would take hr__old's columns too.
+            ("hr__old.csv", "hr_old"),
+            ("hr - old.csv", "hr_old"),
         ],
     )
     def test_the_signature_ignores_the_directory_and_one_extension(self, source, expected):
         assert signature_for(source) == expected
+
+    def test_a_property_holding_the_separator_is_refused(self):
+        with pytest.raises(MappingError, match="double underscore"):
+            TableMapping(
+                source="hr.csv", label="Person", key="k", properties={"dept__salary": "salary"}
+            )
+
+    def test_a_link_property_holding_the_separator_is_refused(self):
+        with pytest.raises(MappingError, match="double underscore"):
+            TableMapping(
+                source="hr.csv",
+                label="Person",
+                key="k",
+                links=[Link("WORKS_AT", to="Org", by="org", properties={"since__year": "y"})],
+            )
+
+    @pytest.mark.parametrize(
+        ("column", "expected"),
+        [("employee__id", "col_employee_id"), ("Dept  Code", "col_dept_code"), ("grade", "grade")],
+    )
+    def test_a_column_header_never_yields_the_separator(self, column, expected):
+        assert safe_property_name(column) == expected
 
 
 class TestANewLabelMustConnect:

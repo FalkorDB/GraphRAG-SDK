@@ -59,6 +59,17 @@ class TestWhatItDerives:
         assert mapping.typed_properties["col_hq_country"].name == "HQ Country"
         assert any("col_hq_country" in note for note in notes)
 
+    async def test_two_headers_reducing_to_one_name_are_both_kept(self):
+        """``HQ Country`` and ``hq-country`` both store as ``col_hq_country``,
+        and the second silently replaced the first: a column of the export was
+        gone from the mapping with nothing said. Suffixed in header order."""
+        batch = await _batch("employee_id,HQ Country,hq-country\nE-1,Norway,NO\n")
+        mapping, notes = natural_mapping(batch, "employees.csv")
+
+        stored = {name: column.name for name, column in mapping.typed_properties.items()}
+        assert stored == {"col_hq_country": "HQ Country", "col_hq_country_2": "hq-country"}
+        assert any("'hq-country' stored as 'col_hq_country_2'" in note for note in notes)
+
     @pytest.mark.parametrize(
         ("source", "label"),
         [

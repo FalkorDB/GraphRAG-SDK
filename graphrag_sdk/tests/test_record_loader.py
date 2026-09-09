@@ -137,6 +137,21 @@ class TestCsvRecordLoader:
         with pytest.raises(ValueError, match=r"duplicate column names \['name'\]"):
             await CsvRecordLoader().load_records(str(path), ctx)
 
+    async def test_a_row_with_more_fields_than_the_header_is_rejected(self, tmp_path, ctx: Context):
+        """An unquoted comma in a cell shifts every field after it under the
+        wrong header and drops the last; ``DictReader`` discards the surplus
+        silently, so the row read as clean."""
+        path = tmp_path / "shifted.csv"
+        path.write_text("name,city,age\nAnn,Paris,30\nBob,Springfield, IL,41\n", encoding="utf-8")
+        with pytest.raises(ValueError, match=r"row 2 has 4 fields, the header 3.*quoted"):
+            await CsvRecordLoader().load_records(str(path), ctx)
+
+    async def test_a_short_row_is_a_missing_cell_not_an_error(self, tmp_path, ctx: Context):
+        path = tmp_path / "short.csv"
+        path.write_text("name,city,age\nAnn,Paris\n", encoding="utf-8")
+        batch = await CsvRecordLoader().load_records(str(path), ctx)
+        assert list(batch) == [{"name": "Ann", "city": "Paris", "age": ""}]
+
 
 class TestRecordBatch:
     def test_iterating_calls_the_factory_each_time(self):
