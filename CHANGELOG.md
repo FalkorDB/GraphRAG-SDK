@@ -220,6 +220,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A table re-sync keeps only what it may.** From review of the structured
+  ingestion (#328): a renamed row is claimed by the value of the key **as this
+  table signs it**, or by a placeholder carrying it — never by the shared
+  `entity_key` slot, which let `hr.csv` row 2 take a node `crm.csv` had written
+  (and moved Alice's CRM email onto Bob). The move drops the old name's
+  `embedding`, so vector search stops finding the row under a name it no longer
+  has. `update()` and `apply_changes()` follow the moves in their cleanup
+  bookkeeping (`StructuredIngestionResult.identity_moved`), so the stale edges
+  between renamed rows go with the export that dropped them.
+
+- **Two rows with one name stay two rows, and a mention of that name joins
+  neither.** The check for a name shared by two rows now counts distinct keys
+  across rows *and* foreign-key references, per `(label, name)`, so
+  `Alice Smith` in the rows and `Alice Smith` as a manager reference no longer
+  fall back to key-derived ids and split. When two keyed rows do share a name, a
+  prose mention of it is left unmerged by `finalize()` and reported in
+  `probable_duplicates` rather than handed to whichever row was listed first.
+
+- **A foreign key two nodes answer to is given to neither.** `entity_key` is one
+  unsigned slot, so two tables numbering `Person` from 1 leave two nodes with
+  `entity_key = "1"`; a third table's link `1` used to attach to whichever the
+  graph listed last. It now stays on a placeholder carrying the key and is
+  reported in `StructuredIngestionResult.references_ambiguous`; a later
+  re-sync of either table leaves that placeholder alone rather than claiming
+  it. Two rows that swap names between exports are moved as a pair, so neither
+  is folded into the other on the way.
+
+- **A contradicting declaration changes nothing.** `TableMapping` registration
+  checked a retyped property only after it had already stored the new mapping
+  and dropped superseded proposals; the check now runs before any write.
+
+- **A table loaded under its own `document_id` is still cleaned up as a table.**
+  The Document is stamped with its table's signature, so the re-sync retraction
+  and `drop_table()` find it by that rather than by basename.
+
+- **`apply_changes(added=[...])` accepts tables.** Each table in `added` is
+  written on its own through the structured path; prose files are batched as
+  before.
+
+- **Property names cannot contain `__`.** The signed-property prefix is
+  `<signature>__`, so `employee__id` under `hr` was indistinguishable from
+  `employee` under `hr__id`. Identifiers with a double underscore are refused,
+  and runs of underscores in signatures and sanitized headers collapse to one.
+
+- **A cell holding `0` is a key.** Every place that read a key or display name
+  used `str(value or "")`, which turned an integer zero into a blank and skipped
+  the row. Cells are read None-safe (`cell_text`).
+
+- **Symbols glued to a word are kept apart from it:** `C` ≠ `C#` ≠ `C++`,
+  `F` ≠ `F#`, `A` ≠ `A+`, while `C#` still equals `C Sharp`.
+
+- **Two headers that sanitize to one property name are both kept** in the
+  read-as-is mapping (`col_hq_country`, `col_hq_country_2`) rather than one
+  silently overwriting the other.
+
+- **A CSV row with more fields than the header is refused** with its row number.
+  `csv.DictReader` discards the surplus, so an unquoted comma in a cell loaded
+  every field after it under the wrong header.
+
+- **`INTEGER` rejects a fractional number.** `int(3.7)` truncated to `3` for a
+  JSON export's float cell; anything that does not round-trip is a
+  `MappingError`.
+
+- **A partial `:Link` row on reload is skipped, not raised**, as the docstring
+  promised; the `by` column is part of the guard.
+
+- **`find_near_misses` logs a label it skipped** for exceeding the per-label
+  bound, so an empty report reads as "not checked" rather than "clean".
+
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
   it — its description, which entity vector search embeds, and every value only

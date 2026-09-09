@@ -81,7 +81,7 @@ async def ingest(
 
 Build a knowledge graph from one or more sources. Auto-detects loader from file extension. When a list of sources is provided, documents are ingested in parallel with bounded concurrency.
 
-A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mapping is looked up in the ontology by filename (see [Structured Ingestion](#structured-ingestion)), no model is called, and a `StructuredIngestionResult` is returned. A table may not appear in a list — each is written on its own — and `chunker`/`extractor` are rejected for one. Pass `loader=TextLoader()` to read a CSV as prose anyway.
+A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mapping is looked up in the ontology by filename (see [Structured Ingestion](#structured-ingestion)), no model is called, and a `StructuredIngestionResult` is returned. A table may not appear in a list — each is written on its own — and `chunker`/`extractor`/`resolver` are rejected for one; identity across sources is judged by `finalize(resolver=...)`. Pass `loader=TextLoader()` to read a CSV as prose anyway.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -730,8 +730,8 @@ class TableMapping:
     label: str                                   # the label each row becomes
     key: str | None = None                       # column identifying the row; defaults to name
     name: str | None = None                      # column holding the display name
-    properties: dict[str, Column | str] = {}     # property_name -> Column; a str means STRING
-    links: list[Link] = []                       # columns that point at other entities
+    properties: dict[str, Column | str] = field(default_factory=dict)  # property_name -> Column; a str means STRING
+    links: list[Link] = field(default_factory=list)                    # columns that point at other entities
     standalone: bool = False                     # a new label that deliberately relates to nothing
     description: str | None = None
 ```
@@ -787,13 +787,13 @@ class RecordBatch:
     columns: list[str]
     document_info: DocumentInfo
     record_count: int | None = None
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 class CsvRecordLoader(RecordLoaderStrategy):
-    def __init__(self, *, delimiter: str | None = None, encoding: str = "utf-8", document_id: str | None = None): ...
+    def __init__(self, *, delimiter: str | None = None, encoding: str = "utf-8-sig", document_id: str | None = None): ...
 ```
 
-`CsvRecordLoader` is the default; `delimiter=None` sniffs comma, semicolon, tab or pipe from the first kilobyte. Implement `RecordLoaderStrategy` for another format and pass it as `ingest(..., record_loader=...)`.
+`CsvRecordLoader` is the default; `delimiter=None` sniffs comma, semicolon, tab or pipe from the first kilobyte, and the default encoding reads UTF-8 with or without the byte-order mark Excel writes. The file is read once before anything is written: a row with more fields than the header — an unquoted delimiter inside a cell — is refused with its row number rather than loaded shifted. Implement `RecordLoaderStrategy` for another format and pass it as `ingest(..., record_loader=...)`.
 
 ### StructuredIngestionResult
 
@@ -807,6 +807,8 @@ Returned by `ingest()` for a table (`graphrag_sdk.ingestion.structured_pipeline.
 | `rows_skipped`, `rows_in_source` | Rows dropped for a blank key, out of the rows read. |
 | `replaced_existing`, `no_op` | The source was already in the graph. `no_op` when the content hash — rows and mapping — was unchanged. |
 | `chunks_deleted`, `entities_deleted` | On a re-sync: rows gone from the export and entities nothing mentions any more. |
+| `entities_moved`, `identity_moved` | Nodes moved to the id their name now gives them — a renamed row, or a placeholder a row filled in — and the `old_id -> new_id` map. |
+| `references_ambiguous` | `(label, key)` pairs a foreign key named that more than one existing node answers to — two tables numbering one label from 1. The edge was left on a placeholder carrying the key rather than given to either. |
 
 ### How a table is written
 

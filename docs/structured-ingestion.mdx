@@ -555,13 +555,13 @@ A document remembers how it was written, and nothing may change its mind: re-rea
 A table is addressed by its **name** — the basename of its mapping's `source`, `employees.csv` — unless you pass `document_id`. A document is addressed by its path because the path is all there is to know about it; a table has a declaration, and exports move. Keyed on the path, `/exports/2026-02/hr.csv` was a second Document under the same label with January's left behind reading as current; keyed on the name, a new export of a known table is a re-sync of it, from wherever it arrives. Use the same handle for `update()`, `delete_document()` and `drop_table()`.
 
 <Warning>
-When one export stops listing a row that another export still describes, the
-entity survives — correctly, it is still mentioned — but the first source's values
-stay on it, belonging to nobody and reading as current. `finalize()` reports those
-as `stale_signed_properties` rather than removing them: the graph cannot tell "that
-source dropped the row" from "that source has not been reloaded yet", and guessing
-would delete live data. Non-empty means re-load the named source, or accept that
-those values are historical.
+The retraction above runs inside the re-sync, `delete_document()` and `drop_table()`.
+`finalize()` still checks for signed values left on an entity by a source that no
+longer mentions it — a graph written before the retraction existed, or a cleanup
+interrupted before it ran — and reports them as `stale_signed_properties` rather than
+removing them: the graph cannot tell "that source dropped the row" from "that source
+has not been reloaded yet", and guessing would delete live data. Non-empty means
+re-load the named source, or accept that those values are historical.
 </Warning>
 
 ---
@@ -686,6 +686,8 @@ board_note.txt     →  Person  name: "Alice Smith"   id: alice_smith__person
 ```
 
 The row's key is not the identity. It is carried as `entity_key`, and it is what two things resolve through: a `Link` whose target has not loaded yet (a placeholder is created and later **renamed in place** onto the name-derived id when the owning source arrives), and a re-sync in which a row's name changed (the node written last time is moved to its new id rather than orphaned with its prose description). Two rows sharing a name would collapse into one entity, so those fall back to the key and are reported — and a prose mention of that name joins neither, correctly, because it is ambiguous.
+
+The same caution runs the other way. `entity_key` is one unsigned slot, so two tables that both number `Person` from 1 leave two nodes carrying `entity_key = "1"`, and a third table's foreign key `1` cannot say which it means. That link is left on a placeholder that says only "Person keyed 1" and reported in `StructuredIngestionResult.references_ambiguous`, rather than attached to whichever node the graph listed last. Give the tables distinct key spaces, or key the link on a column only one of them owns.
 
 What `finalize()` still does is handle **spelling variants**: `NORTHWIND ENERGY` from a NER model and `Northwind Energy` from a CSV are different strings and so different ids. It groups every entity by `(canonical name, label)` and merges each group. The canonical form is reduced independently on both sides — lower-cased,
 punctuation split, `Surname, Given` un-inverted, abbreviations expanded, one

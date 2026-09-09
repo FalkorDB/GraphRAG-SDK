@@ -222,7 +222,7 @@ After ingesting multiple documents, the same real-world entity might exist as mu
 1. **Fetch** all `__Entity__` nodes with their primary label (the non-`__Entity__` label)
 2. **Group** by `(normalized_name.lower(), label)` — grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
 3. **For each group with duplicates:**
-   - **Survivor:** A node whose id came from a declared table key, then a real node over a placeholder, then the best-connected node (most RELATES and MENTIONED_IN edges), then the longest description
+   - **Survivor:** A node a declared table wrote (it carries the row's key, so the table's next re-sync still finds it), then a real node over a placeholder, then the best-connected node (most RELATES and MENTIONED_IN edges), then the longest description
    - **Remap edges:** All RELATES and MENTIONED_IN edges from duplicates are redirected to the survivor:
      ```cypher
      -- Outgoing RELATES

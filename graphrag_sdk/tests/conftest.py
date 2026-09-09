@@ -50,8 +50,14 @@ class MockEmbedder(Embedder):
 
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         self.call_count += 1
-        digest = hashlib.blake2b(text.encode("utf-8"), digest_size=self.dimension).digest()
-        return [byte / 127.5 - 1.0 for byte in digest]
+        # blake2b digests are at most 64 bytes; a wider vector is several
+        # digests of the same text under successive salts.
+        data = text.encode("utf-8")
+        digest = b"".join(
+            hashlib.blake2b(data, digest_size=64, salt=str(block).encode()).digest()
+            for block in range(-(-self.dimension // 64))
+        )
+        return [byte / 127.5 - 1.0 for byte in digest[: self.dimension]]
 
 
 class MockLLM(LLMInterface):

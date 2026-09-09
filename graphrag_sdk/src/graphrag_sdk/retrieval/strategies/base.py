@@ -54,7 +54,7 @@ class RetrievalStrategy(ABC):
         self._vector = vector_store
 
     def set_ontology(self, ontology: Any) -> None:
-        """Adopt the current ontology. Called whenever the facade's changes.
+        """Adopt the current ontology. Called whenever the facade's ontology changes.
 
         A strategy that generates Cypher needs the *current* ontology, not the
         one that existed when it was constructed. An ingest can add labels and
