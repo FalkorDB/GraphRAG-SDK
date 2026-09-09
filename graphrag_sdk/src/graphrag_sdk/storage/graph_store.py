@@ -128,14 +128,18 @@ class GraphStore:
         for prop in (*self._LABEL_INDEXED_PROPERTIES, *extra):
             if (label, prop) in self._indexed:
                 continue
-            self._indexed.add((label, prop))
             target = prop if prop in self._LABEL_INDEXED_PROPERTIES else f"`{prop}`"
             try:
                 await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.{target})")
                 logger.debug("Created range index on %s.%s", safe_label, prop)
             except Exception as exc:
-                # Another instance got there first, or the graph refused.
-                logger.debug("Range index on %s.%s not created: %s", safe_label, prop, exc)
+                if "already indexed" not in str(exc).lower():
+                    # The graph refused, or the connection blipped: not
+                    # remembered, so the next write tries again.
+                    logger.debug("Range index on %s.%s not created: %s", safe_label, prop, exc)
+                    continue
+                # Another instance got there first; the index exists.
+            self._indexed.add((label, prop))
 
     async def _read_range_indexes(self) -> set[tuple[str, str]]:
         """Every ``(label, property)`` the graph already indexes; empty if unreadable."""
@@ -195,6 +199,9 @@ class GraphStore:
                 )
             if not cleaned_group:
                 continue
+            if is_entity:
+                # Relationship writes MATCH endpoints as ``__Entity__ {id}``.
+                await self._ensure_label_id_index("__Entity__")
             # Process in batches
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):
                 batch = cleaned_group[start : start + self._BATCH_SIZE]
@@ -602,6 +609,9 @@ class GraphStore:
                 )
             if not cleaned_group:
                 continue
+            hint_src, hint_tgt = self._REL_LABEL_HINTS.get(rel_type, ("__Entity__", "__Entity__"))
+            await self._ensure_label_id_index(hint_src)
+            await self._ensure_label_id_index(hint_tgt)
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):
                 batch = cleaned_group[start : start + self._BATCH_SIZE]
                 batch_data = [
@@ -819,12 +829,21 @@ class GraphStore:
         Uses ``GRAPH.DELETE`` via the connection for speed on large graphs.
         Falls back to ``MATCH (n) DETACH DELETE n`` if ``delete_graph`` is
         not available.
+
+        ``GRAPH.DELETE`` removes the graph's indexes with it, so the
+        per-label index memo is reset here; otherwise a re-ingest on the same
+        store would skip ``CREATE INDEX`` and run the whole rebuild unindexed.
+        The fallback keeps indexes, but clearing there too costs one
+        idempotent round trip per label and is always safe.
         """
         try:
             await self._conn.delete_graph()
         except Exception:
             logger.debug("GRAPH.DELETE failed, falling back to DETACH DELETE", exc_info=True)
             await self._conn.query("MATCH (n) DETACH DELETE n")
+        # GRAPH.DELETE drops every index; the fallback keeps them. Re-read
+        # on the next write rather than guess.
+        self._indexed = None
         logger.info("Deleted all graph data")
 
     # ── Document Lifecycle (incremental ingestion support) ──────

@@ -334,6 +334,14 @@ class CachedChunkExtraction(ExtractionStrategy):
         mentions: list[EntityMention] = []
         extracted_entities = []
         extracted_relations = []
+        # Report fields are additive across parts: the cached part reports
+        # zero attempts (nothing was extracted), the inner strategy's part
+        # carries the real numbers. Summing keeps the report intact instead
+        # of silently resetting it here.
+        chunks_attempted = 0
+        chunks_skipped = 0
+        failed_chunks: list[str] = []
+        relation_failed_chunks: list[str] = []
 
         def _union_sources(old_props: dict[str, Any], new_props: dict[str, Any]) -> dict[str, Any]:
             merged = {**old_props, **new_props}
@@ -370,12 +378,20 @@ class CachedChunkExtraction(ExtractionStrategy):
             mentions.extend(part.mentions)
             extracted_entities.extend(part.extracted_entities)
             extracted_relations.extend(part.extracted_relations)
+            chunks_attempted += part.chunks_attempted
+            chunks_skipped += part.chunks_skipped
+            failed_chunks.extend(part.failed_chunks)
+            relation_failed_chunks.extend(part.relation_failed_chunks)
         return GraphData(
             nodes=list(nodes_by_id.values()),
             relationships=list(rels_by_key.values()),
             mentions=mentions,
             extracted_entities=extracted_entities,
             extracted_relations=extracted_relations,
+            chunks_attempted=chunks_attempted,
+            chunks_skipped=chunks_skipped,
+            failed_chunks=failed_chunks,
+            relation_failed_chunks=relation_failed_chunks,
         )
 
     async def extract(self, chunks: TextChunks, ontology: Ontology, ctx: Context) -> GraphData:

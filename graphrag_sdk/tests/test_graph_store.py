@@ -20,7 +20,7 @@ def _is_index_housekeeping(cypher: str) -> bool:
     return "CREATE INDEX" in cypher or "db.indexes()" in cypher
 
 
-def _upsert_queries(mock_connection):
+def upsert_calls(mock_connection):
     """The write queries a call made, excluding the indexes it ensures first.
 
     ``upsert_nodes`` range-indexes a label the first time it writes to it,
@@ -40,7 +40,7 @@ class TestGraphStoreUpsertNodes:
         nodes = [GraphNode(id="n1", label="Person", properties={"name": "Alice"})]
         result = await graph_store.upsert_nodes(nodes)
         assert result == 1
-        writes = _upsert_queries(mock_connection)
+        writes = upsert_calls(mock_connection)
         assert len(writes) == 1
         cypher = writes[0][0][0]
         assert "UNWIND" in cypher
@@ -56,7 +56,7 @@ class TestGraphStoreUpsertNodes:
         result = await graph_store.upsert_nodes(nodes)
         assert result == 2
         # One write per label, and an id index ensured for each.
-        assert len(_upsert_queries(mock_connection)) == 2
+        assert len(upsert_calls(mock_connection)) == 2
 
     async def test_upsert_empty_list(self, graph_store, mock_connection):
         result = await graph_store.upsert_nodes([])
@@ -70,7 +70,7 @@ class TestGraphStoreUpsertNodes:
 
     async def test_upsert_passes_id_in_batch_param(self, graph_store, mock_connection):
         await graph_store.upsert_nodes([GraphNode(id="test-id", label="X", properties={})])
-        params = mock_connection.query.call_args[0][1]
+        params = upsert_calls(mock_connection)[0][0][1]
         assert params["batch"][0]["id"] == "test-id"
 
     async def test_upsert_sanitizes_control_chars_in_batch_params(
@@ -79,7 +79,7 @@ class TestGraphStoreUpsertNodes:
         await graph_store.upsert_nodes(
             [GraphNode(id="id\x00\x01", label="Chunk", properties={"text": "A\x00B\x01C"})]
         )
-        params = mock_connection.query.call_args[0][1]
+        params = upsert_calls(mock_connection)[0][0][1]
         assert params["batch"][0]["id"] == "id"
         assert params["batch"][0]["properties"]["text"] == "ABC"
 
@@ -122,7 +122,7 @@ class TestUpsertNodesKeepsProvenance:
         await graph_store.upsert_nodes(
             [GraphNode(id="acme", label="Organization", properties={"source_chunk_ids": ["c2"]})]
         )
-        cypher = _upsert_queries(mock_connection)[0][0][0]
+        cypher = upsert_calls(mock_connection)[0][0][0]
         assert "coalesce(n.source_chunk_ids, []) AS old" in cypher
         assert "SET n += item.properties" in cypher
         assert "n.source_chunk_ids = CASE WHEN size(contrib) = 0" in cypher
@@ -133,7 +133,7 @@ class TestUpsertNodesKeepsProvenance:
         await graph_store.upsert_nodes(
             [GraphNode(id="c1", label="Chunk", properties={"source_chunk_ids": ["c1"]})]
         )
-        cypher = _upsert_queries(mock_connection)[0][0][0]
+        cypher = upsert_calls(mock_connection)[0][0][0]
         assert "SET n += item.properties" in cypher
         assert "source_chunk_ids = CASE" not in cypher
 
@@ -434,14 +434,19 @@ class TestGraphStoreUpsertRelationships:
         R1 type: batch fails → individual fallback also fails → logged
         R2 type: batch succeeds.
         """
-        mock_connection.query = AsyncMock(
-            side_effect=[Exception("fail"), Exception("fail again"), MagicMock()]
-        )
+
+        # Fail R1's writes by type rather than by position: the upsert also
+        # ensures indexes first, and positional side effects would land on those.
+        async def fail_r1(cypher, params=None):
+            if not _is_index_housekeeping(cypher) and "`R1`" in cypher:
+                raise Exception("fail")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=fail_r1)
         rels = [
             GraphRelationship(start_node_id="a", end_node_id="b", type="R1"),
             GraphRelationship(start_node_id="c", end_node_id="d", type="R2"),
         ]
-        # R1 batch fails (call 1), R1 individual fails (call 2), R2 batch succeeds (call 3)
         result = await graph_store.upsert_relationships(rels)
         assert result == 1  # only R2 batch succeeded
 
@@ -903,3 +908,139 @@ class TestGraphStoreDocumentLifecycle:
         n = await graph_store.delete_orphan_entities(ids)
         assert n == 6
         assert mock_connection.query.await_count == 3
+
+
+class TestGraphStoreIdIndex:
+    """Bug #9 — range index on ``id`` for every label we MERGE/MATCH by id.
+
+    Measured against FalkorDB v4.18.0 writing 50K nodes with this class's own
+    MERGE: unindexed the last batch was 477x slower than the first (4.6 ms ->
+    2194.8 ms, 111 s total); indexed it stayed flat (8.8 -> 8.5 ms, 0.69 s).
+    Driving the real ``GraphStore`` rather than raw Cypher showed 8.1x less
+    total time at 20K nodes. This is the "gets slower as the graph grows"
+    complaint.
+    """
+
+    @staticmethod
+    def index_calls(mock_connection):
+        return [
+            c[0][0] for c in mock_connection.query.call_args_list
+            if "CREATE INDEX" in c[0][0]
+        ]
+
+    async def test_creates_index_for_node_label_and_entity(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        assert "CREATE INDEX FOR (n:`Person`) ON (n.id)" in idx
+        # MERGE targets :Person but relationship MATCHes target :__Entity__.
+        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
+
+    async def test_structural_labels_get_index_but_not_entity(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c1", label="Chunk", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" not in idx
+
+    async def test_index_created_once_per_label(self, graph_store, mock_connection):
+        for i in range(5):
+            await graph_store.upsert_nodes(
+                [GraphNode(id=f"n{i}", label="Person", properties={})]
+            )
+        idx = self.index_calls(mock_connection)
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 1
+
+    async def test_relationship_upsert_indexes_both_endpoints(
+        self, graph_store, mock_connection
+    ):
+        await graph_store.upsert_relationships(
+            [GraphRelationship(
+                start_node_id="e1", end_node_id="c1",
+                type="MENTIONED_IN", properties={},
+            )]
+        )
+        idx = self.index_calls(mock_connection)
+        assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
+        assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
+
+    async def test_index_failure_does_not_break_the_write(
+        self, graph_store, mock_connection
+    ):
+        """A missing index is slow; a raised exception would be data loss."""
+        def side_effect(cypher, params=None):
+            if "CREATE INDEX" in cypher:
+                raise Exception("index unsupported")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=side_effect)
+        result = await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={})]
+        )
+        assert result == 1
+
+    async def test_index_failure_is_retried_on_next_write(
+        self, graph_store, mock_connection
+    ):
+        """A transient CREATE INDEX failure must not disable indexing for the
+        life of the store — the label is memoised only once the query succeeds."""
+        attempts = {"n": 0}
+
+        def side_effect(cypher, params=None):
+            if "CREATE INDEX" in cypher:
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    raise Exception("connection blip")
+            return MagicMock()
+
+        mock_connection.query = AsyncMock(side_effect=side_effect)
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c1", label="Chunk", properties={})]
+        )
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c2", label="Chunk", properties={})]
+        )
+        await graph_store.upsert_nodes(
+            [GraphNode(id="c3", label="Chunk", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        # First attempt failed, second succeeded, third was served from the memo.
+        assert idx.count("CREATE INDEX FOR (n:`Chunk`) ON (n.id)") == 2
+
+    async def test_delete_all_resets_index_memo(self, graph_store, mock_connection):
+        """GRAPH.DELETE drops the indexes, so a re-ingest on the same store
+        must recreate them."""
+        mock_connection.delete_graph = AsyncMock()
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={})]
+        )
+        await graph_store.delete_all()
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n2", label="Person", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
+        assert idx.count("CREATE INDEX FOR (n:`__Entity__`) ON (n.id)") == 2
+
+    async def test_delete_all_fallback_also_resets_index_memo(
+        self, graph_store, mock_connection
+    ):
+        """Clearing on the DETACH DELETE fallback is harmless (one idempotent
+        round trip per label) and keeps the two paths behaving the same."""
+        mock_connection.delete_graph = AsyncMock(side_effect=Exception("no GRAPH.DELETE"))
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={})]
+        )
+        await graph_store.delete_all()
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n2", label="Person", properties={})]
+        )
+        idx = self.index_calls(mock_connection)
+        assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
+        assert any("DETACH DELETE" in c[0][0] for c in mock_connection.query.call_args_list)

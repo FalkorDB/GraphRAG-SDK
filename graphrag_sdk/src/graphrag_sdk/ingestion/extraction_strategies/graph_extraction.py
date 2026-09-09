@@ -481,8 +481,22 @@ class GraphExtraction(ExtractionStrategy):
                 break
             active_chunks.append(chunk)
 
+        # Chunks the budget cut off were never attempted. Reported separately
+        # so a 40-chunk document truncated to 3 does not look like a healthy
+        # 3-chunk document.
+        chunks_skipped = len(chunks.chunks) - len(active_chunks)
+
         if not active_chunks:
-            return GraphData(nodes=[], relationships=[])
+            return GraphData(nodes=[], relationships=[], chunks_skipped=chunks_skipped)
+
+        # Chunks whose step 1 (entity extraction) failed: they contributed no
+        # entities. Tracked so the caller can tell an empty document from a
+        # broken one, and retry just these uids.
+        failed_chunk_uids: set[str] = set()
+        # Chunks whose step 1 succeeded but step 2 (relations) failed: their
+        # entities are in the graph, their edges are not. Kept apart from
+        # ``failed_chunk_uids`` so ``extraction_failed`` stays honest.
+        relation_failed_chunk_uids: set[str] = set()
 
         # ── Optional: Coreference resolution per chunk ──
         chunk_texts: list[str] = []
@@ -521,12 +535,14 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 1 NER failed for chunk {chunk.index}: {item.error}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(chunk.uid)
                     chunk_entities.append([])
                 elif item.response is None:
                     ctx.log(
                         f"Step 1 NER returned no response for chunk {chunk.index}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(chunk.uid)
                     chunk_entities.append([])
                 else:
                     parsed = LLMExtractor._parse_response(
@@ -554,6 +570,7 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 1 NER failed for chunk {active_chunks[i].index}: {result}",
                         logging.WARNING,
                     )
+                    failed_chunk_uids.add(active_chunks[i].uid)
                     chunk_entities.append([])
                 else:
                     chunk_entities.append(result)
@@ -597,6 +614,12 @@ class GraphExtraction(ExtractionStrategy):
                         f"Step 2 verify+rels failed for chunk {chunk.index}: {item.error}",
                         logging.WARNING,
                     )
+                    # Step 1 entities survive but this chunk's relations are
+                    # lost. Report it as a relation failure — not as a failed
+                    # chunk, which would claim it produced no entities. A
+                    # chunk that already failed step 1 is not double-counted.
+                    if chunk.uid not in failed_chunk_uids:
+                        relation_failed_chunk_uids.add(chunk.uid)
                     # Fall back to step 1 entities only
                     all_entities.extend(chunk_entities[chunk_idx])
                     continue
@@ -646,12 +669,37 @@ class GraphExtraction(ExtractionStrategy):
             mentions=all_mentions,
             extracted_entities=merged_entities,
             extracted_relations=merged_relations,
+            chunks_attempted=len(active_chunks),
+            chunks_skipped=chunks_skipped,
+            failed_chunks=sorted(failed_chunk_uids),
+            relation_failed_chunks=sorted(relation_failed_chunk_uids),
         )
 
         ctx.log(
             f"Extracted {len(nodes)} nodes, {len(relationships)} relationships, "
             f"{len(all_mentions)} mentions"
         )
+        # Escalate: an INFO summary saying "0 nodes" reads as an empty
+        # document. Say plainly what was lost, and from which step.
+        if failed_chunk_uids:
+            ctx.log(
+                f"{len(failed_chunk_uids)} of {len(active_chunks)} chunks failed "
+                f"entity extraction and contributed no entities to the graph",
+                logging.WARNING,
+            )
+        if relation_failed_chunk_uids:
+            ctx.log(
+                f"{len(relation_failed_chunk_uids)} of {len(active_chunks)} chunks failed "
+                f"relationship extraction; their entities were kept but their "
+                f"relationships were lost",
+                logging.WARNING,
+            )
+        if chunks_skipped:
+            ctx.log(
+                f"{chunks_skipped} of {len(chunks.chunks)} chunks were never attempted "
+                f"because the latency budget ran out",
+                logging.WARNING,
+            )
         return graph_data
 
     @staticmethod
