@@ -54,7 +54,7 @@ class ContextualChunking(ChunkingStrategy):
             **not** be passed — configure those directly on the base chunker.
             If omitted, defaults to
             ``SentenceTokenCapChunking(max_tokens, overlap_sentences, encoding_name)``.
-        max_tokens: Token cap per chunk for the default base chunker. Default 512.
+        max_tokens: Token cap per chunk for the default base chunker. Default 384.
             Ignored (and forbidden) when *base_chunker* is provided.
         overlap_sentences: Sentence overlap for the default base chunker. Default 2.
             Ignored (and forbidden) when *base_chunker* is provided.
@@ -70,7 +70,7 @@ class ContextualChunking(ChunkingStrategy):
         chunker = ContextualChunking(llm=my_llm, max_tokens=256, overlap_sentences=1)
 
         # Custom base chunker — configure it directly, pass no shorthand kwargs
-        chunker = ContextualChunking(llm=my_llm, base_chunker=StructuralChunking(max_tokens=512))
+        chunker = ContextualChunking(llm=my_llm, base_chunker=StructuralChunking(max_tokens=384))
         result = await chunker.chunk_document(doc, ctx)
     """
 
@@ -109,7 +109,7 @@ class ContextualChunking(ChunkingStrategy):
             # Use encoding_name solely for document-truncation token counting
             _encoding_name = "cl100k_base"
         else:
-            _max_tokens = max_tokens if max_tokens is not ContextualChunking._UNSET else 512
+            _max_tokens = max_tokens if max_tokens is not ContextualChunking._UNSET else 384
             _overlap = (
                 overlap_sentences if overlap_sentences is not ContextualChunking._UNSET else 2
             )

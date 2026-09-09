@@ -14,7 +14,7 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
-from graphrag_sdk.core.models import Ontology
+from graphrag_sdk.core.models import RESERVED_NODE_LABELS, Ontology
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ _ENTITY_LABELS = frozenset(
     }
 )
 
-_STRUCTURAL_LABELS = frozenset({"Chunk", "Document", "__Entity__"})
+_STRUCTURAL_LABELS = RESERVED_NODE_LABELS | {"__Entity__"}
 
 _ALL_LABELS = _ENTITY_LABELS | _STRUCTURAL_LABELS
 

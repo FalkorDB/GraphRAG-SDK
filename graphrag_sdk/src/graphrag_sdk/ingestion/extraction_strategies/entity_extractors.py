@@ -42,6 +42,12 @@ UNKNOWN_LABEL = "Unknown"
 #: Sentinel for "use the class default" where ``None`` is itself a valid value.
 _DEFAULT: Any = object()
 
+
+def _is_int(value: Any) -> bool:
+    """``bool`` is an ``int`` subclass; window sizes must be real integers."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 MIN_NAME_LEN = 2  # single-char names are noise
 MAX_NAME_LEN = 80  # descriptions masquerading as names
 
@@ -60,7 +66,6 @@ _PRONOUNS: set[str] = {
     "i",
     "we",
     "you",
-    "one",
     "me",
     "us",
     "my",
@@ -118,6 +123,7 @@ _ENTITY_STOPLIST: set[str] = (
     | _SHELL_TOKENS
     | {
         # Generic/anonymous references
+        "one",
         "narrator",
         "the narrator",
         "author",
@@ -183,14 +189,17 @@ def _normalize_type_label(raw: str) -> str:
 # thing facts get attached to, so it stays.
 #
 # This only applies when ``Date`` is not an entity type in the ontology.  An
-# ontology that declares ``Date`` (the defaults do) has asked for date nodes
-# and gets them; one that leaves it out gets no date nodes.
+# ontology that declares ``Date`` has asked for date nodes and gets them; one
+# that leaves it out gets no date nodes.  DEFAULT_ENTITY_TYPES declares
+# ``Date``, so on the out-of-the-box path this rule never fires: it is a gain
+# for custom ontologies that omit ``Date``, not for the default configuration.
 #
-# Measured on the 11-document benchmark: specific dates were 63 of 274 false
-# positive entities (23%).  Removing them lifted entity precision 0.577 -> 0.642
-# with recall unchanged at 0.644 (F1 0.609 -> 0.643) and cost nothing, because
-# every gold Date entity is a decade.  This also stops the graph accumulating
-# "X happened_in 1957" edges that carry no answerable content.
+# Measured on the 11-document benchmark with an ontology that omits ``Date``:
+# specific dates were 63 of 274 false positive entities (23%).  Removing them
+# lifted entity precision 0.577 -> 0.642 with recall unchanged at 0.644 (F1
+# 0.609 -> 0.643) and cost nothing, because every gold Date entity is a
+# decade.  This also stops the graph accumulating "X happened_in 1957" edges
+# that carry no answerable content.
 _SPECIFIC_DATE_RE = re.compile(
     r"""^(?:
         (?:c\.?\s*|circa\s+|ca\.?\s*)?\d{3,4}\s*(?:ce|bce|ad|bc)?   # 1823, 1003 ce, c. 1200
@@ -201,38 +210,51 @@ _SPECIFIC_DATE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# Overrides the rule above: these name a span of time, not a moment.
-_DATE_PERIOD_RE = re.compile(r"\d{3,4}s\b|centur|era\b|dynasty|period|decade|age\b", re.IGNORECASE)
+# Overrides the rule above: these name a span of time, not a moment.  "era"
+# and "age" are whole words so "opera" and "package" are not periods.
+_DATE_PERIOD_RE = re.compile(
+    r"\d{3,4}s\b|centur|\bera\b|dynasty|period|decade|\bage\b", re.IGNORECASE
+)
+
+# Punctuation that extraction can leave on a date at a sentence boundary
+# ("1823.", "(14 January 1904)"); stripped before the date regexes run so it
+# cannot smuggle a date past the gate.
+_DATE_EDGE_PUNCTUATION = ".,;:!?()[]{}\"'"
 
 
 def is_specific_date(name: str) -> bool:
     """True if name pins down one moment in time rather than naming a period.
 
     Specific dates are rejected as entity names unless the ontology declares a
-    ``Date`` type (see ``is_valid_entity_name``): by default they belong on the
-    relation that mentions them, not as nodes of their own.  Note the deliberate gap --
+    ``Date`` type (see ``is_valid_entity_name``): when the ontology has no
+    ``Date`` type they belong on the relation that mentions them, not as nodes
+    of their own.  Note the deliberate gap --
     a product genuinely named for a number ("747", "1984") is indistinguishable
     from a year here and will be dropped.  That trade was worth 63 false
     positives against zero true positives on the benchmark corpus, but it is
     the first thing to revisit if a domain uses numeric product names.
     """
-    stripped = name.strip()
+    stripped = name.strip().strip(_DATE_EDGE_PUNCTUATION)
     if _DATE_PERIOD_RE.search(stripped):
         return False
     return bool(_SPECIFIC_DATE_RE.match(stripped))
 
 
-def _ontology_has_date_type(entity_types: list[str] | None) -> bool:
-    if not entity_types:
-        return False
+def _ontology_has_date_type(entity_types: list[str]) -> bool:
     return any(_normalize_type_label(t) == "date" for t in entity_types)
 
 
 def is_valid_entity_name(name: str, entity_types: list[str] | None = None) -> bool:
     """Return True if name passes quality gates for entity extraction.
 
-    Specific dates ("1823") are rejected unless ``entity_types`` contains
-    ``Date``: when the ontology asks for date nodes, dates are kept.
+    ``entity_types`` is the ontology's entity labels, when the caller has an
+    ontology.  Specific dates ("1823") are rejected when it is given and does
+    not contain ``Date``; when it does, the ontology has asked for date nodes
+    and they are kept.  With ``entity_types=None`` there is no ontology to
+    consult and dates pass: NER extractors receive a label list that is not
+    always an ontology (grounded discovery passes broad anchor labels), so
+    they call this without types and ``GraphExtraction`` applies the date
+    rule itself once the ontology is known.
     """
     if not name or not name.strip():
         return False
@@ -240,11 +262,21 @@ def is_valid_entity_name(name: str, entity_types: list[str] | None = None) -> bo
     if len(stripped) < MIN_NAME_LEN or len(stripped) > MAX_NAME_LEN:
         return False
     # "US" is a country, "us" is a pronoun, and casefolding the stoplist check
-    # conflates them. An all-caps short token is an acronym, not a pronoun.
+    # conflates them. An all-caps short token is an acronym, not a pronoun --
+    # but that only excuses it from the *pronoun* rows of the stoplist. "CD",
+    # "ETC" or "MAN" in an all-caps heading are still the shell tokens and
+    # generic nouns they are in lower case.  The residual cost is that other
+    # all-caps pronouns ("HE", "WE", "MY") also pass: they cannot be told
+    # apart from "US" and "IT" without context, so the exemption keeps them.
+    lowered = stripped.lower()
     is_acronym = len(stripped) <= 3 and stripped.isupper() and stripped.isalpha()
-    if not is_acronym and stripped.lower() in _ENTITY_STOPLIST:
+    if lowered in _ENTITY_STOPLIST and not (is_acronym and lowered in _PRONOUNS):
         return False
-    if not _ontology_has_date_type(entity_types) and is_specific_date(stripped):
+    if (
+        entity_types is not None
+        and not _ontology_has_date_type(entity_types)
+        and is_specific_date(stripped)
+    ):
         return False
     # Operator and punctuation tokens (+=, ->, ==, !=). A name with no letter or
     # digit anywhere in it cannot be the name of anything.
@@ -322,7 +354,10 @@ def _parse_predictions(
         if not isinstance(pred, dict):
             continue
         name = str(pred.get("text", "")).strip()
-        if not is_valid_entity_name(name, entity_types):
+        # No date gate here: ``entity_types`` may be NER anchor labels rather
+        # than the ontology (grounded discovery), so GraphExtraction applies
+        # the ontology-dependent rule after step 1.
+        if not is_valid_entity_name(name):
             continue
         raw_type = str(pred.get("label", "")).strip()
 
@@ -427,15 +462,20 @@ class GLiNERExtractor(EntityExtractor):
     Default extractor — no API calls, fast. Returns entities with
     confidence scores and character spans.
 
-    The model is loaded lazily on first use and protected by a lock
-    so a single instance can be safely shared across concurrent
-    ``asyncio.to_thread`` calls (e.g. parallel doc ingestion).
+    The model is loaded lazily on first use from a process-wide cache
+    (one copy per model name, shared by every instance) and that load is
+    guarded by the class-level ``_CACHE_LOCK``. Inference itself takes no
+    lock: GLiNER inference mutates no model state, so a single instance can
+    be shared across concurrent ``asyncio.to_thread`` calls (e.g. parallel
+    doc ingestion) and they genuinely run in parallel. See ``_predict_sync``
+    for the measurements behind both decisions.
 
     GLiNER has a hard input limit (``config.max_len``) and truncates anything
-    beyond it **silently** — no exception, no warning, the tail simply never
-    reaches the model. Measured on ``gliner_medium-v2.1`` (``max_len`` 384): a
+    beyond it: the library emits a ``UserWarning`` ("Sentence of length N has
+    been truncated"), raises nothing, and the tail never reaches the model.
+    Measured on ``gliner_medium-v2.1`` (the default model, ``max_len`` 384): a
     probe entity placed at word-token 388 is always returned, at 389 never.
-    The default model's limit is 2048, but real documents still exceed it —
+    The bi-encoder models allow 2048, but real documents still exceed it —
     disabling windowing on our benchmark corpus dropped recall from 0.805 to
     0.621 — so windowing matters regardless of the model.
 
@@ -474,18 +514,31 @@ class GLiNERExtractor(EntityExtractor):
     corpus**, with no error raised.
 
     Args:
-        threshold: Confidence threshold (0-1). Below this → "Unknown".
+        threshold: Confidence threshold (0-1). Spans scoring at or above it
+            are typed; spans between ``candidate_threshold`` and it are
+            labelled ``"Unknown"``; anything lower is discarded by the model.
             ``None`` (default) selects the value measured for ``model_name``.
         model_name: HuggingFace model name for GLiNER.
         window_tokens: Word-tokens per inference window. ``None`` derives it
             from the model's own ``config.max_len`` minus a safety margin.
-        window_overlap: Word-tokens shared between consecutive windows. Must
-            exceed the model's ``max_width`` (longest representable entity,
-            12 words by default) or entities on a boundary are lost.
+            An explicit value must be a positive integer.
+        window_overlap: Word-tokens shared between consecutive windows. An
+            integer satisfying ``0 <= window_overlap < window_tokens`` (checked
+            against the derived window on first use when ``window_tokens`` is
+            ``None``); it should exceed the model's ``max_width`` (longest
+            representable entity, 12 words by default) or entities on a
+            boundary are lost.
         candidate_threshold: Floor of the ``"Unknown"`` band. Default: 25 %
             below ``threshold`` (``CANDIDATE_BAND``). ``None`` disables the
-            band (spans below ``threshold`` are discarded). Must not exceed
-            ``threshold``.
+            band (spans below ``threshold`` are discarded). Must satisfy
+            ``0 <= candidate_threshold <= threshold``.
+
+    Raises:
+        ValueError: If ``threshold`` is outside ``[0, 1]``, if
+            ``candidate_threshold`` is outside ``[0, threshold]``, or if the
+            window parameters are degenerate (``window_tokens`` or
+            ``window_overlap`` not an ``int``, ``window_tokens <= 0``,
+            ``window_overlap < 0`` or ``window_overlap >= window_tokens``).
     """
 
     # Safety margin under config.max_len; the label prompt and special tokens
@@ -542,26 +595,46 @@ class GLiNERExtractor(EntityExtractor):
                     self._model_name,
                     self._FALLBACK_THRESHOLD,
                 )
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError(f"threshold ({threshold}) must be within [0, 1]")
         self._threshold = threshold
         if candidate_threshold is _DEFAULT:
             candidate_threshold = round(threshold * (1.0 - self.CANDIDATE_BAND), 4)
-        if candidate_threshold is not None and candidate_threshold > threshold:
+        if candidate_threshold is not None and not 0.0 <= candidate_threshold <= threshold:
+            # Above ``threshold`` the floor would discard the entities the band
+            # is meant to keep; below 0 the model returns every candidate span
+            # and all of them reach step 2 as ``"Unknown"``.
             raise ValueError(
-                f"candidate_threshold ({candidate_threshold}) must be <= "
-                f"threshold ({threshold}); a candidate floor above the demotion "
-                f"line would discard the very entities it is meant to keep"
+                f"candidate_threshold ({candidate_threshold}) must be within "
+                f"[0, threshold] = [0, {threshold}]"
             )
         self._candidate_threshold = candidate_threshold
         self._model: Any = None
-        # Retained only so callers/tests that swap in a context manager to
-        # A/B the removed inference lock keep working. Nothing in this class
-        # acquires it any more; model loading uses the class-level
-        # ``_CACHE_LOCK`` and inference deliberately takes no lock at all.
-        # See ``_predict_sync`` for the thread-safety evidence.
-        self._lock = threading.Lock()
+        if window_tokens is not None and not (_is_int(window_tokens) and window_tokens > 0):
+            # ``words[begin:begin + 0]`` is empty on the first iteration, so a
+            # non-positive window would return zero entities with no error; a
+            # non-int only fails later, inside ``range()`` at inference time.
+            raise ValueError(f"window_tokens ({window_tokens!r}) must be a positive integer")
+        if not (_is_int(window_overlap) and window_overlap >= 0):
+            # A negative overlap makes ``step > window`` and leaves word ranges
+            # that never reach the model — the silent truncation this class
+            # exists to prevent, reintroduced by configuration.
+            raise ValueError(f"window_overlap ({window_overlap!r}) must be a non-negative integer")
+        if window_tokens is not None:
+            self._check_overlap(window_overlap, window_tokens)
         self._window_tokens = window_tokens
         self._window_overlap = window_overlap
-        self._splitter: Any = None
+
+    @staticmethod
+    def _check_overlap(overlap: int, window: int) -> None:
+        # ``overlap >= window`` collapses ``step`` to 1: a 2000-word text
+        # would run ~2000 sequential inferences instead of ~7.
+        if overlap >= window:
+            raise ValueError(
+                f"window_overlap ({overlap}) must be smaller than the window "
+                f"({window} word-tokens); consecutive windows would otherwise "
+                f"advance one word at a time"
+            )
 
     def _load_model(self) -> Any:
         if self._model is None:
@@ -606,55 +679,102 @@ class GLiNERExtractor(EntityExtractor):
         return cached
 
     def _resolve_window(self, model: Any) -> int:
-        """Window size in word-tokens, derived from the model if not set."""
+        """Window size in word-tokens, derived from the model if not set.
+
+        Both branches are validated against ``window_overlap`` so a derived
+        window (e.g. from a model with a tiny ``max_len``) cannot silently
+        collapse ``step`` to 1 any more than an explicit one can.
+        """
         if self._window_tokens is not None:
-            return self._window_tokens
-        max_len = getattr(getattr(model, "config", None), "max_len", None)
-        if not isinstance(max_len, int) or max_len <= 0:
-            max_len = 384
-        return max(64, max_len - self._WINDOW_MARGIN)
+            window = self._window_tokens
+        else:
+            max_len = getattr(getattr(model, "config", None), "max_len", None)
+            if not isinstance(max_len, int) or max_len <= 0:
+                max_len = 384
+            window = max(64, max_len - self._WINDOW_MARGIN)
+        self._check_overlap(self._window_overlap, window)
+        return window
 
-    def _word_spans(self, model: Any, text: str) -> list[tuple[str, int, int]]:
-        """Split text the same way GLiNER does, keeping char offsets."""
-        if self._splitter is None:
-            splitter = getattr(getattr(model, "data_processor", None), "words_splitter", None)
-            if splitter is None:
-                from gliner.data_processing import WordsSplitter
+    @staticmethod
+    def _word_spans(model: Any, text: str) -> list[tuple[str, int, int]]:
+        """Split text the same way GLiNER does, keeping char offsets.
 
-                splitter = WordsSplitter()
-            self._splitter = splitter
-        return list(self._splitter(text))
+        The splitter is looked up on every call rather than cached on the
+        instance: this method runs unlocked from concurrent
+        ``asyncio.to_thread`` calls, and the extractor must not mutate shared
+        state during inference (see :meth:`_predict_sync`).
+        """
+        splitter = getattr(getattr(model, "data_processor", None), "words_splitter", None)
+        if splitter is None:
+            from gliner.data_processing import WordsSplitter
+
+            splitter = WordsSplitter()
+        return list(splitter(text))
 
     @staticmethod
     def _merge(preds: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Deduplicate predictions from overlapping windows.
+        """Resolve predictions from overlapping windows to non-overlapping spans.
 
-        Identical spans found in two windows collapse to the highest-scoring
-        copy. A span that is strictly contained in a longer span of the same
-        label is dropped: it is the truncated remains of an entity clipped by a
-        window edge, which the neighbouring window saw whole.
+        GLiNER's ``flat_ner`` guarantees non-overlapping spans within one
+        window, and downstream code relies on that shape, so the merge must
+        restore it across windows. Two rules, applied regardless of label:
+
+        1. **Nested spans lose to the span that contains them.** The failure
+           mode being fixed is truncation: a window edge clips
+           "Acme Corporation Ltd" to "Acme", and the fragment may come back
+           with a different label or a higher score than the whole entity seen
+           by the neighbouring window. Exact duplicates collapse to the
+           highest-scoring copy.
+        2. **Partially overlapping spans are resolved by score**, highest
+           first, the way ``flat_ner`` does within a window. Length must not
+           decide here: a long low-confidence span would otherwise delete the
+           disjoint high-confidence entities on either side of it.
+
+        Ties on score break by length, then by start offset, so the result
+        does not depend on the order windows emitted their predictions.
+
+        O(n log n). Rule 1 is a sweep over spans sorted by start. After it, no
+        span contains another, so spans sorted by start are also sorted by
+        end and each span can overlap at most two of the disjoint survivors —
+        the neighbour walks in rule 2 touch each span at most twice.
         """
-        best: dict[tuple[int, int, str], dict[str, Any]] = {}
-        for p in preds:
-            key = (p["start"], p["end"], p["label"])
-            prev = best.get(key)
-            if prev is None or p.get("score", 0.0) > prev.get("score", 0.0):
-                best[key] = p
+        # Rule 1: sorted by start, a span is nested in (or identical to) an
+        # earlier one exactly when it ends at or before the furthest end seen.
+        chain: list[dict[str, Any]] = []
+        max_end = -1
+        for p in sorted(
+            (p for p in preds if p["end"] > p["start"]),
+            key=lambda p: (p["start"], -p["end"], -p.get("score", 0.0)),
+        ):
+            if p["end"] <= max_end:
+                continue
+            max_end = p["end"]
+            chain.append(p)
 
-        kept: list[dict[str, Any]] = []
-        for p in best.values():
-            contained = any(
-                q is not p
-                and q["label"] == p["label"]
-                and q["start"] <= p["start"]
-                and p["end"] <= q["end"]
-                and (q["end"] - q["start"]) > (p["end"] - p["start"])
-                for q in best.values()
-            )
-            if not contained:
-                kept.append(p)
-        kept.sort(key=lambda p: (p["start"], p["end"]))
-        return kept
+        # Rule 2: greedy by score over the containment-free chain.
+        state = [0] * len(chain)  # 0 undecided, 1 kept, -1 dropped
+        by_score = sorted(
+            range(len(chain)),
+            key=lambda i: (
+                -chain[i].get("score", 0.0),
+                chain[i]["start"] - chain[i]["end"],
+                chain[i]["start"],
+            ),
+        )
+        for i in by_score:
+            if state[i]:
+                continue
+            state[i] = 1
+            start, end = chain[i]["start"], chain[i]["end"]
+            j = i - 1
+            while j >= 0 and chain[j]["end"] > start:
+                state[j] = -1
+                j -= 1
+            j = i + 1
+            while j < len(chain) and chain[j]["start"] < end:
+                state[j] = -1
+                j += 1
+        return [p for p, s in zip(chain, state) if s == 1]
 
     def _predict_sync(self, text: str, entity_types: list[str]) -> list[dict[str, Any]]:
         model = self._load_model()
@@ -668,7 +788,7 @@ class GLiNERExtractor(EntityExtractor):
 
         # No lock here, deliberately.
         #
-        # Bug #8: this whole block used to run under ``self._lock`` while the
+        # Bug #8: this whole block used to run under an instance lock while the
         # caller dispatched it through ``asyncio.to_thread`` — the SDK paid for
         # threads and then serialised them anyway. Concurrent documents queued
         # behind each other in NER.
@@ -685,18 +805,6 @@ class GLiNERExtractor(EntityExtractor):
         # locked 3.75 s / 3.54 s versus unlocked 2.21 s / 2.46 s = **1.56x**.
         # Note issue #71 claimed 3.44x; the honest measured figure is 1.56x,
         # because torch's own intra-op threading already uses the cores.
-        return self._predict_body(model, text, labels, window, floor)
-
-    def _predict_body(
-        self,
-        model: Any,
-        text: str,
-        labels: list[str],
-        window: int,
-        floor: float,
-    ) -> list[dict[str, Any]]:
-        """Windowed inference. Split out from :meth:`_predict_sync` so the
-        lock removal above could be A/B tested by wrapping one call site."""
         words = self._word_spans(model, text)
 
         # Fast path: fits in one window, identical to unwindowed behaviour.
@@ -705,10 +813,12 @@ class GLiNERExtractor(EntityExtractor):
 
         step = max(1, window - self._window_overlap)
         out: list[dict[str, Any]] = []
+        n_windows = 0
         for begin in range(0, len(words), step):
             span = words[begin : begin + window]
             if not span:
                 break
+            n_windows += 1
             lo, hi = span[0][1], span[-1][2]
             for p in model.predict_entities(text[lo:hi], labels, threshold=floor):
                 p = dict(p)
@@ -724,7 +834,7 @@ class GLiNERExtractor(EntityExtractor):
             "GLiNER windowed inference: %d word-tokens -> %d windows, "
             "%d raw predictions -> %d after merge",
             len(words),
-            (len(words) - 1) // step + 1,
+            n_windows,
             len(out),
             len(merged),
         )
@@ -797,7 +907,7 @@ class LLMExtractor(EntityExtractor):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
-            if not is_valid_entity_name(name, entity_types):
+            if not is_valid_entity_name(name):
                 continue
             raw_type = str(item.get("type", "")).strip()
             description = str(item.get("description", "")).strip()
