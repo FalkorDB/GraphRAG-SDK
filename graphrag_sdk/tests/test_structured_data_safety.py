@@ -520,26 +520,34 @@ class TestTwoTablesOwningOneLabelStayApart:
     ):
         """HR's 1 is Alice, CRM's 1 is Bob; ``tickets.csv`` says the assignee is 1.
 
-        The lookup that attaches a foreign key to an existing node returned one
-        id per key -- whichever the graph listed last -- so the ticket landed on
-        Alice or on Bob depending on nothing the caller could see, and the load
-        reported success. Two matches is not a match: the edge stays on a
-        placeholder that says only "Person keyed 1", and the result says so.
+        Both key ``Person`` by ``person_id`` -- one id space, said the
+        declaration (two would be refused as a Link target) -- and the exports
+        disagree anyway. The lookup that attaches a foreign key to an existing
+        node returned one id per key -- whichever the graph listed last -- so the
+        ticket landed on Alice or on Bob depending on nothing the caller could
+        see, and the load reported success. Two matches is not a match: the edge
+        stays on a placeholder that says only "Person keyed 1", and the result
+        says so.
         """
-        ontology = self._ontology()
-        ontology.tables.append(
-            TableMapping(
-                source="tickets.csv",
-                label="Ticket",
-                key="ticket_id",
-                name="ticket_id",
-                links=[Link("ASSIGNED_TO", to="Person", by="assignee_id")],
-            )
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Ticket")],
+            tables=[
+                TableMapping(source="hr.csv", label="Person", key="person_id", name="full_name"),
+                TableMapping(
+                    source="crm.csv", label="Person", key="person_id", name="contact_name"
+                ),
+                TableMapping(
+                    source="tickets.csv",
+                    label="Ticket",
+                    key="ticket_id",
+                    name="ticket_id",
+                    links=[Link("ASSIGNED_TO", to="Person", by="assignee_id")],
+                ),
+            ],
         )
-        ontology.entities.append(Entity(label="Ticket"))
         rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology)
-        (tmp_path / "hr.csv").write_text("employee_id,full_name\n1,Alice Smith\n")
-        (tmp_path / "crm.csv").write_text("contact_id,contact_name\n1,Bob Jones\n")
+        (tmp_path / "hr.csv").write_text("person_id,full_name\n1,Alice Smith\n")
+        (tmp_path / "crm.csv").write_text("person_id,contact_name\n1,Bob Jones\n")
         (tmp_path / "tickets.csv").write_text("ticket_id,assignee_id\nT-1,1\n")
         await rag.ingest(str(tmp_path / "hr.csv"))
         await rag.ingest(str(tmp_path / "crm.csv"))
@@ -556,7 +564,7 @@ class TestTwoTablesOwningOneLabelStayApart:
 
         # The next export of either table must not make the choice the link
         # refused to: the placeholder is not a row of hr.csv to claim.
-        (tmp_path / "hr.csv").write_text("employee_id,full_name\n1,Alice Smith\n2,Carol White\n")
+        (tmp_path / "hr.csv").write_text("person_id,full_name\n1,Alice Smith\n2,Carol White\n")
         resynced = await rag.ingest(str(tmp_path / "hr.csv"))
         assert resynced.entities_moved == 0
         assert await rag.query(

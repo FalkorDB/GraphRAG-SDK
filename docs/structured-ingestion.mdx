@@ -364,6 +364,7 @@ A row in `employees.csv` says the organization exists and gives its key. It does
 - The edge's own declared properties are signed with the declaring source, with no exemptions at all — `since` on `WORKS_AT` from `employees.csv` is `employees__since`.
 - One key is one node, however many columns of the file point at it. A citations table whose `citing` column carries an arXiv id and whose `cited` column carries the id plus a `name="title"` raises **one** placeholder for a paper both columns mention, named by the title; a `manager_id` pointing at rows of the same file lands on those rows, not on a placeholder beside them.
 - Keys are compared stripped of surrounding whitespace. `ORG-NW ` in one export and `ORG-NW` in another are the same key; case is kept as written.
+- A label a link points at has **one key column**. Two tables may both describe `Person` — `hr.csv` keyed by `employee_id`, `crm.csv` by `contact_id` — and a person in both exports is one node holding both keys. But a `Link(to="Person", by="lead_id")` could not tell which of the two id spaces `lead_id` means, so whichever declaration completes that shape — the second key or the link — is refused, naming all three. Key both tables by the same column, or give the rows the link means a label of their own.
 
 Order does not matter. Whichever source arrives first creates the node, and a
 `Link` to a label that has not arrived yet is not a problem to be sequenced
@@ -450,7 +451,11 @@ which deletes the table's Document and record chunks (and any entity only those 
 mentioned), removes every property the table signed from entities that survive, and
 takes the mapping out of the ontology, so the next `ingest()` of that filename
 proposes afresh. The label stays, because a document or another table may use it;
-`drop_entity()` removes a label nothing else does.
+`drop_entity()` removes a label nothing else does — while a table maps rows to it or
+links to it, `drop_entity()` refuses and names the table, since the mapping would
+re-register the label on the next load. `rename_entity()` follows through: the
+stored mapping and every link to the label are renamed with it, and the next
+export re-syncs its rows under the new label.
 
 Without a model, or when it cannot produce an acceptable proposal, the file is read
 **as-is**: every column a typed property, the label from the file name in the file's

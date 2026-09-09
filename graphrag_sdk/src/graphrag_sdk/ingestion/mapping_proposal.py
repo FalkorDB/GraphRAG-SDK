@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -410,7 +411,12 @@ def _proposal_prompt(
             patterns = ", ".join(f"{src} -> {tgt}" for src, tgt in relation.patterns) or "any"
             lines.append(f"- {relation.label}: {patterns}")
     if ontology.tables:
-        lines += ["", "Tables already mapped (a column holding one of these keys is a link):"]
+        lines += [
+            "",
+            "Tables already mapped (a column holding one of these keys is a link). A label "
+            "a link points at has one key: to map rows onto a label something links to, "
+            "key them by the same column, otherwise give them another label:",
+        ]
         for mapping in ontology.tables:
             lines.append(
                 f"- {mapping.source} -> {mapping.label}, key column {mapping.key_column!r}"
@@ -428,6 +434,7 @@ def _mapping_from_proposal(
     source: str,
     profiles: list[ColumnProfile],
     known_labels: set[str],
+    others: Sequence[TableMapping] = (),
     model_name: str,
 ) -> tuple[TableMapping, list[str]]:
     """Build the TableMapping a proposal describes, or raise MappingError saying why not.
@@ -436,6 +443,13 @@ def _mapping_from_proposal(
     profile: the columns exist, the key is unique, the types parse. A type the
     model narrowed past what the file holds is widened back to the measured one
     rather than refused — that is a fact about the file, not a judgement.
+
+    ``others`` are the tables already mapped. A label a Link points at has one
+    key (see ``OntologyStore._check_one_key_per_label``); a proposal that would
+    complete the refused shape — keying a linked-to label by a new column, or
+    linking to a label two tables key differently — is sent back for the model
+    to choose another label or drop the link, rather than being refused later at
+    registration with nothing the model could act on.
     """
     by_name = {profile.name: profile for profile in profiles}
     notes: list[str] = []
@@ -472,6 +486,8 @@ def _mapping_from_proposal(
             "neither name nor key is set, so no row can be given a stable identity. "
             "Set name to the column holding the row's name, or key to a unique column."
         )
+    key_column = key if key is not None else str(name)
+    _check_link_targets_have_one_key(proposal, key_column, source=source, others=others)
 
     taken: dict[str, str] = {}
     for kind, value in (("name", name), ("key", key)):
@@ -500,7 +516,7 @@ def _mapping_from_proposal(
     # Where the row's identity is stored; no property may be named into it.
     # Whichever column identifies the row (``key``, else ``name``) is the one
     # ``TableMapping`` will key on, so the slot is derived the same way.
-    key_slot = safe_property_name(key if key is not None else str(name))
+    key_slot = safe_property_name(key_column)
     properties: dict[str, Column | str] = {}
     for prop in proposal.properties:
         profile = column("property", prop.column)
@@ -555,6 +571,43 @@ def _mapping_from_proposal(
     return mapping, notes
 
 
+def _check_link_targets_have_one_key(
+    proposal: MappingProposal, key_column: str, *, source: str, others: Sequence[TableMapping]
+) -> None:
+    """The proposal-time form of ``OntologyStore._check_one_key_per_label``.
+
+    Said to the model in its own terms: what this proposal keys and links to,
+    against what the other tables already key and link to.
+    """
+    keys: dict[str, dict[str, str]] = {proposal.label: {key_column: source}}
+    linked: dict[str, str] = {link.to: source for link in proposal.links}
+    for other in others:
+        keys.setdefault(other.label, {}).setdefault(other.key_column, other.source)
+        for link in other.links:
+            linked.setdefault(link.to, other.source)
+    for label, linking_source in linked.items():
+        by_column = keys.get(label, {})
+        if len(by_column) < 2:
+            continue
+        theirs = " and ".join(
+            f"{column!r} ({other})"
+            for column, other in sorted(by_column.items())
+            if other != source
+        )
+        if label == proposal.label:
+            raise MappingError(
+                f"label {label!r} is already keyed by column {theirs}, and {linking_source} "
+                f"links to it — a Link finds its target by the label's key, so it has one. "
+                f"This proposal keys it by {key_column!r}. Either key these rows by the same "
+                f"column, or these rows are a different kind of thing: give them another label."
+            )
+        raise MappingError(
+            f"the link to {label!r} cannot be resolved: {label!r} is keyed by {theirs}, and a "
+            f"Link finds its target by the label's key. Drop the link and keep the column as "
+            f"a property."
+        )
+
+
 async def propose_mapping(
     batch: RecordBatch,
     source: str,
@@ -590,6 +643,7 @@ async def propose_mapping(
 
     known_labels = {entity.label for entity in ontology.entities}
     known_labels |= {mapping.label for mapping in ontology.tables}
+    others = [mapping for mapping in ontology.tables if mapping.source != table_name(source)]
     counts = entity_counts or {}
     outcome: dict[str, Any] = {}
 
@@ -600,6 +654,7 @@ async def propose_mapping(
                 source=source,
                 profiles=profiles,
                 known_labels=known_labels,
+                others=others,
                 model_name=llm.model_name,
             )
         except MappingError as exc:

@@ -16,8 +16,12 @@ import pytest
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.models import DocumentInfo, Entity, Ontology
 from graphrag_sdk.ingestion.loaders.record_loader import RecordBatch
-from graphrag_sdk.ingestion.mapping import Column, TableMapping, record_mapping_for
+from graphrag_sdk.ingestion.mapping import Column, Link, TableMapping, record_mapping_for
 from graphrag_sdk.ingestion.mapping_proposal import (
+    MappingError,
+    MappingProposal,
+    ProposedLink,
+    _mapping_from_proposal,
     count_entities_per_label,
     pick_key,
     profile_columns,
@@ -119,6 +123,69 @@ class TestAColumnNamedLikeAParameterIsNotLost:
             standalone=True,
         )
         assert record_mapping_for(mapping).anchor.typed_properties["links"] == Column("links")
+
+
+class TestAProposalRespectsTheOneKeyPerLinkTargetRule:
+    """A label a Link points at has one key column.
+
+    The store refuses a declaration completing the shape; a proposal is checked
+    before it gets there so the model is told why and can answer with another
+    label, or without the link.
+    """
+
+    ROWS = [
+        {"invoice_id": "I-1", "amount": "10", "buyer": "E-1"},
+        {"invoice_id": "I-2", "amount": "20", "buyer": "E-2"},
+    ]
+    HR = TableMapping(source="hr.csv", label="Person", key="employee_id", standalone=True)
+    TICKETS = TableMapping(
+        source="tickets.csv",
+        label="Ticket",
+        key="ticket_id",
+        links=[Link("ASSIGNED_TO", to="Person", by="assignee_id")],
+    )
+
+    def _build(self, proposal: MappingProposal, others: list[TableMapping]):
+        return _mapping_from_proposal(
+            proposal,
+            source="invoices.csv",
+            profiles=profile_columns(batch_of(self.ROWS)),
+            known_labels={"Person", "Ticket"},
+            others=others,
+            model_name="test",
+        )
+
+    def test_keying_a_linked_to_label_by_another_column_is_an_error_for_the_model(self):
+        proposal = MappingProposal(label="Person", key="invoice_id")
+        with pytest.raises(
+            MappingError, match="already keyed by column 'employee_id' \\(hr.csv\\)"
+        ):
+            self._build(proposal, [self.HR, self.TICKETS])
+
+    def test_linking_to_a_label_two_tables_key_differently_is_an_error_for_the_model(self):
+        crm = TableMapping(source="crm.csv", label="Person", key="contact_id", standalone=True)
+        proposal = MappingProposal(
+            label="Invoice",
+            key="invoice_id",
+            links=[ProposedLink(column="buyer", type="BOUGHT_BY", to="Person")],
+        )
+        with pytest.raises(MappingError, match="Drop the link and keep the column as a property"):
+            self._build(proposal, [self.HR, crm])
+
+    def test_a_second_key_on_a_label_nothing_links_to_is_fine(self):
+        mapping, _ = self._build(MappingProposal(label="Person", key="invoice_id"), [self.HR])
+        assert (mapping.label, mapping.key) == ("Person", "invoice_id")
+
+    def test_the_same_key_column_or_another_label_is_fine(self):
+        hr = TableMapping(source="hr.csv", label="Person", key="invoice_id", standalone=True)
+        mapping, _ = self._build(
+            MappingProposal(label="Person", key="invoice_id"), [hr, self.TICKETS]
+        )
+        assert mapping.key == "invoice_id"
+        mapping, _ = self._build(
+            MappingProposal(label="Invoice", key="invoice_id"), [self.HR, self.TICKETS]
+        )
+        assert mapping.label == "Invoice"
 
 
 class TestATableIsNotReadAsProse:

@@ -127,12 +127,22 @@ def properties_to_carry(
     both sides hold at once — the survivor was mentioned wherever either was —
     so it becomes the union. ``never`` names what stays behind whatever the
     survivor lacks; ``id`` and ``embedding`` always do.
+
+    ``description`` is the exception to keep_existing: the longer one stays.
+    The survivor is chosen for the reproducibility of its identity — a table's
+    key, then how much of the graph points at it — not for what it knows, and
+    the node that lost on those grounds is often the one the PDF described.
+    Measured as a two-line "from the PDF" description dropped for a stub's
+    one-liner. Safe to swap: the entity embedding is of the name, not of this.
     """
     carry = {
         key: value
         for key, value in dup.items()
         if key not in never and value is not None and keep.get(key) in (None, "", [])
     }
+    richer = dup.get("description")
+    if isinstance(richer, str) and len(richer) > len(str(keep.get("description") or "")):
+        carry["description"] = richer
     provenance = union_chunk_ids(keep.get("source_chunk_ids"), dup.get("source_chunk_ids"))
     if provenance and provenance != keep.get("source_chunk_ids"):
         carry["source_chunk_ids"] = provenance

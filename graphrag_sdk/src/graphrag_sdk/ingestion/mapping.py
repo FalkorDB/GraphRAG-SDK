@@ -546,6 +546,12 @@ def _normalise(
                 f"links must contain Link objects, got {type(link).__name__}. "
                 'Write links=[Link("WORKS_AT", to="Organization", by="org_id")].'
             )
+    # In a fixed order, not the declared one. The handle derivation below gives
+    # the *first* link to a label the bare label, so two orderings of one
+    # declaration — the user's, and the one the ontology graph handed back —
+    # derived two handle sets, two fingerprints, and a content hash that said an
+    # unchanged file had changed.
+    for link in sorted(links or (), key=lambda link: (link.type, link.to, link.by)):
         # A target keyed by the same column as the subject would be the subject,
         # and an edge from a thing to itself says nothing.
         if link.by == key and link.to == node:

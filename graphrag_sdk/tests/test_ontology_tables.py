@@ -369,6 +369,127 @@ class TestTheStoreRoundTrip:
         sources = sorted(m.source for m in (await store.load()).tables)
         assert sources == ["finance.csv", "hr.csv"]
 
+    async def test_two_links_by_one_column_to_two_labels_both_survive(self, store):
+        """``to`` is part of a link's identity in the store.
+
+        Merged on type and column alone, the second link's ``SET l.to`` overwrote
+        the first's, and the reload held one link where two were declared —
+        reported as ``mapping_changed`` on every finalize, forever.
+        """
+        mapping = TableMapping(
+            source="deals.csv",
+            label="Deal",
+            key="deal_id",
+            links=[
+                Link("INVOLVES", to="Organization", by="party_id"),
+                Link("INVOLVES", to="Person", by="party_id"),
+            ],
+        )
+        await store.register(
+            Ontology(
+                entities=[Entity(label="Organization"), Entity(label="Person")], tables=[mapping]
+            )
+        )
+        (back,) = (await store.load()).tables
+        assert sorted((link.to, link.by) for link in back.links) == [
+            ("Organization", "party_id"),
+            ("Person", "party_id"),
+        ]
+        assert back.fingerprint_of_declaration == mapping.fingerprint_of_declaration
+
+    async def test_a_duplicated_mapping_node_is_read_once_and_collapsed_on_register(
+        self, store, caplog
+    ):
+        """Two first-touchers racing MERGE left two ``:TableMapping`` nodes.
+
+        Every later load then read each child twice, built a mapping with a
+        duplicated link, and raised — from ``get_ontology``, ``ingest``,
+        ``finalize`` and ``drop_table`` alike, in every process, until
+        ``delete_all()``. The load now reads such a graph once per source and the
+        next registration removes the extra node.
+        """
+        import logging
+
+        await store.register(_ontology())
+        # What the race leaves behind: a second node for the source with the
+        # same children hung off it.
+        await store._query(
+            "MATCH (t:TableMapping {source: 'hr.csv'})-[:MAPS_LINK]->(l) "
+            "CREATE (t2:TableMapping {source: 'hr.csv', label: t.label, key: t.key, "
+            "name: t.name, standalone: false, derived: false}) "
+            "CREATE (t2)-[:MAPS_LINK]->(l2:MappedLink {type: l.type, to: l.to, by: l.by})"
+        )
+        count = await store._query("MATCH (t:TableMapping) RETURN count(t)")
+        assert count.result_set[0][0] == 2
+
+        with caplog.at_level(logging.WARNING):
+            loaded = await store.load()
+        assert [m.source for m in loaded.tables] == ["hr.csv"]
+        assert loaded.tables[0].fingerprint_of_declaration == HR.fingerprint_of_declaration
+        assert any("more than one mapping for 'hr.csv'" in m for m in caplog.messages)
+
+        await store.register(Ontology(tables=[HR]))
+        count = await store._query("MATCH (t:TableMapping) RETURN count(t)")
+        assert count.result_set[0][0] == 1
+        orphans = await store._query(
+            "MATCH (c:MappedLink) WHERE NOT (:TableMapping)-[:MAPS_LINK]->(c) RETURN count(c)"
+        )
+        assert orphans.result_set[0][0] == 0
+
+    async def test_a_link_to_a_label_two_tables_key_differently_is_refused(self, store):
+        """See ``_check_one_key_per_label``: two id spaces in one ``entity_key`` slot.
+
+        The two tables are fine on their own — that shape is the multi-source
+        case this feature exists for — and the refusal names whichever
+        declaration completes it: the link, or the second key.
+        """
+        from graphrag_sdk.storage.ontology_store import OntologyContradictionError
+
+        person = Entity(label="Person")
+        crm = TableMapping(source="crm.csv", label="Person", key="contact_id", name="name")
+        await store.register(_ontology())
+        await store.register(Ontology(entities=[person], tables=[crm]))
+
+        tickets = TableMapping(
+            source="tickets.csv",
+            label="Ticket",
+            key="ticket_id",
+            links=[Link("ASSIGNED_TO", to="Person", by="assignee_id")],
+        )
+        with pytest.raises(
+            OntologyContradictionError,
+            match="'Person' is keyed by 'contact_id' \\(crm.csv\\) and 'employee_id' \\(hr.csv\\), "
+            "and 'tickets.csv' links to it by 'assignee_id'",
+        ):
+            await store.register(Ontology(entities=[Entity(label="Ticket")], tables=[tickets]))
+
+        # The other order: the link is in place, then a second key arrives.
+        await store.register(Ontology(tables=[HR]))  # replacing crm.csv's claim on Person
+        await store.drop_table_mapping("crm.csv")
+        await store.register(Ontology(entities=[Entity(label="Ticket")], tables=[tickets]))
+        with pytest.raises(OntologyContradictionError, match="'tickets.csv' links to it"):
+            await store.register(Ontology(entities=[person], tables=[crm]))
+
+        # Same key column: one id space, the supported shape.
+        finance = TableMapping(source="finance.csv", label="Person", key="employee_id")
+        await store.register(Ontology(entities=[person], tables=[finance]))
+        sources = sorted(m.source for m in (await store.load()).tables)
+        assert sources == ["finance.csv", "hr.csv", "tickets.csv"]
+
+    async def test_renaming_a_label_renames_it_in_the_stored_mappings(self, store):
+        """Rows and link targets both follow the label.
+
+        Left behind, the stored ontology read ``entities=[Human]`` and
+        ``tables=[hr.csv -> Person]`` — a shape the validator refuses on every
+        later load, so one rename locked the graph until ``delete_all()``.
+        """
+        await store.register(_ontology())
+        await store.rename_entity_label("Person", "Human")
+        await store.rename_entity_label("Organization", "Company")
+        (back,) = (await store.load()).tables
+        assert back.label == "Human"
+        assert [link.to for link in back.links] == ["Company"]
+
 
 class TestATableQueryFailureCannotTakeTheOntologyDown:
     """The table queries have their own try/except for a stated reason.

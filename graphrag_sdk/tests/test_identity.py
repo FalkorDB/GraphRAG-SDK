@@ -110,6 +110,71 @@ class TestTheRules:
         )
 
 
+class TestTheScanIsBlockedNotQuadratic:
+    """``find_near_misses`` compares only names that share a comparable form.
+
+    The all-against-all scan took 12 s at 1k entities under one label and gave
+    up at 5k with a warning; ``finalize()`` ran it twice. Blocking must find the
+    same pairs, so the check here is against :func:`why_same` applied to every
+    pair — on a set built to exercise all three grounds it accepts on.
+    """
+
+    @staticmethod
+    def _entities() -> list[dict]:
+        import itertools
+        import random
+
+        rng = random.Random(7)
+        first = ["Maya", "Marta", "Tomas", "Tobias", "Priya", "Jean-Luc", "J.", "John"]
+        last = ["Ellison", "Reyes", "Raman", "Picard", "Holm", "Nguyen", "Tolkien"]
+        orgs = ["Northwind Energy", "Kestrel Grid", "Globex", "Acme", "Initech"]
+        forms = ["", " AS", " Ltd", " Ltd.", " Corp", " Corporation", " Limited", " LLC"]
+        names = set()
+        for a, b in itertools.product(first, last):
+            names.add(f"{a} {b}")
+            names.add(f"{b}, {a}")
+            names.add(f"{a[0]}. {b}")
+        for org, form in itertools.product(orgs, forms):
+            names.add(org + form)
+        for n in range(400):
+            names.add(f"{rng.choice(first)} {rng.choice(last)} {n}")
+        return [
+            {"id": f"e{i}", "name": name, "label": "Thing", "is_stub": i % 5 == 0}
+            for i, name in enumerate(sorted(names))
+        ]
+
+    def test_blocking_finds_every_pair_the_pairwise_scan_found(self):
+        import itertools
+
+        entities = self._entities()
+        expected = {
+            frozenset((a["id"], b["id"]))
+            for a, b in itertools.combinations(entities, 2)
+            if why_same(a["name"], b["name"]) is not None
+        }
+        assert len(expected) > 100, "the set must exercise the rules, not skip them"
+        by_name = {e["name"]: e["id"] for e in entities}
+        found = {
+            frozenset((by_name[m.name_a], by_name[m.name_b]))
+            for m in find_near_misses(entities, limit=len(entities) ** 2)
+        }
+        assert found == expected
+
+    def test_an_overfull_block_is_skipped_with_a_warning_not_a_crash(self, caplog):
+        from graphrag_sdk.storage import identity
+
+        entities = [
+            {"id": f"e{i}", "name": "Smith", "label": "Person", "is_stub": False}
+            for i in range(identity._MAX_PER_LABEL + 1)
+        ]
+        entities.append({"id": "x", "name": "Maya Ellison", "label": "Person", "is_stub": False})
+        entities.append({"id": "y", "name": "M. Ellison", "label": "Person", "is_stub": False})
+        with caplog.at_level(logging.WARNING):
+            found = find_near_misses(entities)
+        assert [{m.name_a, m.name_b} for m in found] == [{"M. Ellison", "Maya Ellison"}]
+        assert any("reduce to one comparable form (smith)" in m for m in caplog.messages)
+
+
 class TestFinalizeReports:
     async def test_a_near_miss_is_reported_and_not_merged(
         self, real_falkordb_rag_factory, llm, resolver, tmp_path, caplog

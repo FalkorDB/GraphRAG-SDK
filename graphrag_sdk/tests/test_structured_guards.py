@@ -706,3 +706,195 @@ class TestATableNobodyDeclaredGetsAProposedMapping:
         with pytest.raises(ValueError, match="No table named 'employees.csv'"):
             await rag.drop_table("employees.csv")
         await rag.close()
+
+    async def test_a_second_proposal_reducing_to_the_same_signature_is_refused(
+        self, real_falkordb_rag_factory, resolver, tmp_path
+    ):
+        """``HR.csv`` after ``hr.csv``: a different file, the same signature.
+
+        Only a declaration retires a proposal. The second proposal used to
+        retire the first as if it were one, take over ``hr__*``, and its re-sync
+        then stripped the first table's rows to their ids and left its Document
+        behind. Refused by the store's signature check instead, naming both.
+        """
+        llm = MockLLM([PROPOSAL, PROPOSAL], strict=True)
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=ontology())
+        lower = tmp_path / "hr.csv"
+        lower.write_text(ONE_ROW)
+        upper = tmp_path / "HR.csv"
+        upper.write_text("employee_id,full_name,age\nE-9,Lene Holm,29\n")
+        await rag.ingest(str(lower))
+
+        with pytest.raises(OntologyContradictionError, match="'HR.csv'.*'hr.csv'"):
+            await rag.ingest(str(upper))
+
+        stored = (await rag._ontology_store.load()).tables
+        assert [(m.source, m.derived) for m in stored] == [("hr.csv", True)]
+        rows = await rag.query("MATCH (p:Person) RETURN p.name, p.hr__age, p.entity_key")
+        assert rows == [["Maya Ellison", 34, "E-1"]], "the first table is untouched"
+        assert (await rag.query("MATCH (d:Document) RETURN d.id")) == [["hr.csv"]]
+        await rag.close()
+
+
+class TestTheOntologyStaysReadableAfterEvolution:
+    """``rename_entity`` / ``drop_entity`` on a label a table names.
+
+    Neither used to touch the stored mappings. After a rename the store held
+    ``entities=[Human]`` and ``tables=[hr.csv -> Person]``, which the validator
+    refuses — on every later ``load()``, in every process, from every entry
+    point — so a rename locked the graph until ``delete_all()``.
+    """
+
+    async def test_rename_follows_the_table_and_the_next_sync_finds_its_rows(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        orgs = TableMapping(source="orgs.csv", label="Organization", key="org_id", name="name")
+        hr = TableMapping(
+            source="hr.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        )
+        onto = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Organization")], tables=[hr, orgs]
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=onto)
+        hr_path = tmp_path / "hr.csv"
+        hr_path.write_text("employee_id,full_name,org_id\nE-1,Maya Ellison,O-1\n")
+        await rag.ingest(str(hr_path))
+
+        renamed = await rag.rename_entity("Person", "Human")
+        renamed = await rag.rename_entity("Organization", "Company")
+        by_source = {m.source: m for m in renamed.tables}
+        assert by_source["hr.csv"].label == "Human"
+        assert by_source["hr.csv"].links[0].to == "Company"
+        assert by_source["orgs.csv"].label == "Company"
+
+        # A fresh process opens the graph — the part that used to raise.
+        again = real_falkordb_rag_factory(llm=llm, resolver=resolver, connection=rag._conn)
+        loaded = await again.get_ontology()
+        assert {e.label for e in loaded.entities} >= {"Human", "Company"}
+
+        # And the re-sync finds the row by its signed key under the new label,
+        # rather than writing a second Maya beside it.
+        hr_path.write_text("employee_id,full_name,org_id\nE-1,Maya Ellison-Holm,O-1\n")
+        result = await again.ingest(str(hr_path))
+        assert result.replaced_existing is True
+        rows = await again.query("MATCH (p:Human) RETURN p.name, p.entity_key")
+        assert rows == [["Maya Ellison-Holm", "E-1"]]
+        assert (await again.query("MATCH (p:Person) RETURN count(p)")) == [[0]]
+        await rag.close()
+        await again.close()
+
+    async def test_drop_entity_on_a_label_a_table_names_is_refused(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """The mapping is re-registered on every first touch, so a drop would
+        delete every row and then be undone. Refused, pointing at drop_table()."""
+        hr = TableMapping(
+            source="hr.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        )
+        onto = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Organization")], tables=[hr]
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=onto)
+        path = tmp_path / "hr.csv"
+        path.write_text("employee_id,full_name,org_id\nE-1,Maya Ellison,O-1\n")
+        await rag.ingest(str(path))
+
+        with pytest.raises(ValueError, match=r"'hr.csv' \(its rows\).*drop_table\(\)"):
+            await rag.drop_entity("Person")
+        with pytest.raises(ValueError, match=r"'hr.csv' \(Link WORKS_AT\)"):
+            await rag.drop_entity("Organization")
+        assert (await rag.query("MATCH (p:Person) RETURN count(p)")) == [[1]]
+
+        await rag.drop_table("hr.csv")
+        dropped = await rag.drop_entity("Person")
+        assert not any(e.label == "Person" for e in dropped.entities)
+        await rag.close()
+
+
+class TestTwoFirstTouchesOnOneGraph:
+    async def test_concurrent_first_ingests_store_each_mapping_once(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """``asyncio.gather(ingest(hr), ingest(orgs))`` on a fresh graph.
+
+        Both saw the init flag unset and both registered; the store's MERGE is
+        not atomic across writers, so one source ended up with two
+        ``:TableMapping`` nodes and every later load raised. Initialisation and
+        registration are serialised now, and a fresh process must open the graph.
+        """
+        import asyncio
+
+        hr = TableMapping(source="hr.csv", label="Person", key="employee_id", name="full_name")
+        orgs = TableMapping(source="orgs.csv", label="Organization", key="org_id", name="name")
+        onto = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Organization")], tables=[hr, orgs]
+        )
+        rag = real_falkordb_rag_factory(llm=llm, resolver=resolver, ontology=onto)
+        hr_path = tmp_path / "hr.csv"
+        hr_path.write_text("employee_id,full_name\nE-1,Maya Ellison\n")
+        orgs_path = tmp_path / "orgs.csv"
+        orgs_path.write_text("org_id,name\nO-1,Acme\n")
+
+        await asyncio.gather(rag.ingest(str(hr_path)), rag.ingest(str(orgs_path)))
+
+        nodes = await rag._ontology_store._query(
+            "MATCH (t:TableMapping) RETURN t.source, count(t) ORDER BY t.source"
+        )
+        assert nodes.result_set == [["hr.csv", 1], ["orgs.csv", 1]]
+        again = real_falkordb_rag_factory(llm=llm, resolver=resolver, connection=rag._conn)
+        assert sorted(m.source for m in (await again.get_ontology()).tables) == [
+            "hr.csv",
+            "orgs.csv",
+        ]
+        await rag.close()
+        await again.close()
+
+
+class TestALinkTargetHasOneKey:
+    async def test_a_link_to_a_label_keyed_two_ways_is_refused_at_first_touch(
+        self, real_falkordb_rag_factory, llm, resolver, tmp_path
+    ):
+        """A ``Link`` resolves through unsigned ``entity_key``; two tables keying
+        ``Person`` by different columns left it set by whichever loaded last, so a
+        foreign key found Maya or a placeholder by ingest order. Refused with all
+        three named. The two tables without the link stay a supported shape."""
+        hr = TableMapping(source="hr.csv", label="Person", key="employee_id", name="full_name")
+        crm = TableMapping(source="crm.csv", label="Person", key="contact_id", name="name")
+        deals = TableMapping(
+            source="deals.csv",
+            label="Deal",
+            key="deal_id",
+            links=[Link("LEAD", to="Person", by="lead_id")],
+        )
+        entities = [Entity(label="Person"), Entity(label="Deal")]
+        rag = real_falkordb_rag_factory(
+            llm=llm,
+            resolver=resolver,
+            ontology=Ontology(entities=entities, tables=[hr, crm, deals]),
+        )
+        with pytest.raises(
+            OntologyContradictionError, match="'deals.csv' links to it by 'lead_id'"
+        ):
+            await rag.get_ontology()
+        await rag.close()
+
+        rag = real_falkordb_rag_factory(
+            llm=llm, resolver=resolver, ontology=Ontology(entities=entities[:1], tables=[hr, crm])
+        )
+        (tmp_path / "hr.csv").write_text("employee_id,full_name\nE-1,Maya Ellison\n")
+        (tmp_path / "crm.csv").write_text("contact_id,name\nC-7,Maya Ellison\n")
+        await rag.ingest(str(tmp_path / "hr.csv"))
+        await rag.ingest(str(tmp_path / "crm.csv"))
+        rows = await rag.query(
+            "MATCH (p:Person) RETURN p.name, p.hr__employee_id, p.crm__contact_id"
+        )
+        assert rows == [["Maya Ellison", "E-1", "C-7"]], "one person, both keys"
+        await rag.close()

@@ -173,6 +173,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI runs the FalkorDB-backed tests.** The integration job used to run one
+  file (`tests/test_integration.py`); the whole suite now runs with
+  `RUN_INTEGRATION=1`, so every test that needs a live graph is exercised on
+  every push rather than skipped.
+- **A label a `Link` points at has one key column.** Two tables may both
+  describe `Person` under their own keys and a person in both is one node
+  holding both; but a link to `Person` cannot tell which id space its column
+  means, so the declaration completing that shape — the second key, or the
+  link — is refused by `OntologyStore` naming all three, and a mapping proposal
+  that would complete it is sent back to the model.
+- **`drop_entity()` refuses a label a table maps rows to or links to**, naming
+  the table and pointing at `drop_table()`: the mapping would re-register the
+  label on the next load, so the drop could only be undone.
 - **`finalize()` calls the model by default.** It used to deduplicate on exact
   names only. It now also runs `LLMVerifiedResolution` over the whole graph —
   one embedding pass, then one model call per close pair, each pair asked once —
@@ -230,6 +243,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MDX/link validation in CI.
 
 ### Fixed
+- `rename_entity()` on a label a table maps rows to left the stored ontology
+  reading `entities=[Human]`, `tables=[hr.csv -> Person]` — a shape the
+  validator refuses on every later `load()`, from every entry point, in every
+  process, until `delete_all()`. The rename now follows through to the stored
+  `TableMapping`, its links and link columns, and the next export re-syncs its
+  rows under the new label.
+- Two first touches of one graph at once (`asyncio.gather(ingest(hr),
+  ingest(orgs))`, or two workers) both initialised the ontology and left one
+  source with two `:TableMapping` nodes, after which every load raised.
+  Initialisation and registration are serialised per event loop; the store
+  collapses a duplicated mapping node on the next registration and reads such
+  a graph once per source meanwhile, and a malformed stored mapping is skipped
+  with a warning instead of raising out of `load()`.
+- A second *proposed* mapping whose file reduced to an already-proposed
+  signature (`HR.csv` after `hr.csv`) retired the first as if it were a
+  declaration, took over its `hr__*` columns, and its re-sync stripped the
+  first table's rows to their ids. Only a declaration retires a proposal; the
+  second proposal is refused by the signature check like any other table.
+- Two links from one table by the same column to two labels collapsed to one
+  on reload (`to` was not part of a stored link's identity), reporting
+  `mapping_changed` forever; and link order read back from the graph was
+  nondeterministic, so an unchanged export re-synced in about half of fresh
+  processes. Links are keyed by `(type, to, by)` and read in sorted order.
+- `finalize()` compared every pair of same-label names to find probable
+  duplicates: 12 s at 1k entities under one label, skipped outright at 5k.
+  Names are now blocked by their comparable tokens and only names sharing a
+  block are compared — the same pairs, under a second at 5k.
+- A merge kept the survivor's description even when the deleted node's was
+  the longer one (the paragraph from the PDF, lost to the row's template
+  line). The longer description is carried.
 - Re-ingesting the same file no longer duplicates its chunks. Chunk ids are
   now derived from document id + position + text instead of a fresh
   `uuid4()`, so `MERGE` finds the existing node (17 → 17 → 17 chunks across

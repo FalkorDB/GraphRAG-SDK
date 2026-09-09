@@ -37,6 +37,7 @@ from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import
 from graphrag_sdk.storage.deduplicator import (
     _clusters,
     _mentions_two_rows_could_own,
+    properties_to_carry,
     union_chunk_ids,
 )
 
@@ -685,3 +686,33 @@ class TestUnionChunkIds:
         assert union_chunk_ids(["c1"], "c2") == ["c1"]
         assert union_chunk_ids(["c1", 7, None], [3]) == ["c1"]
         assert union_chunk_ids(None, None) == []
+
+
+class TestWhatAMergeKeeps:
+    """``properties_to_carry``: the survivor's value wins, except the description.
+
+    The survivor is the keyed or better-connected node, which is usually the row —
+    and a row's description is a template line where the prose entity's is the
+    paragraph the reader wanted. The longer one stays; nothing else changes.
+    """
+
+    NEVER = frozenset({"id", "embedding"})
+
+    def test_the_longer_description_is_kept_whichever_node_had_it(self):
+        keep = {"id": "a", "description": "An engineer.", "age": 34}
+        dup = {"id": "b", "description": "An engineer who led the remediation plan in 2024."}
+        carried = properties_to_carry(keep, dup, never=self.NEVER)
+        assert carried == {"description": dup["description"]}
+
+        carried = properties_to_carry(dup, keep, never=self.NEVER)
+        assert carried == {"age": 34}, "the survivor's longer description is not replaced"
+
+    def test_every_other_value_on_the_survivor_still_wins(self):
+        keep = {"id": "a", "name": "Maya Ellison", "age": 34, "embedding": [0.1]}
+        dup = {"id": "b", "name": "M. Ellison", "age": 35, "embedding": [0.2], "role": "CTO"}
+        assert properties_to_carry(keep, dup, never=self.NEVER) == {"role": "CTO"}
+
+    def test_a_blank_description_on_the_survivor_is_filled(self):
+        keep = {"id": "a", "description": ""}
+        dup = {"id": "b", "description": "Something."}
+        assert properties_to_carry(keep, dup, never=self.NEVER) == {"description": "Something."}

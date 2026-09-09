@@ -374,6 +374,9 @@ class GraphRAG:
         self._mapping_changes: set[str] = set()
         # Natural mappings built for tables nobody declared, by basename.
         self._natural_mappings: dict[str, TableMapping] = {}
+        # Serialises the ontology writers; see _ontology_lock().
+        self._ontology_write_lock: asyncio.Lock | None = None
+        self._ontology_write_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def _global_ontology(self) -> Ontology:
@@ -485,9 +488,37 @@ class GraphRAG:
         introduce a new label between ingest passes), call
         :py:meth:`set_ontology` — it swaps the ontology and re-runs this
         method cleanly.
+
+        Serialised. Two coroutines touching a fresh graph together —
+        ``asyncio.gather(ingest(hr), ingest(orgs))`` — both saw the flag unset,
+        both loaded an empty ontology and both registered, and the store's MERGE
+        is not atomic across writers: measured as two ``:TableMapping`` nodes for
+        one source, which every later ``load()`` read as a self-contradicting
+        mapping. The second arrival now waits for the first and finds the flag
+        set.
         """
         if self._ontology_initialized:
             return
+        async with self._ontology_lock():
+            if self._ontology_initialized:
+                return
+            await self._initialize_ontology()
+
+    def _ontology_lock(self) -> asyncio.Lock:
+        """The lock every writer of the ontology graph takes.
+
+        Bound to the running loop, and remade when that changes: the ``*_sync``
+        wrappers run each call under a fresh ``asyncio.run()``, and a lock that
+        once waited on one loop raises when acquired from another.
+        """
+        loop = asyncio.get_running_loop()
+        if self._ontology_write_lock is None or self._ontology_write_loop is not loop:
+            self._ontology_write_lock = asyncio.Lock()
+            self._ontology_write_loop = loop
+        return self._ontology_write_lock
+
+    async def _initialize_ontology(self) -> None:
+        """The body of :meth:`_ensure_ontology_initialized`; the caller holds the lock."""
         loaded = await self._ontology_store.load()
         # The user's mappings if they supplied any, else whatever the graph
         # already holds. Held aside because the generic register() below must not
@@ -527,7 +558,9 @@ class GraphRAG:
         # produced. Registered here, so declaring a mapping and ingesting the PDF
         # first is not a different graph from doing it the other way round.
         for mapping in declared_tables:
-            self._global_ontology = await self._register_structured_ontology(ontology_for(mapping))
+            self._global_ontology = await self._register_structured_ontology_locked(
+                ontology_for(mapping)
+            )
 
         self._ontology_initialized = True
 
@@ -843,6 +876,11 @@ class GraphRAG:
         Data migration runs first (relabels every ``:old`` node to
         ``:new``) so a crash between the two leaves the data graph
         already migrated; re-running is idempotent.
+
+        A table mapping that names the label — as the type of its rows or the
+        target of a ``Link`` — is renamed with it, so the stored ontology stays
+        one the validator accepts and the table's next re-sync finds its rows
+        under the new label by their signed key.
         """
         await self._ensure_ontology_initialized()
         if not any(e.label == old for e in self._global_ontology.entities):
@@ -856,6 +894,12 @@ class GraphRAG:
             )
         nodes_moved = await self._graph_store.rename_label(old, new)
         await self._ontology_store.rename_entity_label(old, new)
+        # Proposals memoised for tables nobody declared name the old label too.
+        # They are stored, so the next lookup finds the renamed one in the
+        # ontology before it reaches this cache; dropped rather than left stale.
+        for basename, mapping in list(self._natural_mappings.items()):
+            if mapping.label == old or any(link.to == old for link in mapping.links):
+                del self._natural_mappings[basename]
         logger.info("rename_entity %s → %s: %d data nodes relabelled", old, new, nodes_moved)
         return await self._refresh_global_ontology()
 
@@ -964,10 +1008,26 @@ class GraphRAG:
         label (cascading their incident RELATES edges) and removes the
         entity (and any relation patterns referencing it) from the
         ontology graph.
+
+        Refused while a table mapping names the label, as the type of its
+        rows or the target of a ``Link``. The mapping is a declaration that the
+        label exists and is registered again on every first touch, so the drop
+        would delete every node the table described and then be undone at the
+        next start. Drop the table first with :meth:`drop_table`, or rename the
+        label with :meth:`rename_entity`.
         """
         await self._ensure_ontology_initialized()
         if not any(e.label == label for e in self._global_ontology.entities):
             raise ValueError(f"Unknown entity label: {label!r}")
+        naming = self._global_ontology.tables_naming(label)
+        if naming:
+            detail = "; ".join(f"{source!r} ({how})" for source, how in sorted(naming.items()))
+            raise ValueError(
+                f"Entity {label!r} is declared by a table mapping: {detail}. Dropping it "
+                f"would delete the table's nodes and be undone when the mapping is "
+                f"registered again. drop_table() the source first, or "
+                f"rename_entity() the label."
+            )
         nodes_deleted = await self._graph_store.delete_nodes_by_label(label)
         await self._ontology_store.drop_entity_label(label)
         logger.info("drop_entity %s: %d data nodes deleted", label, nodes_deleted)
@@ -2013,6 +2073,15 @@ class GraphRAG:
         return os.path.basename(os.path.normpath(mapping.source))
 
     async def _register_structured_ontology(self, incoming: Ontology) -> Ontology:
+        """:meth:`_register_structured_ontology_locked` under the ontology lock.
+
+        Registration reads the stored ontology, decides against it and writes;
+        two of them interleaved decide against a state the other is changing.
+        """
+        async with self._ontology_lock():
+            return await self._register_structured_ontology_locked(incoming)
+
+    async def _register_structured_ontology_locked(self, incoming: Ontology) -> Ontology:
         """Merge a mapping's ontology into the persisted one, additively.
 
         ``register()`` deliberately refuses to add properties or patterns to a
@@ -2243,12 +2312,23 @@ class GraphRAG:
         handed back under the declaration's own source string so the
         reconciliation that follows sees it as the previous version of the same
         table and cleans up after it.
+
+        Only a *declaration* retires a proposal. A second proposal that reduces
+        to the same signature — ``HR.csv`` after ``hr.csv`` — is a different file
+        nobody has vouched for, and letting it take over would strip the first
+        table's rows to their ids and leave its Document behind. It falls
+        through to the store's signature check and is refused there, by name.
         """
         by_signature = {mapping.signature: mapping for mapping in existing.tables}
         retired: dict[str, TableMapping] = {}
         for mapping in incoming.tables:
             prior = by_signature.get(mapping.signature)
-            if prior is None or prior.source == mapping.source or not prior.derived:
+            if (
+                prior is None
+                or prior.source == mapping.source
+                or not prior.derived
+                or mapping.derived
+            ):
                 continue
             await self._ontology_store.drop_table_mapping(prior.source)
             retired[prior.source] = dataclasses.replace(prior, source=mapping.source)

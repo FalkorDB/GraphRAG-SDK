@@ -719,6 +719,25 @@ class Ontology(DataModel):
             }
         )
 
+    def tables_naming(self, label: str) -> dict[str, str]:
+        """``source -> how`` for every mapping that names ``label``.
+
+        A mapping names a label as the type of its rows or as the target of a
+        ``Link``. Either way it is a declaration that the label exists, and it
+        is registered again on every first touch — so an entity dropped from
+        under it comes back at the next start, after every node it described
+        was deleted. :meth:`GraphRAG.drop_entity` refuses on this instead.
+        """
+        naming: dict[str, str] = {}
+        for mapping in self.tables:
+            if mapping.label == label:
+                naming[mapping.source] = "its rows"
+                continue
+            links = sorted(link.type for link in mapping.links if link.to == label)
+            if links:
+                naming[mapping.source] = "Link " + ", ".join(links)
+        return naming
+
 
 # ── Extraction / Resolution Output Types ─────────────────────────
 
