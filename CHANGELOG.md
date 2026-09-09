@@ -86,6 +86,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changing the ontology, chunker, extractor or model (for example to adopt
   the new 384-token default below); `update_sync()` takes the same flag.
 
+- **`redis` 8.1 broke the first query on every fresh install** —
+  `falkordb`'s cluster probe forwarded async-pool kwargs to the sync
+  `redis.Redis()` constructor, which rejects them. Fixed upstream in
+  `falkordb` 1.7.0, so the floor moves to `falkordb>=1.7` — the old
+  `>=1.0` still allowed 1.6.x to resolve against the broken redis.
+- Fixed vector-search ordering so chunk, entity, and relationship searches use
+  similarity scores, with higher values indicating closer matches.
+
 ### Changed
 
 - Default chunk size lowered from 512 to 384 tokens in
@@ -98,11 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   53k-token corpus — and ~19 % more input tokens, since the per-call
   instructions are re-sent once per chunk. Pass
   `max_tokens=512` to keep the old size.
-- Fixed vector-search ordering so chunk, entity, and relationship searches use
-  similarity scores, with higher values indicating closer matches.
-
-### Changed
-
 - Documentation migrated from MkDocs to [Mintlify](https://mintlify.com) and
   published at <https://docs.falkordb.com/graphrag>, where GraphRAG SDK now
   appears as a product in the FalkorDB docs product switcher. Pages moved from
