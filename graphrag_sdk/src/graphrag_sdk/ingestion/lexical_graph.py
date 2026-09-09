@@ -22,6 +22,21 @@ from graphrag_sdk.core.models import (
 )
 
 
+def _reported_short(reported: Any, expected: int) -> bool:
+    """True when a store reported writing fewer items than it was handed.
+
+    ``GraphStore.upsert_relationships`` and ``VectorStore.index_chunks`` do
+    not raise on per-item failures — they log, skip and return a count — so
+    the count is the only signal that a relationship or an embedding is
+    missing. Stores that return nothing (``None``, a mock) are taken at their
+    word: ``index_chunks`` returns ``None`` when no embedder is configured
+    (nothing was attempted, so nothing is missing), and the pipeline cannot
+    tell and must not refuse to ever mark a run complete against a
+    duck-typed store.
+    """
+    return isinstance(reported, int) and not isinstance(reported, bool) and reported < expected
+
+
 class LexicalGraphWriter:
     """Writes the Document to Chunk provenance chain, and entity mentions.
 
@@ -43,7 +58,7 @@ class LexicalGraphWriter:
         *,
         content_hash: str | None = None,
         link_sequential: bool = True,
-    ) -> None:
+    ) -> str | None:
         """Build the mandatory provenance chain.
 
         Creates:
@@ -61,9 +76,16 @@ class LexicalGraphWriter:
         model NEXT_CHUNK means "the next sequential Chunk", so chaining unrelated
         rows would assert a sequence that does not exist.
 
-        ``content_hash`` is the SHA-256 of the loaded source text. When
-        present it is written to the Document node so ``GraphRAG.update()``
-        can short-circuit no-op updates without re-running extraction.
+        ``content_hash`` is the SHA-256 of the loaded source. When present it
+        is written to the Document node so ``GraphRAG.update()`` can
+        short-circuit no-op updates without re-running the write. The prose
+        pipeline leaves it ``None`` and records the hash last, once every
+        write has been reported complete; the structured pipeline writes it
+        here because its Document is the table's state and a re-sync to a
+        Document without a hash cannot complete its cutover.
+
+        Returns ``None`` when every edge was reported written, else a short
+        description of the shortfall for the caller to record.
         """
         # Document node
         doc_props: dict[str, Any] = {
@@ -120,24 +142,31 @@ class LexicalGraphWriter:
             prev_chunk_id = chunk.uid
 
         await self.graph_store.upsert_nodes(chunk_nodes)
-        await self.graph_store.upsert_relationships(part_of_rels + next_chunk_rels)
+        lexical_rels = part_of_rels + next_chunk_rels
+        written = await self.graph_store.upsert_relationships(lexical_rels)
 
         ctx.log(
             f"Lexical graph: 1 Document, {len(chunk_nodes)} Chunks, "
             f"{len(part_of_rels)} PART_OF, {len(next_chunk_rels)} NEXT_CHUNK"
         )
+        if _reported_short(written, len(lexical_rels)):
+            return f"lexical edges {written}/{len(lexical_rels)}"
+        return None
 
-    async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> int:
+    async def _write_mentions(self, graph_data: GraphData, ctx: Context) -> tuple[int, str | None]:
         """Write MENTIONED_IN edges linking entities to their source chunks.
 
         Every entity connects to every chunk it was extracted from (uncapped).
         With global dedup controlling entity cardinality, uncapped mentions
         provide richer entity-chunk connectivity for retrieval.
+
+        Returns ``(edges attempted, shortfall)`` where ``shortfall`` is ``None``
+        when the store reported every edge written.
         """
         mentions: list[EntityMention] = graph_data.mentions or []
 
         if not mentions:
-            return 0
+            return 0, None
 
         seen: set[tuple[str, str]] = set()
         mention_rels: list[GraphRelationship] = []
@@ -153,6 +182,8 @@ class LexicalGraphWriter:
                     type="MENTIONED_IN",
                 )
             )
-        await self.graph_store.upsert_relationships(mention_rels)
+        written = await self.graph_store.upsert_relationships(mention_rels)
         ctx.log(f"Wrote {len(mention_rels)} MENTIONED_IN edges (uncapped)")
-        return len(mention_rels)
+        if _reported_short(written, len(mention_rels)):
+            return len(mention_rels), f"mentions {written}/{len(mention_rels)}"
+        return len(mention_rels), None

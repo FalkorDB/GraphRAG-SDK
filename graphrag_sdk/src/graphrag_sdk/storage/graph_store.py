@@ -1006,10 +1006,16 @@ class GraphStore:
         pending_id: str,
         real_id: str,
         path: str,
-        content_hash: str,
+        content_hash: str | None,
     ) -> int:
         """Replay the cutover from a (possibly partial) COMMITTED state
         to FINAL. Idempotent — every operation is safe to re-run.
+
+        ``content_hash=None`` promotes the pending *without* certifying it:
+        the canonical Document ends up with no ``content_hash`` (any hash the
+        pending carried is removed), so the next ``ingest()``/``update()`` of
+        that content re-runs in full instead of short-circuiting. Callers
+        pass ``None`` when the pipeline reported incomplete writes.
 
         Sequence:
           0. Precondition: pending_id must still exist. On a successful
@@ -1060,17 +1066,24 @@ class GraphStore:
         # 3. Promote pending → canonical id and remove the commit marker.
         # ``REMOVE p.ready_to_commit`` is the idiomatic way to drop a
         # property; on a replay where the rename already happened this
-        # MATCH finds nothing and the whole statement is a no-op.
+        # MATCH finds nothing and the whole statement is a no-op. With no
+        # hash to certify, ``content_hash`` is removed rather than set so
+        # the promoted Document never inherits a stale one.
+        params: dict[str, Any] = {
+            "pending_id": pending_id,
+            "real_id": real_id,
+            "path": path,
+        }
+        set_clause = "SET p.id = $real_id, p.path = $path"
+        remove_clause = "REMOVE p.ready_to_commit"
+        if content_hash is None:
+            remove_clause += ", p.content_hash"
+        else:
+            set_clause += ", p.content_hash = $hash"
+            params["hash"] = content_hash
         await self._conn.query(
-            "MATCH (p:Document {id: $pending_id}) "
-            "SET p.id = $real_id, p.path = $path, p.content_hash = $hash "
-            "REMOVE p.ready_to_commit",
-            {
-                "pending_id": pending_id,
-                "real_id": real_id,
-                "path": path,
-                "hash": content_hash,
-            },
+            f"MATCH (p:Document {{id: $pending_id}}) {set_clause} {remove_clause}",
+            params,
         )
         return chunks_removed
 
