@@ -1,6 +1,7 @@
 """Tests for api/main.py — the GraphRAG Facade."""
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +21,7 @@ from graphrag_sdk.core.models import (
     DeleteDocumentResult,
     GraphData,
     IngestionResult,
+    Ontology,
     RagResult,
     RawSearchResult,
     RetrieverResult,
@@ -1255,6 +1257,70 @@ class TestSameEmbeddingModel:
         from graphrag_sdk.api.main import _same_embedding_model
 
         assert _same_embedding_model(stored, current) is False
+
+
+class TestGraphRAGConcurrentLazyInitialization:
+    async def test_ontology_initialization_is_single_flight(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        load_started = asyncio.Event()
+        release_load = asyncio.Event()
+
+        async def load_ontology():
+            load_started.set()
+            await release_load.wait()
+            return Ontology()
+
+        load = AsyncMock(side_effect=load_ontology)
+        register = AsyncMock(return_value=g.ontology)
+        g._ontology_store.load = load
+        g._ontology_store.register = register
+
+        tasks = [asyncio.create_task(g._ensure_ontology_initialized()) for _ in range(20)]
+        await load_started.wait()
+        await asyncio.sleep(0)
+        assert load.call_count == 1
+
+        release_load.set()
+        await asyncio.gather(*tasks)
+        assert register.call_count == 1
+        assert g._ontology_initialized is True
+
+    async def test_graph_config_validation_is_single_flight(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        query_started = asyncio.Event()
+        release_query = asyncio.Event()
+        probe_started = asyncio.Event()
+        release_probe = asyncio.Event()
+
+        async def query_config(*args, **kwargs):
+            query_started.set()
+            await release_query.wait()
+            return MagicMock(result_set=[])
+
+        async def probe_embedder(*args, **kwargs):
+            probe_started.set()
+            await release_probe.wait()
+            return [0.1] * 8
+
+        query = AsyncMock(side_effect=query_config)
+        probe = AsyncMock(side_effect=probe_embedder)
+        g._graph_store.query_raw = query
+        g.embedder.aembed_query = probe
+
+        tasks = [asyncio.create_task(g._validate_graph_config()) for _ in range(20)]
+        await query_started.wait()
+        await asyncio.sleep(0)
+        assert query.call_count == 1
+
+        release_query.set()
+        await probe_started.wait()
+        await asyncio.sleep(0)
+        assert query.call_count == 1
+        assert probe.call_count == 1
+
+        release_probe.set()
+        await asyncio.gather(*tasks)
+        assert g._config_validated is True
 
 
 class TestConfigProviderPrefix:

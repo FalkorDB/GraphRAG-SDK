@@ -290,6 +290,7 @@ class GraphRAG:
         self.ontology = ontology or Ontology()
         self._embedding_dimension = embedding_dimension
         self._config_validated = False
+        self._config_validation_lock = asyncio.Lock()
 
         # Storage layer
         self._graph_store = GraphStore(self._conn)
@@ -309,6 +310,7 @@ class GraphRAG:
         # Lazy-init flag; the first async call that needs the ontology fires
         # ``_ensure_ontology_initialized()`` to load + register the user's ontology.
         self._ontology_initialized = False
+        self._ontology_init_lock = asyncio.Lock()
         # Working ontology used by retrieval; populated by ``_ensure_ontology_initialized()``.
         self._global_ontology: Ontology = self.ontology
 
@@ -412,26 +414,29 @@ class GraphRAG:
         """
         if self._ontology_initialized:
             return
-        loaded = await self._ontology_store.load()
-        if self.ontology.entities or self.ontology.relations:
-            self._global_ontology = await self._ontology_store.register(self.ontology)
-        elif loaded.entities or loaded.relations:
-            self._global_ontology = loaded
-        else:
-            default_schema = Ontology(
-                entities=[Entity(label=label) for label in DEFAULT_ENTITY_TYPES],
-            )
-            logger.info(
-                "No ontology supplied and ontology graph is empty; seeding "
-                "DEFAULT_ENTITY_TYPES (%s) into the ontology. To customize "
-                "properties for these labels, pass ontology=... on first ingest "
-                "or delete_all() and re-ingest with a custom ontology.",
-                ", ".join(DEFAULT_ENTITY_TYPES),
-            )
-            self._global_ontology = await self._ontology_store.register(default_schema)
-        if hasattr(self._retrieval_strategy, "_ontology"):
-            self._retrieval_strategy._ontology = self._global_ontology
-        self._ontology_initialized = True
+        async with self._ontology_init_lock:
+            if self._ontology_initialized:
+                return
+            loaded = await self._ontology_store.load()
+            if self.ontology.entities or self.ontology.relations:
+                self._global_ontology = await self._ontology_store.register(self.ontology)
+            elif loaded.entities or loaded.relations:
+                self._global_ontology = loaded
+            else:
+                default_schema = Ontology(
+                    entities=[Entity(label=label) for label in DEFAULT_ENTITY_TYPES],
+                )
+                logger.info(
+                    "No ontology supplied and ontology graph is empty; seeding "
+                    "DEFAULT_ENTITY_TYPES (%s) into the ontology. To customize "
+                    "properties for these labels, pass ontology=... on first ingest "
+                    "or delete_all() and re-ingest with a custom ontology.",
+                    ", ".join(DEFAULT_ENTITY_TYPES),
+                )
+                self._global_ontology = await self._ontology_store.register(default_schema)
+            if hasattr(self._retrieval_strategy, "_ontology"):
+                self._retrieval_strategy._ontology = self._global_ontology
+            self._ontology_initialized = True
 
     async def get_ontology(self) -> Ontology:
         """Return the persisted global ontology.
@@ -725,7 +730,8 @@ class GraphRAG:
     async def rename_attribute(self, owner_label: str, old_name: str, new_name: str) -> Ontology:
         """Rename an attribute on an entity in data + ontology, atomically.
 
-        Validates that ``old_name`` exists and ``new_name`` does not before
+        Validates that ``old_name`` exists and `
+ew_name`` does not before
         touching either graph — without this guard a typo silently no-ops
         the rename, and a collision with an existing attribute would
         overwrite values on the data graph.
@@ -1527,7 +1533,8 @@ class GraphRAG:
         Path normalization collapses ``./``, ``../``, and double slashes
         so the same logical path always yields the same id, regardless of
         how the caller spelled it; sources with a URI scheme are not
-        touched, since ``normpath`` would rewrite them. Text mode hashes the text (SHA-256, 64
+        touched, since `
+ormpath`` would rewrite them. Text mode hashes the text (SHA-256, 64
         bits) so ingesting the same text twice is the same document — and
         therefore a no-op on the second call, like a file — instead of a
         fresh random ``text-<uuid>`` per call. Two different texts collide
@@ -1731,11 +1738,15 @@ class GraphRAG:
         Apply accepted parts of the proposal via the existing mutation
         API:
 
-        - ``new_entities`` → :py:meth:`add_entity`
-        - ``new_relations`` → :py:meth:`add_relation_pattern`
+        - `
+ew_entities`` → :py:meth:`add_entity`
+        - `
+ew_relations`` → :py:meth:`add_relation_pattern`
           (called once per pattern in the new relation)
-        - ``new_patterns`` → :py:meth:`add_relation_pattern`
-        - ``new_attributes`` → :py:meth:`add_attribute`
+        - `
+ew_patterns`` → :py:meth:`add_relation_pattern`
+        - `
+ew_attributes`` → :py:meth:`add_attribute`
           (atomic — LLM-backfilled across existing chunks)
 
         Example::
@@ -2105,8 +2116,10 @@ class GraphRAG:
 
         Returns:
             ``UpdateResult`` — extends ``IngestionResult`` with
-            ``chunks_deleted``, ``entities_deleted``, ``no_op``, and
-            ``replaced_existing``. ``no_op=True`` means the content hash
+            ``chunks_deleted``, ``entities_deleted``, `
+o_op``, and
+            ``replaced_existing``. `
+o_op=True`` means the content hash
             matched and nothing was written. ``replaced_existing=False``
             means ``if_missing="ingest"`` fell through to a fresh ingest
             because the id was unknown.
@@ -2985,85 +2998,88 @@ class GraphRAG:
         """
         if self._config_validated:
             return
+        async with self._config_validation_lock:
+            if self._config_validated:
+                return
 
-        try:
+            try:
+                if ctx is not None:
+                    ctx.ensure_budget("graph config query")
+                result = await self._graph_store.query_raw(
+                    "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
+                    "RETURN c.embedding_model, c.embedding_dimension"
+                )
+                if result.result_set:
+                    stored_model = result.result_set[0][0]
+                    stored_dim = result.result_set[0][1]
+                    current_model = self.embedder.model_name
+
+                    if stored_model and not _same_embedding_model(stored_model, current_model):
+                        raise ConfigError(
+                            f"Embedding model mismatch: graph was built with "
+                            f"'{stored_model}' but current embedder is "
+                            f"'{current_model}'. Use the same embedding model "
+                            f"to query this graph."
+                        )
+                    if stored_dim and stored_dim != self._embedding_dimension:
+                        raise ConfigError(
+                            f"Embedding dimension mismatch: graph was built with "
+                            f"dimension {stored_dim} but current config is "
+                            f"{self._embedding_dimension}."
+                        )
+            except ConfigError:
+                raise
+            except LatencyBudgetExceededError:
+                raise
+            except Exception:
+                # Don't mark as validated on transient failures — retry next call.
+                logger.debug("Failed to validate graph config", exc_info=True)
+                return
+
+            # Probe the embedder once: confirm it produces vectors of the
+            # configured dimension. Catches user error like
+            # ``embedding_dimension=256`` paired with a 1536-dim model.
             if ctx is not None:
-                ctx.ensure_budget("graph config query")
-            result = await self._graph_store.query_raw(
-                "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
-                "RETURN c.embedding_model, c.embedding_dimension"
-            )
-            if result.result_set:
-                stored_model = result.result_set[0][0]
-                stored_dim = result.result_set[0][1]
-                current_model = self.embedder.model_name
-
-                if stored_model and not _same_embedding_model(stored_model, current_model):
-                    raise ConfigError(
-                        f"Embedding model mismatch: graph was built with "
-                        f"'{stored_model}' but current embedder is "
-                        f"'{current_model}'. Use the same embedding model "
-                        f"to query this graph."
-                    )
-                if stored_dim and stored_dim != self._embedding_dimension:
-                    raise ConfigError(
-                        f"Embedding dimension mismatch: graph was built with "
-                        f"dimension {stored_dim} but current config is "
-                        f"{self._embedding_dimension}."
-                    )
-        except ConfigError:
-            raise
-        except LatencyBudgetExceededError:
-            raise
-        except Exception:
-            # Don't mark as validated on transient failures — retry next call.
-            logger.debug("Failed to validate graph config", exc_info=True)
-            return
-
-        # Probe the embedder once: confirm it produces vectors of the
-        # configured dimension. Catches user error like
-        # ``embedding_dimension=256`` paired with a 1536-dim model.
-        if ctx is not None:
-            ctx.ensure_budget("graph config embedder probe")
-        try:
-            probe = await self.embedder.aembed_query(
-                "dim_check",
-                timeout=(
-                    ctx.provider_timeout_seconds("graph config embedder probe")
-                    if ctx is not None
-                    else None
-                ),
-            )
-        except LatencyBudgetExceededError:
-            raise
-        except Exception:
-            # Probe failure is non-fatal — but don't cache a "validated"
-            # state, otherwise a transient outage permanently disables
-            # the dim check for this instance. Return so the next call
-            # retries the probe once the underlying issue clears.
-            logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
-            return
-        else:
-            if not probe:
-                # Empty list / None means the embedder produced nothing for
-                # a real input. That's a misbehaving embedder — fail fast
-                # rather than silently flipping ``_config_validated`` and
-                # writing an unusable graph downstream.
-                raise ConfigError(
-                    f"Embedder probe returned an empty vector for "
-                    f"'{self.embedder.model_name}'. The embedder is not "
-                    f"producing usable output."
+                ctx.ensure_budget("graph config embedder probe")
+            try:
+                probe = await self.embedder.aembed_query(
+                    "dim_check",
+                    timeout=(
+                        ctx.provider_timeout_seconds("graph config embedder probe")
+                        if ctx is not None
+                        else None
+                    ),
                 )
-            if len(probe) != self._embedding_dimension:
-                raise ConfigError(
-                    f"embedding_dimension={self._embedding_dimension} was "
-                    f"configured, but the embedder ('{self.embedder.model_name}') "
-                    f"produces {len(probe)}-dim vectors. Either pass "
-                    f"embedding_dimension={len(probe)} or configure the "
-                    f"embedder to produce {self._embedding_dimension} dims."
-                )
+            except LatencyBudgetExceededError:
+                raise
+            except Exception:
+                # Probe failure is non-fatal — but don't cache a "validated"
+                # state, otherwise a transient outage permanently disables
+                # the dim check for this instance. Return so the next call
+                # retries the probe once the underlying issue clears.
+                logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
+                return
+            else:
+                if not probe:
+                    # Empty list / None means the embedder produced nothing for
+                    # a real input. That's a misbehaving embedder — fail fast
+                    # rather than silently flipping ``_config_validated`` and
+                    # writing an unusable graph downstream.
+                    raise ConfigError(
+                        f"Embedder probe returned an empty vector for "
+                        f"'{self.embedder.model_name}'. The embedder is not "
+                        f"producing usable output."
+                    )
+                if len(probe) != self._embedding_dimension:
+                    raise ConfigError(
+                        f"embedding_dimension={self._embedding_dimension} was "
+                        f"configured, but the embedder ('{self.embedder.model_name}') "
+                        f"produces {len(probe)}-dim vectors. Either pass "
+                        f"embedding_dimension={len(probe)} or configure the "
+                        f"embedder to produce {self._embedding_dimension} dims."
+                    )
 
-        self._config_validated = True
+            self._config_validated = True
 
     # ── Answer Post-processing ─────────────────────────────────
 
