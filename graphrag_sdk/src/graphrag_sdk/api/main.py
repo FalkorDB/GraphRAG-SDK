@@ -2114,10 +2114,8 @@ class GraphRAG:
 
         Returns:
             ``UpdateResult`` — extends ``IngestionResult`` with
-            ``chunks_deleted``, ``entities_deleted``, `
-o_op``, and
-            ``replaced_existing``. `
-o_op=True`` means the content hash
+            ``chunks_deleted``, ``entities_deleted``, ``no_op``, and
+            ``replaced_existing``. ``no_op=True`` means the content hash
             matched and nothing was written. ``replaced_existing=False``
             means ``if_missing="ingest"`` fell through to a fresh ingest
             because the id was unknown.
