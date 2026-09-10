@@ -19,6 +19,7 @@ from graphrag_sdk.core.models import (
     ApplyChangesResult,
     ChatMessage,
     DeleteDocumentResult,
+    Entity,
     GraphData,
     IngestionResult,
     Ontology,
@@ -1321,6 +1322,38 @@ class TestGraphRAGConcurrentLazyInitialization:
         release_probe.set()
         await asyncio.gather(*tasks)
         assert g._config_validated is True
+
+    async def test_set_ontology_does_not_skip_newer_assignment(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        first = Ontology(entities=[Entity(label="First")])
+        second = Ontology(entities=[Entity(label="Second")])
+        register_started = asyncio.Event()
+        release_first_register = asyncio.Event()
+        registrations = []
+
+        g._ontology_store.load = AsyncMock(return_value=Ontology())
+
+        async def register_ontology(ontology):
+            registrations.append(ontology)
+            if len(registrations) == 1:
+                register_started.set()
+                await release_first_register.wait()
+            return ontology
+
+        g._ontology_store.register = AsyncMock(side_effect=register_ontology)
+
+        first_task = asyncio.create_task(g.set_ontology(first))
+        await register_started.wait()
+        second_task = asyncio.create_task(g.set_ontology(second))
+        await asyncio.sleep(0)
+        release_first_register.set()
+        await asyncio.gather(first_task, second_task)
+
+        assert registrations[0] is first
+        assert registrations[1] is second
+        assert g.ontology is second
+        assert g._global_ontology is second
+        assert g._ontology_initialized is True
 
 
 class TestConfigProviderPrefix:

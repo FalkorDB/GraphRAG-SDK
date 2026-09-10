@@ -311,6 +311,7 @@ class GraphRAG:
         # ``_ensure_ontology_initialized()`` to load + register the user's ontology.
         self._ontology_initialized = False
         self._ontology_init_lock = asyncio.Lock()
+        self._ontology_generation = 0
         # Working ontology used by retrieval; populated by ``_ensure_ontology_initialized()``.
         self._global_ontology: Ontology = self.ontology
 
@@ -417,6 +418,7 @@ class GraphRAG:
         async with self._ontology_init_lock:
             if self._ontology_initialized:
                 return
+            initialization_generation = self._ontology_generation
             loaded = await self._ontology_store.load()
             if self.ontology.entities or self.ontology.relations:
                 self._global_ontology = await self._ontology_store.register(self.ontology)
@@ -436,7 +438,8 @@ class GraphRAG:
                 self._global_ontology = await self._ontology_store.register(default_schema)
             if hasattr(self._retrieval_strategy, "_ontology"):
                 self._retrieval_strategy._ontology = self._global_ontology
-            self._ontology_initialized = True
+            if initialization_generation == self._ontology_generation:
+                self._ontology_initialized = True
 
     async def get_ontology(self) -> Ontology:
         """Return the persisted global ontology.
@@ -477,6 +480,7 @@ class GraphRAG:
         callers would have to reach into ``_ontology_initialized`` to force
         re-registration on an existing instance.
         """
+        self._ontology_generation += 1
         self.ontology = ontology
         self._ontology_initialized = False
         await self._ensure_ontology_initialized()
@@ -730,8 +734,7 @@ class GraphRAG:
     async def rename_attribute(self, owner_label: str, old_name: str, new_name: str) -> Ontology:
         """Rename an attribute on an entity in data + ontology, atomically.
 
-        Validates that ``old_name`` exists and `
-ew_name`` does not before
+        Validates that ``old_name`` exists and ``new_name`` does not before
         touching either graph — without this guard a typo silently no-ops
         the rename, and a collision with an existing attribute would
         overwrite values on the data graph.
@@ -1533,8 +1536,7 @@ ew_name`` does not before
         Path normalization collapses ``./``, ``../``, and double slashes
         so the same logical path always yields the same id, regardless of
         how the caller spelled it; sources with a URI scheme are not
-        touched, since `
-ormpath`` would rewrite them. Text mode hashes the text (SHA-256, 64
+        touched, since ``normpath`` would rewrite them. Text mode hashes the text (SHA-256, 64
         bits) so ingesting the same text twice is the same document — and
         therefore a no-op on the second call, like a file — instead of a
         fresh random ``text-<uuid>`` per call. Two different texts collide
@@ -1738,15 +1740,11 @@ ormpath`` would rewrite them. Text mode hashes the text (SHA-256, 64
         Apply accepted parts of the proposal via the existing mutation
         API:
 
-        - `
-ew_entities`` → :py:meth:`add_entity`
-        - `
-ew_relations`` → :py:meth:`add_relation_pattern`
+        - ``new_entities`` → :py:meth:`add_entity`
+        - ``new_relations`` → :py:meth:`add_relation_pattern`
           (called once per pattern in the new relation)
-        - `
-ew_patterns`` → :py:meth:`add_relation_pattern`
-        - `
-ew_attributes`` → :py:meth:`add_attribute`
+        - ``new_patterns`` → :py:meth:`add_relation_pattern`
+        - ``new_attributes`` → :py:meth:`add_attribute`
           (atomic — LLM-backfilled across existing chunks)
 
         Example::
