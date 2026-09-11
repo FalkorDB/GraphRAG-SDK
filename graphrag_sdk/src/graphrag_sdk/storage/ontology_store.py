@@ -63,6 +63,7 @@ from graphrag_sdk.core.models import (
     Entity,
     Ontology,
     Relation,
+    reject_reserved_labels,
 )
 
 OwnerKind = Literal["entity", "relation"]
@@ -283,6 +284,10 @@ class OntologyStore:
             raise TypeError("register() missing required argument: 'ontology'")
         if not ontology.entities and not ontology.relations:
             return await self.load()
+
+        # Refuse ``Document``/``Chunk`` before anything is persisted: a stored
+        # reserved label would make every later ingest fail mid-pipeline.
+        reject_reserved_labels(e.label for e in ontology.entities)
 
         existing = await self.load()
         self._check_no_contradictions(existing, ontology)

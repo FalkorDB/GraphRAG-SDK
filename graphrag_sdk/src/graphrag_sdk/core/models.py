@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
+from collections.abc import Iterable
 from enum import Enum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
@@ -30,6 +33,50 @@ class DataModel(BaseModel):
 
 
 # ── Graph Data Types ─────────────────────────────────────────────
+
+
+#: Node labels the graph store reserves for corpus bookkeeping. They must not
+#: be used as entity types: an entity carrying one of these labels corrupts
+#: document-level queries and is never marked ``__Entity__``, so it silently
+#: disappears from deduplication and retrieval. Single source of truth for
+#: ``GraphStore._STRUCTURAL_LABELS``, the Cypher generator's label allow-list
+#: and :py:func:`reject_reserved_labels`.
+RESERVED_NODE_LABELS: frozenset[str] = frozenset({"Chunk", "Document"})
+
+
+def reject_reserved_labels(types: Iterable[str]) -> list[str]:
+    """Reject entity types that collide with the store's structural labels.
+
+    ``Document`` and ``Chunk`` are used by the graph store for corpus
+    bookkeeping. An extracted entity carrying one of those labels fails two
+    ways at once, both silently:
+
+    1. Document-level queries (``MATCH (p:Document) ...``) start returning
+       extracted entities, so document counts and lookups are wrong. This was
+       found in the field as an 11-document corpus reporting 106 documents.
+    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
+       label is *not* structural, so the node never receives ``__Entity__``
+       and is dropped from deduplication and retrieval. It is written, then
+       ignored.
+
+    Neither failure raises, so the graph just quietly degrades. Fail here
+    instead, before the label is persisted anywhere, where the caller can act
+    on it. The match is exact, like the store's own membership test and
+    FalkorDB's labels: ``document`` is a distinct (if confusing) label that
+    the store handles correctly, so it is not rejected.
+    """
+    types = list(types)
+    clashes = sorted({str(t).strip() for t in types if str(t).strip() in RESERVED_NODE_LABELS})
+    if clashes:
+        raise ValueError(
+            f"Entity label(s) {clashes} clash with the reserved label(s) "
+            f"{sorted(RESERVED_NODE_LABELS)}, which are used internally for corpus "
+            "bookkeeping; reusing them silently corrupts document counts and "
+            "removes the entity from deduplication and retrieval. "
+            "Rename the type (e.g. 'Document' -> 'Publication', "
+            "'Chunk' -> 'TextSegment')."
+        )
+    return types
 
 
 class GraphNode(DataModel):
@@ -91,6 +138,48 @@ class TextChunks(DataModel):
     """Collection of text chunks from a single document."""
 
     chunks: list[TextChunk] = Field(default_factory=list)
+
+
+_URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def stable_document_id(source: str) -> str:
+    """Document node id for a loader ``source`` when the caller gives none.
+
+    Filesystem paths are normalised (``./``, ``../``, doubled slashes) so the
+    same file spelled two ways is one document. Anything with a URI scheme
+    (``https://``, ``s3://`` …) is returned verbatim: ``os.path.normpath`` would
+    collapse ``https://`` to ``https:/`` and resolve ``..`` inside the query
+    string, merging distinct URLs into one id.
+    """
+    if _URI_SCHEME.match(source):
+        return source
+    return os.path.normpath(source)
+
+
+# Separator ``GraphRAG.update()`` uses to build the transient id of the
+# Document written during its crash-safe cutover (``<id>__pending__<8hex>``).
+# Reserved: a real Document id containing it would be picked up by the
+# ``STARTS WITH "<id>__pending__"`` recovery scan.
+PENDING_ID_MARKER = "__pending__"
+
+
+def ensure_no_pending_marker(document_id: str) -> None:
+    """Raise ``ValueError`` if ``document_id`` contains :data:`PENDING_ID_MARKER`.
+
+    Applied to every Document id that is *not* a pending id — explicit ids in
+    ``GraphRAG.ingest()`` / ``update()`` / ``delete_document()`` and ids the
+    ingestion pipeline derives from a source path — so a file called
+    ``foo__pending__bar.txt`` can never be mistaken for an interrupted update
+    of ``foo`` and rolled back or rolled forward over the real document.
+    """
+    if PENDING_ID_MARKER in document_id:
+        raise ValueError(
+            f"document_id '{document_id}' contains the reserved substring "
+            f"'{PENDING_ID_MARKER}' which is used internally by the update() "
+            "state-machine cutover. Pick a different id (or rename the "
+            "source file) to avoid prefix-collision with pending nodes."
+        )
 
 
 class DocumentInfo(DataModel):
@@ -555,13 +644,57 @@ class Ontology(DataModel):
 
 
 class GraphData(DataModel):
-    """Entities and relationships extracted from text."""
+    """Entities and relationships extracted from text.
+
+    The report fields exist because a per-chunk extraction failure is
+    otherwise invisible: failures are swallowed, so a document where every
+    call failed returns exactly what a document containing no entities
+    returns — same type, same empty lists, no exception. Callers had no way
+    to tell "nothing to find" from "found nothing because everything broke",
+    and a *partial* failure silently shipped a half-empty graph that looked
+    successful.
+
+    - ``chunks_attempted``: chunks that were sent to extraction.
+    - ``chunks_skipped``: chunks never attempted because the latency budget
+      ran out first. A truncated run is *not* a healthy short one; this is
+      how the caller tells them apart.
+    - ``failed_chunks``: uids whose entity extraction (step 1) raised. These
+      chunks produced no entities of their own.
+    - ``relation_failed_chunks``: uids whose entity extraction succeeded but
+      whose relationship extraction (step 2) failed. Their entities are in
+      the graph; their edges are not. Disjoint from ``failed_chunks``.
+
+    Read the lists, not the entity counts: a successful extraction can
+    legitimately yield zero entities (``chunks_attempted > 0``,
+    ``failed_chunks == []``), and a run with every chunk in
+    ``relation_failed_chunks`` has a complete node set and no edges. Both
+    lists carry chunk uids so the caller can retry just those (see
+    ``BackfillExecutor``, which follows the same convention) rather than
+    re-ingesting the document.
+    """
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
     mentions: list[EntityMention] = Field(default_factory=list)
     extracted_entities: list[ExtractedEntity] = Field(default_factory=list)
     extracted_relations: list[ExtractedRelation] = Field(default_factory=list)
+    chunks_attempted: int = 0
+    chunks_skipped: int = 0
+    failed_chunks: list[str] = Field(default_factory=list)
+    relation_failed_chunks: list[str] = Field(default_factory=list)
+
+    @property
+    def extraction_failed(self) -> bool:
+        """True when entity extraction failed for every attempted chunk.
+
+        This is the "no chunk produced entities" signal. Step-2 (relationship)
+        failures do not count: those chunks still contributed their nodes, so
+        a caller that aborts or retries on this flag would otherwise discard a
+        good entity extraction. Check ``relation_failed_chunks`` for lost
+        edges. A genuinely empty document reports ``chunks_attempted == 0``
+        and is not a failure.
+        """
+        return self.chunks_attempted > 0 and len(self.failed_chunks) == self.chunks_attempted
 
 
 class ExtractedEntity(DataModel):
@@ -703,7 +836,15 @@ class RagResult(DataModel):
 
 
 class IngestionResult(DataModel):
-    """Result from an ingestion pipeline run."""
+    """Result from an ingestion pipeline run.
+
+    ``metadata["extraction"]`` carries the per-chunk extraction report
+    computed by the extraction strategy (see ``GraphData``):
+    ``chunks_attempted``, ``chunks_skipped``, ``failed_chunks``,
+    ``relation_failed_chunks`` and ``extraction_failed``. Read it to tell an
+    empty document from one whose extraction calls failed or were cut short
+    by the latency budget.
+    """
 
     document_info: DocumentInfo = Field(default_factory=DocumentInfo)
     nodes_created: int = 0

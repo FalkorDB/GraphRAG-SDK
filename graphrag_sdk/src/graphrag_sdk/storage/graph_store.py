@@ -14,6 +14,7 @@ from typing import Any
 from graphrag_sdk.core.connection import FalkorDBConnection
 from graphrag_sdk.core.exceptions import DatabaseError
 from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
     ChunkEntityRow,
     ChunkRelationshipRow,
     DocumentRecord,
@@ -48,17 +49,63 @@ class GraphStore:
 
     def __init__(self, connection: FalkorDBConnection) -> None:
         self._conn = connection
+        self._indexed_labels: set[str] = set()
 
     # ── Write Operations ─────────────────────────────────────────
 
     _BATCH_SIZE = 500
-    _STRUCTURAL_LABELS = frozenset({"Chunk", "Document"})
+    _STRUCTURAL_LABELS = RESERVED_NODE_LABELS
     _REL_LABEL_HINTS: dict[str, tuple[str, str]] = {
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),
         "MENTIONED_IN": ("__Entity__", "Chunk"),
         "RELATES": ("__Entity__", "__Entity__"),
     }
+
+    async def _ensure_id_index(self, safe_label: str) -> None:
+        """Create a range index on ``id`` for a label, once per label per store.
+
+        Every write path here addresses nodes by ``{id: ...}`` — ``MERGE`` in
+        :meth:`upsert_nodes`, and a double ``MATCH`` in
+        :meth:`upsert_relationships`. Without a range index each of those scans
+        every node carrying the label, so the cost of writing one batch grows
+        linearly with the graph and total ingest cost grows quadratically.
+
+        Measured against FalkorDB v4.18.0, writing 50K nodes in batches of 500
+        using the exact MERGE this class issues:
+
+        =============  ===========  ===========  ==========
+        arm            first batch  last batch   total
+        =============  ===========  ===========  ==========
+        no index       4.6 ms       2194.8 ms    111.47 s
+        range index    8.8 ms       8.5 ms       0.69 s
+        =============  ===========  ===========  ==========
+
+        That is 477x degradation across the run unindexed versus 0.97x (flat)
+        indexed, and 161x less total time. The degradation is why bulk ingest
+        "gets slower as the graph grows" — it is not the LLM, it is this.
+
+        Creating the index is idempotent in FalkorDB but still a round trip, so
+        results are memoised per label. The cache is per-store-instance, which
+        is the right scope: a new store means a possibly different graph.
+        :meth:`delete_all` clears it, because ``GRAPH.DELETE`` drops every
+        index along with the graph.
+
+        Failures are logged and swallowed. A missing index is a performance
+        problem; a raised exception here would be a correctness problem, and
+        the caller's write must not depend on the optimisation succeeding.
+        The label is memoised only after the query succeeds, so a transient
+        failure (connection blip, server restart) is retried on the next
+        write rather than disabling the index for the life of the store.
+        """
+        if safe_label in self._indexed_labels:
+            return
+        try:
+            await self._conn.query(f"CREATE INDEX FOR (n:`{safe_label}`) ON (n.id)")
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            logger.debug("Could not create id index on %s: %s", safe_label, exc)
+            return
+        self._indexed_labels.add(safe_label)
 
     async def upsert_nodes(self, nodes: list[GraphNode]) -> int:
         """Batch upsert nodes using UNWIND, grouped by label.
@@ -99,6 +146,9 @@ class GraphStore:
                 )
             if not cleaned_group:
                 continue
+            await self._ensure_id_index(safe_label)
+            if is_entity:
+                await self._ensure_id_index("__Entity__")
             # Process in batches
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):
                 batch = cleaned_group[start : start + self._BATCH_SIZE]
@@ -189,6 +239,9 @@ class GraphStore:
                 )
             if not cleaned_group:
                 continue
+            hint_src, hint_tgt = self._REL_LABEL_HINTS.get(rel_type, ("__Entity__", "__Entity__"))
+            await self._ensure_id_index(sanitize_cypher_label(hint_src))
+            await self._ensure_id_index(sanitize_cypher_label(hint_tgt))
             for start in range(0, len(cleaned_group), self._BATCH_SIZE):
                 batch = cleaned_group[start : start + self._BATCH_SIZE]
                 batch_data = [
@@ -396,12 +449,19 @@ class GraphStore:
         Uses ``GRAPH.DELETE`` via the connection for speed on large graphs.
         Falls back to ``MATCH (n) DETACH DELETE n`` if ``delete_graph`` is
         not available.
+
+        ``GRAPH.DELETE`` removes the graph's indexes with it, so the
+        per-label index memo is reset here; otherwise a re-ingest on the same
+        store would skip ``CREATE INDEX`` and run the whole rebuild unindexed.
+        The fallback keeps indexes, but clearing there too costs one
+        idempotent round trip per label and is always safe.
         """
         try:
             await self._conn.delete_graph()
         except Exception:
             logger.debug("GRAPH.DELETE failed, falling back to DETACH DELETE", exc_info=True)
             await self._conn.query("MATCH (n) DETACH DELETE n")
+        self._indexed_labels.clear()
         logger.info("Deleted all graph data")
 
     # ── Document Lifecycle (incremental ingestion support) ──────
@@ -565,10 +625,16 @@ class GraphStore:
         pending_id: str,
         real_id: str,
         path: str,
-        content_hash: str,
+        content_hash: str | None,
     ) -> int:
         """Replay the cutover from a (possibly partial) COMMITTED state
         to FINAL. Idempotent — every operation is safe to re-run.
+
+        ``content_hash=None`` promotes the pending *without* certifying it:
+        the canonical Document ends up with no ``content_hash`` (any hash the
+        pending carried is removed), so the next ``ingest()``/``update()`` of
+        that content re-runs in full instead of short-circuiting. Callers
+        pass ``None`` when the pipeline reported incomplete writes.
 
         Sequence:
           0. Precondition: pending_id must still exist. On a successful
@@ -619,17 +685,24 @@ class GraphStore:
         # 3. Promote pending → canonical id and remove the commit marker.
         # ``REMOVE p.ready_to_commit`` is the idiomatic way to drop a
         # property; on a replay where the rename already happened this
-        # MATCH finds nothing and the whole statement is a no-op.
+        # MATCH finds nothing and the whole statement is a no-op. With no
+        # hash to certify, ``content_hash`` is removed rather than set so
+        # the promoted Document never inherits a stale one.
+        params: dict[str, Any] = {
+            "pending_id": pending_id,
+            "real_id": real_id,
+            "path": path,
+        }
+        set_clause = "SET p.id = $real_id, p.path = $path"
+        remove_clause = "REMOVE p.ready_to_commit"
+        if content_hash is None:
+            remove_clause += ", p.content_hash"
+        else:
+            set_clause += ", p.content_hash = $hash"
+            params["hash"] = content_hash
         await self._conn.query(
-            "MATCH (p:Document {id: $pending_id}) "
-            "SET p.id = $real_id, p.path = $path, p.content_hash = $hash "
-            "REMOVE p.ready_to_commit",
-            {
-                "pending_id": pending_id,
-                "real_id": real_id,
-                "path": path,
-                "hash": content_hash,
-            },
+            f"MATCH (p:Document {{id: $pending_id}}) {set_clause} {remove_clause}",
+            params,
         )
         return chunks_removed
 

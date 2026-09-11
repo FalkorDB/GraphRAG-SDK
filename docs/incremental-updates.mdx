@@ -53,11 +53,12 @@ result = await rag.update(
 
 | Argument                                | Meaning                                                                                                                                                           |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`                                | File path. Mutually exclusive with `text`. In file mode, `document_id` defaults to `os.path.normpath(source)`.                                                    |
+| `source`                                | File path. Mutually exclusive with `text`. In file mode, `document_id` defaults to the normalised path (a URI source is used verbatim) — the same id `ingest(source)` derives. |
 | `text`                                  | Raw text. Skips the loader. Requires an explicit `document_id`.                                                                                                   |
 | `document_id`                           | Stable id of the `Document` node to update. Required for text mode.                                                                                               |
 | `loader` / `chunker` / `extractor` / `resolver` | Per-call strategy overrides, identical to `ingest()`.                                                                                                     |
 | `if_missing`                            | `"error"` (default) raises `DocumentNotFoundError` if the id is unknown. `"ingest"` falls through to a fresh `ingest()` — upsert semantics.                       |
+| `force`                                 | `False` (default) returns `no_op=True` when the content hash is unchanged. `True` re-extracts anyway — the way to apply a new ontology, chunker or extractor to existing text, since `ingest()` also skips unchanged documents. |
 
 ### Returns — `UpdateResult`
 
@@ -79,7 +80,7 @@ UpdateResult(
 
 | Scenario                                  | What changes                                                                                                                                                                                 |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Content hash matches (touch-only edit)    | **Nothing.** SHA-256 short-circuits the call to a single Cypher lookup. `no_op=True`. Use this for CRLF/formatter-only PRs.                                                                  |
+| Content hash matches (touch-only edit)    | **Nothing.** SHA-256 short-circuits the call to a single Cypher lookup. `no_op=True`. Use this for CRLF/formatter-only PRs. Pass `force=True` to re-extract regardless.                     |
 | Real content change                       | New chunks written under a pending Document, then atomically cut over to the canonical id. Old chunks are deleted. Entities previously mentioned only by this document are removed.          |
 | Entity still referenced by another doc    | **Preserved.** Orphan cleanup is scoped to candidates from this document — never global.                                                                                                     |
 | `RELATES` edge sourced only from old chunks | **Removed** as a stale fact (cleanup keyed on `source_chunk_ids`).                                                                                                                          |
@@ -124,7 +125,7 @@ result = await rag.delete_document(
 
 | Argument      | Meaning                                                                                                                                                                                |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `document_id` | The Document node id (e.g. `os.path.normpath(path)` for file-mode ingests).                                                                                                            |
+| `document_id` | The Document node id (the normalised path for file-mode ingests; `text-<16hex>` for text-mode ingests without an explicit id).                                                          |
 | `if_missing`  | `"error"` (default) raises `DocumentNotFoundError`. `"ignore"` returns an empty result with zero counts — useful for CI deletes when the caller doesn't track which files were ever ingested. |
 
 ### Returns — `DeleteDocumentResult`
