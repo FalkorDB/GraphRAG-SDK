@@ -592,6 +592,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.
 
+### Removed
+
+- **BREAKING** `SemanticResolution` and `DescriptionMergeResolution` have been
+  removed, along with their exports from `graphrag_sdk` and
+  `graphrag_sdk.ingestion.resolution_strategies`. Neither was constructed
+  anywhere in the SDK and both were strictly weaker than what remains:
+  `SemanticResolution` never merged across labels, and
+  `DescriptionMergeResolution` duplicated the same-label half of exact match.
+  Replace `DescriptionMergeResolution` with `LLMVerifiedResolution` (it runs
+  the same exact-match pass first, then an embedding + LLM tier on top), or
+  with `ExactMatchResolution` — still the `ingest()` default — if you only
+  relied on name-exact merging.
+
 ## [1.4.0] - 2026-08-10
 
 Chunk-level extraction cache for `update()` (#288): re-ingesting a

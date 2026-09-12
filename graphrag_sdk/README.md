@@ -122,7 +122,6 @@ Override any pipeline step by passing a strategy:
 ```python
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk import GraphExtraction, LLMExtractor
-from graphrag_sdk.ingestion.resolution_strategies import SemanticResolution
 
 # Custom chunking
 await rag.ingest("doc.txt", chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200))
@@ -140,7 +139,7 @@ Every algorithmic concern is a swappable strategy behind an abstract base class:
 | **Loading** | `LoaderStrategy` | `TextLoader`, `PdfLoader` | Auto-detect by extension |
 | **Chunking** | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking` | `FixedSizeChunking` |
 | **Extraction** | `ExtractionStrategy` | `GraphExtraction` (GLiNER2 + LLM) | `GraphExtraction` |
-| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution`, `SemanticResolution`, `LLMVerifiedResolution` | `ExactMatch` |
+| **Resolution** | `ResolutionStrategy` | `ExactMatchResolution`, `LLMVerifiedResolution` | `ExactMatch` |
 | **Retrieval** | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` | `MultiPath` (5-path) |
 | **Reranking** | `RerankingStrategy` | `CosineReranker` | Cosine |
 

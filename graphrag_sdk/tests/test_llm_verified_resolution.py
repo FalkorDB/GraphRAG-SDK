@@ -164,6 +164,100 @@ class TestPhase1ExactMatch:
         assert llm._call_index == 0, "nothing about the hinted nodes was put to the model"
 
 
+# ── Phase 1 description + provenance merging ─────────────────────────────────
+#
+# These exercise the same-label half of exact_match_merge() in
+# resolution_strategies/base.py, which LLMVerifiedResolution is now the only
+# caller of. Coverage moved here from the deleted test_description_merge.py /
+# test_semantic_resolution.py suites.
+
+
+class TestPhase1DescriptionMerge:
+
+    @staticmethod
+    def _alice(node_id: str, description: str = "", source_chunk_ids=None) -> GraphNode:
+        props: dict = {"name": "Alice", "description": description}
+        if source_chunk_ids:
+            props["source_chunk_ids"] = source_chunk_ids
+        return GraphNode(id=node_id, label="Person", properties=props)
+
+    async def test_descriptions_concatenated_below_threshold(self, ctx):
+        """Fewer descriptions than force_summary_threshold → plain concatenation,
+        no LLM call."""
+        llm = MockLLM(responses=["should not be used"])
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", description="An engineer"),
+                self._alice("a2", description="Works at Acme"),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(llm=llm, force_summary_threshold=3)
+        result = await resolver.resolve(gd, ctx)
+
+        assert result.merged_count == 1
+        desc = result.nodes[0].properties["description"]
+        assert "An engineer" in desc
+        assert "Works at Acme" in desc
+        assert " | " in desc
+        assert llm._call_index == 0
+
+    async def test_llm_summary_at_threshold(self, ctx):
+        """At or above force_summary_threshold the descriptions are replaced by
+        the LLM summary."""
+        summary = "Alice is a versatile professional."
+        llm = MockLLM(responses=[summary])
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", description="An engineer"),
+                self._alice("a2", description="Works at Acme"),
+                self._alice("a3", description="Likes GraphRAG"),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(llm=llm, force_summary_threshold=3)
+        result = await resolver.resolve(gd, ctx)
+
+        assert len(result.nodes) == 1
+        assert result.nodes[0].properties["description"] == summary
+        assert llm._call_index == 1
+
+    async def test_no_llm_falls_back_to_concat_above_threshold(self, ctx):
+        """Past the threshold but with no LLM → concatenation rather than a
+        dropped description."""
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", description="desc A"),
+                self._alice("a2", description="desc B"),
+                self._alice("a3", description="desc C"),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(llm=None, force_summary_threshold=3)
+        result = await resolver.resolve(gd, ctx)
+
+        desc = result.nodes[0].properties["description"]
+        assert desc == "desc A | desc B | desc C"
+
+    async def test_source_chunk_ids_unioned(self, ctx):
+        """source_chunk_ids from every duplicate survive the merge — this is what
+        orphan cleanup and delete_document() depend on."""
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", source_chunk_ids=["c1"]),
+                self._alice("a2", source_chunk_ids=["c2"]),
+                self._alice("a3", source_chunk_ids=["c1", "c3"]),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution()
+        result = await resolver.resolve(gd, ctx)
+
+        assert len(result.nodes) == 1
+        src_ids = result.nodes[0].properties["source_chunk_ids"]
+        assert sorted(src_ids) == ["c1", "c2", "c3"]
+
+
 # ── Hard merge zone (similarity >= hard_threshold) ───────────────────────────
 
 
