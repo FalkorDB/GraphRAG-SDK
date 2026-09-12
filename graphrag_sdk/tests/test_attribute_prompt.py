@@ -65,6 +65,64 @@ class TestRenderAttributeSchemaBlock:
         assert "since (DATE)" in block
 
 
+class TestStructuredAttributesStayWithTheirTable:
+    """A property a table declared is that table's to write.
+
+    ``TableMapping`` registers ``employees__age`` with ``structured=True``. The
+    prose extractor must not be asked for it: nodes are upserted with
+    ``SET n += props``, so a PDF stating an age would replace the CSV's value
+    under the CSV's own name. Measured before this: the prompt listed
+    ``employees__age (INTEGER) — age, from table employees`` under Person.
+    """
+
+    def _schema(self):
+        return Ontology(
+            entities=[
+                Entity(
+                    label="Person",
+                    properties=[
+                        Attribute(name="employees__age", type="INTEGER", structured=True),
+                        Attribute(name="age", type="INTEGER"),
+                    ],
+                ),
+            ],
+            relations=[
+                Relation(
+                    label="WORKS_AT",
+                    properties=[Attribute(name="employees__since", type="DATE", structured=True)],
+                ),
+            ],
+        )
+
+    def test_the_prompt_never_asks_for_a_table_owned_property(self):
+        block = _render_attribute_block(self._schema())
+        assert "employees__age" not in block
+        assert "employees__since" not in block
+        assert "age (INTEGER)" in block
+
+    def test_a_schema_with_only_table_properties_is_property_less_to_the_extractor(self):
+        s = Ontology(
+            entities=[
+                Entity(
+                    label="Person",
+                    properties=[Attribute(name="employees__age", type="INTEGER", structured=True)],
+                )
+            ]
+        )
+        assert _render_attribute_block(s) == ""
+        assert _ontology_has_attributes(s) is False
+
+    def test_a_model_that_answers_anyway_is_not_written(self):
+        # Mirrors what the parser does with the schema: coerce only the
+        # extractable declarations, so a stray structured key is dropped.
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import _prose_extractable
+
+        properties = self._schema().entities[0].properties
+        declared = {p.name: p for p in properties if _prose_extractable(p)}
+        out = _coerce_attributes({"employees__age": 35, "age": 35}, declared)
+        assert out == {"age": 35}
+
+
 class TestSchemaHasAttributes:
     def test_empty_schema(self):
         assert _ontology_has_attributes(Ontology()) is False

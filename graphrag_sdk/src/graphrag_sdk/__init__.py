@@ -91,14 +91,29 @@ from graphrag_sdk.ingestion.extraction_strategies.coref_resolvers import (
     FastCorefResolver,
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    CompositeExtractor,
     EntityExtractor,
     GLiNERExtractor,
     LLMExtractor,
+    SpacyExtractor,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+    DEFAULT_RELATION_TYPES,
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    CsvRecordLoader,
+    RecordBatch,
+    RecordLoaderStrategy,
+)
+from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    Link,
+    MappingError,
+    TableMapping,
+)
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
@@ -124,6 +139,7 @@ from graphrag_sdk.storage.ontology_store import (
 from graphrag_sdk.storage.vector_store import VectorStore
 
 __all__ = [
+    "DEFAULT_RELATION_TYPES",
     # Version
     "__version__",
     # API
@@ -185,12 +201,15 @@ __all__ = [
     "CachedChunkExtraction",
     "GraphExtraction",
     "EntityExtractor",
+    "CompositeExtractor",
     "GLiNERExtractor",
     "LLMExtractor",
+    "SpacyExtractor",
     "CorefResolver",
     "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
+    "TextLoader",
     "ResolutionStrategy",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
@@ -205,6 +224,13 @@ __all__ = [
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    "Column",
+    "TableMapping",
+    "CsvRecordLoader",
+    "MappingError",
+    "RecordBatch",
+    "RecordLoaderStrategy",
+    "Link",
 ]
 
 

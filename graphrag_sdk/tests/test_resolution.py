@@ -129,6 +129,74 @@ class TestExactMatchResolution:
             if rel.type == "LINK":
                 assert rel.end_node_id == survivor_id
 
+    async def test_distinct_facts_between_same_pair_are_kept(self, ctx):
+        """Two RELATES with different ``rel_type`` are two facts, not one.
+
+        Every data edge is written with ``type == "RELATES"`` and its
+        semantic type in ``properties["rel_type"]``. Keying dedup on
+        ``(start, rel.type, end)`` therefore reads as "one edge per entity
+        pair" and silently drops every fact after the first — here,
+        ``FOUNDED`` disappeared while ``WORKS_AT`` survived, in Python,
+        before the write ever reached the graph.
+        """
+        data = GraphData(
+            nodes=[
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "FOUNDED", "fact": "Alice founded Acme"},
+                ),
+            ],
+        )
+        resolver = ExactMatchResolution(resolve_property="name")
+        result = await resolver.resolve(data, ctx)
+        kept = sorted(r.properties["rel_type"] for r in result.relationships)
+        assert kept == ["FOUNDED", "WORKS_AT"], (
+            f"both facts must survive resolution — got {kept}. The dedup key "
+            "must include properties['rel_type'], since rel.type is always "
+            "'RELATES' for data edges."
+        )
+
+    async def test_identical_facts_between_same_pair_still_dedupe(self, ctx):
+        """The same fact twice is still one edge — the key got finer, not absent."""
+        data = GraphData(
+            nodes=[
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+            ],
+        )
+        resolver = ExactMatchResolution(resolve_property="name")
+        result = await resolver.resolve(data, ctx)
+        assert len(result.relationships) == 1, (
+            "two identical facts must still collapse to one edge — adding "
+            "rel_type to the key must not disable dedup"
+        )
+
 
 class TestCrossLabelMerge:
     """Bug 2: exact_match_merge with cross_label_merge=True groups by name
@@ -279,3 +347,76 @@ class TestCrossLabelMerge:
         assert count == 1
         names = {n.properties["name"] for n in deduped}
         assert names == {"Alice", "Bob"}
+
+
+class TestSurvivorRank:
+    """Which of two duplicates survives a merge.
+
+    The rule matters beyond aesthetics: the survivor's id is the one that stays
+    in the graph, and a structured id is recomputed by every later ingest of the
+    same table. Keeping the other one silently breaks re-ingest.
+    """
+
+    @staticmethod
+    def _rank(**entity):
+        from graphrag_sdk.storage.deduplicator import _survivor_rank
+
+        return _survivor_rank(entity)
+
+    def test_a_keyed_node_outranks_one_extracted_from_prose(self):
+        keyed = self._rank(is_stub=False, description="")
+        prose = self._rank(is_stub=None, description="a much longer description")
+        assert keyed > prose
+
+    def test_a_real_node_outranks_a_placeholder(self):
+        real = self._rank(is_stub=False, description="")
+        stub = self._rank(is_stub=True, description="")
+        assert real > stub
+
+    def test_a_placeholder_still_outranks_a_prose_node(self):
+        """A stub's id also comes from a declared key, so it is reproducible."""
+        stub = self._rank(is_stub=True, description="")
+        prose = self._rank(is_stub=None, description="long description here")
+        assert stub > prose
+
+    def test_between_two_prose_nodes_the_longest_description_wins(self):
+        """The original rule, unchanged when nothing else separates the two."""
+        rich = self._rank(is_stub=None, description="a long, detailed description")
+        thin = self._rank(is_stub=None, description="short")
+        assert rich > thin
+
+    def test_between_two_prose_nodes_the_better_connected_one_outranks_the_richer(self):
+        """The name the graph points at is the one it keeps.
+
+        Measured: a resolver judged 'Austria' and 'Republik Österreich' one
+        country from a single citation, and the description rule then renamed
+        the node fifty-six rows pointed at. Every query by name missed after.
+        """
+        hub = self._rank(is_stub=None, description="a country", degree=126)
+        citation = self._rank(
+            is_stub=None,
+            description="Republik Österreich is referenced in the legislative materials",
+            degree=1,
+        )
+        assert hub > citation
+
+    def test_a_keyed_node_still_outranks_a_well_connected_prose_node(self):
+        """Degree is a tiebreak among equals in provenance, not a promotion."""
+        keyed = self._rank(is_stub=False, description="", degree=0)
+        prose = self._rank(is_stub=None, description="long description", degree=500)
+        assert keyed > prose
+
+    def test_a_placeholder_still_outranks_a_well_connected_prose_node(self):
+        stub = self._rank(is_stub=True, description="", degree=0)
+        prose = self._rank(is_stub=None, description="long description", degree=500)
+        assert stub > prose
+
+    def test_a_missing_degree_ranks_as_none(self):
+        """Callers that never fetched a degree keep the old ordering."""
+        assert self._rank(is_stub=None, description="x") == self._rank(
+            is_stub=None, description="x", degree=0
+        )
+
+    def test_a_missing_description_is_treated_as_empty(self):
+        """An entity with no description at all must still rank, not raise."""
+        assert self._rank(is_stub=None) == self._rank(is_stub=None, description="")

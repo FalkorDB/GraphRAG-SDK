@@ -57,7 +57,12 @@ async def test_rename_entity_relabels_data_nodes(real_falkordb_rag_factory, star
 
     stats = await rag.get_statistics()
     assert "Human" in stats["entity_types"]
-    assert "Person" not in stats["entity_types"]
+    # Not asserted on ``entity_types``: that list is ``CALL db.labels()``, and
+    # FalkorDB keeps a label in its catalogue after the last node carrying it
+    # is relabelled. The data is what the rename is about, so check the data.
+    humans = await rag._graph_store.query_raw("MATCH (n:Human) RETURN count(n)")
+    persons = await rag._graph_store.query_raw("MATCH (n:Person) RETURN count(n)")
+    assert (humans.result_set[0][0], persons.result_set[0][0]) == (1, 0)
 
 
 @pytest.mark.asyncio

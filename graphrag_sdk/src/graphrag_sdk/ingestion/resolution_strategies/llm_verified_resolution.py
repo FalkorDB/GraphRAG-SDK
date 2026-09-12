@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -32,12 +33,37 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.resolution_strategies.base import (
+    RESOLUTION_ASK_PAIRS,
+    RESOLUTION_DISTINCT_IDS,
+    RESOLUTION_REJECTED_PAIRS,
+    RESOLUTION_SKIP_PAIRS,
     ResolutionStrategy,
     exact_match_merge,
     remap_relationships,
 )
 
 logger = logging.getLogger(__name__)
+
+_DIGITS = re.compile(r"\d+")
+
+
+def differ_only_in_digits(name_a: str, name_b: str) -> bool:
+    """``P-011`` / ``P-021``, ``GPT-3`` / ``GPT-4``, ``Q1 2024`` / ``Q2 2024``.
+
+    Codes, versions and periods embed almost identically — the letters carry the
+    vector and the digits barely move it — so pairs like these score above the
+    hard threshold and merge with no one asked, and a model that is asked is not
+    consistent about them (measured: ``P-021`` merged into ``P-011`` while
+    ``P-001`` / ``P-011`` was refused, in one run). Two names that are equal once
+    their digits are removed, and not equal with them, denote different things
+    in practice, so they are neither merged nor asked about.
+    """
+    a, b = name_a.strip().lower(), name_b.strip().lower()
+    if a == b:
+        return False
+    shape_a, shape_b = _DIGITS.sub("#", a), _DIGITS.sub("#", b)
+    return shape_a == shape_b and "#" in shape_a
+
 
 _VERIFY_PROMPT = (
     "You are an entity resolution assistant. Decide whether the two entities below "
@@ -148,13 +174,23 @@ class LLMVerifiedResolution(ResolutionStrategy):
         )
 
         # ── Phase 1: Normalized name exact-match merge ────────────────────────
+        # A node the caller declared distinct from another, or already decided
+        # a pair about, is not merged on its name: two keyed rows called Alice
+        # Smith are two rows, and a mention between them is not either. Those
+        # nodes go straight to the embedding phase, which honours the hints.
+        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
+        protected = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ()) | {
+            node_id for pair in skip_pairs for node_id in pair
+        }
+        held_out = [node for node in graph_data.nodes if node.id in protected]
         deduplicated_nodes, id_remap, merged_count = await exact_match_merge(
-            graph_data.nodes,
+            [node for node in graph_data.nodes if node.id not in protected],
             self.llm,
             force_summary_threshold=self.force_summary_threshold,
             max_summary_tokens=self.max_summary_tokens,
             cross_label_merge=True,
         )
+        deduplicated_nodes = held_out + deduplicated_nodes
         ctx.log(
             f"Phase 1 (exact-match): {merged_count} merged, {len(deduplicated_nodes)} surviving"
         )
@@ -236,6 +272,14 @@ class LLMVerifiedResolution(ResolutionStrategy):
         total_llm = 0
 
         emb_cache: dict[str, list[float]] = ctx.metadata.setdefault("embedding_cache", {})
+        # What the caller already knows. Pairs are of post-phase-1 ids, which for
+        # a caller passing graph ids is the same thing: phase 1 finds nothing
+        # left to merge in a graph the deduplicator has already been over.
+        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
+        distinct_ids: set[str] = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ())
+        ask_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_ASK_PAIRS) or ())
+        ask_pairs = {p for p in ask_pairs if p not in skip_pairs and not p <= distinct_ids}
+        rejected: set[frozenset[str]] = ctx.metadata.setdefault(RESOLUTION_REJECTED_PAIRS, set())
 
         for label, label_nodes in by_label.items():
             if len(label_nodes) < 2:
@@ -312,6 +356,44 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         hard_pairs.append((i, j))
                     elif sim_val >= self.soft_threshold:
                         ambiguous_pairs.append((i, j, sim_val))
+
+            def _codes_apart(gi: int, gj: int) -> bool:
+                return differ_only_in_digits(
+                    str(valid_nodes[gi].properties.get("name", "")),
+                    str(valid_nodes[gj].properties.get("name", "")),
+                )
+
+            hard_pairs = [(i, j) for i, j in hard_pairs if not _codes_apart(i, j)]
+            ambiguous_pairs = [(i, j, s) for i, j, s in ambiguous_pairs if not _codes_apart(i, j)]
+
+            if skip_pairs or ask_pairs or distinct_ids:
+                index_of = {node.id: k for k, node in enumerate(valid_nodes)}
+
+                def _known(gi: int, gj: int) -> frozenset[str]:
+                    return frozenset((valid_nodes[gi].id, valid_nodes[gj].id))
+
+                def _settled(gi: int, gj: int) -> bool:
+                    # Decided against on an earlier run, or two declared identities:
+                    # not asked about, and not merged however close the names embed.
+                    pair = _known(gi, gj)
+                    return pair in skip_pairs or pair <= distinct_ids
+
+                hard_pairs = [(i, j) for i, j in hard_pairs if not _settled(i, j)]
+                ambiguous_pairs = [
+                    (i, j, sim) for i, j, sim in ambiguous_pairs if not _settled(i, j)
+                ]
+                # A pair the caller wants judged goes to the model whatever it
+                # scored, at its real similarity so the prompt does not lie.
+                seen = {frozenset((i, j)) for i, j in hard_pairs}
+                seen |= {frozenset((i, j)) for i, j, _ in ambiguous_pairs}
+                for pair in sorted(ask_pairs, key=sorted):
+                    ids = [index_of[node_id] for node_id in pair if node_id in index_of]
+                    if len(ids) != 2 or frozenset(ids) in seen:
+                        continue
+                    gi, gj = sorted(ids)
+                    sim_val = float(mat_normed[gi] @ mat_normed[gj])
+                    ambiguous_pairs.append((gi, gj, sim_val))
+                    seen.add(frozenset(ids))
 
             # Hard merges — no LLM needed
             for gi, gj in hard_pairs:
@@ -429,6 +511,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     if answer.startswith("YES"):
                         union(req.idx_a, req.idx_b)
                         llm_confirmed += 1
+                    elif answer.startswith("NO"):
+                        rejected.add(frozenset((req.node_a.id, req.node_b.id)))
 
                 total_llm += llm_confirmed
                 ctx.log(

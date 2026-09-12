@@ -105,6 +105,17 @@ class TestVectorStoreIndex:
         result = await vector_store.create_chunk_vector_index()
         assert result is True
 
+    async def test_create_index_declares_already_indexed_as_expected(
+        self, vector_store, mock_connection
+    ):
+        """The call site, not ``FalkorDBConnection.query``, knows that CREATE
+        INDEX is idempotent -- it must say so, or the connection logs the
+        'already indexed' reply as an ERROR on every finalize()."""
+        mock_connection.query = AsyncMock(return_value=MagicMock())
+        await vector_store.create_chunk_vector_index()
+        kwargs = mock_connection.query.call_args.kwargs
+        assert set(kwargs["expected_errors"]) == {"already indexed", "already exists"}
+
     async def test_create_index_returns_false_on_real_failure(
         self, vector_store, mock_connection
     ):
@@ -135,10 +146,13 @@ class TestVectorStoreIndexChunks:
         params = mock_connection.query.call_args[0][1]
         assert len(params["batch"]) == 2
 
-    async def test_index_chunks_no_embedder(self, vector_store_no_embedder):
+    async def test_index_chunks_no_embedder(self, vector_store_no_embedder, mock_connection):
+        """No embedder → ``None`` (not attempted), distinct from ``0`` (all
+        failed) so the ingestion pipeline does not read it as a shortfall."""
         chunks = TextChunks(chunks=[TextChunk(text="Hi", index=0)])
         result = await vector_store_no_embedder.index_chunks(chunks)
-        assert result == 0
+        assert result is None
+        mock_connection.query.assert_not_awaited()
 
     async def test_index_chunks_batch_fallback(self, vector_store, mock_connection, embedder):
         """When UNWIND batch fails, should fall back to individual queries."""
