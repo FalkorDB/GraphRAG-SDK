@@ -1,6 +1,7 @@
 """Tests for api/main.py — the GraphRAG Facade."""
 from __future__ import annotations
 
+import logging
 import os
 from unittest.mock import AsyncMock, MagicMock
 
@@ -2219,3 +2220,154 @@ class TestGraphRAGUpdateSyncWrapper:
             f"{sync_name} signature drifted from {async_name}.\n"
             f"  async: {async_params}\n  sync:  {sync_params}"
         )
+
+
+class TestFinalizeReminder:
+    """Ingesting without a dedup pass must not be silent.
+
+    The ingest-time resolver only ever sees one document, so cross-document
+    duplicates survive by design and are removed only by
+    ``deduplicate_entities()`` / ``finalize()``. Nothing in the API requires
+    that call, so the read path warns once when it was skipped.
+    """
+
+    async def test_retrieve_warns_when_dedup_never_ran(self, graphrag, caplog):
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        await graphrag.ingest(text="Airbus builds aircraft.")
+        assert graphrag._docs_since_dedup == 1
+
+        graphrag._validate_graph_config = AsyncMock()
+        graphrag._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("who builds aircraft?")
+        assert "without a deduplication pass" in caplog.text
+
+    async def test_reminder_is_emitted_only_once(self, graphrag, caplog):
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+        await graphrag.ingest(text="Airbus builds aircraft.")
+
+        graphrag._validate_graph_config = AsyncMock()
+        graphrag._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("q1")
+            await graphrag.retrieve("q2")
+        assert caplog.text.count("without a deduplication pass") == 1
+
+    async def test_no_warning_before_any_ingest(self, graphrag, caplog):
+        graphrag._validate_graph_config = AsyncMock()
+        graphrag._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await graphrag.retrieve("querying an existing graph")
+        assert "without a deduplication pass" not in caplog.text
+
+    async def test_dedup_clears_the_reminder(self, mock_conn, embedder, llm, caplog):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._docs_since_dedup = 3
+
+        empty_result = MagicMock()
+        empty_result.result_set = []
+        g._graph_store.query_raw = AsyncMock(return_value=empty_result)
+        await g.deduplicate_entities()
+        assert g._docs_since_dedup == 0
+
+        g._validate_graph_config = AsyncMock()
+        g._ensure_ontology_initialized = AsyncMock()
+        g._retrieval_strategy.search = AsyncMock(
+            return_value=RetrieverResult(items=[], metadata={})
+        )
+        with caplog.at_level(logging.WARNING):
+            await g.retrieve("after dedup")
+        assert "without a deduplication pass" not in caplog.text
+
+
+class TestDefaultResolver:
+    """``ingest()`` resolves with ``ExactMatchResolution`` unless told otherwise;
+    cross-document dedup belongs to ``finalize()``, where it sees every document.
+
+    These pin that ingest stays zero-LLM-cost for resolution and that an
+    explicit ``resolver=`` still wins.
+    """
+
+    @staticmethod
+    def _capture_pipeline(g, monkeypatch):
+        from graphrag_sdk.core.models import IngestionResult
+        from graphrag_sdk.ingestion.pipeline import IngestionPipeline
+
+        captured: dict = {}
+
+        def fake_init(self_obj, *args, **kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(IngestionPipeline, "__init__", fake_init)
+        monkeypatch.setattr(
+            IngestionPipeline,
+            "run",
+            AsyncMock(
+                return_value=IngestionResult(
+                    nodes_created=0, relationships_created=0, chunks_indexed=0, metadata={}
+                )
+            ),
+        )
+        g._vector_store.ensure_indices = AsyncMock()
+        g._write_graph_config = AsyncMock()
+        return captured
+
+    async def test_default_ingest_resolver_is_exact_match(self, graphrag, monkeypatch):
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        captured = self._capture_pipeline(graphrag, monkeypatch)
+        await graphrag.ingest(text="Airbus builds aircraft.")
+        resolver = captured["resolver"]
+        assert isinstance(resolver, ExactMatchResolution)
+        # zero-LLM at ingest: no summaries, no cross-label merges
+        assert resolver.llm is None
+        assert resolver.cross_label_merge is False
+
+    async def test_default_ingest_resolver_joins_descriptions_and_keeps_labels_apart(
+        self, graphrag
+    ):
+        """Same name + same label → one node, descriptions joined with ' | ',
+        edges re-pointed to the survivor. Same name + different label → two
+        nodes (the judge decides at finalize). No LLM call in either case."""
+        from graphrag_sdk.core.context import Context
+        from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship
+
+        nodes = [
+            GraphNode(id="p1", label="Person", properties={"name": "Alice", "description": "engineer"}),
+            GraphNode(id="p2", label="Person", properties={"name": "alice", "description": "born 1970"}),
+            GraphNode(id="p3", label="Person", properties={"name": "Alice", "description": "lives in Paris"}),
+            GraphNode(id="o1", label="Organization", properties={"name": "Alice", "description": "a company"}),
+            GraphNode(id="x", label="Location", properties={"name": "Paris", "description": ""}),
+        ]
+        rels = [GraphRelationship(start_node_id="p2", end_node_id="x", type="RELATES", properties={})]
+        graphrag.llm.abatch_invoke = AsyncMock(side_effect=AssertionError("LLM must not be called"))
+
+        res = await graphrag._default_resolver().resolve(GraphData(nodes=nodes, relationships=rels), Context())
+
+        ids = {n.id for n in res.nodes}
+        assert len(ids) == 3 and "o1" in ids and "x" in ids  # 3 Persons → 1, Organization kept
+        survivor = next(n for n in res.nodes if n.label == "Person")
+        assert res.merged_count == 2
+        assert set(survivor.properties["description"].split(" | ")) == {"engineer", "born 1970", "lives in Paris"}
+        assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
+        assert res.relationships[0].end_node_id == "x"
+
+    async def test_explicit_resolver_is_honoured(self, graphrag, monkeypatch):
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        captured = self._capture_pipeline(graphrag, monkeypatch)
+        mine = ExactMatchResolution()
+        await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
+        assert captured["resolver"] is mine
+
+
