@@ -162,6 +162,7 @@ class FalkorDBConnection:
         params: dict[str, Any] | None = None,
         *,
         timeout: int | None = None,
+        expected_errors: tuple[str, ...] = (),
     ) -> Any:
         """Execute a Cypher query with retry logic.
 
@@ -169,6 +170,14 @@ class FalkorDBConnection:
             cypher: The Cypher query string.
             params: Optional query parameters.
             timeout: Optional per-query timeout (ms) forwarded to FalkorDB.
+            expected_errors: Lower-case substrings identifying non-transient
+                failures the caller anticipates and handles itself (e.g.
+                ``"already indexed"`` for an idempotent ``CREATE INDEX``). Such
+                a failure still raises ``DatabaseError`` but is logged at DEBUG
+                rather than ERROR. Only the caller knows which failures are
+                expected; ``query()`` cannot tell an idempotent index creation
+                from any other statement whose error happens to say "already
+                exists", so it never downgrades on its own.
 
         Returns:
             ``QueryResult`` from the async FalkorDB driver.
@@ -200,7 +209,10 @@ class FalkorDBConnection:
                 last_exc = exc
                 # Don't retry non-transient errors (e.g. schema/index conflicts)
                 if self._is_non_transient(exc):
-                    logger.error(
+                    msg = str(exc).lower()
+                    expected = any(marker in msg for marker in expected_errors)
+                    logger.log(
+                        logging.DEBUG if expected else logging.ERROR,
                         "Non-transient FalkorDB query failure: %s: %s",
                         type(exc).__name__,
                         exc,

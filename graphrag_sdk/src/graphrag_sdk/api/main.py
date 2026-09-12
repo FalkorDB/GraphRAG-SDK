@@ -3093,7 +3093,10 @@ class GraphRAG:
         self,
         *,
         fuzzy: bool = False,
-        similarity_threshold: float = 0.9,
+        # Kept in step with EntityDeduplicator.deduplicate: at 0.90 the
+        # name-embedding tier merges 2 of 33 hard-negative pairs and drops
+        # precision to 0.739, buying no recall the exact tiers miss.
+        similarity_threshold: float = 0.95,
         batch_size: int = 500,
     ) -> int:
         """Global entity deduplication across all ingested documents.

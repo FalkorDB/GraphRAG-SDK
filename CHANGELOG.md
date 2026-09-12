@@ -93,9 +93,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `>=1.0` still allowed 1.6.x to resolve against the broken redis.
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.
+- Finalize-time entity deduplication no longer creates empty ghost `__Entity__`
+  nodes when remapping edges (the survivor is `MATCH`ed before every `MERGE`),
+  unions `source_chunk_ids` provenance on remapped RELATES edges and on the
+  survivor node, and preserves what the duplicate carried: its description is
+  appended with `" | "` and its name recorded in the survivor's `aliases`.
+  Survivor update and duplicate deletion are one atomic statement; a survivor
+  that vanished mid-pass leaves the duplicate in place instead of destroying
+  its edges.
+- Name grouping folds accents, punctuation, inner dots (`A.I.` = `AI`) and a
+  leading English article, keeps non-Latin letters (so `Отдел 5` and
+  `Кабинет 5` stay distinct), and folds an acronym of 3-6 letters into its
+  unique same-label long form.
+- "Already indexed" replies to idempotent `CREATE INDEX` calls are logged at
+  DEBUG instead of ERROR; the call site declares them expected via
+  `FalkorDBConnection.query(expected_errors=...)`.
 
 ### Changed
 
+- `EntityDeduplicator.deduplicate()` and `GraphRAG.deduplicate_entities()`
+  default `similarity_threshold` raised from `0.9` to `0.95`: at `0.9` the
+  name-embedding tier merged 2 of 33 deliberate hard-negative pairs for no
+  added recall.
 - `GraphExtraction` now ships a default relation vocabulary,
   `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels: `LOCATED_IN`,
   `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...), the counterpart of
