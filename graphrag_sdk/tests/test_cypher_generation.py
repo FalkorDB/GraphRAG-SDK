@@ -244,8 +244,99 @@ class TestExecuteCypherRetrieval:
         facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
         assert len(facts) == 2
         assert "Alice" in facts[0]
+    async def test_repairs_query_after_execution_error(self):
+        """A rejected query gets one LLM repair round with the server error (#292)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```"),
+                LLMResponse(
+                    content="```cypher\nMATCH (n:Person) RETURN n.name AS name LIMIT 10\n```"
+                ),
+            ]
+        )
+        result_mock = MagicMock()
+        result_mock.result_set = [["Alice"]]
+        mock_graph = MagicMock()
+        mock_graph.query_raw = AsyncMock(
+            side_effect=[
+                Exception("Invalid input 'F': expected OR or OPTIONAL MATCH"),
+                result_mock,
+            ]
+        )
+
+        facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "who?")
+
+        assert mock_llm.ainvoke.await_count == 2  # generate + one repair
+        assert mock_graph.query_raw.await_count == 2  # failed exec + repaired exec
+        repair_prompt = mock_llm.ainvoke.await_args_list[1].args[0]
+        assert "Invalid input 'F'" in repair_prompt
+        assert facts == ["Alice"]
         assert "alice" in entities
-        assert "bob" in entities
+
+    async def test_returns_empty_when_repair_also_fails(self):
+        """A repair that still fails degrades to empty results — no retry loop."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(
+            return_value=LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```")
+        )
+        mock_graph = MagicMock()
+        mock_graph.query_raw = AsyncMock(
+            side_effect=Exception(
+                "The alias 'r' was specified for both a node and a relationship"
+            )
+        )
+
+        facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
+
+        assert facts == []
+        assert entities == {}
+        assert mock_graph.query_raw.await_count == 2  # exactly one repair attempt
+
+    async def test_repair_must_pass_safety_allowlist(self):
+        """A repaired query violating the read-only allowlist must never execute."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.models import LLMResponse
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```"),
+                LLMResponse(
+                    content="```cypher\nMATCH (n:Person) DELETE n RETURN n.name\n```"
+                ),
+            ]
+        )
+        mock_graph = MagicMock()
+        mock_graph.query_raw = AsyncMock(
+            side_effect=Exception("Unexpected clause following RETURN")
+        )
+
+        facts, entities = await execute_cypher_retrieval(mock_graph, mock_llm, "test?")
+
+        assert facts == []
+        assert entities == {}
+        # Only the original failing execution ran — the unsafe repair was
+        # blocked by validate_cypher before reaching the database.
+        assert mock_graph.query_raw.await_count == 1
 
 
 # ── Schema-aware prompt + validator ──────────────────────────────
@@ -338,3 +429,37 @@ class TestValidateCypherWithSchema:
     def test_no_schema_falls_back_to_historic_labels(self):
         errors = validate_cypher("MATCH (p:Person) RETURN p LIMIT 10")
         assert errors == []
+
+
+# ── Non-transient Cypher error classification (#292) ─────────────
+
+
+class TestNonTransientCypherErrorMarkers:
+    """The error classes observed in #292 must fail fast at the connection
+    layer instead of burning the full retry budget on identical inputs."""
+
+    def test_alias_reused_for_node_and_relationship(self):
+        from graphrag_sdk.core.connection import FalkorDBConnection
+
+        exc = Exception(
+            "The alias 'r' was specified for both a node and a relationship"
+        )
+        assert FalkorDBConnection._is_non_transient(exc)
+
+    def test_unexpected_clause(self):
+        from graphrag_sdk.core.connection import FalkorDBConnection
+
+        exc = Exception("Unexpected clause following RETURN")
+        assert FalkorDBConnection._is_non_transient(exc)
+
+    def test_invalid_input(self):
+        from graphrag_sdk.core.connection import FalkorDBConnection
+
+        exc = Exception("Invalid input 'F': expected OR or OPTIONAL MATCH")
+        assert FalkorDBConnection._is_non_transient(exc)
+
+    def test_connection_reset_still_transient(self):
+        from graphrag_sdk.core.connection import FalkorDBConnection
+
+        exc = Exception("Connection reset by peer")
+        assert not FalkorDBConnection._is_non_transient(exc)

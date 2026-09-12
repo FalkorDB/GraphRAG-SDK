@@ -478,6 +478,55 @@ async def generate_cypher(
     return None
 
 
+async def _repair_cypher(
+    llm: Any,
+    cypher: str,
+    error: str,
+    *,
+    ontology: Ontology | None = None,
+    ctx: Context | None = None,
+) -> str | None:
+    """Ask the LLM for one corrected query after a FalkorDB execution error.
+
+    The repaired query must pass the same ``validate_cypher`` safety
+    allowlist as a fresh generation — a repair round must never become a
+    bypass around the read-only checks. Returns ``None`` when the LLM
+    call fails, the answer is empty/unparseable, or the proposal fails
+    validation.
+    """
+    prompt = (
+        "The following read-only Cypher query failed when executed on FalkorDB.\n"
+        "Fix it. Keep it read-only (no CREATE/DELETE/SET/MERGE/REMOVE/CALL),\n"
+        "give every RETURN column a unique alias, and keep a LIMIT clause.\n\n"
+        f"Failed query:\n```cypher\n{cypher}\n```\n\n"
+        f"FalkorDB error:\n{error}\n\n"
+        "Return ONLY the corrected Cypher query inside triple backticks."
+    )
+    try:
+        if ctx is not None:
+            ctx.ensure_budget("Cypher repair LLM call")
+        response = await llm.ainvoke(
+            prompt,
+            timeout=(
+                ctx.provider_timeout_seconds("Cypher repair LLM call")
+                if ctx is not None
+                else None
+            ),
+        )
+    except LatencyBudgetExceededError:
+        raise
+    except Exception as exc:
+        logger.debug("Cypher repair LLM call failed: %s", exc)
+        return None
+
+    fixed = extract_cypher(response.content)
+    if not fixed:
+        return None
+    if validate_cypher(fixed, ontology):
+        return None
+    return _sanitize_cypher(fixed)
+
+
 async def execute_cypher_retrieval(
     graph_store: Any,
     llm: Any,
@@ -514,8 +563,26 @@ async def execute_cypher_retrieval(
     except LatencyBudgetExceededError:
         raise
     except Exception as exc:
+        # The query passed the safety allowlist but FalkorDB rejected it.
+        # Degrading silently here wastes every failure (#292): the
+        # server's error is specific and actionable, so give the LLM
+        # exactly one repair round with the failed query and the error
+        # before giving up on this retrieval path.
         logger.debug("Cypher execution failed: %s — query: %s", exc, cypher)
-        return [], {}
+        repaired = await _repair_cypher(llm, cypher, str(exc), ontology=ontology, ctx=ctx)
+        if not repaired:
+            return [], {}
+        try:
+            if ctx is not None:
+                ctx.ensure_budget("Cypher execution")
+            result = await graph_store.query_raw(repaired)
+        except LatencyBudgetExceededError:
+            raise
+        except Exception as exc2:
+            logger.debug(
+                "Cypher execution failed after repair: %s — query: %s", exc2, repaired
+            )
+            return [], {}
 
     if not result.result_set:
         return [], {}
