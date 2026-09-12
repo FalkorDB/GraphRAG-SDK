@@ -424,9 +424,9 @@ Three-tier resolution that catches near-duplicates exact match misses (e.g. `Acm
 
 1. `(normalized name, label)` exact-match merge -- the same first pass `ExactMatchResolution` performs.
 2. Embed surviving node names and compare pairs within each label group:
-   - similarity >= `hard_threshold`: merged immediately, no LLM call
-   - `soft_threshold` <= similarity < `hard_threshold`: sent to the LLM for a YES/NO verdict
-   - similarity < `soft_threshold`: skipped
+   - `similarity >= hard_threshold`: merged immediately, no LLM call
+   - `soft_threshold <= similarity < hard_threshold`: sent to the LLM for a YES/NO verdict
+   - `similarity < soft_threshold`: skipped
 3. Merge the confirmed clusters, then remap and deduplicate relationships.
 
 Descriptions are merged the same way in both resolvers: concatenated below `force_summary_threshold`, LLM-summarized at or above it.
