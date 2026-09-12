@@ -165,10 +165,10 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 - Remaps all relationship endpoints to the survivor
 - Deduplicates relationships by `(start_id, type, end_id)`
 
-**Alternative: DescriptionMergeResolution**
-- Groups by `(normalized name, label)` — same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris")
-- Merges descriptions (concatenation or LLM summarization)
-- Useful when the same entity is described differently across documents
+**Alternative: LLMVerifiedResolution**
+- Runs the same exact-match pass first, then compares the surviving names by embedding similarity within each label
+- Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.80) go to the LLM for a YES/NO verdict
+- Useful when the same entity is named inconsistently across documents (e.g., "Acme Corp" vs "Acme Corporation")
 
 For details on resolution strategies, see [Strategies](/strategies).
 
@@ -270,7 +270,7 @@ stats = await rag.finalize()
 | Strategy | When to use |
 |----------|-------------|
 | `ExactMatchResolution` (default) | Fast, deterministic. Good when extraction is consistent |
-| `DescriptionMergeResolution` | Multi-document ingestion. Used in the benchmark pipeline |
+| `LLMVerifiedResolution` | Multi-document ingestion where names vary. Costs embedding calls, plus LLM calls for ambiguous pairs |
 
 ---
 
@@ -294,6 +294,6 @@ stats = await rag.finalize()
 | [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
 | [`extraction_strategies/graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
 | [`resolution_strategies/exact_match.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |
-| [`resolution_strategies/description_merge.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/description_merge.py) | DescriptionMergeResolution |
+| [`resolution_strategies/llm_verified_resolution.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/llm_verified_resolution.py) | LLMVerifiedResolution |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Batched node/relationship writes |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Chunk embedding + indexing |

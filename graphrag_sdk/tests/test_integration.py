@@ -6,6 +6,8 @@ import os
 
 import pytest
 
+from graphrag_sdk.core.providers import Embedder
+
 
 class TestTopLevelImports:
     """Verify all public API exports are importable."""
@@ -202,6 +204,36 @@ def _resolver_param_ids():
     return ["ExactMatch", "LLMVerified"]
 
 
+class OrthogonalNameEmbedder(Embedder):
+    """Same name → identical vector (cosine 1.0, merges); different name →
+    orthogonal vector (cosine 0.0, never merges).
+
+    The integration assertions below are all ``_entity_count(...) == 1``, so
+    they need both halves to be deterministic: a resolver that silently fused
+    two distinct entities and one that silently fused nothing would otherwise
+    be indistinguishable from a passing run.
+    """
+
+    DIMENSION = 64
+
+    def __init__(self) -> None:
+        self._basis: dict[str, int] = {}
+
+    @property
+    def model_name(self) -> str:
+        return "orthogonal-name-embedder"
+
+    def embed_query(self, text: str, **kwargs) -> list[float]:
+        key = text.strip().lower()
+        index = self._basis.setdefault(key, len(self._basis))
+        # Fixed width: hnswlib requires every vector in an index to agree on
+        # dimension, so this cannot grow with the basis.
+        assert index < self.DIMENSION, "more distinct names than basis vectors"
+        vector = [0.0] * self.DIMENSION
+        vector[index] = 1.0
+        return vector
+
+
 @pytest.fixture(params=_resolver_param_ids())
 def resolver(request, embedder):
     """Direct parametrize over the two resolvers (replaces the old
@@ -218,9 +250,12 @@ def resolver(request, embedder):
         return ExactMatchResolution()
     # No llm: the surrounding tests script their LLM for extraction, so a
     # resolver that also calls it would consume those scripted responses.
-    # Without an llm the embedding stage still merges the >=0.95 tier for
-    # free, which is all this tripwire needs to exercise mention-remap.
-    return LLMVerifiedResolution(embedder=embedder)
+    # Without an llm only the >=hard_threshold tier can merge, so the
+    # embedder decides what this tripwire actually exercises — hence
+    # OrthogonalNameEmbedder rather than the hash-derived MockEmbedder,
+    # whose all-positive vectors put unrelated names at an arbitrary,
+    # PYTHONHASHSEED-dependent similarity that could merge Alice into Bob.
+    return LLMVerifiedResolution(embedder=OrthogonalNameEmbedder())
 
 
 async def _entity_count(rag, name: str) -> int:

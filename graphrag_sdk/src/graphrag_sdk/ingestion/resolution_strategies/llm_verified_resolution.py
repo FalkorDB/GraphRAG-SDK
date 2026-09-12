@@ -77,8 +77,9 @@ class LLMVerifiedResolution(ResolutionStrategy):
     LLM-verified ambiguous zone → skip.
 
     Flow:
-      1. Group by (normalized_name, label) — exact-match merge, same as
-         DescriptionMergeResolution. No LLM or embedder needed here.
+      1. Group by (normalized_name, label) — exact-match merge, the same
+         first pass ExactMatchResolution performs. No LLM or embedder needed
+         here.
       2. Embed all surviving node names within each label group.
       3. For each pair (within same label only):
            similarity >= hard_threshold  → hard merge immediately
