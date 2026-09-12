@@ -102,19 +102,25 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    CsvRecordLoader,
+    RecordBatch,
+    RecordLoaderStrategy,
+)
+from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    Link,
+    MappingError,
+    TableMapping,
+)
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
-    DescriptionMergeResolution,
-)
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
     ExactMatchResolution,
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
-)
-from graphrag_sdk.ingestion.resolution_strategies.semantic_resolution import (
-    SemanticResolution,
 )
 
 # ── Retrieval Strategies ────────────────────────────────────────
@@ -203,11 +209,10 @@ __all__ = [
     "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
+    "TextLoader",
     "ResolutionStrategy",
-    "DescriptionMergeResolution",
     "ExactMatchResolution",
     "LLMVerifiedResolution",
-    "SemanticResolution",
     # Retrieval
     "CosineReranker",
     "MultiPathRetrieval",
@@ -219,6 +224,13 @@ __all__ = [
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    "Column",
+    "TableMapping",
+    "CsvRecordLoader",
+    "MappingError",
+    "RecordBatch",
+    "RecordLoaderStrategy",
+    "Link",
 ]
 
 

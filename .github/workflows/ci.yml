@@ -89,7 +89,8 @@ jobs:
           echo "FalkorDB did not become reachable within 20 attempts" >&2
           exit 1
       - name: Run real-FalkorDB integration tests
-        run: >
-          python -m pytest -v
-          -m integration
-          tests/test_integration.py
+        # The whole suite, not one file: every test gated on RUN_INTEGRATION
+        # (the structured-ingestion, backfill, cached-extraction and
+        # ontology-evolution suites) runs here against the live service. The
+        # unit job skips them, so this is the only place they run at all.
+        run: python -m pytest tests/ -q

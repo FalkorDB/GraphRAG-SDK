@@ -261,7 +261,10 @@ def _ensure_sdk_managed_attributes(ontology: Ontology) -> Ontology:
     if not changed:
         return ontology
 
-    return Ontology(entities=new_entities, relations=list(ontology.relations))
+    # model_copy so a field added to Ontology later is carried, not silently
+    # dropped: this function takes an existing ontology and returns a modified
+    # one, which is exactly the shape that lost `mentions` from GraphData once.
+    return ontology.model_copy(update={"entities": new_entities})
 
 
 # ── Per-step calls ──────────────────────────────────────────────────

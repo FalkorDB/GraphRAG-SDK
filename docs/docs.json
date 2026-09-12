@@ -60,6 +60,7 @@
                 "group": "Pipeline",
                 "pages": [
                   "ingestion",
+                  "structured-ingestion",
                   "extraction",
                   "retrieval",
                   "storage",

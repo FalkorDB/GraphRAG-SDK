@@ -124,15 +124,82 @@ class TestFalkorDBConnection:
         conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.0))
 
         mock_graph = MagicMock()
-        mock_graph.query = AsyncMock(side_effect=Exception("already indexed"))
+        mock_graph.query = AsyncMock(side_effect=Exception("syntax error at offset 3"))
         conn._graph = mock_graph
         conn._driver = MagicMock()
 
         with caplog.at_level("ERROR", logger="graphrag_sdk.core.connection"):
-            with pytest.raises(Exception, match="already indexed"):
-                await conn.query("CREATE INDEX idx")
+            with pytest.raises(Exception, match="syntax error"):
+                await conn.query("MATCH (n RETURN n")
         assert "Non-transient FalkorDB query failure" in caplog.text
         assert mock_graph.query.call_count == 1
+
+    @pytest.mark.parametrize(
+        "message",
+        ["Attribute 'embedding' is already indexed", "Index already exists"],
+    )
+    async def test_expected_already_indexed_is_logged_at_debug(self, caplog, message):
+        """An idempotent CREATE INDEX on an indexed graph is not a failure.
+
+        finalize() re-creates every index each call; FalkorDB answers
+        'already indexed' and VectorStore treats that as success. Logging it
+        at ERROR printed three spurious failures per finalize(). The caller
+        declares the reply expected; the connection logs it at DEBUG exactly.
+        """
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.0))
+
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=Exception(message))
+        conn._graph = mock_graph
+        conn._driver = MagicMock()
+
+        with caplog.at_level("DEBUG", logger="graphrag_sdk.core.connection"):
+            with pytest.raises(Exception, match="already"):
+                await conn.query(
+                    "CREATE VECTOR INDEX FOR (n:Chunk) ON (n.embedding)",
+                    expected_errors=("already indexed", "already exists"),
+                )
+        failures = [
+            r for r in caplog.records if r.getMessage().startswith("Non-transient FalkorDB query failure:")
+        ]
+        assert [r.levelname for r in failures] == ["DEBUG"]
+        assert message in failures[0].getMessage()
+        assert mock_graph.query.call_count == 1
+
+    async def test_already_exists_stays_an_error_unless_the_caller_expects_it(self, caplog):
+        """``query()`` cannot tell an idempotent CREATE INDEX from any other
+        statement whose error says "already exists", so it never downgrades
+        on its own -- that would hide real failures from ERROR-based monitoring."""
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.0))
+
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=Exception("Constraint already exists"))
+        conn._graph = mock_graph
+        conn._driver = MagicMock()
+
+        with caplog.at_level("DEBUG", logger="graphrag_sdk.core.connection"):
+            with pytest.raises(Exception, match="already exists"):
+                await conn.query("CREATE CONSTRAINT ...")
+        failures = [
+            r for r in caplog.records if r.getMessage().startswith("Non-transient FalkorDB query failure:")
+        ]
+        assert [r.levelname for r in failures] == ["ERROR"]
+
+    async def test_expected_errors_do_not_cover_other_failures(self, caplog):
+        conn = FalkorDBConnection(ConnectionConfig(retry_count=3, retry_delay=0.0))
+
+        mock_graph = MagicMock()
+        mock_graph.query = AsyncMock(side_effect=Exception("syntax error at offset 3"))
+        conn._graph = mock_graph
+        conn._driver = MagicMock()
+
+        with caplog.at_level("DEBUG", logger="graphrag_sdk.core.connection"):
+            with pytest.raises(Exception, match="syntax error"):
+                await conn.query("CREATE INDEX ...", expected_errors=("already indexed",))
+        failures = [
+            r for r in caplog.records if r.getMessage().startswith("Non-transient FalkorDB query failure:")
+        ]
+        assert [r.levelname for r in failures] == ["ERROR"]
 
     async def test_query_with_params(self):
         conn = FalkorDBConnection(ConnectionConfig(retry_count=1))

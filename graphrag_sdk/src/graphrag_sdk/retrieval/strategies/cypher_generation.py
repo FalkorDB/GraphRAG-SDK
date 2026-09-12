@@ -478,6 +478,28 @@ async def generate_cypher(
     return None
 
 
+def _column_names(result: Any) -> list[str]:
+    """Best-effort column names for a query result.
+
+    FalkorDB exposes ``header`` as a list of ``(type_code, name)`` pairs, but the
+    shape is driver-dependent and a header is never essential, so anything
+    unexpected degrades to no labels rather than failing the retrieval.
+    """
+    header = getattr(result, "header", None)
+    if not header:
+        return []
+    names: list[str] = []
+    for entry in header:
+        if isinstance(entry, (list, tuple)) and entry:
+            raw = entry[-1]
+        else:
+            raw = entry
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        names.append(str(raw).strip())
+    return names
+
+
 async def execute_cypher_retrieval(
     graph_store: Any,
     llm: Any,
@@ -524,13 +546,27 @@ async def execute_cypher_retrieval(
     fact_strings: list[str] = []
     entities: dict[str, dict] = {}
 
+    # Column names, so a scalar row stays interpretable. Without them an
+    # aggregate like `RETURN avg(p.age)` reaches the answering LLM as a bare
+    # "39.5", which it cannot attribute to anything and reports as missing
+    # context. FalkorDB returns header entries as (type, name) pairs.
+    column_names = _column_names(result)
+
     for row in result.result_set:
         parts: list[str] = []
-        for val in row:
+        for index, val in enumerate(row):
             if val is None:
                 continue
             s = str(val).strip()
-            if s and s != "[]" and s != "{}":
+            if not s or s in ("[]", "{}"):
+                continue
+            label = column_names[index] if index < len(column_names) else ""
+            # Only label values that need it. A node or map already reads as a
+            # described thing, and prefixing a name with its column would just
+            # add noise for the reranker to chew on.
+            if label and not s.startswith(("(", "[", "{")):
+                parts.append(f"{label}: {s}")
+            else:
                 parts.append(s)
         if not parts:
             continue

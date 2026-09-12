@@ -14,6 +14,7 @@ Complete reference for all public classes and methods exported by `graphrag_sdk`
 - [Schema](#schema)
 - [Ingestion Strategies](#ingestion-strategies)
 - [Ingestion Pipeline](#ingestion-pipeline)
+- [Structured Ingestion](#structured-ingestion)
 - [Retrieval Strategies](#retrieval-strategies)
 - [Reranking Strategies](#reranking-strategies)
 - [Storage](#storage)
@@ -24,7 +25,7 @@ Complete reference for all public classes and methods exported by `graphrag_sdk`
 
 ## GraphRAG (Facade)
 
-The main entry point. Three primary operations: `ingest()`, `retrieve()`, and `completion()`.
+The main entry point. Three primary operations: `ingest()`, `retrieve()`, and `completion()`. Tables go through the same `ingest()`; see [Structured Ingestion](#structured-ingestion).
 
 ```python
 from graphrag_sdk import GraphRAG
@@ -37,8 +38,12 @@ GraphRAG(
     connection: FalkorDBConnection | ConnectionConfig,
     llm: LLMInterface,
     embedder: Embedder,
-    schema: GraphSchema | None = None,
+    ontology: Ontology | None = None,
     retrieval_strategy: RetrievalStrategy | None = None,
+    embedding_dimension: int = 256,
+    *,
+    enable_cypher: bool = False,
+    schema: Ontology | None = None,  # deprecated alias of ontology=
 )
 ```
 
@@ -47,8 +52,11 @@ GraphRAG(
 | `connection` | `FalkorDBConnection \| ConnectionConfig` | required | Database connection or config to create one |
 | `llm` | `LLMInterface` | required | LLM provider |
 | `embedder` | `Embedder` | required | Embedding provider |
-| `schema` | `GraphSchema \| None` | `None` | Schema constraints for extraction (empty = unconstrained) |
+| `ontology` | `Ontology \| None` | `None` | Entity and relation types for extraction, and any `tables=` declared on it (empty = unconstrained) |
 | `retrieval_strategy` | `RetrievalStrategy \| None` | `None` | Default retrieval strategy (uses `MultiPathRetrieval` if None) |
+| `embedding_dimension` | `int` | `256` | Dimension of the vectors `embedder` produces |
+| `enable_cypher` | `bool` | `False` | Add text-to-Cypher retrieval, which answers counts and aggregates over declared columns. One extra LLM call per question. |
+| `schema` | `Ontology \| None` | `None` | Deprecated; use `ontology=` |
 
 **Public attributes:** `llm`, `embedder`, `schema`, `graph_store`, `vector_store`
 
@@ -56,32 +64,40 @@ GraphRAG(
 
 ```python
 async def ingest(
-    source: str | list[str],
+    source: str | list[str] | None = None,
     *,
     text: str | None = None,
+    document_id: str | None = None,
+    record_loader: RecordLoaderStrategy | None = None,
+    strict_mapping: bool = False,
     loader: LoaderStrategy | None = None,
     chunker: ChunkingStrategy | None = None,
     extractor: ExtractionStrategy | None = None,
     resolver: ResolutionStrategy | None = None,
-    max_concurrent: int = 3,
+    max_concurrency: int = 3,
     ctx: Context | None = None,
-) -> IngestionResult | list[IngestionResult]
+) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
 ```
 
 Build a knowledge graph from one or more sources. Auto-detects loader from file extension. When a list of sources is provided, documents are ingested in parallel with bounded concurrency.
 
+A `.csv`, `.tsv`, `.psv` or `.tab` is read as **records, not prose**: its mapping is looked up in the ontology by filename (see [Structured Ingestion](#structured-ingestion)), no model is called, and a `StructuredIngestionResult` is returned. A table may not appear in a list — each is written on its own — and `chunker`/`extractor`/`resolver` are rejected for one; identity across sources is judged by `finalize(resolver=...)`. Pass `loader=TextLoader()` to read a CSV as prose anyway.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `source` | `str \| list[str]` | required | File path (or list of paths) for ingestion |
+| `source` | `str \| list[str] \| None` | `None` | File path (or list of paths) for ingestion. Required unless `text=` is given |
 | `text` | `str \| None` | `None` | Raw text (single source only; skips loader) |
+| `document_id` | `str \| None` | `None` | Stable handle for `update()`/`delete_document()`. Defaults to the normalised path for a document and to the table's name for a table; `ingest("employees_2026Q3.csv", document_id="employees.csv")` re-syncs `employees.csv`. |
+| `record_loader` | `RecordLoaderStrategy \| None` | `None` | How a table is read (`CsvRecordLoader` if None). Tables only. |
+| `strict_mapping` | `bool` | `False` | Fail when a table has a column its mapping never reads. Tables only. |
 | `loader` | `LoaderStrategy \| None` | `None` | Custom loader (auto-detect if None) |
-| `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (FixedSizeChunking(1000) if None) |
-| `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None) |
+| `chunker` | `ChunkingStrategy \| None` | `None` | Custom chunker (`SentenceTokenCapChunking()` if None). Rejected for a table. |
+| `extractor` | `ExtractionStrategy \| None` | `None` | Custom extractor (GraphExtraction if None). Rejected for a table. |
 | `resolver` | `ResolutionStrategy \| None` | `None` | Custom resolver (ExactMatchResolution if None) |
-| `max_concurrent` | `int` | `3` | Max parallel ingestions (list input only) |
+| `max_concurrency` | `int` | `3` | Max parallel ingestions (list input only) |
 | `ctx` | `Context \| None` | `None` | Execution context |
 
-**Returns:** `IngestionResult` for a single source, `list[IngestionResult]` for multiple sources.
+**Returns:** `IngestionResult` for a single document, `StructuredIngestionResult` for a table, `list[IngestionResult | Exception]` (aligned by index) for multiple sources.
 
 ### retrieve()
 
@@ -163,13 +179,31 @@ result = await rag.completion(
 
 When history is provided, `completion()` builds a native messages list: `[system_prompt, *history, user_question]` and calls `LLMInterface.ainvoke_messages()`. Without history, it uses the single-turn `ainvoke()` path.
 
-### query() (deprecated)
+### query()
 
 ```python
-async def query(question: str, **kwargs) -> RagResult
+async def query(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]
 ```
 
-**Deprecated.** Use `completion()` for the full RAG pipeline or `retrieve()` for retrieval-only. Emits a `DeprecationWarning` and delegates to `completion()`.
+Run a Cypher query against your own graph and return its rows, each a list of column values. The way to check what an ingest wrote or to aggregate over declared columns yourself. Runs exactly the Cypher you pass with no rewriting and no read-only enforcement — use `params` (`$name`) for values, never string formatting.
+
+```python
+rows = await rag.query(
+    "MATCH (p:Person)-[r:RELATES]->(o:Organization) "
+    "WHERE r.rel_type = 'WORKS_AT' AND o.name = $company RETURN avg(p.hr__age)",
+    {"company": "Acme Corp"},
+)
+```
+
+### drop_table()
+
+```python
+async def drop_table(source: str) -> Ontology
+```
+
+Take a table out of the graph: its Document and record chunks (and any entity only those rows mentioned), every property it signed on entities that survive, the identity it gave them (`entity_key`, `is_stub` — unless another table still keys the node), and its stored mapping, so the next `ingest()` of that filename is proposed a mapping afresh. The label stays in the ontology; `drop_entity()` removes a label nothing uses. `source` is matched on its basename, like `ingest()`.
+
+**Raises:** `ValueError` when no table of that name is in the ontology.
 
 ### deduplicate_entities()
 
@@ -177,15 +211,16 @@ async def query(question: str, **kwargs) -> RagResult
 async def deduplicate_entities(
     *,
     fuzzy: bool = False,
-    similarity_threshold: float = 0.9,
+    similarity_threshold: float = 0.95,
     batch_size: int = 500,
 ) -> int
 ```
 
 Post-ingestion entity deduplication. Groups entities by `(normalized name, label)` to prevent cross-type merging (e.g. Person "Paris" and Location "Paris" stay separate).
 
-- **Phase 1** (always): Exact name match -- keeps longest description, remaps RELATES and MENTIONED_IN edges, deletes duplicates.
+- **Phase 1** (always): Canonical name match — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, then description length; merges the duplicate's description (`" | "`-joined), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
 - **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
+- **Phase 3** (optional, `resolver=`): A `ResolutionStrategy` judges the remaining pairs across documents and tables. `finalize()` passes one by default.
 
 Call once after all documents are ingested.
 
@@ -194,25 +229,36 @@ Call once after all documents are ingested.
 ### finalize()
 
 ```python
-async def finalize() -> dict[str, Any]
+async def finalize(
+    *,
+    resolver: ResolutionStrategy | None = None,
+    resolve: bool = True,
+) -> FinalizeResult
 ```
 
-Run all post-ingestion steps after all documents are ingested. Bundles:
-1. `deduplicate_entities()` -- global exact-name dedup
+Run all post-ingestion steps after all documents and tables are ingested. Bundles:
+1. `deduplicate_entities()` -- canonical-name dedup, then the resolver across sources
 2. `backfill_entity_embeddings()` -- name-only embeddings
 3. `embed_relationships()` -- fact text embeddings on RELATES edges
 4. `ensure_indices()` -- all indexes
+5. A consistency report over the whole graph
 
-**Returns:** Dict with counts: `entities_deduplicated`, `entities_embedded`, `relationships_embedded`, `indexes`.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `resolver` | `ResolutionStrategy \| None` | `None` | Judges whether two entities from different sources are one. Defaults to `LLMVerifiedResolution` over the instance's `llm` and `embedder`, asking the model about pairs from cosine 0.6 — the only place a table's "Priya Raman" and a note's "Ms. Raman" meet. Each pair is asked once; a NO is remembered as a `DISTINCT_FROM` edge. |
+| `resolve` | `bool` | `True` | `False` skips the resolver entirely, so no model is called. |
+
+**Returns:** `FinalizeResult` — counts `entities_deduplicated`, `entities_embedded`, `relationships_embedded`, `null_stubs_removed`, `indexes`, and the report: `resolved_duplicates`, `rejected_duplicates`, `probable_duplicates` (spellings the canonical rule declined to merge, with the reason), `unmerged_name_collisions` (one name under two declared labels), `property_conflicts` (a property two tables both supply, with how many entities hold differing values; every value is kept, none resolved for you), `unresolved_references` (placeholders whose owning table has not arrived), `entities_without_a_name`, `proposed_mappings` (tables loaded on a proposed, not declared, mapping), `mapping_changed`, `stale_signed_properties`. Everything non-empty is also logged at WARNING.
 
 ### Sync Wrappers
 
 ```python
 def retrieve_sync(question: str, **kwargs) -> RetrieverResult
 def completion_sync(question: str, **kwargs) -> RagResult
-def ingest_sync(source: str | list[str], **kwargs) -> IngestionResult | list[IngestionResult]
-def finalize_sync() -> dict[str, Any]
-def query_sync(question: str, **kwargs) -> RagResult  # deprecated
+def ingest_sync(source: str | list[str], **kwargs) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult
+def finalize_sync(*, resolver=None, resolve=True) -> FinalizeResult
+def query_sync(cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]
+def drop_table_sync(source: str) -> Ontology
 ```
 
 Convenience methods that run the async versions in `asyncio.run()`.
@@ -614,7 +660,7 @@ class ResolutionStrategy(ABC):
 
 **Built-in:**
 - `ExactMatchResolution(resolve_property="id")`
-- `DescriptionMergeResolution(llm=None, force_summary_threshold=3, max_summary_tokens=500)`
+- `LLMVerifiedResolution(llm=None, embedder=None, *, hard_threshold=0.95, soft_threshold=0.80, max_llm_pairs=500, max_llm_concurrency=None, force_summary_threshold=3, max_summary_tokens=500, ann_top_k=50)`
 
 ---
 
@@ -643,6 +689,136 @@ IngestionPipeline(
 
 ---
 
+## Structured Ingestion
+
+```python
+from graphrag_sdk import (
+    Ontology, TableMapping, Column, Link, MappingError,
+    CsvRecordLoader, RecordLoaderStrategy, RecordBatch, TextLoader,
+)
+```
+
+A table is declared on the ontology, next to the entity types, and then ingested through the ordinary `ingest()`. No model is involved in writing it: identity comes from a declared key, every property type is declared, and the same file always produces the same graph. A row and a prose mention of the same thing share one node from the first write. The full guide is [Structured Ingestion](/structured-ingestion); the runnable version is `examples/11_structured_ingestion.py`.
+
+```python
+ontology = Ontology(
+    entities=[Entity(label="Person"), Entity(label="Organization")],
+    tables=[
+        TableMapping(
+            source="employees.csv",
+            label="Person",
+            key="employee_id",
+            name="full_name",
+            properties={"age": Column("age", "INTEGER"), "title": "title"},
+            links=[Link("WORKS_AT", to="Organization", by="org_id")],
+        ),
+    ],
+)
+rag = GraphRAG(connection=conn, llm=llm, embedder=embedder, ontology=ontology, enable_cypher=True)
+
+result = await rag.ingest("data/employees.csv")     # StructuredIngestionResult
+await rag.ingest("data/quarterly_report.pdf")       # prose, as before
+report = await rag.finalize()                        # joins the two halves
+```
+
+### TableMapping
+
+```python
+@dataclass
+class TableMapping:
+    source: str                                  # file name; also the property signature
+    label: str                                   # the label each row becomes
+    key: str | None = None                       # column identifying the row; defaults to name
+    name: str | None = None                      # column holding the display name
+    properties: dict[str, Column | str] = field(default_factory=dict)  # property_name -> Column; a str means STRING
+    links: list[Link] = field(default_factory=list)                    # columns that point at other entities
+    standalone: bool = False                     # a new label that deliberately relates to nothing
+    description: str | None = None
+```
+
+| Field | Description |
+|-------|-------------|
+| `source` | Matched to the ingested file on its basename. Also the **signature**: every property this table writes is stored as `<signature>__<property>` (`employees__age`), so two tables describing one entity cannot overwrite each other, and an extracted property (always unsigned) cannot collide with a declared one. |
+| `label` | May be new. A new label must connect to something — a `Link`, an entity in `entities`, or `standalone=True` — or `Ontology` raises `ValueError`, because rows nothing can reach are almost always a typo. |
+| `key` | Derives the node id, so a corrected export updates in place. Rows with a blank key are skipped and reported; a repeated key is logged. Defaults to `name`. Declare a separate key when names can repeat, change, or are what other tables link by. |
+| `name` | What joins a row to a prose mention of the same thing. Two rows sharing a name fall back to their key and are reported, so an ambiguous mention joins neither. |
+| `properties` | Validated against the file's real header before anything is written. The signed columns reach the ontology as `Attribute(structured=True)` and are left out of the extraction prompt. |
+| `links` | See `Link`. |
+
+`MappingError` is raised for a declaration that does not fit — an unknown column, a cell that does not parse as its type, a label the sanitiser would rewrite — and the graph is left untouched.
+
+### Column
+
+```python
+@dataclass
+class Column:
+    name: str                     # the column in the source record
+    type: str = "STRING"          # one of COLUMN_TYPES
+    description: str | None = None
+```
+
+`COLUMN_TYPES`: `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`. Types are declared, never sniffed. `INTEGER` and `FLOAT` accept `1,234.56` and `1.234,56`; `FLOAT` refuses `nan`/`inf`; `LIST` is parsed as a CSV row. A blank cell writes no property.
+
+### Link
+
+```python
+@dataclass
+class Link:
+    type: str                                    # relationship type, e.g. "WORKS_AT"
+    to: str                                      # label of the target
+    by: str                                      # column holding the target's key
+    name: str | None = None                      # column holding the target's display name, if denormalised
+    properties: dict[str, Column | str] = {}     # columns written onto the edge
+    description: str | None = None
+```
+
+Written as a `RELATES` edge with `rel_type=type`, like every data edge. The target is **keyed, never named**: a missing target is created as a placeholder (`is_stub: true`) that is renamed in place — edges intact — when the owning table arrives; an existing target, another table's row or an entity a document mentioned, only gains the key. A link can therefore never overwrite what the owning source wrote.
+
+### Record loaders
+
+```python
+class RecordLoaderStrategy(ABC):
+    @abstractmethod
+    async def load_records(self, source: str, ctx: Context) -> RecordBatch: ...
+
+@dataclass
+class RecordBatch:
+    open_records: Callable[[], Iterator[dict[str, Any]]]   # re-openable; the file is streamed twice
+    columns: list[str]
+    document_info: DocumentInfo
+    record_count: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+class CsvRecordLoader(RecordLoaderStrategy):
+    def __init__(self, *, delimiter: str | None = None, encoding: str = "utf-8-sig", document_id: str | None = None): ...
+```
+
+`CsvRecordLoader` is the default; `delimiter=None` sniffs comma, semicolon, tab or pipe from the first kilobyte, and the default encoding reads UTF-8 with or without the byte-order mark Excel writes. The file is read once before anything is written: a row with more fields than the header — an unquoted delimiter inside a cell — is refused with its row number rather than loaded shifted. Implement `RecordLoaderStrategy` for another format and pass it as `ingest(..., record_loader=...)`.
+
+### StructuredIngestionResult
+
+Returned by `ingest()` for a table (`graphrag_sdk.ingestion.structured_pipeline.StructuredIngestionResult`).
+
+| Field | Description |
+|-------|-------------|
+| `document_id` | The table's handle: its name, or the `document_id` you passed. |
+| `records`, `chunks` | Rows written. Each row is a `Chunk` (`kind: "record"`) carrying its cells beside the rendered text, under a `Document` named for the table. |
+| `entities`, `references`, `edges` | Nodes written, placeholders created for foreign keys, `RELATES` edges written. |
+| `rows_skipped`, `rows_in_source` | Rows dropped for a blank key, out of the rows read. |
+| `replaced_existing`, `no_op` | The source was already in the graph. `no_op` when the content hash — rows and mapping — was unchanged. |
+| `chunks_deleted`, `entities_deleted` | On a re-sync: rows gone from the export and entities nothing mentions any more. |
+| `entities_moved`, `identity_moved` | Nodes moved to the id their name now gives them — a renamed row, or a placeholder a row filled in — and the `old_id -> new_id` map. |
+| `references_ambiguous` | `(label, key)` pairs a foreign key named that more than one existing node answers to — two tables numbering one label from 1. The edge was left on a placeholder carrying the key rather than given to either. |
+
+### How a table is written
+
+- **Re-ingesting is a re-sync.** A table is a snapshot: a deleted row is removed, a blanked cell loses its column, a moved foreign key leaves its old target, and a node another source still mentions survives with the table's signed columns and identity retracted. The content hash covers the mapping, so re-declaring a type rewrites the source.
+- **A Document records how it was written**, so `update()` cannot re-read a table as prose or a document as records. `update()`, `delete_document()` and `drop_table()` all take the table's name.
+- **No mapping declared?** With a model, one is proposed from the measured columns, the first rows and the current ontology, held to the data (unique key, existing columns, known link targets), stored as `derived=True` and reported by `finalize().proposed_mappings`. Without a model the file is read as-is: the label from the filename, the leftmost unique-and-complete column as key, no name column. Declare a `TableMapping` to replace it, or `drop_table()` to refuse it.
+- **Ontology registration is additive.** Declared types reach the ontology so text-to-Cypher sees `age` as an `INTEGER`; an existing label is extended, not redeclared, and a type contradiction raises.
+
+---
+
 ## Retrieval Strategies
 
 ### RetrievalStrategy (ABC)
@@ -655,9 +831,13 @@ class RetrievalStrategy(ABC):
 
     async def search(self, query, ctx=None, **kwargs) -> RetrieverResult: ...
 
+    def set_ontology(self, ontology) -> None: ...
+
     @abstractmethod
     async def _execute(self, query, ctx, **kwargs) -> RawSearchResult: ...
 ```
+
+`set_ontology()` is called by the facade whenever the working ontology changes — an evolution call, a table declaring typed columns — so a strategy that generates Cypher always sees the current schema. A no-op by default; `MultiPathRetrieval` overrides it.
 
 ### LocalRetrieval
 

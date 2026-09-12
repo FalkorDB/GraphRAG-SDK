@@ -4,7 +4,7 @@ GraphRAG SDK -- Custom Strategies
 Demonstrates composing the ingestion strategies explicitly rather than relying
 on the defaults. Retrieval is left at the default. Uses:
   - GraphExtraction (GLiNER2 NER + LLM relationship extraction)
-  - DescriptionMergeResolution (LLM-assisted entity dedup)
+  - LLMVerifiedResolution (embedding + LLM-verified entity dedup)
   - Post-ingestion finalize (dedup, embeddings, indexes)
   - MultiPathRetrieval (the default; not passed explicitly)
 
@@ -32,7 +32,7 @@ from graphrag_sdk import (
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
 from graphrag_sdk import GraphExtraction
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
+from graphrag_sdk.ingestion.resolution_strategies import LLMVerifiedResolution
 
 # Sample documents (replace with your own)
 DOCUMENTS = [
@@ -136,8 +136,8 @@ async def main():
             chunker=FixedSizeChunking(chunk_size=1500, chunk_overlap=200),
             # GraphExtraction: GLiNER2 entity NER + LLM verify & relationship extraction
             extractor=GraphExtraction(llm=llm),
-            # LLM-assisted deduplication merges entity descriptions
-            resolver=DescriptionMergeResolution(llm=llm),
+            # Embedding similarity + LLM-verified deduplication
+            resolver=LLMVerifiedResolution(llm=llm, embedder=embedder),
             ctx=Context(tenant_id="demo"),
         )
         print(f"  {source_id}: {result.nodes_created} nodes, {result.relationships_created} edges")

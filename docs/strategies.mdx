@@ -13,7 +13,7 @@ GraphRAG SDK uses the **Strategy pattern** for every algorithmic concern. Each c
 | 1 | Loading | `LoaderStrategy` | `TextLoader`, `PdfLoader`, `MarkdownLoader` |
 | 2 | Chunking | `ChunkingStrategy` | `FixedSizeChunking`, `SentenceTokenCapChunking`, `ContextualChunking`, `CallableChunking`, `StructuralChunking` |
 | 3 | Extraction | `ExtractionStrategy` | `GraphExtraction` |
-| 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `DescriptionMergeResolution` |
+| 4 | Resolution | `ResolutionStrategy` | `ExactMatchResolution`, `LLMVerifiedResolution` |
 | 5 | Retrieval | `RetrievalStrategy` | `LocalRetrieval`, `MultiPathRetrieval` |
 | 6 | Reranking | `RerankingStrategy` | `CosineReranker` |
 
@@ -418,23 +418,37 @@ resolver = ExactMatchResolution(
 
 **When to use:** Default. Fast and deterministic. Works well when extraction produces consistent entity IDs.
 
-### Built-in: DescriptionMergeResolution
+### Built-in: LLMVerifiedResolution
 
-Deduplicates by `(normalized name, label)` -- same-name entities with different labels (e.g. Person "Paris" vs Location "Paris") are kept separate. Merges descriptions:
-- If fewer than `force_summary_threshold` descriptions: concatenates them
-- If more: uses LLM to summarize into a single description
+Three-tier resolution that catches near-duplicates exact match misses (e.g. `Acme Corp` vs `Acme Corporation`):
+
+1. `(normalized name, label)` exact-match merge -- the same first pass `ExactMatchResolution` performs.
+2. Embed surviving node names and compare pairs within each label group:
+   - `similarity >= hard_threshold`: merged immediately, no LLM call
+   - `soft_threshold <= similarity < hard_threshold`: sent to the LLM for a YES/NO verdict
+   - `similarity < soft_threshold`: skipped
+3. Merge the confirmed clusters, then remap and deduplicate relationships.
+
+Descriptions are merged the same way in both resolvers: concatenated below `force_summary_threshold`, LLM-summarized at or above it.
 
 ```python
-from graphrag_sdk.ingestion.resolution_strategies.description_merge import DescriptionMergeResolution
+from graphrag_sdk import LLMVerifiedResolution
 
-resolver = DescriptionMergeResolution(
-    llm=llm,                       # LLMInterface for summarization (optional)
+resolver = LLMVerifiedResolution(
+    llm=llm,                       # LLMInterface for YES/NO verification and summaries (optional)
+    embedder=embedder,             # Embedder for pairwise cosine similarity (optional)
+    hard_threshold=0.95,           # Merge without asking the LLM (default: 0.95)
+    soft_threshold=0.80,           # Below this, skip the pair entirely (default: 0.80)
+    max_llm_pairs=500,             # Cap on ambiguous pairs per call, highest similarity first (default: 500)
     force_summary_threshold=3,     # Trigger LLM summary at this many descriptions (default: 3)
     max_summary_tokens=500,        # Max tokens for LLM summary (default: 500)
+    ann_top_k=50,                  # Nearest neighbours retrieved per node (default: 50)
 )
 ```
 
-**When to use:** Multi-document ingestion where the same entity appears with different descriptions. Useful when the same entity is described differently across documents.
+Both arguments are optional: with no `embedder` it degrades to exact match, and with no `llm` the ambiguous zone is skipped so only the `hard_threshold` tier merges.
+
+**When to use:** Multi-document ingestion where the same entity is named inconsistently across documents. Costs embedding calls on every ingest plus an LLM call when any pair lands in the ambiguous zone.
 
 ---
 
