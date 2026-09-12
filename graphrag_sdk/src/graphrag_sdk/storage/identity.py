@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -154,13 +155,42 @@ def _uninvert(text: str) -> str:
     return f"{tail} {head}"
 
 
+# A dot between word characters, or closing a word, is an abbreviation mark and
+# not a separator: split on it, "A.I." becomes the single letter "i" and
+# "U.S. Steel" becomes "u s steel". Removed, the two spellings of an initialism
+# agree ("A.I." = "AI", "L.L.C." = "LLC"). A dot followed by a space is left to
+# the splitter, so "J. Doe" still tokenises as two words.
+_ABBREVIATION_DOT = re.compile(r"(?<=\w)\.(?=\w|$)")
+
+# English only. Stripping foreign articles turned "Los Angeles" into "angeles"
+# and "Le Mans" into "mans" — collisions, not variants.
+_LEADING_ARTICLES = frozenset({"the", "a", "an"})
+
+
+def _fold(name: str) -> str:
+    """Case and diacritics folded: ``Jardín`` reads as ``jardin``.
+
+    Only the combining marks of the NFKD form are dropped, so a letter of any
+    other script survives: transliterating to ASCII instead threw those letters
+    away and reduced "Отдел 5" and "Кабинет 5" both to "5". A base letter is
+    kept as it is, which is why "Müller" and "Möller" stay two names.
+    """
+    decomposed = unicodedata.normalize("NFKD", name)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
+
+
 def _tokens(name: str) -> list[str]:
-    text = _JOINERS.sub("", name.lower())
+    text = _ABBREVIATION_DOT.sub("", _JOINERS.sub("", _fold(name)))
     for glued, word in _GLUED_SYMBOLS:
         text = glued.sub(word, text)
     for symbol, word in _SYMBOL_WORDS.items():
         text = text.replace(symbol, word)
-    return [token for token in _WORD.split(_uninvert(text)) if token]
+    tokens = [token for token in _WORD.split(_uninvert(text)) if token]
+    # "The Guardian" and "Guardian" are one paper. A name that *is* an article
+    # keeps it, so it does not vanish into the empty key.
+    if len(tokens) > 1 and tokens[0] in _LEADING_ARTICLES:
+        tokens = tokens[1:]
+    return tokens
 
 
 def _core(name: str) -> list[str]:
@@ -188,11 +218,12 @@ def _merge_core(name: str) -> list[str]:
 def canonical_key(name: str) -> str:
     """The form two spellings of one name must share to be merged automatically.
 
-    Lower-cased, punctuation-split, apostrophes and ``&`` normalised,
-    ``Surname, Given`` un-inverted, abbreviations expanded, trailing legal forms
-    dropped. Because both sides are reduced independently, the join is an
-    equality rather than a pairwise comparison, so the order two sources arrive
-    in does not change what merges.
+    Case and diacritics folded, punctuation-split, abbreviation dots removed
+    (``A.I.`` = ``AI``), apostrophes and ``&`` normalised, a leading English
+    article dropped, ``Surname, Given`` un-inverted, abbreviations expanded,
+    trailing legal forms dropped. Because both sides are reduced independently,
+    the join is an equality rather than a pairwise comparison, so the order two
+    sources arrive in does not change what merges.
 
     **Word order is deliberately preserved.** Sorting the tokens would join one
     more realistic pair (``Priya Raman`` / ``Raman, Priya``, which the comma rule

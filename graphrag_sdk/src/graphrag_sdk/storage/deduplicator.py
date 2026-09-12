@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
@@ -40,6 +42,99 @@ logger = logging.getLogger(__name__)
 # server bug that keeps returning the same page.
 _MAX_PAGINATION_ITERATIONS = 10_000
 
+# Only English articles. Stripping foreign ones turned ``Los Angeles`` into
+# ``angeles`` and ``Le Mans`` into ``mans`` -- collisions, not variants.
+_LEADING_ARTICLE = re.compile(r"^(the|a|an)\s+")
+
+# Words that carry no signal when forming an acronym.
+_ACRONYM_STOPWORDS = frozenset({"of", "the", "and", "for", "de", "la", "del", "at", "in", "on"})
+
+# A short form of fewer than 3 letters is not evidence of anything: with a
+# floor of 2, ``Bo`` spelled the initials of ``Ben Ottoson`` and the pair was
+# merged with no LLM in the loop.
+_MIN_ACRONYM_LEN = 3
+_MAX_ACRONYM_LEN = 6
+
+
+def normalize_entity_name(name: str) -> str:
+    """Fold accents, punctuation and a leading English article for grouping.
+
+    Accents are folded by dropping the combining marks of the NFKD form
+    (``Jardín`` = ``Jardin``); letters and digits of every other script are
+    kept. Folding to ASCII instead threw those letters away, so ``Отдел 5``
+    and ``Кабинет 5`` both became ``5`` and ``東京, Japan`` and ``大阪, Japan``
+    both became ``japan`` -- one of each pair was then deleted.
+
+    Dots inside a token are removed rather than turned into spaces, so ``A.I.``
+    stays ``ai`` instead of becoming the single letter ``i``.
+
+    Deliberately does NOT strip generational suffixes: ``Elias Whitford, Jr.``
+    and ``Elias Whitford`` are a father and a son, and merging them is a
+    correctness bug rather than a cleanup.
+    """
+    original = re.sub(r"\s+", " ", str(name or "")).strip()
+    s = unicodedata.normalize("NFKD", original)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch)).casefold()
+    s = re.sub(r"(?<=\w)\.(?=\w|$)", "", s)
+    s = re.sub(r"[\W_]+", " ", s).strip()
+    cleaned = _LEADING_ARTICLE.sub("", s).strip() or s
+    # A name made only of punctuation has nothing left; keep it distinct from
+    # every other such name rather than pooling them under "".
+    return cleaned or original.casefold()
+
+
+def _acronym_key(normalized: str) -> str | None:
+    """The letters of a plausible acronym, or ``None`` if the name is not one."""
+    s = normalized.replace(" ", "")
+    if not (_MIN_ACRONYM_LEN <= len(s) <= _MAX_ACRONYM_LEN):
+        return None
+    if not (s.isascii() and s.isalpha()):
+        return None
+    return s
+
+
+def _expansion_key(normalized: str) -> str | None:
+    """The initials of a multi-word name, or ``None`` if it has too few words."""
+    words = [w for w in normalized.split() if w not in _ACRONYM_STOPWORDS]
+    if len(words) < 2:
+        return None
+    return "".join(w[0] for w in words)
+
+
+def is_acronym_of(short: str, long: str) -> bool:
+    """Is ``short`` a plausible acronym of the multi-word ``long``?
+
+    This is the only rule that can see ``AIHS`` = ``Ashford Island Historical
+    Society``: their character similarity is 0.11 and their embedding similarity
+    sits below every threshold worth using, so neither fuzzy matching nor
+    vectors recover that pair.
+
+    Kept strict on purpose (3-6 ASCII letters; the long form must have at
+    least two significant words). A looser version merges arbitrary unrelated
+    short strings.
+    """
+    key = _acronym_key(normalize_entity_name(short))
+    if key is None:
+        return False
+    return key == _expansion_key(normalize_entity_name(long))
+
+
+def _merge_description(current: str, absorbed: str) -> str:
+    """Join two descriptions with ``" | "``, keeping each segment once.
+
+    Segments are compared individually, not whole strings: once a survivor
+    holds ``"a lighthouse | first lit in 1871"``, absorbing a node described as
+    ``"first lit in 1871"`` must not append it again. Across incremental
+    finalize cycles that repetition compounds on hub entities.
+    """
+    segments: list[str] = []
+    for text in (current, absorbed):
+        for seg in (s.strip() for s in str(text or "").split(" | ")):
+            if seg and seg not in segments:
+                segments.append(seg)
+    return " | ".join(segments)
+
+
 # Cypher queries for remapping edges from a duplicate to a survivor entity.
 #
 # The RELATES variants union ``source_chunk_ids`` rather than letting
@@ -55,13 +150,15 @@ _MAX_PAGINATION_ITERATIONS = 10_000
 # "simplifying" them:
 #
 # 1. The survivor is bound by its own ``MATCH`` before the ``MERGE``.
-#    Writing the survivor inline — ``MERGE (s:__Entity__ {id: $survivor_id})
-#    -[nr:RELATES]->(b)`` — leaves ``s`` unbound, and MERGE creates the
-#    *entire* pattern when it fails to match. That silently forks the
-#    survivor into a second, type-label-less ``__Entity__`` node carrying
-#    the same id: the ghost takes the remapped edges while the real
-#    survivor is left with none. There is no uniqueness constraint on
-#    ``__Entity__.id`` to catch it.
+#    Cypher MERGE on a *path* is all-or-nothing: writing the survivor inline
+#    — ``MERGE (s:__Entity__ {id: $survivor_id})-[nr:RELATES]->(b)`` — leaves
+#    ``s`` unbound, so when that relationship does not yet exist FalkorDB
+#    creates the whole pattern, including a brand new, nameless
+#    ``__Entity__`` node carrying only ``id``. The remapped edge attaches to
+#    that ghost instead of the real survivor, so a "deduplication" run both
+#    invents entities and silently loses relationships. Reproduced minimally:
+#    3 entities in, 4 out, "Nodes created: 1", two nodes sharing one id.
+#    There is no uniqueness constraint on ``__Entity__.id`` to catch it.
 #
 # 2. The RELATES ``MERGE`` is keyed on ``rel_type``. Without that key it
 #    matches *any* RELATES between the pair, so a survivor's ``WORKS_AT``
@@ -87,7 +184,19 @@ _REMAP_QUERIES = [
     "SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old] "
     "DELETE r",
     # Incoming RELATES to duplicate.
-    "MATCH (a:__Entity__)-[r:RELATES]->(dup:__Entity__ {id: $dup_id}) "
+    #
+    # The ``MATCH (dup) WITH dup`` prefix is load-bearing, not style. Written
+    # as a single pattern starting from ``(a:__Entity__)``, FalkorDB's planner
+    # anchors on ``a`` and produces "Node By Label Scan | (a:__Entity__)" —
+    # a full scan of every entity in the graph, once per merged duplicate.
+    # That is why merge throughput fell 61.9 -> 10.3 merges/s between a 1K and
+    # a 50K-node graph. The WITH barrier forces "Node By Index Scan |
+    # (dup:__Entity__)" and the incoming remap gets ~7.5x faster at 20K nodes.
+    # Reversing the arrow instead (``(dup)<-[r]-(a)``) does NOT help; the
+    # planner still chooses the label scan.
+    "MATCH (dup:__Entity__ {id: $dup_id}) "
+    "WITH dup "
+    "MATCH (a:__Entity__)-[r:RELATES]->(dup) "
     "WHERE a.id <> $survivor_id "
     "MATCH (s:__Entity__ {id: $survivor_id}) "
     "MERGE (a)-[nr:RELATES {rel_type: coalesce(r.rel_type, '')}]->(s) "
@@ -104,6 +213,35 @@ _REMAP_QUERIES = [
     "DELETE r",
 ]
 
+# Folds the duplicate into the survivor and deletes it in ONE statement, so a
+# failed write cannot leave the survivor un-updated with the duplicate already
+# gone. Binding the survivor first also closes a race: ``_fetch_all_entities``
+# snapshots the entity list up front, and a concurrent ``delete_document()``
+# can remove a survivor mid-loop. The remap queries then match nothing, and a
+# bare ``DETACH DELETE dup`` would destroy every edge the duplicate still
+# holds. Here a missing survivor yields zero rows, nothing is deleted, and the
+# empty result tells the caller the merge did not happen.
+#
+# Node-level ``source_chunk_ids`` are unioned like the RELATES ones: they feed
+# ``CachedChunkExtraction`` through ``get_entities_for_chunks``, and deleting
+# the duplicate outright dropped its half of the provenance. The CASE keeps a
+# survivor with no provenance property from acquiring an empty list.
+_ABSORB_QUERY_HEAD = (
+    "MATCH (s:__Entity__ {id: $survivor_id}) "
+    "MATCH (dup:__Entity__ {id: $dup_id}) "
+    "WITH s, dup, "
+    "     coalesce(s.source_chunk_ids, []) AS old, "
+    "     coalesce(dup.source_chunk_ids, []) AS contrib "
+    "SET s.source_chunk_ids = CASE WHEN size(contrib) = 0 THEN s.source_chunk_ids "
+    "    ELSE old + [c IN contrib WHERE NOT c IN old] END"
+)
+_ABSORB_QUERY_TAIL = "WITH s, dup DETACH DELETE dup RETURN s.id"
+
+
+def _string_list(value: Any) -> list[str]:
+    """The strings in a list-valued property; anything else counts as empty."""
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
 
 def union_chunk_ids(existing: Any, incoming: Any) -> list[str]:
     """``existing`` followed by every id in ``incoming`` it lacks, order kept.
@@ -112,8 +250,7 @@ def union_chunk_ids(existing: Any, incoming: Any) -> list[str]:
     the places that read both nodes' properties before writing — a merge's
     property carry. Anything that is not a list of strings counts as empty.
     """
-    old = [c for c in existing if isinstance(c, str)] if isinstance(existing, list) else []
-    new = [c for c in incoming if isinstance(c, str)] if isinstance(incoming, list) else []
+    old, new = _string_list(existing), _string_list(incoming)
     return old + [c for c in new if c not in old]
 
 
@@ -128,21 +265,26 @@ def properties_to_carry(
     so it becomes the union. ``never`` names what stays behind whatever the
     survivor lacks; ``id`` and ``embedding`` always do.
 
-    ``description`` is the exception to keep_existing: the longer one stays.
-    The survivor is chosen for the reproducibility of its identity — a table's
-    key, then how much of the graph points at it — not for what it knows, and
-    the node that lost on those grounds is often the one the PDF described.
+    ``description`` is the exception to keep_existing: the two are joined with
+    ``" | "`` (:func:`_merge_description`), each segment kept once. The
+    survivor is chosen for the reproducibility of its identity — a table's key,
+    then how much of the graph points at it — not for what it knows, and the
+    node that lost on those grounds is often the one the PDF described.
     Measured as a two-line "from the PDF" description dropped for a stub's
-    one-liner. Safe to swap: the entity embedding is of the name, not of this.
+    one-liner. Safe to change: the entity embedding is of the name, not of this.
     """
     carry = {
         key: value
         for key, value in dup.items()
         if key not in never and value is not None and keep.get(key) in (None, "", [])
     }
-    richer = dup.get("description")
-    if isinstance(richer, str) and len(richer) > len(str(keep.get("description") or "")):
-        carry["description"] = richer
+    description = _merge_description(
+        str(keep.get("description") or ""), str(dup.get("description") or "")
+    )
+    if description != str(keep.get("description") or ""):
+        carry["description"] = description
+    else:
+        carry.pop("description", None)
     provenance = union_chunk_ids(keep.get("source_chunk_ids"), dup.get("source_chunk_ids"))
     if provenance and provenance != keep.get("source_chunk_ids"):
         carry["source_chunk_ids"] = provenance
@@ -252,7 +394,7 @@ def _clusters(
     return [members for members in grouped.values() if len(members) > 1]
 
 
-def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, str]:
+def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, int, str]:
     """Rank candidates so the most reproducible identity survives a merge.
 
     Ordered by:
@@ -267,7 +409,11 @@ def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, str
        re-ingest idempotent after resolution.
     2. **Real over placeholder.** A stub was created by a foreign key and knows
        only an id and a name.
-    3. **Best connected.** Between two nodes of the same provenance, the one the
+    3. **Long form over acronym.** The survivor's *name* is what
+       ``backfill_entity_embeddings`` embeds, so keeping ``AIHS`` over
+       ``Ashford Island Historical Society`` would leave the entity
+       vector-indexed as an opaque string, whatever else recommended it.
+    4. **Best connected.** Between two nodes of the same provenance, the one the
        rest of the graph points at keeps its name. Measured: a resolver judged
        ``Austria`` and ``Republik Österreich`` one country — correctly, from a
        single legislative citation — and the longer-description rule below then
@@ -275,13 +421,13 @@ def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, str
        after the one nobody did. Every later ``WHERE c.name CONTAINS 'Austria'``
        found nothing. Degree is ``RELATES`` plus ``MENTIONED_IN``; a node fetched
        without one ranks as if it had none.
-    4. **Longest description**, the original rule, which still decides between
+    5. **Longest description**, the original rule, which still decides between
        two nodes nothing else separates.
-    5. **Longest name.** Grouping is by canonical key, so a group holds different
+    6. **Longest name.** Grouping is by canonical key, so a group holds different
        spellings of one name and the survivor's is the one the graph keeps.
        Length picks the written-out form — "Globex Limited" over "Globex Ltd",
        "Acme Corporation" over "Acme Corp".
-    6. **Id**, purely to make the outcome deterministic. Entities are fetched
+    7. **Id**, purely to make the outcome deterministic. Entities are fetched
        with no ``ORDER BY`` and :meth:`list.sort` is stable, so without a total
        ordering a tie resolves to whatever order the server happened to return
        and the same data can settle on a different display name from run to run.
@@ -292,9 +438,11 @@ def _survivor_rank(entity: dict[str, Any]) -> tuple[int, int, int, int, int, str
     means the node came from extraction.
     """
     is_stub = entity.get("is_stub")
+    normalized = entity.get("norm") or normalize_entity_name(entity.get("name") or "")
     return (
         0 if is_stub is None else 1,
         0 if is_stub else 1,
+        0 if _acronym_key(normalized) is not None else 1,
         int(entity.get("degree") or 0),
         len(entity.get("description") or ""),
         len(entity.get("name") or ""),
@@ -311,8 +459,10 @@ class EntityDeduplicator:
     """Entity deduplication engine over the whole graph.
 
     Phase 1 (always): Exact name match — groups entities by
-    ``(canonical_name, label)`` to prevent cross-type merging,
-    keeps the one with the longest description, remaps all
+    ``(canonical_name, label)`` to prevent cross-type merging, folds an
+    acronym into its unique same-label long form, keeps the survivor
+    :func:`_survivor_rank` picks (a table row over a mention, the long form
+    over an acronym, then the best-connected and best-described), remaps all
     RELATES and MENTIONED_IN edges, deletes duplicates.
 
     Phase 2 (optional): Fuzzy embedding match — embeds entity
@@ -324,6 +474,12 @@ class EntityDeduplicator:
     and asked which surviving entities are one thing. It decides
     identity; the merge follows this class's rules, so a table row
     always survives a mention of it. See :meth:`_deduplicate_with_resolver`.
+
+    Every merge preserves what the duplicate carried: its description is
+    joined onto the survivor's with ``" | "``, its name is recorded in the
+    survivor's ``aliases`` list when it differs, its node-level
+    ``source_chunk_ids`` are unioned into the survivor's, and any property
+    the survivor lacks is copied over. See :meth:`_absorb`.
 
     Args:
         graph_store: Graph data access object with ``query_raw()`` method.
@@ -352,7 +508,13 @@ class EntityDeduplicator:
         self,
         *,
         fuzzy: bool = False,
-        similarity_threshold: float = 0.9,
+        # 0.95, not 0.9. Measured on the benchmark corpus: at 0.90 name-embedding
+        # matching drops precision to 0.739 and wrongly merges 2 of 33
+        # deliberate hard-negative pairs, for no recall the cheap tiers do not
+        # already reach. At 0.95 precision is 0.938 with zero hard negatives
+        # merged. The old 0.9 was an unswept guess, and it also disagreed with
+        # the 0.95 used by LLMVerifiedResolution for the same job.
+        similarity_threshold: float = 0.95,
         batch_size: int = 500,
         declared_labels: set[str] | None = None,
         resolver: ResolutionStrategy | None = None,
@@ -468,12 +630,17 @@ class EntityDeduplicator:
         groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for ent in entities:
             key = canonical_key(ent["name"]) or ent["name"].strip().lower()
+            # The acronym fold and the alias rule read this lighter form.
+            ent["norm"] = normalize_entity_name(ent["name"])
             label = ent.get("label", "").strip().lower()
             groups.setdefault((key, label), []).append(ent)
 
+        # An acronym and its unique same-label long form are one group too.
+        merged_groups = self._merge_acronym_groups(list(groups.values()))
+
         merged = 0
         deleted: set[str] = set()
-        for (_norm_name, _label), group in groups.items():
+        for group in merged_groups:
             if len(group) < 2:
                 continue
 
@@ -495,19 +662,9 @@ class EntityDeduplicator:
                 )
 
             for dup in duplicates:
-                if not await self._remap_entity_edges(dup["id"], survivor["id"]):
-                    logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
-                    continue
-                await self._carry_properties(dup["id"], survivor["id"])
-                try:
-                    await self._graph.query_raw(
-                        "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
-                        {"dup_id": dup["id"]},
-                    )
+                if await self._absorb(survivor, dup):
                     merged += 1
                     deleted.add(dup["id"])
-                except Exception as exc:
-                    logger.warning(f"Failed to delete duplicate entity {dup['id']}: {exc}")
 
         # What follows works from the groups too, and a node deleted above would
         # otherwise be "adopted" a second time — a MATCH on nothing succeeds, and
@@ -520,72 +677,225 @@ class EntityDeduplicator:
         self._report_cross_label_names(groups)
         return merged
 
+    async def _absorb(self, survivor: dict[str, Any], dup: dict[str, Any]) -> bool:
+        """Remap ``dup``'s edges onto ``survivor``, fold its data in, delete it.
+
+        The remap migrates edges only, so ``DETACH DELETE`` would otherwise take
+        the duplicate's properties with it. That silently loses whatever only
+        the duplicate knew: the description that came from the PDF, every typed
+        value a structured source supplied, and ``is_stub`` — a survivor that
+        absorbed a table's row is now the node that row re-syncs to. Both nodes
+        are read back first; the policy for what crosses over is
+        :func:`properties_to_carry`, with the description joined and the
+        duplicate's name recorded as an alias.
+
+        The survivor's update and the duplicate's deletion are one statement, so
+        a failure between them cannot leave the text gone and the node still
+        there, and a survivor that no longer exists (deleted by an earlier merge
+        in the same run) is detected rather than silently written past.
+
+        Returns ``True`` only when the duplicate was actually deleted. The
+        in-memory ``survivor`` is updated so a group's later duplicates build
+        on the merged description and aliases.
+        """
+        if not await self._remap_entity_edges(dup["id"], survivor["id"]):
+            logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
+            return False
+
+        keep_props, dup_props = await self._read_properties(survivor["id"], dup["id"])
+        if keep_props is not None and dup_props is not None:
+            # The graph is the truth about what each node holds; the fetched row
+            # carries only the columns the phases rank on.
+            survivor["description"] = keep_props.get("description") or ""
+            survivor["aliases"] = _string_list(keep_props.get("aliases"))
+            dup = {
+                **dup,
+                "description": dup_props.get("description") or "",
+                "aliases": _string_list(dup_props.get("aliases")),
+            }
+
+        sets: list[str] = []
+        params: dict[str, Any] = {"survivor_id": survivor["id"], "dup_id": dup["id"]}
+
+        # Concatenated with " | ", matching LLMVerifiedResolution's survivor
+        # rule, so both mechanisms leave the same shape behind.
+        description = _merge_description(
+            survivor.get("description") or "", dup.get("description") or ""
+        )
+        if description != (survivor.get("description") or ""):
+            sets.append("s.description = $desc")
+            params["desc"] = description
+
+        aliases = self._merged_aliases(survivor, dup)
+        if aliases != list(survivor.get("aliases") or []):
+            sets.append("s.aliases = $aliases")
+            params["aliases"] = aliases
+
+        carry: dict[str, Any] = {}
+        if keep_props is not None and dup_props is not None:
+            carry = properties_to_carry(keep_props, dup_props, never=self._NEVER_CARRY)
+            # Handled above, or by the absorb query itself.
+            for handled in ("description", "aliases", "source_chunk_ids"):
+                carry.pop(handled, None)
+        if carry:
+            sets.append("s += $carry")
+            params["carry"] = carry
+
+        query = _ABSORB_QUERY_HEAD
+        if sets:
+            query += " WITH s, dup SET " + ", ".join(sets)
+        query += " " + _ABSORB_QUERY_TAIL
+
+        try:
+            result = await self._graph.query_raw(query, params)
+        except Exception as exc:
+            logger.warning(
+                f"Failed to merge duplicate entity {dup['id']} into {survivor['id']}: {exc}"
+            )
+            return False
+        if not (getattr(result, "result_set", None) or []):
+            logger.warning(
+                "Survivor %s no longer exists; duplicate %s left in place",
+                survivor["id"],
+                dup["id"],
+            )
+            return False
+
+        survivor["description"] = description
+        survivor["aliases"] = aliases
+        if "is_stub" in carry:
+            survivor["is_stub"] = carry["is_stub"]
+        return True
+
+    async def _read_properties(
+        self, survivor_id: str, dup_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
+        """Both nodes' properties, or ``(None, None)`` if they could not be read.
+
+        A failed read is not a failed merge: the edges are already remapped and
+        the absorb query still joins what the fetched rows know.
+        """
+        try:
+            res = await self._graph.query_raw(
+                "MATCH (k:__Entity__ {id: $survivor_id}), (d:__Entity__ {id: $dup_id}) "
+                "RETURN properties(k), properties(d)",
+                {"survivor_id": survivor_id, "dup_id": dup_id},
+            )
+        except Exception as exc:
+            logger.warning(f"Could not read properties for {dup_id} -> {survivor_id}: {exc}")
+            return None, None
+        rows = getattr(res, "result_set", None) or []
+        if not rows or len(rows[0]) < 2:
+            return None, None
+        return rows[0][0] or {}, rows[0][1] or {}
+
+    @staticmethod
+    def _merged_aliases(survivor: dict[str, Any], dup: dict[str, Any]) -> list[str]:
+        """The survivor's aliases plus the duplicate's name and aliases.
+
+        A name that normalises to the survivor's own is a spelling variant,
+        not an alias worth keeping; an acronym or a fuzzy-matched variant is.
+        """
+        survivor_norm = survivor.get("norm") or normalize_entity_name(survivor.get("name") or "")
+        aliases = _string_list(survivor.get("aliases"))
+        for candidate in [dup.get("name") or "", *(dup.get("aliases") or [])]:
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            if normalize_entity_name(candidate) == survivor_norm or candidate in aliases:
+                continue
+            aliases.append(candidate)
+        return aliases
+
+    @staticmethod
+    def _merge_acronym_groups(groups: list[list[dict]]) -> list[list[dict]]:
+        """Union groups where one name is an acronym of another.
+
+        Runs on the ``(normalised name, label)`` groups so an acronym attaches to
+        an already-complete group. Uses union-find rather than pairwise merging
+        so the result does not depend on iteration order.
+
+        Long forms are bucketed by their initials, so each short form costs one
+        dict lookup: each name is normalised once and the fold is linear in the
+        number of groups. The pairwise version re-normalised both names for
+        every (short, long) pair -- ~51 µs each, 20 s for 400k pairs -- which is
+        quadratic inside ``finalize()``.
+
+        Two guards, because this fold deletes nodes without an LLM looking:
+        the short and long form must share at least one label, and a short form
+        that spells the initials of two or more long forms (``ABC`` = ``American
+        Broadcasting Company`` = ``Australian Broadcasting Corporation``) is
+        left alone rather than used as a hub that collapses unrelated entities.
+        Ambiguous cases are the LLM judge's job.
+        """
+        parent = list(range(len(groups)))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        names = [g[0]["name"] for g in groups]
+        norms = [g[0].get("norm") or normalize_entity_name(n) for g, n in zip(groups, names)]
+        labels = [{(e.get("label") or "").strip().lower() for e in g} - {""} for g in groups]
+
+        by_initials: dict[str, list[int]] = {}
+        for j, norm in enumerate(norms):
+            initials = _expansion_key(norm)
+            if initials is not None:
+                by_initials.setdefault(initials, []).append(j)
+
+        for i, norm in enumerate(norms):
+            key = _acronym_key(norm)
+            if key is None:
+                continue
+            matches = [j for j in by_initials.get(key, ()) if i != j and labels[i] & labels[j]]
+            if len(matches) == 1:
+                union(i, matches[0])
+            elif len(matches) > 1:
+                logger.info(
+                    "Acronym %r matches %d long forms (%s); leaving unmerged",
+                    names[i],
+                    len(matches),
+                    ", ".join(names[j] for j in matches),
+                )
+
+        combined: dict[int, list[dict]] = {}
+        for i, g in enumerate(groups):
+            combined.setdefault(find(i), []).extend(g)
+        return list(combined.values())
+
     # ── Phase 2: Fuzzy embedding match ──
 
     async def _deduplicate_fuzzy(self, batch_size: int, similarity_threshold: float) -> int:
         import numpy as np
 
-        # Re-fetch surviving entities (with labels for cross-type guard)
-        offset = 0
-        all_ids: list[str] = []
-        all_names: list[str] = []
-        all_labels: list[str] = []
-        rank_by_id: dict[str, tuple[int, int, int, int, int, str]] = {}
-        keyed: set[str] = set()
-        for _ in range(_MAX_PAGINATION_ITERATIONS):
-            result = await self._graph.query_raw(
-                "MATCH (e:__Entity__) "
-                "RETURN e.id AS id, e.name AS name, "
-                "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
-                f"e.is_stub AS is_stub, e.description AS desc, {_DEGREE_EXPR} AS degree "
-                "SKIP $offset LIMIT $limit",
-                {"offset": offset, "limit": batch_size},
-            )
-            if not result.result_set:
-                break
-            for row in result.result_set:
-                all_ids.append(row[0])
-                all_names.append(row[1] if len(row) > 1 and row[1] else str(row[0]))
-                all_labels.append(row[2] if len(row) > 2 and row[2] else "")
-                if len(row) > 3 and row[3] is not None:
-                    keyed.add(row[0])
-                rank_by_id[row[0]] = _survivor_rank(
-                    {
-                        "is_stub": row[3] if len(row) > 3 else None,
-                        "description": row[4] if len(row) > 4 else "",
-                        "degree": row[5] if len(row) > 5 else 0,
-                        "name": all_names[-1],
-                        "id": row[0],
-                    }
-                )
-            offset += batch_size
-        else:
-            logger.error(
-                "Pagination exceeded %d iterations in _deduplicate_fuzzy — aborting",
-                _MAX_PAGINATION_ITERATIONS,
-            )
-
-        if len(all_ids) < 2:
+        # Re-fetch surviving entities (with labels for the cross-type guard).
+        entities = await self._fetch_all_entities(batch_size)
+        if len(entities) < 2:
             return 0
 
         # The same refusals the exact phase makes. Two keyed nodes are two rows
         # whatever their names embed like, a pair the resolver already judged
         # distinct is not re-decided by a cosine score, and a mention two rows
         # could own is not handed to either by one.
+        keyed = {ent["id"] for ent in entities if ent.get("is_stub") is not None}
         decided = await self._fetch_distinct_pairs() | self._undecidable_pairs
 
-        raw_vectors = await self._embedder.aembed_documents(all_names)
-        valid = [
-            (eid, name, label, vec)
-            for eid, name, label, vec in zip(all_ids, all_names, all_labels, raw_vectors)
-            if vec
-        ]
+        raw_vectors = await self._embedder.aembed_documents([e["name"] for e in entities])
+        valid = [(ent, vec) for ent, vec in zip(entities, raw_vectors) if vec]
         if len(valid) < 2:
             return 0
 
-        v_ids, _v_names, v_labels, vectors = zip(*valid)
-        v_ids = list(v_ids)
-        v_labels = list(v_labels)
+        v_entities = [ent for ent, _ in valid]
+        v_ids = [ent["id"] for ent in v_entities]
+        v_labels = [ent["label"] for ent in v_entities]
+        vectors = [vec for _, vec in valid]
 
         mat = np.array(vectors, dtype=np.float32)
         norms_arr = np.linalg.norm(mat, axis=1, keepdims=True)
@@ -614,25 +924,14 @@ class EntityDeduplicator:
                     and not (v_ids[gi] in keyed and v_ids[gj] in keyed)
                     and frozenset((v_ids[gi], v_ids[gj])) not in decided
                 ):
-                    survivor_id = v_ids[gi]
-                    dup_id = v_ids[gj]
+                    survivor, dup = v_entities[gi], v_entities[gj]
                     # Array order is arbitrary here, so apply the same rule as
                     # the exact phase rather than keeping whichever came first.
-                    if rank_by_id.get(dup_id, (0, 0, 0)) > rank_by_id.get(survivor_id, (0, 0, 0)):
-                        survivor_id, dup_id = dup_id, survivor_id
-                    merged_set.add(dup_id)
-
-                    if not await self._remap_entity_edges(dup_id, survivor_id):
-                        continue
-                    await self._carry_properties(dup_id, survivor_id)
-                    try:
-                        await self._graph.query_raw(
-                            "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
-                            {"dup_id": dup_id},
-                        )
+                    if _survivor_rank(dup) > _survivor_rank(survivor):
+                        survivor, dup = dup, survivor
+                    merged_set.add(dup["id"])
+                    if await self._absorb(survivor, dup):
                         merged_count += 1
-                    except Exception:
-                        logger.debug("Failed to delete duplicate entity %s", dup_id, exc_info=True)
 
         logger.info(
             f"EntityDeduplicator phase 2 (fuzzy): merged {merged_count} additional duplicates"
@@ -664,8 +963,8 @@ class EntityDeduplicator:
         - :func:`_keep_declared_identities_apart` refuses to merge two rows of a
           table into each other, whatever they are called — a mapping with a key
           has already said they are two things;
-        - :meth:`_carry_properties` keeps every value the survivor holds, so a
-          typed value a table supplied is never overwritten by what prose said;
+        - :meth:`_absorb` keeps every value the survivor holds, so a typed
+          value a table supplied is never overwritten by what prose said;
         - labels never merge: the resolver's own cross-label merges are dropped,
           as phase 1 already reports those rather than deciding them.
 
@@ -737,17 +1036,7 @@ class EntityDeduplicator:
             duplicates = _keep_declared_identities_apart(survivor, members[1:])
             duplicates = self._keep_undecidable_mentions_apart(survivor, duplicates, members)
             for dup in duplicates:
-                if not await self._remap_entity_edges(dup["id"], survivor["id"]):
-                    logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
-                    continue
-                await self._carry_properties(dup["id"], survivor["id"])
-                try:
-                    await self._graph.query_raw(
-                        "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
-                        {"dup_id": dup["id"]},
-                    )
-                except Exception as exc:
-                    logger.warning(f"Failed to delete duplicate entity {dup['id']}: {exc}")
+                if not await self._absorb(survivor, dup):
                     continue
                 merged += 1
                 pair = f"{survivor['label']} {dup['name']!r} -> {survivor['name']!r}"
@@ -972,29 +1261,13 @@ class EntityDeduplicator:
                 for duplicate in groups[(norm_name, label)]:
                     if duplicate["id"] == survivor["id"]:
                         continue
-                    if not await self._remap_entity_edges(duplicate["id"], survivor["id"]):
-                        logger.warning(
-                            "Skipping deletion of %s — edge remap incomplete", duplicate["id"]
-                        )
-                        continue
-                    await self._carry_properties(duplicate["id"], survivor["id"])
-                    try:
-                        await self._graph.query_raw(
-                            "MATCH (e:__Entity__ {id: $dup_id}) DETACH DELETE e",
-                            {"dup_id": duplicate["id"]},
-                        )
+                    if await self._absorb(survivor, duplicate):
                         merged += 1
                         logger.info(
                             "Adopted %r from inferred label %r into declared label %r",
                             survivor["name"],
                             label,
                             declared[0],
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to delete %s during label adoption: %s",
-                            duplicate["id"],
-                            exc,
                         )
                 # Consumed, so the leftover report does not name it.
                 groups.pop((norm_name, label), None)
@@ -1066,23 +1339,25 @@ class EntityDeduplicator:
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, e.description AS desc, "
                 "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
-                f"e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree "
+                f"e.aliases AS aliases, e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
             if not result.result_set:
                 break
             for row in result.result_set:
+                aliases = row[4] if len(row) > 4 and isinstance(row[4], list) else []
                 entities.append(
                     {
                         "id": row[0],
                         "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
                         "description": row[2] if len(row) > 2 and row[2] else "",
                         "label": row[3] if len(row) > 3 and row[3] else "",
+                        "aliases": [a for a in aliases if isinstance(a, str)],
                         # Only a table write sets is_stub (False for a row, True
                         # for a placeholder), so its presence marks a keyed node.
-                        "is_stub": row[4] if len(row) > 4 else None,
-                        "degree": row[5] if len(row) > 5 else 0,
+                        "is_stub": row[5] if len(row) > 5 else None,
+                        "degree": row[6] if len(row) > 6 else 0,
                     }
                 )
             offset += batch_size
@@ -1095,41 +1370,6 @@ class EntityDeduplicator:
 
     # Written by the system, never carried across from a duplicate.
     _NEVER_CARRY = frozenset({"id", "embedding"})
-
-    async def _carry_properties(self, dup_id: str, survivor_id: str) -> int:
-        """Move the duplicate's own properties onto the survivor before deleting it.
-
-        The remap migrates edges only, so ``DETACH DELETE`` would otherwise take
-        the duplicate's properties with it. That silently loses whatever only the
-        duplicate knew: the ``description`` entity vector search embeds, and every
-        typed value a structured source supplied. ``is_stub`` travels too: a
-        survivor that absorbed a table's row is now the node that row re-syncs to.
-        The policy is :func:`properties_to_carry`.
-        """
-        try:
-            res = await self._graph.query_raw(
-                "MATCH (k:__Entity__ {id: $survivor_id}), (d:__Entity__ {id: $dup_id}) "
-                "RETURN properties(k), properties(d)",
-                {"survivor_id": survivor_id, "dup_id": dup_id},
-            )
-        except Exception as exc:
-            logger.warning(f"Could not read properties for {dup_id} -> {survivor_id}: {exc}")
-            return 0
-        if not res.result_set:
-            return 0
-        keep_props, dup_props = res.result_set[0][0] or {}, res.result_set[0][1] or {}
-        carry = properties_to_carry(keep_props, dup_props, never=self._NEVER_CARRY)
-        if not carry:
-            return 0
-        try:
-            await self._graph.query_raw(
-                "MATCH (k:__Entity__ {id: $survivor_id}) SET k += $carry",
-                {"survivor_id": survivor_id, "carry": carry},
-            )
-        except Exception as exc:
-            logger.warning(f"Property carry failed for {dup_id} -> {survivor_id}: {exc}")
-            return 0
-        return len(carry)
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
         """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.

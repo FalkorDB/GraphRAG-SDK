@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar
 
 from graphrag_sdk.core.models import ExtractedEntity
@@ -934,3 +935,530 @@ class LLMExtractor(EntityExtractor):
                 )
             )
         return entities
+
+
+# ── spaCy Extractor ──────────────────────────────────────────────
+
+
+class SpacyExtractor(EntityExtractor):
+    """Classic (non zero-shot) NER via spaCy, for well-known proper nouns.
+
+    This exists to cover a measured blind spot rather than as a general
+    extractor. Swapping the GLiNER default to ``gliner-bi-small-v2.0`` gained 49
+    gold entities but *lost* 24, and the losses were textbook proper nouns —
+    ``Baghdad``, ``Cairo``, ``Madrid``, ``Barcelona``, ``Constantinople``,
+    ``Paris Observatory`` — which a supervised model trained on exactly those
+    categories gets right trivially.
+
+    Used alone it is a poor fit for GraphRAG: its label set is fixed, so it
+    cannot represent custom types such as ``Method`` or ``Technology``. Its
+    value is as the second half of a :class:`CompositeExtractor`.
+
+    ``DEFAULT_LABELS`` is deliberately narrow. Measured on an 11-document
+    benchmark (157 chunks), unioned with the default GLiNER extractor:
+
+    ===========================  ======  =========  =====
+    spaCy labels added           recall  precision  F1
+    ===========================  ======  =========  =====
+    none (GLiNER alone)          0.494   0.554      0.522
+    PERSON/ORG/GPE/FAC           0.613   0.499      0.550
+    + LOC                        0.616   0.497      0.550
+    + NORP                       0.616   0.477      0.538
+    all 12 usable labels         0.654   0.352      0.458
+    ===========================  ======  =========  =====
+
+    Widening past the four default labels buys recall by giving away
+    precision, and F1 falls off a cliff at the wide setting. The narrow set
+    recovers 18 of the 24 lost entities for ~5s per 157 chunks.
+
+    Requires the ``spacy`` extra and a downloaded model::
+
+        pip install "graphrag-sdk[spacy]"
+        python -m spacy download en_core_web_lg
+    """
+
+    #: spaCy labels kept by default. Everything else is dropped rather than
+    #: guessed at, because a wrong type is worse than a missing entity here.
+    DEFAULT_LABELS = frozenset({"PERSON", "ORG", "GPE", "FAC"})
+
+    #: spaCy label -> the generic type name we look for in ``entity_types``.
+    #: Candidates are tried in order and the first one the caller allows wins,
+    #: so this works whether a schema calls it ``Place``, ``Location`` or
+    #: ``Organization``.
+    LABEL_MAP: dict[str, tuple[str, ...]] = {
+        "PERSON": ("Person",),
+        "ORG": ("Organization", "Institution", "Company"),
+        "GPE": ("Location", "Place", "GeographicLocation"),
+        "LOC": ("Location", "Place", "GeographicLocation"),
+        "FAC": ("Building", "Facility", "Location", "Place"),
+        "NORP": ("Group", "Nationality", "Organization"),
+        "EVENT": ("Event",),
+        "PRODUCT": ("Product",),
+        "WORK_OF_ART": ("Work", "Publication", "Product"),
+        "LAW": ("Law",),
+        "DATE": ("Date",),
+        "LANGUAGE": ("Language",),
+    }
+
+    DEFAULT_MODEL = "en_core_web_lg"
+
+    #: Confidence recorded on every emitted entity. Pinned to the threshold of
+    #: the default :class:`GLiNERExtractor` model so that, in the documented
+    #: ``CompositeExtractor([GLiNERExtractor(), SpacyExtractor()])`` pairing, a
+    #: ``confidence >= threshold`` filter on the graph keeps spaCy's entities
+    #: alongside GLiNER's instead of silently dropping them.
+    DEFAULT_CONFIDENCE: float = GLiNERExtractor.DEFAULT_THRESHOLDS[GLiNERExtractor.DEFAULT_MODEL]
+
+    #: Pipeline components that cost time and contribute nothing to ``ents``.
+    #: Only ``tok2vec`` and ``ner`` stay active. spaCy ignores names that a
+    #: given pipeline does not have, so this is safe for custom models too.
+    DISABLED_COMPONENTS: tuple[str, ...] = ("tagger", "parser", "attribute_ruler", "lemmatizer")
+
+    def __init__(
+        self,
+        model_name: str | None = None,
+        labels: Iterable[str] | None = None,
+        confidence: float | None = None,
+    ) -> None:
+        """Initialise the extractor.
+
+        Args:
+            model_name: spaCy pipeline to load. Defaults to ``en_core_web_lg``.
+                ``en_core_web_sm`` is ~2.6x smaller and just as fast but
+                measured 0.554 ceiling recall against 0.601 for ``lg``.
+            labels: spaCy entity labels to keep. Defaults to
+                :attr:`DEFAULT_LABELS`. Widening this reduces F1 — see the
+                class docstring for the measured trade. A bare string is
+                rejected rather than being iterated character by character.
+            confidence: Score recorded on emitted entities. spaCy's ``ents``
+                expose no per-span probability, so this is a fixed stand-in
+                rather than a real confidence and has no effect on *which*
+                entities are emitted. Defaults to :attr:`DEFAULT_CONFIDENCE`,
+                the default GLiNER model's threshold (0.75), so the recorded
+                value lines up with GLiNER's under the default pairing. Pass
+                the matching threshold when pairing with a different GLiNER
+                model.
+
+        Raises:
+            TypeError: If ``labels`` is a single string.
+        """
+        if isinstance(labels, str):
+            raise TypeError(
+                f"labels must be an iterable of spaCy labels, not a string; "
+                f"got {labels!r}. Did you mean labels=[{labels!r}]?"
+            )
+        self._model_name = model_name or self.DEFAULT_MODEL
+        self._labels = frozenset(labels) if labels is not None else self.DEFAULT_LABELS
+        self._confidence = self.DEFAULT_CONFIDENCE if confidence is None else confidence
+        self._nlp: Any = None
+        self._load_error: Exception | None = None
+
+    async def _get_nlp(self) -> Any:
+        if self._nlp is not None:
+            return self._nlp
+        # A missing package or model is permanent for the life of this process;
+        # remember it so every chunk does not re-attempt the load in a thread.
+        if self._load_error is not None:
+            raise self._load_error
+        try:
+            self._nlp = await asyncio.to_thread(self._get_shared_nlp, self._model_name)
+        except (ImportError, OSError) as exc:
+            self._load_error = exc
+            raise
+        return self._nlp
+
+    # Process-wide cache of loaded spaCy pipelines, keyed on model name.
+    #
+    # Mirrors ``GLiNERExtractor._MODEL_CACHE`` for the same reason: extractors
+    # are constructed ad hoc (one per ``GraphExtraction``, one per discovery
+    # pipeline), and ``en_core_web_lg`` is several hundred MB resident, most of
+    # it the 685k x 300 word-vector table. Without sharing, one pipeline per
+    # document pays that per document.
+    _MODEL_CACHE: ClassVar[dict[str, Any]] = {}
+    _CACHE_LOCK: ClassVar[threading.Lock] = threading.Lock()
+
+    @classmethod
+    def _get_shared_nlp(cls, model_name: str) -> Any:
+        cached = cls._MODEL_CACHE.get(model_name)
+        if cached is not None:
+            return cached
+        with cls._CACHE_LOCK:
+            # Double-checked: another thread may have loaded it while we waited.
+            cached = cls._MODEL_CACHE.get(model_name)
+            if cached is None:
+                cached = cls._load(model_name)
+                cls._MODEL_CACHE[model_name] = cached
+        return cached
+
+    @classmethod
+    def _load(cls, model_name: str) -> Any:
+        try:
+            import spacy
+        except ImportError as exc:  # pragma: no cover - depends on env
+            raise ImportError(
+                "SpacyExtractor requires the 'spacy' extra. Install with: "
+                'pip install "graphrag-sdk[spacy]"'
+            ) from exc
+        try:
+            return spacy.load(model_name, disable=list(cls.DISABLED_COMPONENTS))
+        except OSError as exc:  # pragma: no cover - depends on env
+            raise OSError(
+                f"spaCy model '{model_name}' is not installed. Run: "
+                f"python -m spacy download {model_name}"
+            ) from exc
+
+    def _type_for(self, label: str, entity_types: list[str]) -> str | None:
+        """Map a spaCy label onto an allowed type, or None if unrepresentable."""
+        for candidate in self.LABEL_MAP.get(label, ()):
+            mapped = label_for_type(candidate, entity_types)
+            if mapped != UNKNOWN_LABEL:
+                return mapped
+        return None
+
+    async def extract_entities(
+        self,
+        text: str,
+        entity_types: list[str],
+        source_chunk_id: str,
+    ) -> list[ExtractedEntity]:
+        nlp = await self._get_nlp()
+        # Deliberately no lock: spaCy inference on a shared ``Language`` is
+        # thread-safe in practice. Verified with 12 threads sharing one ``nlp``
+        # over 400 docs (the pipeline's ``Semaphore(12)`` + ``to_thread`` shape)
+        # against a serialised run: 0 mismatches.
+        doc = await asyncio.to_thread(nlp, text)
+
+        preds: list[dict[str, Any]] = []
+        for ent in doc.ents:
+            if ent.label_ not in self._labels:
+                continue
+            etype = self._type_for(ent.label_, entity_types)
+            if etype is None:
+                continue  # caller's schema has no home for this label
+            preds.append(
+                {
+                    "text": ent.text,
+                    "label": etype,
+                    "score": self._confidence,
+                    "start": ent.start_char,
+                    "end": ent.end_char,
+                }
+            )
+        # threshold=0.0: spaCy gives no real scores, so there is nothing to
+        # demote on. The recorded score is a fixed stand-in (see __init__).
+        return _parse_predictions(preds, entity_types, source_chunk_id, threshold=0.0)
+
+
+# ── Composite Extractor ──────────────────────────────────────────
+
+
+class CompositeExtractor(EntityExtractor):
+    """Run several extractors over the same text and merge their entities.
+
+    Built for the measured fact that no single extractor we tested wins
+    everywhere: ``gliner-bi-small-v2.0`` is far stronger on multi-word,
+    domain-specific entities (``Fresnel lens``, ``differential gear train
+    mechanism``, ``Samarkand Expedition of 892``), while a supervised spaCy
+    pipeline is stronger on plain proper nouns (``Baghdad``, ``Madrid``,
+    ``Paris Observatory``). Combining them recovered 18 of the 24 entities lost
+    in the model swap.
+
+    Measured on an 11-document benchmark, 157 chunks, GLiNER default plus
+    ``SpacyExtractor`` at its default labels: recall 0.494 -> 0.613, F1
+    0.522 -> 0.550, for about 5 extra seconds. Precision falls 0.554 -> 0.499,
+    so this trades some precision for a larger gain in recall.
+
+    Extractors run concurrently. Duplicates are resolved by normalised name:
+    the **earliest** extractor in the list wins the type, which makes ordering
+    meaningful — put your most trusted or most schema-aware extractor first.
+    Chunk provenance and character spans are unioned, so a merged entity keeps
+    every chunk and every occurrence it came from, including repeat mentions
+    the same extractor reported as separate entities.
+
+    A failing extractor does not take the others down: the exception is logged
+    and its results are skipped, on the grounds that degraded extraction beats
+    a failed ingest. If *every* extractor fails the error is re-raised. Two
+    kinds of failure are never demoted to a per-chunk warning, because they
+    are configuration faults rather than bad input and would otherwise repeat
+    silently on every chunk: ``ImportError`` (a missing optional dependency)
+    and ``OSError`` (a model that is not installed). Cancellation and other
+    process-level ``BaseException`` subclasses propagate as well.
+
+    ``LLMExtractor`` members are rejected. ``GraphExtraction`` dispatches on
+    the extractor type to batch NER prompts through ``abatch_invoke`` with the
+    caller's ``max_concurrency`` and ontology type descriptions; wrapped in a
+    composite it would silently fall back to one un-batched ``ainvoke`` per
+    chunk with a poorer prompt and N-times the configured concurrency.
+
+    Example::
+
+        extractor = CompositeExtractor([
+            GLiNERExtractor(),
+            SpacyExtractor(),
+        ])
+    """
+
+    def __init__(
+        self,
+        extractors: Sequence[EntityExtractor],
+        suppress_overlaps: bool = True,
+    ) -> None:
+        """Initialise the extractor.
+
+        Args:
+            extractors: Extractors to run, in priority order. The first one to
+                produce a given name decides its type.
+            suppress_overlaps: Resolve entities whose character spans collide
+                across extractors. Without this, merging two NER systems
+                reliably produces near-duplicate fragments — measured on one
+                sentence, spaCy contributed ``Fresnel`` (typed
+                ``Organization``) next to GLiNER's ``Fresnel lens``, and ``The
+                Paris Observatory`` next to ``Paris Observatory``. Those
+                fragments are false positives and inflate the entity count
+                without adding knowledge. When one span strictly contains the
+                other and adds a content word, the longer span wins regardless
+                of which extractor produced it, so a later extractor's ``Paris
+                Observatory`` replaces an earlier ``Paris`` at the same
+                position (but leaves that entity's other, non-nested
+                occurrences alone). An extension that only adds an article —
+                ``The Paris Observatory`` over ``Paris Observatory`` — is the
+                same entity, not a better one, and the earlier extractor
+                wins, as it does when spans merely partially overlap or are
+                identical under different names. Entities without span
+                information are always kept, since there is no evidence on
+                which to drop them.
+
+        Raises:
+            ValueError: If ``extractors`` is empty.
+            TypeError: If any member (or nested composite member) is an
+                ``LLMExtractor``; see the class docstring for why.
+        """
+        if not extractors:
+            raise ValueError("CompositeExtractor requires at least one extractor")
+        for member in self._flatten(extractors):
+            if isinstance(member, LLMExtractor):
+                raise TypeError(
+                    "CompositeExtractor does not accept LLMExtractor members: "
+                    "GraphExtraction batches LLM NER through abatch_invoke only when "
+                    "the extractor itself is an LLMExtractor, so wrapping one would "
+                    "silently lose batching, max_concurrency and entity-type descriptions. "
+                    "Use LLMExtractor directly, or compose local extractors only."
+                )
+        self._extractors = list(extractors)
+        self._suppress_overlaps = suppress_overlaps
+
+    @classmethod
+    def _flatten(cls, extractors: Iterable[EntityExtractor]) -> Iterable[EntityExtractor]:
+        for e in extractors:
+            if isinstance(e, CompositeExtractor):
+                yield from cls._flatten(e._extractors)
+            else:
+                yield e
+
+    @staticmethod
+    def _spans_dict(ent: ExtractedEntity) -> dict[str, list[dict[str, Any]]] | None:
+        """The live ``{chunk_id: [{"start", "end"}, ...]}`` mapping of an entity.
+
+        ``_parse_predictions`` passes ``spans`` as an extra model field rather
+        than into ``attributes``, so check both.
+        """
+        spans = getattr(ent, "spans", None)
+        if spans is None:
+            spans = ent.attributes.get("spans")
+        return spans if isinstance(spans, dict) else None
+
+    @classmethod
+    def _spans_of(cls, ent: ExtractedEntity) -> list[tuple[int, int]]:
+        """Character spans claimed by an entity, flattened across chunks."""
+        spans = cls._spans_dict(ent)
+        out: list[tuple[int, int]] = []
+        if spans:
+            for items in spans.values():
+                for sp in items or ():
+                    try:
+                        out.append((int(sp["start"]), int(sp["end"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        return out
+
+    @classmethod
+    def _remove_span(cls, ent: ExtractedEntity, span: tuple[int, int]) -> None:
+        """Drop one ``(start, end)`` occurrence from an entity's span mapping."""
+        spans = cls._spans_dict(ent)
+        if not spans:
+            return
+        start, end = span
+        for chunk_id in list(spans):
+            kept = [
+                sp
+                for sp in spans[chunk_id] or ()
+                if not (isinstance(sp, dict) and sp.get("start") == start and sp.get("end") == end)
+            ]
+            if kept:
+                spans[chunk_id] = kept
+            else:
+                del spans[chunk_id]
+
+    @classmethod
+    def _merge_spans(cls, into: ExtractedEntity, ent: ExtractedEntity) -> None:
+        """Union ``ent``'s spans into ``into`` without duplicating offsets."""
+        src = cls._spans_dict(ent)
+        if not src:
+            return
+        dst = cls._spans_dict(into)
+        if dst is None:
+            dst = {}
+            into.spans = dst  # type: ignore[attr-defined]
+        for chunk_id, offsets in src.items():
+            bucket = dst.setdefault(chunk_id, [])
+            for sp in offsets or ():
+                if sp not in bucket:
+                    bucket.append(sp)
+
+    async def extract_entities(
+        self,
+        text: str,
+        entity_types: list[str],
+        source_chunk_id: str,
+    ) -> list[ExtractedEntity]:
+        results = await asyncio.gather(
+            *(e.extract_entities(text, entity_types, source_chunk_id) for e in self._extractors),
+            return_exceptions=True,
+        )
+
+        merged: dict[str, ExtractedEntity] = {}
+        # Spans claimed by earlier extractors -> the merged key that owns each.
+        claimed: dict[tuple[int, int], str] = {}
+        failures: list[Exception] = []
+        for extractor, result in zip(self._extractors, results, strict=True):
+            if isinstance(result, BaseException):
+                if not isinstance(result, Exception) or isinstance(result, (ImportError, OSError)):
+                    # Cancellation / interpreter exit, or a configuration
+                    # fault that would otherwise repeat on every chunk.
+                    raise result
+                failures.append(result)
+                logger.warning(
+                    "%s failed during entity extraction, skipping its results: %s",
+                    type(extractor).__name__,
+                    result,
+                )
+                continue
+            fresh: dict[tuple[int, int], str] = {}
+            for ent in result:
+                key = ent.name.strip().casefold()
+                if not key:
+                    continue
+                spans = self._spans_of(ent)
+                if self._suppress_overlaps and spans:
+                    admitted = self._admit_spans(ent, key, spans, claimed, merged, text, extractor)
+                    if not admitted:
+                        continue  # every occurrence was a fragment of something claimed
+                    spans = admitted
+                existing = merged.get(key)
+                if existing is None:
+                    merged[key] = ent
+                    for sp in spans:
+                        fresh[sp] = key
+                    continue
+                # Keep the earlier extractor's type; only fill genuine gaps.
+                if existing.type == UNKNOWN_LABEL and ent.type != UNKNOWN_LABEL:
+                    existing.type = ent.type
+                if not existing.description and ent.description:
+                    existing.description = ent.description
+                for cid in ent.source_chunk_ids:
+                    if cid not in existing.source_chunk_ids:
+                        existing.source_chunk_ids.append(cid)
+                # Repeat occurrences keep their offsets, and claim them, so a
+                # later fragment overlapping the *second* mention is caught too.
+                self._merge_spans(existing, ent)
+                for sp in spans:
+                    fresh[sp] = key
+            # Only claim spans once the whole extractor is processed, so two
+            # entities from the SAME extractor never suppress each other.
+            claimed.update(fresh)
+
+        if failures and len(failures) == len(self._extractors):
+            raise failures[0]
+        return list(merged.values())
+
+    #: Tokens that, on their own, do not make a longer span a *better* entity.
+    #: ``The Paris Observatory`` over ``Paris Observatory`` is the same entity
+    #: with an article, not a recovered one, so it does not supersede.
+    _TRIVIAL_EXTENSION_TOKENS: ClassVar[frozenset[str]] = frozenset({"the", "a", "an"})
+
+    @classmethod
+    def _extends_meaningfully(
+        cls, text: str, outer: tuple[int, int], inner: tuple[int, int]
+    ) -> bool:
+        """True if ``outer`` adds at least one content token around ``inner``."""
+        (s, e), (cs, ce) = outer, inner
+        extra = f"{text[s:cs]} {text[ce:e]}"
+        tokens = re.findall(r"\w+", extra.casefold())
+        return any(tok not in cls._TRIVIAL_EXTENSION_TOKENS for tok in tokens)
+
+    def _admit_spans(
+        self,
+        ent: ExtractedEntity,
+        key: str,
+        spans: list[tuple[int, int]],
+        claimed: dict[tuple[int, int], str],
+        merged: dict[str, ExtractedEntity],
+        text: str,
+        extractor: EntityExtractor,
+    ) -> list[tuple[int, int]]:
+        """Decide which of ``ent``'s spans survive against already-claimed ones.
+
+        Spans owned by the same normalised name never conflict; they are simply
+        further occurrences. Against other names, per span: dropped if a
+        claimed span contains it, equals it, or partly overlaps it (earlier
+        extractor wins); kept if it strictly contains one or more claimed spans
+        *and* adds a content token beyond them, in which case those fragments
+        are evicted from their owners (an owner left with no spans is removed
+        entirely). Dropped spans are also removed from ``ent`` so its
+        provenance matches what was actually admitted.
+        """
+        admitted: list[tuple[int, int]] = []
+        for s, e in spans:
+            blocked = False
+            nested: list[tuple[int, int]] = []
+            for (cs, ce), owner_key in claimed.items():
+                if owner_key == key or not (s < ce and cs < e):
+                    continue
+                if cs <= s and e <= ce:
+                    blocked = True  # contained in, or identical to, a claimed span
+                    break
+                if s <= cs and ce <= e and self._extends_meaningfully(text, (s, e), (cs, ce)):
+                    nested.append((cs, ce))
+                else:
+                    blocked = True  # partial overlap, or an article-only extension
+                    break
+            if blocked:
+                logger.debug(
+                    "%s: dropping %r at %d-%d, overlaps an entity claimed earlier",
+                    type(extractor).__name__,
+                    ent.name,
+                    s,
+                    e,
+                )
+                self._remove_span(ent, (s, e))
+                continue
+            for frag in nested:
+                owner_key = claimed.pop(frag)
+                owner = merged.get(owner_key)
+                if owner is None:
+                    continue
+                logger.debug(
+                    "%s: %r at %d-%d supersedes fragment %r at %d-%d",
+                    type(extractor).__name__,
+                    ent.name,
+                    s,
+                    e,
+                    owner.name,
+                    frag[0],
+                    frag[1],
+                )
+                self._remove_span(owner, frag)
+                if not self._spans_of(owner):
+                    del merged[owner_key]
+            admitted.append((s, e))
+        return admitted

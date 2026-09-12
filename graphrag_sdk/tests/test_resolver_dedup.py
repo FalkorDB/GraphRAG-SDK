@@ -693,19 +693,28 @@ class TestWhatAMergeKeeps:
 
     The survivor is the keyed or better-connected node, which is usually the row —
     and a row's description is a template line where the prose entity's is the
-    paragraph the reader wanted. The longer one stays; nothing else changes.
+    paragraph the reader wanted. The two are joined so neither is lost; nothing
+    else changes.
     """
 
     NEVER = frozenset({"id", "embedding"})
 
-    def test_the_longer_description_is_kept_whichever_node_had_it(self):
+    def test_both_descriptions_are_kept_whichever_node_had_which(self):
         keep = {"id": "a", "description": "An engineer.", "age": 34}
         dup = {"id": "b", "description": "An engineer who led the remediation plan in 2024."}
         carried = properties_to_carry(keep, dup, never=self.NEVER)
-        assert carried == {"description": dup["description"]}
+        assert carried == {"description": f"{keep['description']} | {dup['description']}"}
 
         carried = properties_to_carry(dup, keep, never=self.NEVER)
-        assert carried == {"age": 34}, "the survivor's longer description is not replaced"
+        assert carried == {
+            "age": 34,
+            "description": f"{dup['description']} | {keep['description']}",
+        }, "the survivor's own text comes first"
+
+    def test_an_identical_description_is_not_repeated(self):
+        keep = {"id": "a", "description": "An engineer."}
+        dup = {"id": "b", "description": "An engineer."}
+        assert properties_to_carry(keep, dup, never=self.NEVER) == {}
 
     def test_every_other_value_on_the_survivor_still_wins(self):
         keep = {"id": "a", "name": "Maya Ellison", "age": 34, "embedding": [0.1]}

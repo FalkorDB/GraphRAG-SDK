@@ -706,10 +706,12 @@ The row's key is not the identity. It is carried as `entity_key`, and it is what
 
 The same caution runs the other way. `entity_key` is one unsigned slot, so two tables that both number `Person` from 1 leave two nodes carrying `entity_key = "1"`, and a third table's foreign key `1` cannot say which it means. That link is left on a placeholder that says only "Person keyed 1" and reported in `StructuredIngestionResult.references_ambiguous`, rather than attached to whichever node the graph listed last. Give the tables distinct key spaces, or key the link on a column only one of them owns.
 
-What `finalize()` still does is handle **spelling variants**: `NORTHWIND ENERGY` from a NER model and `Northwind Energy` from a CSV are different strings and so different ids. It groups every entity by `(canonical name, label)` and merges each group. The canonical form is reduced independently on both sides — lower-cased,
-punctuation split, `Surname, Given` un-inverted, abbreviations expanded, one
-trailing legal form dropped — so the join is an equality rather than a pairwise
-comparison and the order two sources arrive in does not change what merges. Word
+What `finalize()` still does is handle **spelling variants**: `NORTHWIND ENERGY` from a NER model and `Northwind Energy` from a CSV are different strings and so different ids. It groups every entity by `(canonical name, label)` and merges each group. The canonical form is reduced independently on both sides — case and accents
+folded, punctuation split, abbreviation dots removed (`A.I.` = `AI`), a leading
+English article dropped, `Surname, Given` un-inverted, abbreviations expanded,
+one trailing legal form dropped — so the join is an equality rather than a
+pairwise comparison and the order two sources arrive in does not change what
+merges. An acronym also joins the one same-label entity whose initials it spells. Word
 order is deliberately preserved: sorting the tokens would wrongly merge `Stanley
 Morgan` with `Morgan Stanley`, a person and a bank, and a merge is not reversible.
 

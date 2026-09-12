@@ -219,12 +219,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A merge's survivor is chosen by identity and connectivity before
   description length.** The survivor of a deduplication was the node with the
   longest description. The rank is now: a node keyed on a declared column, then
-  a real node over a placeholder, then degree (`RELATES` in either direction plus
-  `MENTIONED_IN`), then description length, then name length, then id — so the
-  hub five rows point at is not renamed after a one-mention citation, and a tie
-  settles the same way on every run. For a corpus with no structured sources
-  only the degree and tie-break steps are new.
+  a real node over a placeholder, then the long form over an acronym, then
+  degree (`RELATES` in either direction plus `MENTIONED_IN`), then description
+  length, then name length, then id — so the hub five rows point at is not
+  renamed after a one-mention citation, and a tie settles the same way on every
+  run. For a corpus with no structured sources only the degree and tie-break
+  steps are new.
 
+- `EntityDeduplicator.deduplicate()` and `GraphRAG.deduplicate_entities()`
+  default `similarity_threshold` raised from `0.9` to `0.95`: at `0.9` the
+  name-embedding tier merged 2 of 33 deliberate hard-negative pairs for no
+  added recall.
+- `GraphExtraction` now ships a default relation vocabulary,
+  `DEFAULT_RELATION_TYPES` (31 UPPER_SNAKE_CASE labels: `LOCATED_IN`,
+  `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...), the counterpart of
+  `DEFAULT_ENTITY_TYPES`, exposed as a new `relation_types=` kwarg. Without a
+  declared ontology the step-2 prompt now lists these as *Preferred
+  Relationships* and asks the LLM to prefer one, falling back to a descriptive
+  `UPPER_SNAKE_CASE` label when none fits; nothing prunes off-list edges. This
+  changes the default extraction output for every user without an ontology:
+  on the benchmark corpus the label vocabulary shrank from 447 distinct
+  `rel_type` strings to ~100 and exact triple F1 doubled. Pass
+  `relation_types=[]` to restore the previous open-vocabulary behaviour. A
+  declared `Ontology.relations` still overrides it and is still enforced
+  (*Allowed Relationships*, MUST, pruned). Blank relation labels are rejected.
+- The relation extraction prompt no longer stops early: it now states that the
+  task is exhaustive and not a summary, that there is no maximum, and that a
+  dense paragraph often yields 20 or more relationships. Measured: +15 %
+  relations for +4 % ingest time. The endpoint instruction also names the
+  *verified* entity list the model returns rather than the pre-extracted
+  input, so relationships are not anchored to entities that step 1 removed.
 - Default chunk size lowered from 512 to 384 tokens in
   `SentenceTokenCapChunking`, `StructuralChunking`, `ContextualChunking` and
   the documented `CallableChunking` example. Measured on the benchmark corpus:
@@ -357,6 +381,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `>=1.0` still allowed 1.6.x to resolve against the broken redis.
 - Fixed vector-search ordering so chunk, entity, and relationship searches use
   similarity scores, with higher values indicating closer matches.
+- Finalize-time entity deduplication no longer creates empty ghost `__Entity__`
+  nodes when remapping edges (the survivor is `MATCH`ed before every `MERGE`),
+  unions `source_chunk_ids` provenance on remapped RELATES edges and on the
+  survivor node, and preserves what the duplicate carried: its description is
+  appended with `" | "` and its name recorded in the survivor's `aliases`.
+  Survivor update and duplicate deletion are one atomic statement; a survivor
+  that vanished mid-pass leaves the duplicate in place instead of destroying
+  its edges.
+- Name grouping folds accents, punctuation, inner dots (`A.I.` = `AI`) and a
+  leading English article, keeps non-Latin letters (so `Отдел 5` and
+  `Кабинет 5` stay distinct), and folds an acronym of 3-6 letters into its
+  unique same-label long form.
+- "Already indexed" replies to idempotent `CREATE INDEX` calls are logged at
+  DEBUG instead of ERROR; the call site declares them expected via
+  `FalkorDBConnection.query(expected_errors=...)`.
 
 - **A table re-sync keeps only what it may.** From review of the structured
   ingestion (#328): a renamed row is claimed by the value of the key **as this
@@ -469,8 +508,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A merge no longer discards the duplicate's properties.** The deduplicator
   remapped edges only, so `DETACH DELETE` took the duplicate's properties with
   it — its description, which entity vector search embeds, and every value only
-  it knew. Properties are now carried onto the survivor before the delete, with
-  a value already on the survivor always winning.
+  it knew. Properties are now carried onto the survivor in the same statement
+  that deletes the duplicate, with a value already on the survivor always
+  winning; the two descriptions are joined with `" | "` and the duplicate's
+  name is recorded in the survivor's `aliases`. The same policy applies when a
+  renamed table row is folded into a node that already holds its new id.
 
 - **Edge identity includes `rel_type`.** Every data edge is `RELATES` with its
   semantic type in `rel_type`, but the deduplicator's remap and the writers that

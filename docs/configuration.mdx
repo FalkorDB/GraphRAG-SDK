@@ -576,7 +576,7 @@ Call this when you need fine-grained control over deduplication.
 ```python
 merged_count = await rag.deduplicate_entities(
     fuzzy=False,                  # True to also run embedding-based dedup
-    similarity_threshold=0.9,     # cosine threshold for fuzzy matching
+    similarity_threshold=0.95,    # cosine threshold for fuzzy matching
     batch_size=500,               # entities per query batch
 )
 ```
@@ -586,10 +586,10 @@ merged_count = await rag.deduplicate_entities(
 | Parameter              | Type    | Default | Description                                                         |
 |------------------------|---------|---------|---------------------------------------------------------------------|
 | `fuzzy`                | `bool`  | `False` | If `True`, runs a second fuzzy dedup phase using embedding similarity.|
-| `similarity_threshold` | `float` | `0.9`   | Cosine similarity threshold for fuzzy matching.                     |
+| `similarity_threshold` | `float` | `0.95`  | Cosine similarity threshold for fuzzy matching.                     |
 | `batch_size`           | `int`   | `500`   | Entities per query batch.                                           |
 
-**Phase 1 (always runs): Exact name match.** Groups entities by normalized name (lowercase, stripped) and label to prevent cross-type merging. Keeps the best-connected entity (most RELATES and MENTIONED_IN edges) as the survivor, falling back to the longest description on a tie; a node whose id came from a declared table key always outranks one extracted from prose. Remaps all RELATES and MENTIONED_IN edges from duplicates to the survivor, then deletes the duplicate nodes.
+**Phase 1 (always runs): Exact name match.** Groups entities by canonical name (case, accents, punctuation and a leading English article folded; `A.I.` = `AI`; `Surname, Given` un-inverted; common abbreviations expanded; one trailing legal form such as `Ltd` or `Inc` dropped) and label to prevent cross-type merging. An acronym joins its long form when exactly one same-label entity spells its initials (`AIHS` / `Ashford Island Historical Society`). The survivor is the node whose id came from a declared table key, then a real node over a placeholder, then the long form over an acronym, then the best-connected entity (most RELATES and MENTIONED_IN edges), then the longest description. The duplicate's description is appended to the survivor's with `" | "`, its name is recorded in the survivor's `aliases`, its `source_chunk_ids` are unioned in, any property the survivor lacks is copied over, and its RELATES and MENTIONED_IN edges are remapped before it is deleted.
 
 **Phase 2 (optional, `fuzzy=True`): Embedding-based match.** Re-fetches all surviving entities, batch-embeds their names, computes pairwise cosine similarity in memory-efficient blocks (1000 entities per block), and merges near-duplicates above the threshold.
 

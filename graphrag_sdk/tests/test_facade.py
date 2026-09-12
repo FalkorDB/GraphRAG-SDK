@@ -290,8 +290,11 @@ class TestGraphRAGDeduplicateEntities:
         empty_result = MagicMock()
         empty_result.result_set = []
 
-        # entity query, pagination end, three edge remaps, the property carry
-        # read, then the delete.
+        # entity query, pagination end, three edge remaps, the property read
+        # (nothing to carry), then the absorb statement, which RETURNs the
+        # survivor's id to confirm the duplicate was actually deleted.
+        absorbed_result = MagicMock()
+        absorbed_result.result_set = [["e1"]]
         g._graph_store.query_raw = AsyncMock(
             side_effect=[
                 entity_result,
@@ -299,8 +302,8 @@ class TestGraphRAGDeduplicateEntities:
                 empty_result,  # remap: outgoing RELATES
                 empty_result,  # remap: incoming RELATES
                 empty_result,  # remap: MENTIONED_IN
-                empty_result,  # property carry: nothing to read, returns early
-                empty_result,  # DETACH DELETE
+                empty_result,  # property read: nothing to carry
+                absorbed_result,  # absorb + DETACH DELETE
             ]
         )
 

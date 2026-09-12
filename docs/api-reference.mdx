@@ -211,14 +211,14 @@ Take a table out of the graph: its Document and record chunks (and any entity on
 async def deduplicate_entities(
     *,
     fuzzy: bool = False,
-    similarity_threshold: float = 0.9,
+    similarity_threshold: float = 0.95,
     batch_size: int = 500,
 ) -> int
 ```
 
 Post-ingestion entity deduplication. Groups entities by `(normalized name, label)` to prevent cross-type merging (e.g. Person "Paris" and Location "Paris" stay separate).
 
-- **Phase 1** (always): Canonical name match — case, punctuation, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. Keeps the survivor ranked by declared key, real-over-placeholder, degree, then description length; remaps RELATES and MENTIONED_IN edges; carries the duplicate's properties over; deletes duplicates.
+- **Phase 1** (always): Canonical name match — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, then description length; merges the duplicate's description (`" | "`-joined), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
 - **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
 - **Phase 3** (optional, `resolver=`): A `ResolutionStrategy` judges the remaining pairs across documents and tables. `finalize()` passes one by default.
 
@@ -643,7 +643,7 @@ class ExtractionStrategy(ABC):
 ```
 
 **Built-in:**
-- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, max_concurrency=None)`
+- `GraphExtraction(llm, *, entity_extractor=None, coref_resolver=None, entity_types=None, relation_types=None, max_concurrency=None)` -- `entity_types=None` selects `DEFAULT_ENTITY_TYPES`; `relation_types=None` selects `DEFAULT_RELATION_TYPES`, a 31-label UPPER_SNAKE_CASE vocabulary (`LOCATED_IN`, `PART_OF`, `EMPLOYED_AT`, `AUTHORED`, ...) the step-2 prompt asks the LLM to *prefer*; off-list labels are still kept. Pass `relation_types=[]` for open-vocabulary labels. Both are overridden by a declared `Ontology`, whose relations *are* enforced.
 
 **Entity Extractors** (step 1 backends for `GraphExtraction`):
 - `GLiNERExtractor(threshold=None, model_name=None, window_tokens=None, window_overlap=48, candidate_threshold=<25 % below threshold>)` -- default, local NER. `model_name=None` selects `urchade/gliner_medium-v2.1`; `threshold=None` selects the measured per-model value (0.75 for that model). Spans scoring between `candidate_threshold` and `threshold` are returned as `"Unknown"`; pass `candidate_threshold=None` to disable. Chunks longer than `window_tokens` (derived from the model's `max_len` when `None`) are processed as overlapping windows.

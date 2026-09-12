@@ -100,7 +100,10 @@ class VectorStore:
         each index is in place — failures are not papered over as success.
         """
         try:
-            await self._conn.query(query)
+            # The connection cannot know this CREATE INDEX is idempotent; tell
+            # it, so the expected "already indexed" reply is not logged as an
+            # ERROR on every finalize() while any other failure still is.
+            await self._conn.query(query, expected_errors=_INDEX_EXISTS_MARKERS)
             if kind == "vector":
                 logger.info(
                     f"Created vector index on {descriptor} (dim={self.embedding_dimension})"

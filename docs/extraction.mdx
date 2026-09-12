@@ -236,6 +236,21 @@ extractor = GraphExtraction(llm=llm)
 # Uses the 11 default types
 ```
 
+### Relation Types
+
+Relations resolve the same way, with one difference in strictness:
+
+1. **`Ontology.relations`** (highest priority). The prompt lists them under *Allowed Relationships* and says the type MUST be one of them, and `IngestionPipeline` prunes any edge whose `rel_type` is not declared.
+2. **`relation_types` parameter on GraphExtraction.** Guidance, not a filter: the prompt lists them under *Preferred Relationships* and asks the LLM to prefer one, falling back to a descriptive `UPPER_SNAKE_CASE` label when none fits. Off-list edges are kept. Blank labels are rejected.
+3. **`DEFAULT_RELATION_TYPES`** (lowest priority). A 31-label domain-neutral vocabulary (`LOCATED_IN`, `PART_OF`, `CONTAINS`, `MEMBER_OF`, `EMPLOYED_AT`, `FOUNDED`, `CREATED`, `AUTHORED`, `BORN_IN`, `MARRIED_TO`, `USES`, ...) used when neither of the above is given. Without it the model invented a fresh label for almost every edge (447 distinct labels against 30 in the benchmark answer key); with it the vocabulary shrinks ~4x and exact triple F1 doubles.
+
+```python
+extractor = GraphExtraction(llm=llm, relation_types=["INHIBITS", "ACTIVATES", "BINDS"])
+
+# Open vocabulary -- the model names every edge itself:
+extractor = GraphExtraction(llm=llm, relation_types=[])
+```
+
 ---
 
 ## Entity Name Validation
