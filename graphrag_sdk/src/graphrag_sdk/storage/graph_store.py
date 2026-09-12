@@ -298,32 +298,48 @@ class GraphStore:
                 # The survivor already carries its own label.
                 if not part or part == node.label:
                     continue
-                # Never stamp a structural or marker label onto an entity: it
-                # would surface in every MATCH (:Document) / (:Chunk) query.
-                if part in self._STRUCTURAL_LABELS or part == "__Entity__":
-                    logger.warning("Skipping structural merged label %r", part)
-                    continue
+                # Sanitize *before* the structural check, not after. The guard
+                # compares strings, and sanitizing strips backticks, so a raw
+                # "`Document`" would pass the check and then become Document —
+                # landing a structural label on an entity, which is the exact
+                # case this guard exists to prevent.
                 try:
-                    extra.add(sanitize_cypher_label(part))
+                    safe = sanitize_cypher_label(part)
                 except ValueError:
                     logger.warning("Skipping unusable merged label %r", part)
+                    continue
+                # Never stamp a structural or marker label onto an entity: it
+                # would surface in every MATCH (:Document) / (:Chunk) query.
+                if safe in self._STRUCTURAL_LABELS or safe == "__Entity__":
+                    logger.warning("Skipping structural merged label %r", part)
+                    continue
+                if safe == node.label:
+                    continue
+                extra.add(safe)
             if extra:
                 by_labels.setdefault(tuple(sorted(extra)), []).append(cid)
 
         for labels, ids in by_labels.items():
             clause = "".join(f":`{lab}`" for lab in labels)
-            try:
-                await self._conn.query(
-                    f"UNWIND $ids AS nid MATCH (n:__Entity__ {{id: nid}}) SET n{clause}",
-                    {"ids": ids},
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to add merged labels %s to %d node(s): %s",
-                    ", ".join(labels),
-                    len(ids),
-                    exc,
-                )
+            # Batched like every other write in this class. Unbatched, a
+            # cross-label-heavy ingest puts every matching id in one parameter
+            # list, and the except below would then drop the promoted labels
+            # for all of them at once.
+            for start in range(0, len(ids), self._BATCH_SIZE):
+                chunk = ids[start : start + self._BATCH_SIZE]
+                try:
+                    await self._conn.query(
+                        f"UNWIND $ids AS nid MATCH (n:__Entity__ {{id: nid}}) SET n{clause}",
+                        {"ids": chunk},
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to add merged labels %s to %d node(s): %s",
+                        ", ".join(labels),
+                        len(chunk),
+                        exc,
+                    )
+
     async def set_document_path(self, document_id: str, path: str) -> None:
         """Point a Document at the file it is now read from.
 

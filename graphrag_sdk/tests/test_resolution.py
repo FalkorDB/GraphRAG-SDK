@@ -651,7 +651,7 @@ class TestExactMatchMatchesStage1:
             relationships=[],
         )
         llm = MockLLM(responses=["YES Technology\nGraph database and its vendor"])
-        result = await ExactMatchResolution(llm=llm).resolve(data, ctx)
+        result = await ExactMatchResolution(llm=llm, cross_label_merge=True).resolve(data, ctx)
         assert len(result.nodes) == 1
         assert result.merged_count == 2
         assert "Organization" in result.nodes[0].properties.get("merged_labels", "")

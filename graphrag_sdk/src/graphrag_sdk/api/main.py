@@ -3592,7 +3592,7 @@ class GraphRAG:
                 "extracted_chunks": cache_wrapper.extracted_chunk_count,
             }
 
-        return await self._finish_update(
+        update_result = await self._finish_update(
             resolved_id=resolved_id,
             pending_id=pending_id,
             doc_path=doc_path,
@@ -3606,6 +3606,15 @@ class GraphRAG:
             result_metadata=result_metadata,
             ctx=ctx,
         )
+
+        # A revised document brings in new entities the same way a fresh one
+        # does, and the ingest-time resolver only ever sees this one document —
+        # so update() accumulates exactly the cross-document duplicates
+        # finalize() exists to remove. Arm the reminder here too, or a session
+        # that ingests, finalizes, then updates a hundred files reads a graph
+        # full of duplicates in silence. See _warn_if_dedup_pending.
+        self._docs_since_dedup += 1
+        return update_result
 
     async def _finish_update(
         self,

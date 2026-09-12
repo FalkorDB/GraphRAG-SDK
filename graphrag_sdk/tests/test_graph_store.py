@@ -1032,6 +1032,59 @@ class TestMergedLabelsBecomeRealLabels:
         for bad in ("`Document`", "`Chunk`", "`__Entity__`"):
             assert bad not in queries[0]
 
+    async def test_backticked_structural_labels_are_also_rejected(
+        self, graph_store, mock_connection
+    ):
+        """The guard must run on the sanitized label, not the raw one.
+
+        ``sanitize_cypher_label`` strips backticks, so checking membership
+        first lets ```Document``` through and then turns it into
+        ``Document`` — landing a structural label on an entity by the very
+        path the guard exists to close.
+        """
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={
+                        "merged_labels": "`Document` | `Chunk` | `__Entity__` | Engineer"
+                    },
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert "`Engineer`" in queries[0]
+        for bad in ("`Document`", "`Chunk`", "`__Entity__`"):
+            assert bad not in queries[0]
+
+    async def test_label_promotion_is_batched(self, graph_store, mock_connection):
+        """Every other write in this class chunks at ``_BATCH_SIZE``; so must this.
+
+        Unbatched, one failure drops the promoted labels for every node that
+        shares the label set at once.
+        """
+        count = graph_store._BATCH_SIZE * 2 + 1
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id=f"n{i}",
+                    label="Person",
+                    properties={"merged_labels": "Engineer"},
+                )
+                for i in range(count)
+            ]
+        )
+        queries = [
+            c for c in mock_connection.query.call_args_list
+            if " SET n:" in c[0][0] and "MERGE" not in c[0][0]
+        ]
+        assert len(queries) == 3
+        sizes = [len(c[0][1]["ids"]) for c in queries]
+        assert sizes == [graph_store._BATCH_SIZE, graph_store._BATCH_SIZE, 1]
+        assert sum(sizes) == count
+
     async def test_promotion_failure_does_not_fail_the_upsert(
         self, graph_store, mock_connection
     ):

@@ -48,6 +48,18 @@ def description_list(props: dict) -> list[str]:
     same texts joined with ``" | "``, which is what search and prompts read).
     An unmerged node has only ``description``. Either way this returns the
     list, deduplicated, empty strings dropped.
+
+    A node holding only ``description`` contributes it as **one** member, and
+    is deliberately not split on ``" | "``. Splitting would recover the members
+    of a survivor written before ``descriptions`` existed, but nothing
+    distinguishes that node from a fresh one whose single description happens
+    to contain the separator ("CEO | founder of Acme"), and the two failures
+    are not symmetric. Splitting a fresh node invents members that were never
+    written: the count drives ``force_summary_threshold``, so it buys LLM
+    summary calls nothing asked for, and the invented entries are rendered as
+    separate bullets in the prompts below. Not splitting a legacy survivor
+    costs only granularity — every character is still carried, and the
+    re-joined ``description`` is byte-identical either way.
     """
     raw = props.get("descriptions")
     items: list[str] = []
@@ -55,9 +67,7 @@ def description_list(props: dict) -> list[str]:
         items = [str(d).strip() for d in raw]
     else:
         single = str(props.get("description") or "").strip()
-        # A survivor written before ``descriptions`` existed may hold a
-        # joined string; split it so old graphs merge the same way.
-        items = single.split(" | ") if single else []
+        items = [single] if single else []
     out: list[str] = []
     for d in items:
         if d and d not in out:
@@ -390,7 +400,13 @@ async def exact_match_merge(
         set_merged_descriptions(
             cl_survivor, [n for n in sl_survivors_in_cand if n.id != cl_survivor.id]
         )
-        cl_survivor.properties["description"] = cl_summary
+        # Only when the model actually wrote one. ``cl_summary`` is the second
+        # line of the verdict, so a reply of "YES Person\n" — verdict line, no
+        # body — yields "". Assigning that unconditionally would blank the
+        # description ``set_merged_descriptions`` just built from every member,
+        # and it is the field search, the fulltext index and the prompts read.
+        if cl_summary:
+            cl_survivor.properties["description"] = cl_summary
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
     # cl-survivor becomes sl-loser → cl-survivor directly) ──
@@ -455,7 +471,15 @@ def remap_relationships(
     Structural edges (``MENTIONED_IN``, ``PART_OF``, ``NEXT_CHUNK``)
     carry no ``rel_type``; they fall back to ``""`` and keep their
     previous one-edge-per-pair behaviour.
+
+    ``id_remap`` is flattened first. A multi-pass resolver records each
+    hop separately (``dup -> A`` in one pass, ``A -> B`` in the next), and
+    the single lookup below would otherwise re-point an edge at ``A``,
+    which that later pass removed. Flattening here rather than at each
+    call site means no caller can forget it; it is a no-op on a mapping
+    that is already one hop deep.
     """
+    id_remap = flatten_remap(id_remap)
     deduplicated_rels: list[GraphRelationship] = []
     seen_rels: set[tuple[str, str, str, str]] = set()
     for rel in relationships:
