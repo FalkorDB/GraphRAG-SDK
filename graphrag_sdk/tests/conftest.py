@@ -1,6 +1,7 @@
 """Shared test fixtures for GraphRAG SDK v2 tests."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -30,7 +31,14 @@ from graphrag_sdk.core.providers import Embedder, LLMInterface
 
 
 class MockEmbedder(Embedder):
-    """Deterministic embedder that returns a fixed-length vector derived from text hash."""
+    """Deterministic embedder that returns a fixed-length vector derived from a text digest.
+
+    A stable digest rather than ``hash()``, which Python salts per process: the
+    same text embeds the same across runs. Bytes are centred on zero so two
+    unrelated texts are near-orthogonal rather than all-positive — with
+    ``finalize()`` judging close pairs by default, an all-positive vector space
+    made unrelated names score as duplicates on some hash seeds and not others.
+    """
 
     def __init__(self, dimension: int = 8) -> None:
         self.dimension = dimension
@@ -42,8 +50,14 @@ class MockEmbedder(Embedder):
 
     def embed_query(self, text: str, **kwargs: Any) -> list[float]:
         self.call_count += 1
-        h = hash(text) % (10**9)
-        return [(h >> i & 0xFF) / 255.0 for i in range(self.dimension)]
+        # blake2b digests are at most 64 bytes; a wider vector is several
+        # digests of the same text under successive salts.
+        data = text.encode("utf-8")
+        digest = b"".join(
+            hashlib.blake2b(data, digest_size=64, salt=str(block).encode()).digest()
+            for block in range(-(-self.dimension // 64))
+        )
+        return [byte / 127.5 - 1.0 for byte in digest[: self.dimension]]
 
 
 class MockLLM(LLMInterface):
@@ -324,7 +338,7 @@ async def real_falkordb_rag_factory(embedder):
 
     created: list[Any] = []
 
-    def _make(*, llm, resolver, ontology=None):
+    def _make(*, llm, resolver, ontology=None, **kwargs):
         config = ConnectionConfig(
             host=os.getenv("FALKOR_HOST", "localhost"),
             port=int(os.getenv("FALKOR_PORT", "6379")),
@@ -332,15 +346,18 @@ async def real_falkordb_rag_factory(embedder):
             password=os.getenv("FALKOR_PASSWORD") or None,
             graph_name=f"test_{uuid4().hex[:8]}",
         )
-        kwargs = dict(
+        options = dict(
             connection=config,
             llm=llm,
             embedder=embedder,
             embedding_dimension=embedder.dimension,
         )
         if ontology is not None:
-            kwargs["ontology"] = ontology
-        rag = GraphRAG(**kwargs)
+            options["ontology"] = ontology
+        # Anything else the test asked for (e.g. enable_cypher) goes straight
+        # through, so a new GraphRAG option does not need a fixture change.
+        options.update(kwargs)
+        rag = GraphRAG(**options)
         # Per-call resolver injection (apply_changes / update / ingest don't
         # accept a default-resolver kwarg on the facade — but each call does).
         rag._test_resolver = resolver  # marker, not used by SDK

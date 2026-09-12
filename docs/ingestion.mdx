@@ -7,6 +7,13 @@ When you call `rag.ingest("document.txt")`, the SDK transforms your raw text int
 
 This document explains what each step does, why it exists, and how to tune it.
 
+<Note>
+This pipeline is built for prose. For CSVs and other tabular sources, see
+[Structured Ingestion](/structured-ingestion): you declare what the columns mean
+and the graph is written deterministically, with no model in the loop, into the
+same graph your documents live in.
+</Note>
+
 ---
 
 ## The Big Picture

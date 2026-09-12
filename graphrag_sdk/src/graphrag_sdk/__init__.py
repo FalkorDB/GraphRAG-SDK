@@ -102,6 +102,18 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
 )
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+from graphrag_sdk.ingestion.loaders.record_loader import (
+    CsvRecordLoader,
+    RecordBatch,
+    RecordLoaderStrategy,
+)
+from graphrag_sdk.ingestion.loaders.text_loader import TextLoader
+from graphrag_sdk.ingestion.mapping import (
+    Column,
+    Link,
+    MappingError,
+    TableMapping,
+)
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 from graphrag_sdk.ingestion.resolution_strategies.description_merge import (
@@ -203,6 +215,7 @@ __all__ = [
     "FastCorefResolver",
     "IngestionPipeline",
     "LoaderStrategy",
+    "TextLoader",
     "ResolutionStrategy",
     "DescriptionMergeResolution",
     "ExactMatchResolution",
@@ -219,6 +232,13 @@ __all__ = [
     "OntologyModificationNotAllowedError",
     "OntologyStore",
     "VectorStore",
+    "Column",
+    "TableMapping",
+    "CsvRecordLoader",
+    "MappingError",
+    "RecordBatch",
+    "RecordLoaderStrategy",
+    "Link",
 ]
 
 

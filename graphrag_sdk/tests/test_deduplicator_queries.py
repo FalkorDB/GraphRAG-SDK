@@ -22,7 +22,8 @@ def _result(rows):
 
 
 def _incoming_query() -> str:
-    matches = [q for q in _REMAP_QUERIES if "MERGE (a)-[nr:RELATES]->" in q]
+    # The RELATES MERGE is keyed on rel_type, so match the head of the pattern.
+    matches = [q for q in _REMAP_QUERIES if "MERGE (a)-[nr:RELATES" in q and "]->(s)" in q]
     assert len(matches) == 1, "expected exactly one incoming-RELATES remap query"
     return matches[0]
 

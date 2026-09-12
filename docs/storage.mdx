@@ -220,17 +220,17 @@ After ingesting multiple documents, the same real-world entity might exist as mu
 ### Phase 1: Exact Name Match (Always Runs)
 
 1. **Fetch** all `__Entity__` nodes with their primary label (the non-`__Entity__` label)
-2. **Group** by `(normalized_name, label)` — the name is case-folded with accents, punctuation, inner dots (`A.I.` = `AI`) and a leading English article removed; letters of non-Latin scripts are kept. Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
+2. **Group** by `(canonical_name, label)` — the name is case-folded with accents, punctuation, inner dots (`A.I.` = `AI`) and a leading English article removed, `Surname, Given` un-inverted, common abbreviations expanded and one trailing legal form (`Ltd`, `Inc`) dropped; word order and the letters of non-Latin scripts are kept. Grouping by label prevents cross-type merging (Person "Paris" and Location "Paris" stay separate)
 3. **Fold acronyms:** a 3–6 letter name joins the group of the *single* same-label entity whose initials it spells (`AIHS` / `Ashford Island Historical Society`). An acronym with several candidate expansions is left alone
 4. **For each group with duplicates:**
-   - **Survivor:** the long form over an acronym; otherwise the entity with the longest description
-   - **Remap edges:** All RELATES and MENTIONED_IN edges from duplicates are redirected to the survivor. The survivor is `MATCH`ed before every `MERGE` — a path-`MERGE` with an unbound `(s {id})` creates an empty ghost `__Entity__` node whenever the edge does not exist yet — and RELATES `source_chunk_ids` are unioned rather than overwritten:
+   - **Survivor:** A node a declared table wrote (it carries the row's key, so the table's next re-sync still finds it), then a real node over a placeholder, then the long form over an acronym, then the best-connected node (most RELATES and MENTIONED_IN edges), then the longest description, then the longest name. Two nodes written from declared keys are never merged into each other, whatever they are called
+   - **Remap edges:** All RELATES and MENTIONED_IN edges from duplicates are redirected to the survivor. The survivor is `MATCH`ed before every `MERGE` — a path-`MERGE` with an unbound `(s {id})` creates an empty ghost `__Entity__` node whenever the edge does not exist yet — the RELATES `MERGE` is keyed on `rel_type` so two facts between one pair stay two edges, and RELATES `source_chunk_ids` are unioned rather than overwritten:
      ```cypher
      -- Outgoing RELATES
      MATCH (dup:__Entity__ {id: $dup_id})-[r:RELATES]->(b:__Entity__)
      WHERE b.id <> $survivor_id
      MATCH (s:__Entity__ {id: $survivor_id})
-     MERGE (s)-[nr:RELATES]->(b)
+     MERGE (s)-[nr:RELATES {rel_type: coalesce(r.rel_type, '')}]->(b)
      WITH r, nr, coalesce(nr.source_chunk_ids, []) AS old, coalesce(r.source_chunk_ids, []) AS contrib
      SET nr += properties(r)
      SET nr.source_chunk_ids = old + [c IN contrib WHERE NOT c IN old]
@@ -242,7 +242,7 @@ After ingesting multiple documents, the same real-world entity might exist as mu
      MATCH (a:__Entity__)-[r:RELATES]->(dup)
      WHERE a.id <> $survivor_id
      MATCH (s:__Entity__ {id: $survivor_id})
-     MERGE (a)-[nr:RELATES]->(s)
+     MERGE (a)-[nr:RELATES {rel_type: coalesce(r.rel_type, '')}]->(s)
      ... same provenance union ...
      DELETE r
 
@@ -252,7 +252,7 @@ After ingesting multiple documents, the same real-world entity might exist as mu
      MERGE (s)-[:MENTIONED_IN]->(c)
      DELETE r
      ```
-   - **Absorb and delete** in one statement: the duplicate's `source_chunk_ids` are unioned into the survivor's, its description appended to the survivor's with `" | "` (each segment kept once) and its name added to the survivor's `aliases` when it is not a spelling variant; then `DETACH DELETE dup`. Because the survivor is matched in the same statement, a survivor removed mid-pass makes this a no-op — the duplicate and its edges stay in place and the merge is not counted.
+   - **Absorb and delete** in one statement: the duplicate's `source_chunk_ids` are unioned into the survivor's, its description appended to the survivor's with `" | "` (each segment kept once), its name added to the survivor's `aliases` when it is not a spelling variant, and every other property the survivor lacks — a typed column a table signed, `is_stub` — copied over, with a value already on the survivor always winning; then `DETACH DELETE dup`. Because the survivor is matched in the same statement, a survivor removed mid-pass makes this a no-op — the duplicate and its edges stay in place and the merge is not counted.
 
 ### Phase 2: Fuzzy Embedding Match (Optional)
 
