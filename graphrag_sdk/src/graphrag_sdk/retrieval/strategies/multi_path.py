@@ -33,6 +33,10 @@ from graphrag_sdk.retrieval.strategies.entity_discovery import (
     is_enumeration_query,
     search_relates_edges,
 )
+from graphrag_sdk.retrieval.strategies.path_router import (
+    RETRIEVAL_PATHS,
+    all_paths,
+)
 from graphrag_sdk.retrieval.strategies.relationship_expansion import (
     expand_relationships,
 )
@@ -176,6 +180,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         rel_top_k: int = 15,  # Matched to chunk_top_k for balanced fact/passage coverage
         keyword_limit: int = 10,  # Fulltext search keyword budget from query decomposition
         enable_cypher: bool = False,  # Text-to-Cypher path (experimental, off by default)
+        router: Any | None = None,  # Optional path router (agentic path selection)
         ontology: Ontology | None = None,  # forwarded to Cypher generation when enable_cypher
         schema: Ontology | None = None,  # DEPRECATED: use ``ontology=`` instead
     ) -> None:
@@ -206,6 +211,7 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._rel_top_k = rel_top_k
         self._keyword_limit = keyword_limit
         self._enable_cypher = enable_cypher
+        self._router = router
         self._ontology = ontology
 
     # -- Template Method hook --
@@ -216,6 +222,39 @@ class MultiPathRetrieval(RetrievalStrategy):
         ctx: Context,
         **kwargs: Any,
     ) -> RawSearchResult:
+        # 0. Resolve per-call overrides. Defaults preserve normal-flow
+        # behavior; the agentic flow may pass kwargs to widen selection.
+        def _pos_int(key: str, default: int) -> int:
+            val = kwargs.get(key, default)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                return default
+            return val if val > 0 else default
+
+        def _nonneg_int(key: str, default: int) -> int:
+            # Output caps allow 0 ("omit this section entirely" — see
+            # result_assembly.assemble_raw_result); only negatives/garbage
+            # fall back to the default.
+            val = kwargs.get(key, default)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                return default
+            return val if val >= 0 else default
+
+        chunk_top_k = _pos_int("chunk_top_k", self._chunk_top_k)
+        max_entities = _pos_int("max_entities", self._max_entities)
+        max_relationships = _pos_int("max_relationships", self._max_relationships)
+        rel_top_k = _pos_int("rel_top_k", self._rel_top_k)
+
+        # Final-context display caps (agent-tunable; default to prior values).
+        max_cypher_out = _nonneg_int("max_cypher_out", 20)
+        max_entities_out = _nonneg_int("max_entities_out", 25)
+        max_relationships_out = _nonneg_int("max_relationships_out", 20)
+        max_facts_out = _nonneg_int("max_facts_out", 15)
+        max_passages_out = _nonneg_int("max_passages_out", 15)
+
         # 1. Extract keywords
         ctx.ensure_budget("MultiPath keyword extraction")
         simple_kw, llm_kw = await self._extract_keywords(query, ctx)
@@ -229,22 +268,57 @@ class MultiPathRetrieval(RetrievalStrategy):
             timeout=ctx.provider_timeout_seconds("MultiPath question embedding"),
         )
 
+        # 2b. Plan which retrieval paths to run. Without a router this is
+        # "all paths" (unchanged behavior). With a router, an LLM/heuristic
+        # prunes to the paths the question actually needs; on any failure or
+        # empty plan we fall back to all paths so recall is never lost.
+        plan: set[str] = all_paths()
+        if self._router is not None:
+            try:
+                planned = await self._router.plan(query, ctx)
+                plan = set(planned) & set(RETRIEVAL_PATHS) or all_paths()
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Path router failed (%s); running all paths", exc)
+                plan = all_paths()
+            # Expansion traverses from discovered entities, so a plan that
+            # selects it without any seed-producing path would always return
+            # zero relationships. Guarantee a seed source.
+            if "expansion" in plan and not plan & {
+                "entity_cypher",
+                "entity_fulltext",
+                "relates",
+            }:
+                plan.add("entity_cypher")
+            ctx.log(f"MultiPath plan: {sorted(plan)}")
+
         # 3. RELATES vector search + Text-to-Cypher (parallel when enabled)
+        run_relates = "relates" in plan
+        fact_strings_scored: list[tuple[str, float]] = []
+        rel_entities: dict[str, dict] = {}
+        cypher_facts: list = []
+        cypher_entities: dict[str, dict] = {}
         if self._enable_cypher:
-            results = await asyncio.gather(
-                search_relates_edges(self._vector, query_vector, self._rel_top_k, ctx=ctx),
+            coros = [
                 execute_cypher_retrieval(
                     self._graph, self._llm, query, ontology=self._ontology, ctx=ctx
-                ),
-                return_exceptions=True,
-            )
-            fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))
-            cypher_facts, cypher_entities = _unpack_gather_result(results[1], ([], {}))
-        else:
+                )
+            ]
+            if run_relates:
+                coros.insert(
+                    0, search_relates_edges(self._vector, query_vector, rel_top_k, ctx=ctx)
+                )
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            if run_relates:
+                fact_strings_scored, rel_entities = _unpack_gather_result(results[0], ([], {}))
+                cypher_facts, cypher_entities = _unpack_gather_result(results[1], ([], {}))
+            else:
+                cypher_facts, cypher_entities = _unpack_gather_result(results[0], ([], {}))
+        elif run_relates:
             fact_strings_scored, rel_entities = await search_relates_edges(
-                self._vector, query_vector, self._rel_top_k, ctx=ctx
+                self._vector, query_vector, rel_top_k, ctx=ctx
             )
-            cypher_facts, cypher_entities = [], {}
 
         # Filter RELATES vector facts by relevance score
         fact_strings = filter_facts_by_relevance(fact_strings_scored)
@@ -256,9 +330,20 @@ class MultiPathRetrieval(RetrievalStrategy):
             + (f", {len(cypher_facts)} cypher results" if cypher_facts else "")
         )
         # 4. Entity discovery (2 paths) + merge rel_entities + cypher_entities
-        found_entities, entity_sources = await discover_entities(
-            self._graph, self._vector, llm_kw, all_keywords, ctx=ctx
-        )
+        use_entity_cypher = "entity_cypher" in plan
+        use_entity_fulltext = "entity_fulltext" in plan
+        if use_entity_cypher or use_entity_fulltext:
+            found_entities, entity_sources = await discover_entities(
+                self._graph,
+                self._vector,
+                llm_kw,
+                all_keywords,
+                ctx=ctx,
+                use_cypher=use_entity_cypher,
+                use_fulltext=use_entity_fulltext,
+            )
+        else:
+            found_entities, entity_sources = {}, {}
         for eid, einfo in rel_entities.items():
             if eid not in found_entities:
                 found_entities[eid] = einfo
@@ -283,22 +368,28 @@ class MultiPathRetrieval(RetrievalStrategy):
                     f"({len(found_entities)} total)"
                 )
         # 5. Relationship expansion
-        entity_list = list(found_entities.items())[: self._max_entities]
-        relationship_strings = await expand_relationships(
-            self._graph, entity_list, self._max_relationships, ctx=ctx
-        )
+        entity_list = list(found_entities.items())[:max_entities]
+        if "expansion" in plan:
+            relationship_strings = await expand_relationships(
+                self._graph, entity_list, max_relationships, ctx=ctx
+            )
+        else:
+            relationship_strings = []
         ctx.log(f"MultiPath [5/9]: {len(relationship_strings)} relationships")
         # 6. Chunk retrieval (4 paths)
-        candidate_chunks, chunk_sources, chunk_embeddings = await retrieve_chunks(
-            self._vector,
-            self._graph,
-            query,
-            query_vector,
-            llm_kw,
-            simple_kw,
-            entity_list,
-            ctx=ctx,
-        )
+        if "chunks" in plan:
+            candidate_chunks, _chunk_sources, chunk_embeddings = await retrieve_chunks(
+                self._vector,
+                self._graph,
+                query,
+                query_vector,
+                llm_kw,
+                simple_kw,
+                entity_list,
+                ctx=ctx,
+            )
+        else:
+            candidate_chunks, _chunk_sources, chunk_embeddings = {}, {}, {}
         ctx.log(
             f"MultiPath [6/9]: {len(candidate_chunks)} candidate chunks "
             f"({len(chunk_embeddings)} with stored embeddings)"
@@ -314,7 +405,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             self._embedder,
             query_vector,
             candidate_chunks,
-            self._chunk_top_k,
+            chunk_top_k,
             stored_embeddings=chunk_embeddings,
             ctx=ctx,
         )
@@ -340,6 +431,11 @@ class MultiPathRetrieval(RetrievalStrategy):
             source_passages,
             q_type_hint,
             cypher_results=cypher_facts if cypher_facts else None,
+            max_cypher=max_cypher_out,
+            max_entities=max_entities_out,
+            max_relationships=max_relationships_out,
+            max_facts=max_facts_out,
+            max_passages=max_passages_out,
         )
 
     def _format(self, raw: RawSearchResult) -> RetrieverResult:

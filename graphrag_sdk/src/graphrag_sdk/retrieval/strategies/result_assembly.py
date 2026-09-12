@@ -159,13 +159,30 @@ def assemble_raw_result(
     source_passages: list[str],
     q_type_hint: str = "",
     cypher_results: list[str] | None = None,
+    *,
+    max_cypher: int = 20,
+    max_entities: int = 25,
+    max_relationships: int = 20,
+    max_facts: int = 15,
+    max_passages: int = 15,
 ) -> RawSearchResult:
     """Build structured RawSearchResult with section records.
 
     ``cypher_results`` are placed in their own section and are NOT
     subject to cosine reranking — they go directly to the final LLM.
+
+    The ``max_*`` caps bound how much of each section reaches the LLM;
+    callers (e.g. the agentic flow) may raise them per query.
     """
     records: list[dict[str, Any]] = []
+
+    # Negative caps would slice from the end; clamp so callers can only ever
+    # narrow a section (0 = omit it entirely), never reorder/truncate-from-tail.
+    max_cypher = max(0, max_cypher)
+    max_entities = max(0, max_entities)
+    max_relationships = max(0, max_relationships)
+    max_facts = max(0, max_facts)
+    max_passages = max(0, max_passages)
 
     # Question-type hint (prepended so LLM sees it first)
     if q_type_hint:
@@ -177,12 +194,12 @@ def assemble_raw_result(
         )
 
     # Cypher Query Results (direct to LLM — not reranked)
-    if cypher_results:
+    capped_cypher = (cypher_results or [])[:max_cypher]
+    if capped_cypher:
         records.append(
             {
                 "section": "cypher_results",
-                "content": "## Graph Query Results\n"
-                + "\n".join(f"- {r}" for r in cypher_results[:20]),
+                "content": "## Graph Query Results\n" + "\n".join(f"- {r}" for r in capped_cypher),
             }
         )
 
@@ -195,40 +212,43 @@ def assemble_raw_result(
             seen_names.add(name.lower())
             desc = einfo.get("description", "")
             entity_lines.append(f"- {name}: {desc}" if desc else f"- {name}")
-    if entity_lines:
+    capped_entities = entity_lines[:max_entities]
+    if capped_entities:
         records.append(
             {
                 "section": "entities",
-                "content": "## Key Entities\n" + "\n".join(entity_lines[:25]),
+                "content": "## Key Entities\n" + "\n".join(capped_entities),
             }
         )
 
     # Relationship section
-    if relationship_strings:
+    capped_relationships = relationship_strings[:max_relationships]
+    if capped_relationships:
         records.append(
             {
                 "section": "relationships",
                 "content": "## Entity Relationships\n"
-                + "\n".join(f"- {r}" for r in relationship_strings[:20]),
+                + "\n".join(f"- {r}" for r in capped_relationships),
             }
         )
 
     # Knowledge Graph Facts section (from RELATES edge vector search)
-    if fact_strings:
+    capped_facts = fact_strings[:max_facts]
+    if capped_facts:
         records.append(
             {
                 "section": "facts",
-                "content": "## Knowledge Graph Facts\n"
-                + "\n".join(f"- {f}" for f in fact_strings[:15]),
+                "content": "## Knowledge Graph Facts\n" + "\n".join(f"- {f}" for f in capped_facts),
             }
         )
 
     # Passages section
-    if source_passages:
+    capped_passages = source_passages[:max_passages]
+    if capped_passages:
         records.append(
             {
                 "section": "passages",
-                "content": "## Source Document Passages\n" + "\n---\n".join(source_passages[:15]),
+                "content": "## Source Document Passages\n" + "\n---\n".join(capped_passages),
             }
         )
 
