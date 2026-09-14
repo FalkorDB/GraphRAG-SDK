@@ -1013,7 +1013,7 @@ class TestCrossLabelPass:
             ],
             relationships=[],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder)
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 1
         assert len(result.nodes) == 1
@@ -1045,7 +1045,7 @@ class TestCrossLabelPass:
             ],
             relationships=[],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder)
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
         assert len(result.nodes) == 2
@@ -1080,7 +1080,7 @@ class TestCrossLabelPass:
             ],
             relationships=[],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder)
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
         assert llm._call_index == 0, "floor should reject before any LLM call"
@@ -1110,7 +1110,7 @@ class TestCrossLabelPass:
             ],
             relationships=[],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder)
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
         await resolver.resolve(gd, ctx)
         # identical vectors -> phase 2 hard-merges without the LLM; PASS 2 then
         # has a single surviving node and forms no pairs at all.
@@ -1191,7 +1191,7 @@ class TestCrossLabelPass:
                 ),
             ],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder)
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
         result = await resolver.resolve(gd, ctx)
         survivors = {n.id for n in result.nodes}
         assert survivors == {"p1", "o1"}, "p2 must be absorbed into p1"
@@ -1250,13 +1250,15 @@ class TestCrossLabelPass:
             ],
             relationships=[],
         )
-        # cross_label_vote off: the count here is "every pair was asked once",
-        # which the second vote would otherwise inflate with re-asks.
+        # cross_label_vote off: the assertion is "every pair was asked about",
+        # which the second vote would otherwise inflate with re-asks. Counted in
+        # PAIRS, not calls: PASS 2 packs pairs into batched calls now, so three
+        # pairs are three questions but only one request.
         resolver = LLMVerifiedResolution(
             llm=llm, embedder=embedder, unified_stage=False, cross_label_vote=False
         )
         result = await resolver.resolve(gd, ctx)
-        assert llm._call_index == 3, "all three pairs must be asked"
+        assert len(llm.asked) == 3, "all three pairs must be asked"
         assert len(result.nodes) == 1, "two YES answers must chain all three"
 
     async def test_multi_pass_remap_chain_is_flattened_end_to_end(self, ctx):
@@ -1305,7 +1307,7 @@ class TestCrossLabelPass:
                 GraphRelationship(start_node_id="p2", end_node_id="other", type="R", properties={}),
             ],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder)
+        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
         result = await resolver.resolve(gd, ctx)
 
         assert [n.id for n in result.nodes] == ["e1"]
@@ -2837,3 +2839,175 @@ class TestRemapChainsAcrossPhases:
         assert result.remap, "the fixture must actually produce merges"
         for src, dst in result.remap.items():
             assert dst in surviving, f"{src!r} -> {dst!r}, which is not a surviving node"
+
+
+class TestFamilyGateIsNotBypassedTransitively:
+    """The gate is pairwise; Union-Find is not. Without a per-cluster family
+    the two together undo it: Engineer belongs to no known family, so both
+    Person~Engineer and Engineer~Institution are admitted, and unioning them in
+    turn lands Person and Institution in one cluster — the pair the gate would
+    have refused to ask about. The survivor then records both labels, so the
+    merge happens anyway, one hop removed.
+    """
+
+    @staticmethod
+    def _chain():
+        desc = "Ran the Whitford foundation and its archive."
+        # Person and Institution are each close to Engineer, further from
+        # each other, so only the two end pairs clear the floor.
+        vectors = {
+            f"Eleanor Whitford: {desc}": _angle(0.0),
+            f"E. Whitford: {desc}": _angle(0.25),
+            f"Whitford Institute: {desc}": _angle(0.5),
+        }
+        gd = GraphData(
+            nodes=[
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"name": "Eleanor Whitford", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label="Engineer",
+                    properties={"name": "E. Whitford", "description": desc},
+                ),
+                GraphNode(
+                    id="n3",
+                    label="Institution",
+                    properties={"name": "Whitford Institute", "description": desc},
+                ),
+            ],
+            relationships=[],
+        )
+        return gd, ControlledEmbedder(vectors)
+
+    async def test_person_and_institution_never_share_a_cluster(self, ctx):
+        gd, embedder = self._chain()
+        llm = PairScriptedLLM(
+            {
+                frozenset({"Eleanor Whitford", "E. Whitford"}): True,
+                frozenset({"E. Whitford", "Whitford Institute"}): True,
+            }
+        )
+        result = await LLMVerifiedResolution(
+            llm=llm, embedder=embedder, cross_label_vote=False
+        ).resolve(gd, ctx)
+
+        labels_per_node = [
+            {n.label}
+            | {p for p in str(n.properties.get("merged_labels", "") or "").split(" | ") if p}
+            for n in result.nodes
+        ]
+        for labels in labels_per_node:
+            assert not ({"Person"} <= labels and {"Institution"} <= labels), (
+                f"a survivor carries both families: {labels}"
+            )
+
+    async def test_the_gate_off_still_allows_the_chain(self, ctx):
+        """The guard is the gate's doing, not an unconditional restriction."""
+        gd, embedder = self._chain()
+        llm = PairScriptedLLM(
+            {
+                frozenset({"Eleanor Whitford", "E. Whitford"}): True,
+                frozenset({"E. Whitford", "Whitford Institute"}): True,
+            }
+        )
+        result = await LLMVerifiedResolution(
+            llm=llm, embedder=embedder, label_family_gate=False, cross_label_vote=False
+        ).resolve(gd, ctx)
+        assert len(result.nodes) < 3
+
+
+class TestCandidatePairsDoNotDependOnInputOrder:
+    """kNN neighbour lists are directional, so keeping only `j > i` kept a pair
+    only when the lower-index node was the one that retrieved the other.
+
+    Needs a TRUNCATED neighbour list to show up — with ann_top_k >= n-1 every
+    node retrieves every other and the direction never matters. Here ann_top_k
+    is 1: A's one neighbour is C (0.90), while B's one neighbour is A (0.80).
+    The pair {A, B} is therefore only ever seen from B's side, so under the old
+    rule it survived only when B happened to sort before A.
+    """
+
+    @staticmethod
+    def _nodes_and_embedder(order: list[int]):
+        desc = "Keeper of the Cape Morrow light."
+        names = ["Cape Morrow Lighthouse", "the Cape Morrow light", "Ashford Beacon"]
+        # A=0 at 0.0; B=1 at -acos(0.80); C=2 at +acos(0.90).
+        # cos(A,C)=0.90 > cos(A,B)=0.80, and cos(B,C)=0.46 is below the floor.
+        angles = [0.0, -math.acos(0.80), math.acos(0.90)]
+        vectors = {f"{names[k]}: {desc}": _angle(angles[k]) for k in range(3)}
+        nodes = [
+            GraphNode(
+                id=f"n{k}", label="Location", properties={"name": names[k], "description": desc}
+            )
+            for k in order
+        ]
+        return GraphData(nodes=nodes, relationships=[]), ControlledEmbedder(vectors)
+
+    @pytest.mark.parametrize("order", [[0, 1, 2], [1, 0, 2], [2, 1, 0], [2, 0, 1]])
+    async def test_the_same_duplicate_is_found_in_any_order(self, ctx, order):
+        gd, embedder = self._nodes_and_embedder(order)
+        llm = PairScriptedLLM(
+            {
+                frozenset({"Cape Morrow Lighthouse", "the Cape Morrow light"}): True,
+                frozenset({"Cape Morrow Lighthouse", "Ashford Beacon"}): False,
+            }
+        )
+        result = await LLMVerifiedResolution(llm=llm, embedder=embedder, ann_top_k=1).resolve(
+            gd, ctx
+        )
+        assert frozenset({"Cape Morrow Lighthouse", "the Cape Morrow light"}) in llm.asked, (
+            f"order {order}: the duplicate pair was never even considered"
+        )
+        assert len(result.nodes) == 2, f"order {order} changed the outcome"
+
+
+class TestPhase1HonoursTheFamilyGate:
+    """Phase 1 merges on the NAME alone, with no vector filter, so a homograph
+    with enough descriptions reached the LLM and could be merged before any
+    gate or second vote ran.
+    """
+
+    @staticmethod
+    def _homograph(label_a: str, label_b: str):
+        return GraphData(
+            nodes=[
+                GraphNode(
+                    id="a",
+                    label=label_a,
+                    properties={"name": "Paris", "description": "Capital of France."},
+                ),
+                GraphNode(
+                    id="b",
+                    label=label_b,
+                    properties={"name": "Paris", "description": "Prince of Troy."},
+                ),
+                GraphNode(
+                    id="c",
+                    label=label_b,
+                    properties={"name": "Paris", "description": "Son of Priam."},
+                ),
+            ],
+            relationships=[],
+        )
+
+    async def test_cross_family_homograph_is_not_asked_about(self, ctx):
+        llm = PairScriptedLLM({})
+        gd = self._homograph("Location", "Person")
+        result = await LLMVerifiedResolution(
+            llm=llm, embedder=ControlledEmbedder({}), cross_label_min_descriptions=1
+        ).resolve(gd, ctx)
+        assert llm._call_index == 0, "a cross-family homograph must not reach the LLM at all"
+        labels = {n.label for n in result.nodes}
+        assert "Location" in labels and "Person" in labels
+
+    async def test_same_family_homograph_still_reaches_phase_1(self, ctx):
+        """Engineer is in no known family, so the gate leaves it to the LLM."""
+        llm = PairScriptedLLM({})
+        gd = self._homograph("Person", "Engineer")
+        await LLMVerifiedResolution(
+            llm=llm, embedder=ControlledEmbedder({}), cross_label_min_descriptions=1
+        ).resolve(gd, ctx)
+        assert llm._call_index > 0

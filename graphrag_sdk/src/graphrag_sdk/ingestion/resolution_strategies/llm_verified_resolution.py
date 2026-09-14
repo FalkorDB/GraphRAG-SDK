@@ -419,20 +419,47 @@ class LLMVerifiedResolution(ResolutionStrategy):
     """Three-tier entity resolution: exact-match → hard embedding merge →
     LLM-verified ambiguous zone → skip.
 
-    Flow:
-      1. Group by (normalized_name, label) — exact-match merge, the same
-         first pass ExactMatchResolution performs. No LLM or embedder needed
-         here.
-      2. Embed all surviving node names within each label group.
-      3. For each pair (within same label only):
+    There are TWO pipelines here, selected by ``unified_stage``, and they differ
+    in more than a flag — read the one you are actually running.
+
+    Phase 1 is common to both: group by (normalized_name, label) and
+    exact-match merge, the same first pass ExactMatchResolution performs. No
+    embedder needed. It can merge same-name entries across labels via the LLM;
+    with ``label_family_gate`` on, cross-family groups are dropped before that
+    call, so the gate holds from the very first phase.
+
+    Unified stage (``unified_stage=True``, the DEFAULT):
+      2. Embed "name: description" for every surviving node, in ONE group —
+         labels do not bucket anything.
+      3. ANN candidate generation over that one group, so a candidate pair may
+         span two labels. ``unified_threshold`` is the floor (not
+         ``soft_threshold``, which this path never reads). Cross-family pairs
+         are dropped by ``label_family_gate`` here.
+      4. sim >= hard_threshold merges without asking, EXCEPT cross-label pairs,
+         which always go to the LLM whatever they score. Everything else in the
+         band is verified, batched when ``batch_verification`` is on.
+      5. Cross-label YESes are re-asked with A and B swapped
+         (``cross_label_vote``) and only survive if the model agrees twice.
+      6. Union-Find, with the label family carried on each cluster root so a
+         chain of individually-allowed unions cannot join two families.
+      7. Flatten the remap chain, then remap and deduplicate relationships.
+
+      PASS 2 does NOT run in this mode — cross-label pairs are ordinary
+      candidates in step 3, so there is nothing left for a separate pass.
+
+    Legacy label-bucket stage (``unified_stage=False``):
+      2. Embed node NAMES within each label group.
+      3. For each pair within one label:
            similarity >= hard_threshold  → hard merge immediately
            soft_threshold <= sim < hard  → send to LLM YES/NO batch
            sim < soft_threshold          → skip
       4. LLM confirms or rejects each ambiguous pair.
       5. Apply Union-Find clusters from hard + LLM-confirmed merges.
       6. PASS 2: cross-label pairs only — three doors (shared token, acronym,
-         vector) OR-ed, filtered by a rank floor, one LLM call per pair,
-         Union-Find. Steps 2-5 group by label and can never form these pairs.
+         vector) OR-ed, filtered by a rank floor, then the same family gate,
+         verification helpers and second vote the unified stage uses. Steps 2-5
+         group by label and can never form these pairs, which is why this pass
+         exists here and not above.
       7. Flatten the remap chain, then remap and deduplicate relationships.
 
     Args:
@@ -865,7 +892,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
         norms = np.linalg.norm(mat, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         mat_normed = mat / norms
-        sims = mat_normed @ mat_normed.T
+        # One row at a time rather than `mat_normed @ mat_normed.T`: the full
+        # Gram matrix is O(n^2) floats held at once (10k nodes = ~400 MB) for
+        # values each read exactly once inside the loop below. A row dot the
+        # matrix gives the same numbers in O(n) memory.
 
         names = [_name(n) for n in valid]
         token_sets = [_name_tokens(nm) for nm in names]
@@ -873,10 +903,11 @@ class LLMVerifiedResolution(ResolutionStrategy):
         candidates: list[tuple[int, int, float, str]] = []
         gated_pairs = 0
         for i in range(len(valid)):
+            sims_i = mat_normed[i] @ mat_normed.T
             for j in range(i + 1, len(valid)):
                 if valid[i].label == valid[j].label:
                     continue  # PASS 1 already owns same-label pairs
-                sim = float(sims[i, j])
+                sim = float(sims_i[j])
                 if sim < self.cross_label_rank_floor:
                     continue
                 # The family gate belongs here most of all: this pass exists to
@@ -931,9 +962,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
             nbrs = adjacency.get(node_id, [])[:top_n]
             return "; ".join(f"{t} -> {nm}" for nm, t in nbrs) if nbrs else "(none)"
 
-        prompts = [
-            _VERIFY_PROMPT_INTRO
-            + _CROSS_LABEL_PAIR_BLOCK.format(
+        blocks = [
+            _CROSS_LABEL_PAIR_BLOCK.format(
                 name_a=names[i],
                 label_a=valid[i].label,
                 desc_a=_desc(valid[i]),
@@ -944,17 +974,40 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 neighbors_b=_fmt_neighbors(valid[j].id),
                 similarity=sim,
             )
-            + "\n\n"
-            + _RULES
-            + _VERIFY_PROMPT_ANSWER
             for i, j, sim, _ in capped
         ]
 
-        # Deliberately one pair per call. Batched verification was measured on
-        # this shape and loses merges: an unanswered index in a batch reply is
-        # indistinguishable from a NO.
-        results = await self.llm.abatch_invoke(prompts, max_concurrency=self.max_llm_concurrency)
-        by_index = {item.index: item for item in results}
+        # Through the shared helper, so batch_verification, the token budget and
+        # the per-call pair cap mean here what they mean everywhere else. This
+        # path used to be one provider call per pair unconditionally: with the
+        # default cap and the second vote that is up to 400 calls with batching
+        # switched on, which is not what the setting says.
+        #
+        # The reason it was one-per-call is recorded and still true on its own
+        # terms — an unanswered index in a batch reply is indistinguishable from
+        # a NO, and this pass has no second door to catch what it drops. What
+        # changed is that _verify_batched no longer treats silence as a verdict:
+        # every unanswered pair is re-asked one per call before it is allowed to
+        # stay unmerged, which is exactly the shape this pass wanted.
+        verdicts = (
+            await self._verify_batched(blocks)
+            if self.batch_verification
+            else await self._verify_one_by_one(
+                blocks,
+                [
+                    _VerificationRequest(
+                        node_a=valid[i],
+                        node_b=valid[j],
+                        idx_a=i,
+                        idx_b=j,
+                        similarity=sim,
+                        label=valid[i].label,
+                        prompt_index=pos,
+                    )
+                    for pos, (i, j, sim, _) in enumerate(capped)
+                ],
+            )
+        )
 
         parent = list(range(len(valid)))
 
@@ -964,20 +1017,14 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 x = parent[x]
             return x
 
-        yes_positions: list[int] = []
-        for pos, (i, j, _sim, _door) in enumerate(capped):
-            item = by_index.get(pos)
-            if item is None or not item.ok:
-                logger.warning(
-                    "PASS 2 verification failed for '%s' vs '%s': %s",
-                    names[i],
-                    names[j],
-                    getattr(item, "error", "missing result"),
-                )
-                continue
-            if not item.response.content.strip().upper().startswith("YES"):
-                continue
-            yes_positions.append(pos)
+        yes_positions = [pos for pos in range(len(capped)) if verdicts.get(pos)]
+        unanswered = [pos for pos in range(len(capped)) if pos not in verdicts]
+        if unanswered:
+            logger.warning(
+                "PASS 2 left %d of %d pairs unanswered; they stay unmerged",
+                len(unanswered),
+                len(capped),
+            )
 
         # Second opinion, same rule the unified stage applies to its cross-label
         # YESes: ask again with A and B swapped and keep only the answers the
@@ -988,8 +1035,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
         vetoed = 0
         if self.cross_label_vote and yes_positions:
             swapped = [
-                _VERIFY_PROMPT_INTRO
-                + _CROSS_LABEL_PAIR_BLOCK.format(
+                _CROSS_LABEL_PAIR_BLOCK.format(
                     name_a=names[capped[pos][1]],
                     label_a=valid[capped[pos][1]].label,
                     desc_a=_desc(valid[capped[pos][1]]),
@@ -1000,22 +1046,34 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     neighbors_b=_fmt_neighbors(valid[capped[pos][0]].id),
                     similarity=capped[pos][2],
                 )
-                + "\n\n"
-                + _RULES
-                + _VERIFY_PROMPT_ANSWER
                 for pos in yes_positions
             ]
-            second = await self.llm.abatch_invoke(swapped, max_concurrency=self.max_llm_concurrency)
-            second_by_index = {item.index: item for item in second}
+            # Same helper as the first ask, so the vote honours the same
+            # batching controls rather than doubling the call count outright.
+            second = (
+                await self._verify_batched(swapped)
+                if self.batch_verification
+                else await self._verify_one_by_one(
+                    swapped,
+                    [
+                        _VerificationRequest(
+                            node_a=valid[capped[pos][1]],
+                            node_b=valid[capped[pos][0]],
+                            idx_a=capped[pos][1],
+                            idx_b=capped[pos][0],
+                            similarity=capped[pos][2],
+                            label=valid[capped[pos][1]].label,
+                            prompt_index=k,
+                        )
+                        for k, pos in enumerate(yes_positions)
+                    ],
+                )
+            )
             agreed: list[int] = []
             for k, pos in enumerate(yes_positions):
-                item = second_by_index.get(k)
-                ok = (
-                    item is not None
-                    and item.ok
-                    and item.response.content.strip().upper().startswith("YES")
-                )
-                if ok:
+                # An unanswered re-ask is not agreement: the vote exists to keep
+                # only the YESes the model repeats, and silence is not one.
+                if second.get(k):
                     agreed.append(pos)
                 else:
                     vetoed += 1
@@ -1152,6 +1210,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
             max_summary_tokens=self.max_summary_tokens,
             cross_label_merge=True,
             cross_label_min_descriptions=self.cross_label_min_descriptions,
+            # Phase 1 merges on the name alone, so without this it could fuse a
+            # cross-family homograph before the embedding stage's gate or the
+            # second vote ever ran.
+            label_gate=labels_compatible if self.label_family_gate else None,
         )
         deduplicated_nodes = held_out + deduplicated_nodes
         ctx.log(
@@ -1354,8 +1416,27 @@ class LLMVerifiedResolution(ResolutionStrategy):
             def _needs_llm(gi: int, gj: int) -> bool:
                 return self.unified_stage and valid_nodes[gi].label != valid_nodes[gj].label
 
-            # Union-Find
+            # Union-Find, with the label family carried on the cluster root.
+            #
+            # The family gate is PAIRWISE, and Union-Find is transitive, so the
+            # gate alone does not hold: "Person ~ Engineer" and "Engineer ~
+            # Institution" are both admitted (Engineer belongs to no known
+            # family, so it is compatible with everything), and unioning them in
+            # turn puts Person and Institution in one cluster — the very pair the
+            # gate would have refused to even ask about. The survivor then
+            # records both labels, so the merge the gate exists to prevent
+            # happens anyway, one hop removed.
+            #
+            # Each root therefore carries the set of KNOWN families in its
+            # cluster, and a union that would put two different known families
+            # together is refused. Unknown and generic labels still join freely:
+            # they are what `labels_compatible` deliberately lets through.
             parent: dict[int, int] = {i: i for i in range(n_nodes)}
+            cluster_families: dict[int, set[str]] = {}
+            for i in range(n_nodes):
+                fam = _LABEL_TO_FAMILY.get((valid_nodes[i].label or "").strip().lower())
+                cluster_families[i] = {fam} if fam else set()
+            blocked_unions = 0
 
             def find(x: int) -> int:
                 while parent[x] != x:
@@ -1364,9 +1445,26 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 return x
 
             def union(x: int, y: int) -> None:
+                nonlocal blocked_unions
                 px, py = find(x), find(y)
-                if px != py:
-                    parent[py] = px
+                if px == py:
+                    return
+                if self.unified_stage and self.label_family_gate:
+                    merged_families = cluster_families[px] | cluster_families[py]
+                    if len(merged_families) > 1:
+                        blocked_unions += 1
+                        logger.debug(
+                            "Family gate blocked a transitive union of %s with %s ('%s' + '%s')",
+                            sorted(cluster_families[px]),
+                            sorted(cluster_families[py]),
+                            valid_nodes[x].properties.get("name", valid_nodes[x].id),
+                            valid_nodes[y].properties.get("name", valid_nodes[y].id),
+                        )
+                        return
+                    cluster_families[px] = merged_families
+                else:
+                    cluster_families[px] = cluster_families[px] | cluster_families[py]
+                parent[py] = px
 
             hard_pairs: list[tuple[int, int]] = []
             ambiguous_pairs: list[tuple[int, int, float]] = []
@@ -1386,28 +1484,46 @@ class LLMVerifiedResolution(ResolutionStrategy):
             hnsw_index.add_items(mat_normed, list(range(n_nodes)))
             # "ip" space with unit-normed vectors: distance = 1 - cosine_similarity
             nbrs, dists = hnsw_index.knn_query(mat_normed, k=top_k + 1)
+            # kNN neighbour lists are DIRECTIONAL: b can sit in a's top-k while a
+            # is missing from b's. Keeping only `j > i` therefore kept a pair
+            # only when the lower-index node happened to be the one that
+            # retrieved the other, so whether a duplicate was ever considered
+            # depended on the order the nodes arrived in. Collect each unordered
+            # pair once, from whichever direction found it, and keep the best
+            # similarity seen — the unified stage routes every label through
+            # this pass, so a pair dropped here is dropped silently and for good.
+            seen_pairs: dict[tuple[int, int], float] = {}
             for i in range(n_nodes):
                 for rank in range(1, top_k + 1):
                     j = int(nbrs[i, rank])
-                    if j <= i:
+                    if j == i:
                         continue
+                    key = (i, j) if i < j else (j, i)
                     sim_val = 1.0 - float(dists[i, rank])
-                    if sim_val < soft_floor:
-                        continue
-                    if (
-                        self.unified_stage
-                        and self.label_family_gate
-                        and not labels_compatible(valid_nodes[i].label, valid_nodes[j].label)
-                    ):
-                        gated_pairs += 1
-                        continue
-                    if sim_val >= self.hard_threshold and not _needs_llm(i, j):
-                        hard_pairs.append((i, j))
-                    else:
-                        ambiguous_pairs.append((i, j, sim_val))
+                    if sim_val > seen_pairs.get(key, -1.0):
+                        seen_pairs[key] = sim_val
+
+            for (i, j), sim_val in sorted(seen_pairs.items()):
+                if sim_val < soft_floor:
+                    continue
+                if (
+                    self.unified_stage
+                    and self.label_family_gate
+                    and not labels_compatible(valid_nodes[i].label, valid_nodes[j].label)
+                ):
+                    gated_pairs += 1
+                    continue
+                if sim_val >= self.hard_threshold and not _needs_llm(i, j):
+                    hard_pairs.append((i, j))
+                else:
+                    ambiguous_pairs.append((i, j, sim_val))
 
             if gated_pairs:
                 ctx.log(f"Label family gate dropped {gated_pairs} cross-family candidate pair(s)")
+            if blocked_unions:
+                ctx.log(
+                    f"Label family gate blocked {blocked_unions} transitive cross-family union(s)"
+                )
 
             def _codes_apart(gi: int, gj: int) -> bool:
                 return differ_only_in_digits(

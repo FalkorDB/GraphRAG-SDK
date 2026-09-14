@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from graphrag_sdk.core.context import Context
@@ -140,6 +141,7 @@ async def exact_match_merge(
     cross_label_merge: bool = False,
     cross_label_min_descriptions: int = 3,
     resolve_property: str = "name",
+    label_gate: Callable[[str, str], bool] | None = None,
 ) -> tuple[list[GraphNode], dict[str, str], int]:
     """Phase 1: group nodes by normalized name and merge exact duplicates.
 
@@ -224,6 +226,24 @@ async def exact_match_merge(
             labels = {sl_entries[i]["nodes"][0].label for i in indices}
             if len(labels) < 2:
                 continue
+            # Same safety policy as the embedding stage, applied here too.
+            # This phase merges on the NAME alone, with no vector filter, so a
+            # Person/Place homograph with enough descriptions reached the LLM
+            # and could be merged before any family gate or second vote ran —
+            # the caller's cross-family guarantees were simply absent from the
+            # first phase. A group spanning two different known families is not
+            # asked about at all; the members survive under their own labels.
+            if label_gate is not None:
+                ordered = sorted(labels)
+                if any(
+                    not label_gate(a, b) for k, a in enumerate(ordered) for b in ordered[k + 1 :]
+                ):
+                    logger.debug(
+                        "Label family gate dropped cross-label group %s for '%s'",
+                        ordered,
+                        _name_key,
+                    )
+                    continue
             total_orig_descs = sum(sl_entries[i]["orig_desc_count"] for i in indices)
             if total_orig_descs < cross_label_min_descriptions:
                 # Fail-safe: too little evidence to ask the LLM here, so
