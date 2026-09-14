@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from graphrag_sdk.core.context import Context
@@ -93,6 +94,28 @@ def set_merged_descriptions(survivor: GraphNode, members: list[GraphNode]) -> li
     return merged
 
 
+def merge_source_ids(survivor: GraphNode, members: list[GraphNode]) -> list[str]:
+    """Rule for every merge: the survivor keeps **every** member's provenance.
+
+    ``source_chunk_ids`` is the link back to the chunks an entity was extracted
+    from — it drives chunk retrieval and the ``MENTIONED_IN`` edges. Extraction
+    sets it on every node, so a "copy the keys the survivor lacks" rule never
+    copies it and the duplicate's chunks are lost. Stage 1 and Stage 5 in this
+    module union it explicitly; strategies must do the same. Returns the union.
+    """
+    merged: list[str] = []
+    for node in [survivor, *members]:
+        raw = node.properties.get("source_chunk_ids") or []
+        if not isinstance(raw, list):
+            raw = [raw]
+        for sid in raw:
+            if sid and sid not in merged:
+                merged.append(sid)
+    if merged:
+        survivor.properties["source_chunk_ids"] = merged
+    return merged
+
+
 def _pick_canonical_label(nodes: list[GraphNode]) -> str:
     """Heuristic label selection: most frequent non-Unknown label wins.
 
@@ -118,6 +141,9 @@ async def exact_match_merge(
     cross_label_merge: bool = False,
     cross_label_min_descriptions: int = 3,
     resolve_property: str = "name",
+    label_gate: Callable[[str, str], bool] | None = None,
+    cross_label_vote: bool = False,
+    rejected_out: set[frozenset[str]] | None = None,
 ) -> tuple[list[GraphNode], dict[str, str], int]:
     """Phase 1: group nodes by normalized name and merge exact duplicates.
 
@@ -202,6 +228,24 @@ async def exact_match_merge(
             labels = {sl_entries[i]["nodes"][0].label for i in indices}
             if len(labels) < 2:
                 continue
+            # Same safety policy as the embedding stage, applied here too.
+            # This phase merges on the NAME alone, with no vector filter, so a
+            # Person/Place homograph with enough descriptions reached the LLM
+            # and could be merged before any family gate or second vote ran —
+            # the caller's cross-family guarantees were simply absent from the
+            # first phase. A group spanning two different known families is not
+            # asked about at all; the members survive under their own labels.
+            if label_gate is not None:
+                ordered = sorted(labels)
+                if any(
+                    not label_gate(a, b) for k, a in enumerate(ordered) for b in ordered[k + 1 :]
+                ):
+                    logger.debug(
+                        "Label family gate dropped cross-label group %s for '%s'",
+                        ordered,
+                        _name_key,
+                    )
+                    continue
             total_orig_descs = sum(sl_entries[i]["orig_desc_count"] for i in indices)
             if total_orig_descs < cross_label_min_descriptions:
                 # Fail-safe: too little evidence to ask the LLM here, so
@@ -247,6 +291,9 @@ async def exact_match_merge(
                     "name": entity_name,
                     "descriptions": all_descs,
                     "types": sorted(labels),
+                    # The nodes that carry on from the same-label pass; a
+                    # definitive NO about this group is a decision about them.
+                    "ids": [sl_entries[i]["nodes"][0].id for i in indices],
                 }
             )
 
@@ -287,6 +334,20 @@ async def exact_match_merge(
     if prompts and llm is not None:
         batch_results = await llm.abatch_invoke(prompts)
 
+    def _record_rejection(cl_idx: int) -> None:
+        """Remember a DEFINITIVE refusal so a later run need not pay to re-ask.
+
+        Only ever called for an explicit NO — never for a failed call or an
+        unparseable reply, which carry no decision at all. Recording those
+        would turn one transient error into a permanent "distinct" verdict.
+        """
+        if rejected_out is None:
+            return
+        ids = cl_candidates[cl_idx]["ids"]
+        for x in range(len(ids)):
+            for y in range(x + 1, len(ids)):
+                rejected_out.add(frozenset((ids[x], ids[y])))
+
     # ── Stage 4: parse results ──
     sl_summaries: dict[int, str] = {}  # sl_entry_idx -> summary text
     cl_approvals: dict[int, tuple[str, str]] = {}  # cl_idx -> (chosen_type, summary)
@@ -306,7 +367,11 @@ async def exact_match_merge(
             content = item.response.content.strip()
             first_line = content.split("\n", 1)[0].strip()
             if not first_line.upper().startswith("YES"):
-                # NO or malformed → fail-safe: preserve homographs.
+                # NO or malformed → fail-safe: preserve homographs. Only the
+                # explicit NO is a decision; a malformed reply is not one, and
+                # must stay askable on a later run.
+                if first_line.upper().startswith("NO"):
+                    _record_rejection(cl_idx)
                 continue
             parts = first_line.split(None, 1)
             chosen = parts[1].strip() if len(parts) >= 2 else ""
@@ -317,6 +382,54 @@ async def exact_match_merge(
                 else " | ".join(cl_candidates[cl_idx]["descriptions"])
             )
             cl_approvals[cl_idx] = (chosen, cl_summary)
+
+    # ── Stage 4b: second opinion on cross-label approvals ──
+    # The same rule the embedding stage applies to its cross-label YESes, and
+    # for the same reason: this phase merges on the NAME alone, so a single
+    # approval is the only thing standing between a homograph and a merge.
+    # Asked again with the candidate types listed in the opposite order —
+    # the analogue of swapping A and B — and only the approvals the model
+    # repeats survive. A failed or malformed re-ask is not agreement.
+    if cross_label_vote and cl_approvals and llm is not None:
+        revote_idx = sorted(cl_approvals)
+        revote_prompts = [
+            _SUMMARY_WITH_TYPE_PROMPT.format(
+                entity_name=cl_candidates[cl_idx]["name"],
+                max_tokens=max_summary_tokens,
+                types=", ".join(reversed(cl_candidates[cl_idx]["types"])),
+                descriptions="\n".join(f"- {d}" for d in cl_candidates[cl_idx]["descriptions"]),
+            )
+            for cl_idx in revote_idx
+        ]
+        second = await llm.abatch_invoke(revote_prompts)
+        agreed: dict[int, bool] = {}
+        for item in second:
+            if not item.ok:
+                continue
+            first_line = item.response.content.strip().split("\n", 1)[0].strip().upper()
+            # Only a reply that actually says YES or NO is a verdict. Storing
+            # `startswith("YES")` put "MAYBE" — or an empty string — in as
+            # False, which the veto branch below then reads as an explicit NO
+            # and persists as a permanent distinct decision. A parse failure
+            # withdraws the approval without being remembered, the same rule
+            # the first vote uses.
+            if first_line.startswith("YES"):
+                agreed[item.index] = True
+            elif first_line.startswith("NO"):
+                agreed[item.index] = False
+        for k, cl_idx in enumerate(revote_idx):
+            if not agreed.get(k):
+                logger.debug(
+                    "Cross-label vote %s the phase-1 merge of '%s' (%s)",
+                    "vetoed" if k in agreed else "left unconfirmed",
+                    cl_candidates[cl_idx]["name"],
+                    cl_candidates[cl_idx]["types"],
+                )
+                # An explicit NO on the re-ask is a decision; an unanswered one
+                # only withdraws the approval.
+                if k in agreed:
+                    _record_rejection(cl_idx)
+                del cl_approvals[cl_idx]
 
     # ── Stage 5: apply same-label merges, producing one survivor per sl group ──
     sl_survivor_by_idx: dict[int, GraphNode] = {}

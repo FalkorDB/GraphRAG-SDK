@@ -32,6 +32,7 @@ class TestFastCorefResolver:
         """FastCorefResolver raises clear ImportError if fastcoref not installed."""
         try:
             import fastcoref  # noqa: F401
+
             pytest.skip("fastcoref is installed")
         except ImportError:
             resolver = FastCorefResolver()

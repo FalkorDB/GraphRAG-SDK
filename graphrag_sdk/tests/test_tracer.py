@@ -1,4 +1,5 @@
 """Tests for telemetry/tracer.py — Span-based tracing."""
+
 from __future__ import annotations
 
 import time

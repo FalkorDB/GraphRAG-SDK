@@ -660,8 +660,11 @@ class TestExactMatchMatchesStage1:
         """Three or more descriptions are summarised, not concatenated."""
         data = GraphData(
             nodes=[
-                GraphNode(id=f"a{i}", label="Person",
-                          properties={"name": "Ada", "description": f"desc {i}"})
+                GraphNode(
+                    id=f"a{i}",
+                    label="Person",
+                    properties={"name": "Ada", "description": f"desc {i}"},
+                )
                 for i in range(3)
             ],
             relationships=[],
@@ -673,16 +676,20 @@ class TestExactMatchMatchesStage1:
 
     async def test_identical_to_stage_1_on_the_same_input(self, ctx):
         """Equivalence check: same nodes through both paths, same outcome."""
+
         def build() -> list[GraphNode]:
             return [
-                GraphNode(id="a1", label="Person",
-                          properties={"name": "Ada", "description": "d1",
-                                      "source_chunk_ids": ["c1"]}),
-                GraphNode(id="a2", label="Person",
-                          properties={"name": "ADA ", "description": "d2",
-                                      "source_chunk_ids": ["c2"]}),
-                GraphNode(id="b1", label="Person",
-                          properties={"name": "Bob", "description": "d3"}),
+                GraphNode(
+                    id="a1",
+                    label="Person",
+                    properties={"name": "Ada", "description": "d1", "source_chunk_ids": ["c1"]},
+                ),
+                GraphNode(
+                    id="a2",
+                    label="Person",
+                    properties={"name": "ADA ", "description": "d2", "source_chunk_ids": ["c2"]},
+                ),
+                GraphNode(id="b1", label="Person", properties={"name": "Bob", "description": "d3"}),
             ]
 
         stage1_nodes, stage1_remap, stage1_count = await exact_match_merge(build(), None)
@@ -740,12 +747,9 @@ class TestCrossLabelGroupingUsesTheSameKey:
 
     async def test_nameless_nodes_are_not_bucketed_together(self):
         nodes = [
-            GraphNode(id="alpha", label="Person",
-                      properties={"description": "some person"}),
-            GraphNode(id="beta", label="Location",
-                      properties={"description": "somewhere else"}),
-            GraphNode(id="gamma", label="Product",
-                      properties={"description": "a third thing"}),
+            GraphNode(id="alpha", label="Person", properties={"description": "some person"}),
+            GraphNode(id="beta", label="Location", properties={"description": "somewhere else"}),
+            GraphNode(id="gamma", label="Product", properties={"description": "a third thing"}),
         ]
         llm = MockLLM(responses=["YES Person\nmerged summary"])
         deduped, remap, count = await exact_match_merge(
@@ -760,12 +764,9 @@ class TestCrossLabelGroupingUsesTheSameKey:
     async def test_control_named_homographs_still_group(self):
         """Control: real same-name cross-label groups are still detected."""
         nodes = [
-            GraphNode(id="a", label="Person",
-                      properties={"name": "Ada", "description": "d1"}),
-            GraphNode(id="b", label="Person",
-                      properties={"name": "Ada", "description": "d2"}),
-            GraphNode(id="c", label="Scientist",
-                      properties={"name": "Ada", "description": "d3"}),
+            GraphNode(id="a", label="Person", properties={"name": "Ada", "description": "d1"}),
+            GraphNode(id="b", label="Person", properties={"name": "Ada", "description": "d2"}),
+            GraphNode(id="c", label="Scientist", properties={"name": "Ada", "description": "d3"}),
         ]
         llm = MockLLM(responses=["YES Person\nmerged summary"])
         deduped, _remap, count = await exact_match_merge(
@@ -775,6 +776,8 @@ class TestCrossLabelGroupingUsesTheSameKey:
         )
         assert count == 2
         assert len(deduped) == 1
+
+
 class TestSurvivorRank:
     """Which of two duplicates survives a merge.
 

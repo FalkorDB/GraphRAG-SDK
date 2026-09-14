@@ -59,10 +59,14 @@ def _mock_hybrid_llm(
         step2_entities = step1_entities
     if step2_relationships is None:
         step2_relationships = [
-            {"source": "Alice", "target": "Acme Corp", "type": "WORKS_AT",
-             "description": "Alice is employed as an engineer at Acme Corp",
-             "keywords": "employment, engineering",
-             "weight": 0.9},
+            {
+                "source": "Alice",
+                "target": "Acme Corp",
+                "type": "WORKS_AT",
+                "description": "Alice is employed as an engineer at Acme Corp",
+                "keywords": "employment, engineering",
+                "weight": 0.9,
+            },
         ]
 
     step1 = json.dumps(step1_entities)
@@ -143,11 +147,17 @@ class TestGraphExtractionSchemaTypes:
                 captured_prompts.append(prompt)
                 return super().invoke(prompt, **kwargs)
 
-        llm = CaptureLLM(responses=[
-            json.dumps([{"name": "Test", "type": "Vehicle", "description": "A car"}]),
-            json.dumps({"entities": [{"name": "Test", "type": "Vehicle", "description": "A car"}],
-                        "relationships": []}),
-        ])
+        llm = CaptureLLM(
+            responses=[
+                json.dumps([{"name": "Test", "type": "Vehicle", "description": "A car"}]),
+                json.dumps(
+                    {
+                        "entities": [{"name": "Test", "type": "Vehicle", "description": "A car"}],
+                        "relationships": [],
+                    }
+                ),
+            ]
+        )
         ontology = Ontology(
             entities=[
                 Entity(label="Vehicle", description="A vehicle"),
@@ -181,10 +191,12 @@ class TestGraphExtractionAggregation:
     async def test_cross_chunk_entity_dedup(self, ctx):
         """Same entity from multiple chunks should be deduplicated."""
         step1 = json.dumps([{"name": "Alice", "type": "Person", "description": "An engineer"}])
-        step2 = json.dumps({
-            "entities": [{"name": "Alice", "type": "Person", "description": "An engineer"}],
-            "relationships": [],
-        })
+        step2 = json.dumps(
+            {
+                "entities": [{"name": "Alice", "type": "Person", "description": "An engineer"}],
+                "relationships": [],
+            }
+        )
         llm = MockLLM(responses=[step1, step1, step2, step2])
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
 
@@ -229,23 +241,39 @@ class TestGraphExtractionPluggableExtractor:
         class SimpleNERExtractor(EntityExtractor):
             async def extract_entities(self, text, entity_types, source_chunk_id):
                 from graphrag_sdk.core.models import ExtractedEntity
+
                 return [
-                    ExtractedEntity(name="Alice", type="Person", description="",
-                                    source_chunk_ids=[source_chunk_id]),
-                    ExtractedEntity(name="Bob", type="Person", description="",
-                                    source_chunk_ids=[source_chunk_id]),
+                    ExtractedEntity(
+                        name="Alice",
+                        type="Person",
+                        description="",
+                        source_chunk_ids=[source_chunk_id],
+                    ),
+                    ExtractedEntity(
+                        name="Bob",
+                        type="Person",
+                        description="",
+                        source_chunk_ids=[source_chunk_id],
+                    ),
                 ]
 
-        step2 = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": ""},
-                {"name": "Bob", "type": "Person", "description": ""},
-            ],
-            "relationships": [
-                {"source": "Alice", "target": "Bob", "type": "KNOWS",
-                 "description": "They know each other", "weight": 0.8},
-            ],
-        })
+        step2 = json.dumps(
+            {
+                "entities": [
+                    {"name": "Alice", "type": "Person", "description": ""},
+                    {"name": "Bob", "type": "Person", "description": ""},
+                ],
+                "relationships": [
+                    {
+                        "source": "Alice",
+                        "target": "Bob",
+                        "type": "KNOWS",
+                        "description": "They know each other",
+                        "weight": 0.8,
+                    },
+                ],
+            }
+        )
         llm = MockLLM(responses=[step2])
         custom_extractor = SimpleNERExtractor()
         extractor = GraphExtraction(
@@ -266,7 +294,9 @@ class TestGraphExtractionConcurrency:
     async def test_max_concurrency_stored(self, ctx):
         llm = _mock_hybrid_llm()
         extractor = GraphExtraction(
-            llm=llm, entity_extractor=LLMExtractor(llm), max_concurrency=2,
+            llm=llm,
+            entity_extractor=LLMExtractor(llm),
+            max_concurrency=2,
         )
         assert extractor._max_concurrency == 2
 
@@ -295,18 +325,23 @@ class TestGraphExtractionDefaults:
 
 class TestGraphExtractionStep2Parsing:
     def test_parse_valid_response(self):
-        content = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": "Engineer"},
-            ],
-            "relationships": [
-                {"source": "Alice", "target": "Bob", "type": "KNOWS",
-                 "description": "Friends", "weight": 0.8},
-            ],
-        })
-        ents, rels = GraphExtraction._parse_step2_response(
-            content, ["Person"], "chunk-0"
+        content = json.dumps(
+            {
+                "entities": [
+                    {"name": "Alice", "type": "Person", "description": "Engineer"},
+                ],
+                "relationships": [
+                    {
+                        "source": "Alice",
+                        "target": "Bob",
+                        "type": "KNOWS",
+                        "description": "Friends",
+                        "weight": 0.8,
+                    },
+                ],
+            }
         )
+        ents, rels = GraphExtraction._parse_step2_response(content, ["Person"], "chunk-0")
         assert len(ents) == 1
         assert ents[0].name == "Alice"
         assert len(rels) == 1
@@ -314,47 +349,48 @@ class TestGraphExtractionStep2Parsing:
         assert rels[0].target == "Bob"
 
     def test_parse_invalid_json(self):
-        ents, rels = GraphExtraction._parse_step2_response(
-            "not json", ["Person"], "chunk-0"
-        )
+        ents, rels = GraphExtraction._parse_step2_response("not json", ["Person"], "chunk-0")
         assert ents == []
         assert rels == []
 
     def test_parse_filters_stoplist_endpoints(self):
-        content = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": ""},
-            ],
-            "relationships": [
-                {"source": "he", "target": "Alice", "type": "KNOWS",
-                 "description": "", "weight": 0.5},
-            ],
-        })
-        ents, rels = GraphExtraction._parse_step2_response(
-            content, ["Person"], "chunk-0"
+        content = json.dumps(
+            {
+                "entities": [
+                    {"name": "Alice", "type": "Person", "description": ""},
+                ],
+                "relationships": [
+                    {
+                        "source": "he",
+                        "target": "Alice",
+                        "type": "KNOWS",
+                        "description": "",
+                        "weight": 0.5,
+                    },
+                ],
+            }
         )
+        ents, rels = GraphExtraction._parse_step2_response(content, ["Person"], "chunk-0")
         assert len(rels) == 0  # "he" is in stoplist
 
     def test_parse_rejects_slash_types(self):
-        content = json.dumps({
-            "entities": [
-                {"name": "Horse", "type": "Animal/Concept", "description": "A horse"},
-                {"name": "Alice", "type": "Person", "description": "Valid"},
-            ],
-            "relationships": [],
-        })
-        ents, rels = GraphExtraction._parse_step2_response(
-            content, ["Person", "Animal"], "chunk-0"
+        content = json.dumps(
+            {
+                "entities": [
+                    {"name": "Horse", "type": "Animal/Concept", "description": "A horse"},
+                    {"name": "Alice", "type": "Person", "description": "Valid"},
+                ],
+                "relationships": [],
+            }
         )
+        ents, rels = GraphExtraction._parse_step2_response(content, ["Person", "Animal"], "chunk-0")
         names = {e.name for e in ents}
         assert "Alice" in names
         assert "Horse" not in names
 
     def test_parse_markdown_fences(self):
         content = '```json\n{"entities": [{"name": "Alice", "type": "Person", "description": ""}], "relationships": []}\n```'
-        ents, rels = GraphExtraction._parse_step2_response(
-            content, ["Person"], "chunk-0"
-        )
+        ents, rels = GraphExtraction._parse_step2_response(content, ["Person"], "chunk-0")
         assert len(ents) == 1
 
 
@@ -363,13 +399,17 @@ class TestSpansMerging:
         """Step 1 spans/confidence should carry over to step 2 verified entities."""
         step1 = [
             ExtractedEntity(
-                name="Alice", type="Person", description="",
+                name="Alice",
+                type="Person",
+                description="",
                 source_chunk_ids=["chunk-0"],
                 spans={"chunk-0": [{"start": 0, "end": 5}]},
                 confidence=0.95,
             ),
             ExtractedEntity(
-                name="Bob", type="Person", description="",
+                name="Bob",
+                type="Person",
+                description="",
                 source_chunk_ids=["chunk-0"],
                 spans={"chunk-0": [{"start": 10, "end": 13}]},
                 confidence=0.88,
@@ -377,12 +417,14 @@ class TestSpansMerging:
         ]
         verified = [
             ExtractedEntity(
-                name="Alice", type="Person",
+                name="Alice",
+                type="Person",
                 description="A software engineer",
                 source_chunk_ids=["chunk-0"],
             ),
             ExtractedEntity(
-                name="Bob", type="Person",
+                name="Bob",
+                type="Person",
                 description="A product manager",
                 source_chunk_ids=["chunk-0"],
             ),
@@ -405,7 +447,9 @@ class TestSpansMerging:
         """Entities found by LLM (not in step 1) get spans via text.find()."""
         step1 = [
             ExtractedEntity(
-                name="Alice", type="Person", description="",
+                name="Alice",
+                type="Person",
+                description="",
                 source_chunk_ids=["chunk-0"],
                 spans={"chunk-0": [{"start": 0, "end": 5}]},
                 confidence=0.95,
@@ -414,12 +458,14 @@ class TestSpansMerging:
         # LLM discovered "Acme Corp" which GLiNER missed
         verified = [
             ExtractedEntity(
-                name="Alice", type="Person",
+                name="Alice",
+                type="Person",
                 description="A software engineer",
                 source_chunk_ids=["chunk-0"],
             ),
             ExtractedEntity(
-                name="Acme Corp", type="Organization",
+                name="Acme Corp",
+                type="Organization",
                 description="A tech company",
                 source_chunk_ids=["chunk-0"],
             ),
@@ -441,7 +487,8 @@ class TestSpansMerging:
         step1: list[ExtractedEntity] = []
         verified = [
             ExtractedEntity(
-                name="ACME Corp", type="Organization",
+                name="ACME Corp",
+                type="Organization",
                 description="A tech company",
                 source_chunk_ids=["chunk-0"],
             ),
@@ -456,12 +503,16 @@ class TestSpansMerging:
     def test_aggregate_merges_spans_across_chunks(self):
         """Spans from different chunks should merge during aggregation."""
         ent1 = ExtractedEntity(
-            name="Alice", type="Person", description="",
+            name="Alice",
+            type="Person",
+            description="",
             source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 0, "end": 5}]},
         )
         ent2 = ExtractedEntity(
-            name="Alice", type="Person", description="",
+            name="Alice",
+            type="Person",
+            description="",
             source_chunk_ids=["chunk-1"],
             spans={"chunk-1": [{"start": 10, "end": 15}]},
         )
@@ -475,11 +526,15 @@ class TestSpansMerging:
     def test_aggregate_without_spans_works(self):
         """Entities without spans (LLM mode) should aggregate normally."""
         ent1 = ExtractedEntity(
-            name="Alice", type="Person", description="desc1",
+            name="Alice",
+            type="Person",
+            description="desc1",
             source_chunk_ids=["chunk-0"],
         )
         ent2 = ExtractedEntity(
-            name="Alice", type="Person", description="longer description",
+            name="Alice",
+            type="Person",
+            description="longer description",
             source_chunk_ids=["chunk-1"],
         )
         merged = GraphExtraction._aggregate_entities([ent1, ent2])
@@ -491,7 +546,9 @@ class TestSpansMerging:
     def test_spans_propagated_to_node_properties(self):
         """Nodes with spans should include them in properties."""
         ent = ExtractedEntity(
-            name="Alice", type="Person", description="",
+            name="Alice",
+            type="Person",
+            description="",
             source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 0, "end": 5}]},
         )
@@ -503,7 +560,9 @@ class TestSpansMerging:
     def test_no_spans_not_in_node_properties(self):
         """Nodes without spans should not have spans key."""
         ent = ExtractedEntity(
-            name="Alice", type="Person", description="",
+            name="Alice",
+            type="Person",
+            description="",
             source_chunk_ids=["chunk-0"],
         )
         nodes = GraphExtraction._entities_to_nodes([ent])
@@ -511,20 +570,27 @@ class TestSpansMerging:
 
     def test_relationship_spans_parsed(self):
         """Step 2 should extract span_start/span_end for relationships."""
-        content = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": ""},
-                {"name": "Bob", "type": "Person", "description": ""},
-            ],
-            "relationships": [
-                {"source": "Alice", "target": "Bob", "type": "KNOWS",
-                 "description": "Alice knows Bob", "keywords": "social",
-                 "weight": 0.9, "span_start": 10, "span_end": 35},
-            ],
-        })
-        ents, rels = GraphExtraction._parse_step2_response(
-            content, ["Person"], "chunk-5"
+        content = json.dumps(
+            {
+                "entities": [
+                    {"name": "Alice", "type": "Person", "description": ""},
+                    {"name": "Bob", "type": "Person", "description": ""},
+                ],
+                "relationships": [
+                    {
+                        "source": "Alice",
+                        "target": "Bob",
+                        "type": "KNOWS",
+                        "description": "Alice knows Bob",
+                        "keywords": "social",
+                        "weight": 0.9,
+                        "span_start": 10,
+                        "span_end": 35,
+                    },
+                ],
+            }
         )
+        ents, rels = GraphExtraction._parse_step2_response(content, ["Person"], "chunk-5")
         assert len(rels) == 1
         assert hasattr(rels[0], "spans")
         assert "chunk-5" in rels[0].spans
@@ -535,9 +601,13 @@ class TestSpansMerging:
         from graphrag_sdk.core.models import ExtractedRelation
 
         rel = ExtractedRelation(
-            source="Alice", target="Bob", type="KNOWS",
-            keywords="social", description="Alice knows Bob",
-            weight=0.9, source_chunk_ids=["chunk-0"],
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            keywords="social",
+            description="Alice knows Bob",
+            weight=0.9,
+            source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 10, "end": 35}]},
         )
         rels = GraphExtraction._relations_to_relationships([rel])
@@ -550,8 +620,12 @@ class TestSpansMerging:
         from graphrag_sdk.core.models import ExtractedRelation
 
         rel = ExtractedRelation(
-            source="Alice", target="Bob", type="KNOWS",
-            keywords="", description="", weight=1.0,
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            keywords="",
+            description="",
+            weight=1.0,
             source_chunk_ids=["chunk-0"],
         )
         rels = GraphExtraction._relations_to_relationships([rel])
@@ -562,15 +636,23 @@ class TestSpansMerging:
         from graphrag_sdk.core.models import ExtractedRelation
 
         rel1 = ExtractedRelation(
-            source="Alice", target="Bob", type="KNOWS",
-            keywords="", description="short",
-            weight=0.9, source_chunk_ids=["chunk-0"],
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            keywords="",
+            description="short",
+            weight=0.9,
+            source_chunk_ids=["chunk-0"],
             spans={"chunk-0": [{"start": 10, "end": 35}]},
         )
         rel2 = ExtractedRelation(
-            source="Alice", target="Bob", type="KNOWS",
-            keywords="", description="longer description",
-            weight=0.9, source_chunk_ids=["chunk-1"],
+            source="Alice",
+            target="Bob",
+            type="KNOWS",
+            keywords="",
+            description="longer description",
+            weight=0.9,
+            source_chunk_ids=["chunk-1"],
             spans={"chunk-1": [{"start": 5, "end": 40}]},
         )
         merged = GraphExtraction._aggregate_relations([rel1, rel2])
@@ -778,11 +860,19 @@ class TestEntityTypeDescriptions:
                 captured_prompts.append(prompt)
                 return super().invoke(prompt, **kwargs)
 
-        llm = CaptureLLM(responses=[
-            json.dumps([{"name": "GRAPH.QUERY", "type": "Command", "description": "A cmd"}]),
-            json.dumps({"entities": [{"name": "GRAPH.QUERY", "type": "Command", "description": "A cmd"}],
-                        "relationships": []}),
-        ])
+        llm = CaptureLLM(
+            responses=[
+                json.dumps([{"name": "GRAPH.QUERY", "type": "Command", "description": "A cmd"}]),
+                json.dumps(
+                    {
+                        "entities": [
+                            {"name": "GRAPH.QUERY", "type": "Command", "description": "A cmd"}
+                        ],
+                        "relationships": [],
+                    }
+                ),
+            ]
+        )
         ontology = Ontology(
             entities=[
                 Entity(label="Command", description="FalkorDB GRAPH.* commands"),
@@ -844,15 +934,25 @@ class TestFormatRelationPatterns:
                 captured_prompts.append(prompt)
                 return super().invoke(prompt, **kwargs)
 
-        llm = CaptureLLM(responses=[
-            json.dumps([{"name": "Alice", "type": "Person", "description": "A person"}]),
-            json.dumps({"entities": [{"name": "Alice", "type": "Person", "description": "A person"}],
-                        "relationships": []}),
-        ])
+        llm = CaptureLLM(
+            responses=[
+                json.dumps([{"name": "Alice", "type": "Person", "description": "A person"}]),
+                json.dumps(
+                    {
+                        "entities": [
+                            {"name": "Alice", "type": "Person", "description": "A person"}
+                        ],
+                        "relationships": [],
+                    }
+                ),
+            ]
+        )
         ontology = Ontology(
             entities=[Entity(label="Person"), Entity(label="Company")],
             relations=[
-                Relation(label="WORKS_AT", description="Works at", patterns=[("Person", "Company")]),
+                Relation(
+                    label="WORKS_AT", description="Works at", patterns=[("Person", "Company")]
+                ),
             ],
         )
         extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
@@ -870,17 +970,20 @@ class TestGraphExtractionSchemaAttributes:
 
     def test_parse_step2_coerces_declared_attributes(self):
         from graphrag_sdk.core.models import Attribute
-        content = json.dumps({
-            "entities": [
-                {
-                    "name": "Marie Curie",
-                    "type": "Person",
-                    "description": "Scientist",
-                    "attributes": {"age": "56", "birth_date": "1867-11-07"},
-                },
-            ],
-            "relationships": [],
-        })
+
+        content = json.dumps(
+            {
+                "entities": [
+                    {
+                        "name": "Marie Curie",
+                        "type": "Person",
+                        "description": "Scientist",
+                        "attributes": {"age": "56", "birth_date": "1867-11-07"},
+                    },
+                ],
+                "relationships": [],
+            }
+        )
         ontology = Ontology(
             entities=[
                 Entity(
@@ -892,9 +995,7 @@ class TestGraphExtractionSchemaAttributes:
                 )
             ]
         )
-        ents, _ = GraphExtraction._parse_step2_response(
-            content, ["Person"], "c1", ontology
-        )
+        ents, _ = GraphExtraction._parse_step2_response(content, ["Person"], "c1", ontology)
         assert len(ents) == 1
         assert ents[0].attributes == {"age": 56, "birth_date": "1867-11-07"}
 
@@ -903,17 +1004,20 @@ class TestGraphExtractionSchemaAttributes:
         entity is NEVER dropped. Storage strips ``None`` before writing so
         the graph sees "key missing", which is the right null semantics."""
         from graphrag_sdk.core.models import Attribute
-        content = json.dumps({
-            "entities": [
-                {
-                    "name": "Marie Curie",
-                    "type": "Person",
-                    "description": "",
-                    "attributes": {"age": 56},
-                },
-            ],
-            "relationships": [],
-        })
+
+        content = json.dumps(
+            {
+                "entities": [
+                    {
+                        "name": "Marie Curie",
+                        "type": "Person",
+                        "description": "",
+                        "attributes": {"age": 56},
+                    },
+                ],
+                "relationships": [],
+            }
+        )
         ontology = Ontology(
             entities=[
                 Entity(
@@ -925,14 +1029,13 @@ class TestGraphExtractionSchemaAttributes:
                 )
             ]
         )
-        ents, _ = GraphExtraction._parse_step2_response(
-            content, ["Person"], "c1", ontology
-        )
+        ents, _ = GraphExtraction._parse_step2_response(content, ["Person"], "c1", ontology)
         assert len(ents) == 1
         assert ents[0].attributes == {"age": 56, "birth_date": None}
 
     def test_aggregator_carries_attributes_with_last_write_wins(self):
         from graphrag_sdk.core.models import ExtractedEntity
+
         e1 = ExtractedEntity(
             name="Marie Curie",
             type="Person",
@@ -958,6 +1061,7 @@ class TestGraphExtractionSchemaAttributes:
 
     def test_attributes_merged_into_node_properties(self):
         from graphrag_sdk.core.models import ExtractedEntity
+
         ent = ExtractedEntity(
             name="Marie Curie",
             type="Person",
@@ -975,16 +1079,16 @@ class TestGraphExtractionSchemaAttributes:
         """Deterministic-extractor regression: ontology declares no
         properties \u2192 records have empty attributes \u2192 storage gets only the
         reserved keys."""
-        content = json.dumps({
-            "entities": [
-                {"name": "Alice", "type": "Person", "description": "A person"},
-            ],
-            "relationships": [],
-        })
-        ontology = Ontology(entities=[Entity(label="Person")])
-        ents, _ = GraphExtraction._parse_step2_response(
-            content, ["Person"], "c1", ontology
+        content = json.dumps(
+            {
+                "entities": [
+                    {"name": "Alice", "type": "Person", "description": "A person"},
+                ],
+                "relationships": [],
+            }
         )
+        ontology = Ontology(entities=[Entity(label="Person")])
+        ents, _ = GraphExtraction._parse_step2_response(content, ["Person"], "c1", ontology)
         assert len(ents) == 1
         assert ents[0].attributes == {}
 
@@ -1117,9 +1221,7 @@ class _FlakyBatchLLM(MockLLM):
         return items
 
 
-_STEP1_JSON = json.dumps(
-    [{"name": "Alice", "type": "Person", "description": "An engineer"}]
-)
+_STEP1_JSON = json.dumps([{"name": "Alice", "type": "Person", "description": "An engineer"}])
 _STEP2_JSON = json.dumps(
     {
         "entities": [{"name": "Alice", "type": "Person", "description": "An engineer"}],
@@ -1510,9 +1612,7 @@ class TestRelationVocabularyInStep2Prompt:
     async def test_empty_relation_types_leaves_vocabulary_open(self, ctx):
         captured: list[str] = []
         llm = self._capture_llm(captured)
-        extractor = GraphExtraction(
-            llm=llm, entity_extractor=LLMExtractor(llm), relation_types=[]
-        )
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm), relation_types=[])
 
         await extractor.extract(_make_chunks("Alice works at Acme."), Ontology(), ctx)
 

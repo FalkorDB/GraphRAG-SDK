@@ -84,6 +84,20 @@ class SaysTheyAreOne(ResolutionStrategy):
         )
 
 
+def _embedded_name(text: str) -> str:
+    """The entity name out of whatever the resolver chose to embed.
+
+    LLMVerifiedResolution embeds the NAME alone on the legacy label-bucket path
+    and ``"name: description"`` under the unified stage (the default since the
+    resolver rework). These doubles are keyed by name, so without this an
+    unrecognised string falls through to the default branch — which for
+    NearEmbedder is one CONSTANT vector, i.e. two unrelated nodes at cosine 1.0
+    and a hard merge with nobody asked. Matching on the name keeps the doubles
+    stage-agnostic.
+    """
+    return text.split(":", 1)[0].strip()
+
+
 class NearEmbedder(Embedder):
     """Two people's names embed close enough to ask about, and nobody else's do."""
 
@@ -95,9 +109,10 @@ class NearEmbedder(Embedder):
         return "near-embedder"
 
     def embed_query(self, text: str, **kwargs) -> list[float]:
-        if text in self.close:
+        name = _embedded_name(text)
+        if name in self.close:
             # Distinct vectors at cosine ~0.9: the LLM's zone, not the hard merge's.
-            return [1.0, 0.0] if text == sorted(self.close)[0] else [0.9, 0.436]
+            return [1.0, 0.0] if name == sorted(self.close)[0] else [0.9, 0.436]
         return [0.0, 1.0]
 
 
@@ -112,7 +127,7 @@ class OrthogonalEmbedder(Embedder):
         return "orthogonal-embedder"
 
     def embed_query(self, text: str, **kwargs) -> list[float]:
-        axis = self.seen.setdefault(text, len(self.seen))
+        axis = self.seen.setdefault(_embedded_name(text), len(self.seen))
         vector = [0.0] * 16
         vector[axis % 16] = 1.0
         return vector
@@ -553,11 +568,12 @@ class NearPairEmbedder(Embedder):
         return "near-pair-embedder"
 
     def embed_query(self, text: str, **kwargs) -> list[float]:
+        name = _embedded_name(text)
         vector = [0.0] * 16
-        if text in self.close:
-            vector[0], vector[1] = (1.0, 0.0) if text == self.close[0] else (0.9, 0.436)
+        if name in self.close:
+            vector[0], vector[1] = (1.0, 0.0) if name == self.close[0] else (0.9, 0.436)
         else:
-            vector[2 + self.seen.setdefault(text, len(self.seen)) % 14] = 1.0
+            vector[2 + self.seen.setdefault(name, len(self.seen)) % 14] = 1.0
         return vector
 
 

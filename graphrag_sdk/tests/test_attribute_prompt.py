@@ -1,5 +1,6 @@
 """Tests for the attribute-aware prompt and coercion helpers in
 ``graph_extraction.py``."""
+
 from __future__ import annotations
 
 import pytest
@@ -189,9 +190,7 @@ class TestCoerceAttributes:
             "birth_date": Attribute(name="birth_date", type="DATE"),
             "nickname": Attribute(name="nickname", type="STRING"),
         }
-        result = _coerce_attributes(
-            {"age": "56", "birth_date": "1867-11-07"}, declared
-        )
+        result = _coerce_attributes({"age": "56", "birth_date": "1867-11-07"}, declared)
         assert result == {"age": 56, "birth_date": "1867-11-07", "nickname": None}
 
     def test_uncoercible_value_becomes_none(self):
