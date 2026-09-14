@@ -406,8 +406,17 @@ async def exact_match_merge(
         for item in second:
             if not item.ok:
                 continue
-            first_line = item.response.content.strip().split("\n", 1)[0].strip()
-            agreed[item.index] = first_line.upper().startswith("YES")
+            first_line = item.response.content.strip().split("\n", 1)[0].strip().upper()
+            # Only a reply that actually says YES or NO is a verdict. Storing
+            # `startswith("YES")` put "MAYBE" — or an empty string — in as
+            # False, which the veto branch below then reads as an explicit NO
+            # and persists as a permanent distinct decision. A parse failure
+            # withdraws the approval without being remembered, the same rule
+            # the first vote uses.
+            if first_line.startswith("YES"):
+                agreed[item.index] = True
+            elif first_line.startswith("NO"):
+                agreed[item.index] = False
         for k, cl_idx in enumerate(revote_idx):
             if not agreed.get(k):
                 logger.debug(

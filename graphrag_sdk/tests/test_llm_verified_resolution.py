@@ -3465,3 +3465,55 @@ class TestPass2CapOfZeroSendsNothing:
         ).resolve(gd, ctx)
         assert llm._call_index == 0
         assert len(result.nodes) == 2
+
+
+class TestPhase1VoteParseFailureIsNotARejection:
+    """A malformed second-vote reply withdraws the approval but must not be
+    stored: `agreed[k] = startswith("YES")` put "MAYBE" in as False, which the
+    veto branch then read as an explicit NO and persisted for good.
+    """
+
+    class _YesThenMaybe(MockLLM):
+        def __init__(self) -> None:
+            super().__init__(responses=["YES Person"])
+            self.round = 0
+
+        def invoke(self, prompt: str, **kwargs):
+            self._call_index += 1
+            self.round += 1
+            if self.round == 1:
+                return LLMResponse(content="YES Person\nMerged.")
+            return LLMResponse(content="MAYBE")
+
+    async def test_a_malformed_vote_is_not_recorded(self, ctx):
+        gd = GraphData(
+            nodes=[
+                GraphNode(
+                    id="a",
+                    label="Person",
+                    properties={"name": "Paris", "description": "Prince of Troy."},
+                ),
+                GraphNode(
+                    id="b",
+                    label="Engineer",
+                    properties={"name": "Paris", "description": "Built the walls."},
+                ),
+                GraphNode(
+                    id="c",
+                    label="Engineer",
+                    properties={"name": "Paris", "description": "Son of Priam."},
+                ),
+            ],
+            relationships=[],
+        )
+        result = await LLMVerifiedResolution(
+            llm=self._YesThenMaybe(),
+            embedder=ControlledEmbedder({}),
+            cross_label_min_descriptions=1,
+            label_family_gate=False,
+        ).resolve(gd, ctx)
+
+        # The unrepeated approval is withdrawn...
+        assert {n.label for n in result.nodes} == {"Person", "Engineer"}
+        # ...but nothing is remembered, so a later run can ask again.
+        assert not ctx.metadata.get(RESOLUTION_REJECTED_PAIRS)
