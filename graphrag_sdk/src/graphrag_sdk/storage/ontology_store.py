@@ -37,7 +37,7 @@ Three node types, connected like a schema diagram::
 
     (:Entity   {label, description})
     (:Relation {label, description})
-    (:Property {label, type, description})
+    (:Property {label, type, description, structured})
 
     (:Entity)-[:HAS_PROPERTY]->(:Property)
     (:Relation)-[:SOURCE]->(:Entity)
@@ -63,7 +63,9 @@ from graphrag_sdk.core.models import (
     Entity,
     Ontology,
     Relation,
+    reject_reserved_labels,
 )
+from graphrag_sdk.core.tables import Column, Link, TableMapping
 
 OwnerKind = Literal["entity", "relation"]
 DescriptionKind = Literal["entity", "relation", "entity_property", "relation_property"]
@@ -147,7 +149,7 @@ class OntologyStore:
             ent_prop_result = await self._query(
                 "MATCH (e:Entity)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN e.label AS owner, p.label AS name, p.type AS type, "
-                "p.description AS description"
+                "p.description AS description, p.structured AS structured"
             )
             patterned_rel_result = await self._query(
                 "MATCH (r:Relation)-[:SOURCE]->(s:Entity), (r)-[:TARGET]->(t:Entity) "
@@ -161,11 +163,55 @@ class OntologyStore:
             rel_prop_result = await self._query(
                 "MATCH (r:Relation)-[:HAS_PROPERTY]->(p:Property) "
                 "RETURN r.label AS owner, p.label AS name, p.type AS type, "
-                "p.description AS description"
+                "p.description AS description, p.structured AS structured"
             )
         except Exception as exc:
             logger.debug("Ontology load failed (returning empty ontology): %s", exc)
             return Ontology()
+
+        # A SEPARATE try/except, on purpose. The five queries above share one,
+        # whose handler returns a bare Ontology() and logs at DEBUG — so a failure
+        # in a table query placed up there would silently discard every entity and
+        # relation as well, and say nothing at any visible level.
+        table_rows: list[Any] = []
+        column_rows: list[Any] = []
+        link_rows: list[Any] = []
+        # Bound out here with the others, not inside the try. Assigned only on the
+        # success path, a failing table query raised UnboundLocalError out of
+        # load() instead of the warning below -- taking the entities and relations
+        # this separate handler exists to protect down with it.
+        link_column_rows: list[Any] = []
+        try:
+            table_result = await self._query(
+                "MATCH (t:TableMapping) RETURN t.source AS source, t.label AS label, "
+                "t.key AS key, t.name AS name, t.standalone AS standalone, t.derived AS derived, "
+                "t.description AS description"
+            )
+            column_result = await self._query(
+                "MATCH (t:TableMapping)-[:MAPS_COLUMN]->(c:MappedColumn) "
+                "RETURN t.source AS source, c.property AS property, c.column AS column, "
+                "c.type AS type, c.description AS description"
+            )
+            link_result = await self._query(
+                "MATCH (t:TableMapping)-[:MAPS_LINK]->(l:MappedLink) "
+                "RETURN t.source AS source, l.type AS type, l.to AS to, l.by AS by, "
+                "l.name AS name, l.description AS description"
+            )
+            link_column_result = await self._query(
+                "MATCH (t:TableMapping)-[:MAPS_LINK_COLUMN]->(c:MappedLinkColumn) "
+                "RETURN t.source AS source, c.link_type AS link_type, c.link_by AS link_by, "
+                "c.property AS property, c.column AS column, c.type AS type, "
+                "c.description AS description, c.link_to AS link_to"
+            )
+            table_rows = list(getattr(table_result, "result_set", None) or [])
+            column_rows = list(getattr(column_result, "result_set", None) or [])
+            link_rows = list(getattr(link_result, "result_set", None) or [])
+            link_column_rows = list(getattr(link_column_result, "result_set", None) or [])
+        except Exception as exc:
+            logger.warning(
+                "Table mappings could not be loaded (entities and relations are unaffected): %s",
+                exc,
+            )
 
         def _rows(result: Any) -> list[Any]:
             rows = getattr(result, "result_set", None) or []
@@ -176,10 +222,13 @@ class OntologyStore:
         for row in _rows(ent_prop_result):
             if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1]):
                 continue
-            owner, name, type_, desc = row
+            owner, name, type_, desc = row[0], row[1], row[2], row[3]
+            structured = bool(row[4]) if len(row) > 4 else False
             bucket = ent_props_by_owner.setdefault(owner, {})
             if name not in bucket:
-                bucket[name] = Attribute(name=name, type=type_ or "STRING", description=desc)
+                bucket[name] = Attribute(
+                    name=name, type=type_ or "STRING", description=desc, structured=structured
+                )
 
         entities = [
             Entity(
@@ -192,15 +241,23 @@ class OntologyStore:
         ]
 
         # Relation properties, deduplicated per (owner, name) across all
-        # Relation nodes with the same label
+        # Relation nodes with the same label. ``structured`` is OR-ed across
+        # those nodes: the flag is only ever raised, and the row order FalkorDB
+        # returns them in is not guaranteed.
         rel_props_by_owner: dict[str, dict[str, Attribute]] = {}
         for row in _rows(rel_prop_result):
             if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1]):
                 continue
-            owner, name, type_, desc = row
+            owner, name, type_, desc = row[0], row[1], row[2], row[3]
+            structured = bool(row[4]) if len(row) > 4 else False
             bucket = rel_props_by_owner.setdefault(owner, {})
-            if name not in bucket:
-                bucket[name] = Attribute(name=name, type=type_ or "STRING", description=desc)
+            seen = bucket.get(name)
+            if seen is None:
+                bucket[name] = Attribute(
+                    name=name, type=type_ or "STRING", description=desc, structured=structured
+                )
+            elif structured and not seen.structured:
+                bucket[name] = seen.model_copy(update={"structured": True})
 
         # Group patterned relations by label, collecting (src, tgt) pairs
         rel_by_label: dict[str, dict[str, Any]] = {}
@@ -230,7 +287,11 @@ class OntologyStore:
             )
             for label, entry in rel_by_label.items()
         ]
-        return Ontology(entities=entities, relations=relations)
+        return Ontology(
+            entities=entities,
+            relations=relations,
+            tables=self._load_tables_sync(table_rows, column_rows, link_rows, link_column_rows),
+        )
 
     # ── Register ─────────────────────────────────────────────────
 
@@ -281,19 +342,97 @@ class OntologyStore:
 
         if ontology is None:
             raise TypeError("register() missing required argument: 'ontology'")
-        if not ontology.entities and not ontology.relations:
+        # ``tables`` counts: an ontology carrying only mappings is not empty, and
+        # returning early here would silently discard every one of them.
+        if not ontology.entities and not ontology.relations and not ontology.tables:
             return await self.load()
+
+        # Refuse ``Document``/``Chunk`` before anything is persisted: a stored
+        # reserved label would make every later ingest fail mid-pipeline.
+        reject_reserved_labels(e.label for e in ontology.entities)
 
         existing = await self.load()
         self._check_no_contradictions(existing, ontology)
         self._check_no_modifications_to_existing(existing, ontology)
+        self._check_no_signature_collision(existing, ontology)
+        self._check_one_key_per_label(existing, ontology)
 
         for et in ontology.entities:
             await self._upsert_entity_type(et)
         for rt in ontology.relations:
             await self._upsert_relation_type(rt)
+        for mapping in ontology.tables:
+            await self._upsert_table_mapping(mapping)
 
         return await self.load()
+
+    @staticmethod
+    def _check_no_signature_collision(existing: Ontology, incoming: Ontology) -> None:
+        """Refuse a mapping whose signature a *different, already stored* source owns.
+
+        ``Ontology._refuse_colliding_signatures`` is a pydantic validator, so it
+        only ever sees the tables of the one object being built. Two sources
+        registered in separate calls — ``/exports/2026-01/hr.csv`` then
+        ``/exports/2026-02/hr.csv``, both signing ``hr`` — never meet inside a
+        single Ontology and so never reach it.
+
+        That left a trap worse than the overwrite it was meant to prevent: the
+        second mapping was written, and every subsequent ``load()`` then built an
+        Ontology holding both and raised, so a brand-new ``GraphRAG`` on that
+        graph could not start. Checked here, against what is already stored and
+        before the first write, the graph stays loadable and the caller gets an
+        error naming both paths.
+        """
+        owner: dict[str, str] = {m.signature: m.source for m in existing.tables}
+        for mapping in incoming.tables:
+            prior = owner.get(mapping.signature)
+            if prior is not None and prior != mapping.source:
+                raise OntologyContradictionError(
+                    f"{mapping.source!r} and the already-registered {prior!r} both reduce "
+                    f"to the property signature {mapping.signature!r}. Every property a "
+                    f"source writes is stored as '<signature>__<property>', so these would "
+                    f"share one namespace and overwrite each other. The signature is the "
+                    f"file's basename, so give one of them a distinct filename "
+                    f"(for example {mapping.signature}_2026_02.csv)."
+                )
+
+    @staticmethod
+    def _check_one_key_per_label(existing: Ontology, incoming: Ontology) -> None:
+        """Refuse a Link to a label that two tables key by different columns.
+
+        A ``Link`` finds its target by the label's unsigned ``entity_key`` — the
+        one slot every table writing the label fills. Two tables keying
+        ``Person`` by ``employee_id`` and by ``contact_id`` put two id spaces in
+        that slot: a person in both exports is keyed by whichever loaded last,
+        and ``Link(to="Person", by="lead_id")`` was measured landing on Maya or
+        on a placeholder by ingest order, with nothing reported.
+
+        The two tables on their own are fine, and are the point: each row is
+        found again by the key as its own table signs it, and a person in both
+        exports is one node holding both keys. What cannot be told is which id
+        space a foreign key means, so a label keyed two ways is refused as a
+        Link target — whichever declaration completes the shape, the second key
+        or the link. A mapping replacing its own stored version is read once.
+        """
+        merged = {m.source: m for m in existing.tables}
+        merged.update({m.source: m for m in incoming.tables})
+        keys: dict[str, dict[str, str]] = {}
+        for mapping in merged.values():
+            keys.setdefault(mapping.label, {}).setdefault(mapping.key_column, mapping.source)
+        for mapping in merged.values():
+            for link in mapping.links:
+                by_column = keys.get(link.to, {})
+                if len(by_column) < 2:
+                    continue
+                keyed = " and ".join(
+                    f"{column!r} ({source})" for column, source in sorted(by_column.items())
+                )
+                raise OntologyContradictionError(
+                    f"{link.to!r} is keyed by {keyed}, and {mapping.source!r} links to it by "
+                    f"{link.by!r}. A Link finds its target by the label's key, so a label a "
+                    f"Link points at has one key. Either key both tables by one column, or "
+                    f"give the rows the link means a label of their own."
+                )
 
     @staticmethod
     def _check_no_contradictions(existing: Ontology, incoming: Ontology) -> None:
@@ -395,13 +534,255 @@ class OntologyStore:
             "MATCH (e:Entity {label: $owner}) "
             "MERGE (e)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            "p.description = coalesce($description, p.description), "
+            # Sticky: a property a table owns stays owned even if a later
+            # prose-side declaration mentions it without the flag.
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "owner": entity_label,
                 "name": prop.name,
                 "type": prop.type,
                 "description": prop.description,
+                "structured": bool(prop.structured),
             },
+        )
+
+    @staticmethod
+    def _load_tables_sync(
+        table_rows: list[Any],
+        column_rows: list[Any],
+        link_rows: list[Any],
+        link_column_rows: list[Any],
+    ) -> list[TableMapping]:
+        """Rebuild the declared mappings from their four result sets.
+
+        Rows are guarded on length and on the fields that identify them, the same
+        way the entity and relation blocks are: a graph written by an older
+        version simply has no ``:TableMapping`` nodes, and a partial row is
+        skipped rather than raising.
+
+        Read defensively in two more ways, because this is what every entry point
+        goes through and a graph it cannot read is a graph nothing can open:
+
+        - a row that repeats — a second ``:TableMapping`` node for one source,
+          or the same link listed under both — is read once. Concurrent first
+          writers could leave such a graph behind before the upsert learned to
+          collapse them, and a load that raised on it stayed unopenable until
+          ``delete_all()``;
+        - a mapping whose rows do not add up to a valid ``TableMapping`` is
+          logged and left out, rather than taking the entities and relations down
+          with it. The next registration of that source writes it whole again.
+        """
+        columns_by_source: dict[str, dict[str, Column]] = {}
+        for row in column_rows:
+            if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1] and row[2]):
+                continue
+            columns_by_source.setdefault(row[0], {})[row[1]] = Column(
+                name=row[2],
+                type=row[3] or "STRING",
+                description=row[4] if len(row) > 4 else None,
+            )
+
+        # (source, link type, link to, link by) -> {property: Column}. A column
+        # stored before ``link_to`` existed is filed under ``None`` and matched on
+        # type and column alone, as it was written.
+        link_columns: dict[tuple[str, str, str | None, str], dict[str, Column]] = {}
+        for row in link_column_rows:
+            if not (
+                isinstance(row, list) and len(row) >= 6 and row[0] and row[1] and row[2] and row[3]
+            ):
+                continue
+            link_to = row[7] if len(row) > 7 and row[7] else None
+            link_columns.setdefault((row[0], row[1], link_to, row[2]), {})[row[3]] = Column(
+                name=row[4],
+                type=row[5] or "STRING",
+                description=row[6] if len(row) > 6 else None,
+            )
+
+        # Keyed by what identifies a link, so a link the graph lists twice is one.
+        # Sorted on the same key when read out, so the declaration a process
+        # loads does not depend on the order the server returned the rows in —
+        # measured as an unchanged file re-syncing in about half of fresh
+        # processes, because the two link orders derived two different
+        # fingerprints.
+        links_by_source: dict[str, dict[tuple[str, str, str], Link]] = {}
+        for row in link_rows:
+            # ``by`` too: Link() refuses an empty one, and this runs outside the
+            # handler that turns a broken table row into a skipped one.
+            if not (
+                isinstance(row, list) and len(row) >= 4 and row[0] and row[1] and row[2] and row[3]
+            ):
+                continue
+            source, link_type, link_to, link_by = row[0], row[1], row[2], row[3]
+            identity = (link_type, link_to, link_by)
+            bucket = links_by_source.setdefault(source, {})
+            if identity in bucket:
+                continue
+            columns = link_columns.get((source, link_type, link_to, link_by))
+            if columns is None:
+                columns = link_columns.get((source, link_type, None, link_by), {})
+            bucket[identity] = Link(
+                type=link_type,
+                to=link_to,
+                by=link_by,
+                name=row[4] if len(row) > 4 else None,
+                properties=dict(columns),
+                description=row[5] if len(row) > 5 else None,
+            )
+
+        mappings: dict[str, TableMapping] = {}
+        for row in table_rows:
+            if not (isinstance(row, list) and len(row) >= 3 and row[0] and row[1] and row[2]):
+                continue
+            source = row[0]
+            if source in mappings:
+                logger.warning(
+                    "The ontology graph holds more than one mapping for %r; the first was "
+                    "read and the rest ignored. Registering the mapping again collapses them.",
+                    source,
+                )
+                continue
+            links = links_by_source.get(source, {})
+            try:
+                mappings[source] = TableMapping(
+                    source=source,
+                    label=row[1],
+                    key=row[2],
+                    name=row[3] if len(row) > 3 else None,
+                    properties=dict(columns_by_source.get(source, {})),
+                    links=[links[identity] for identity in sorted(links)],
+                    standalone=bool(row[4]) if len(row) > 4 else False,
+                    derived=bool(row[5]) if len(row) > 5 else False,
+                    description=row[6] if len(row) > 6 else None,
+                )
+            except ValueError as exc:  # MappingError included
+                logger.warning(
+                    "The stored mapping for %r could not be read and was left out of the "
+                    "ontology (entities and relations are unaffected): %s. Registering it "
+                    "again replaces what is stored.",
+                    source,
+                    exc,
+                )
+        return [mappings[source] for source in sorted(mappings)]
+
+    async def _upsert_table_mapping(self, mapping: TableMapping) -> None:
+        """Upsert a ``:TableMapping`` node and replace its children.
+
+        A mapping cannot be one node: FalkorDB rejects a dict or a list-of-dicts
+        as a property value (*"Property values can only be of primitive types or
+        arrays of primitive types"*), so the declared columns and links are their
+        own nodes — the same shape ``:Entity``/``:Property`` already uses.
+
+        The children are **replaced, not merged**. A mapping is authoritative
+        about its own shape, so a re-declaration that drops a column must drop it
+        here too; otherwise the stored mapping and the user's code disagree and
+        the diff that reports a change can never come out clean.
+
+        ``:MappedColumn`` / ``:MappedLink`` rather than reusing ``:Property``,
+        which belongs to entity and relation types. Distinct labels mean no
+        existing query can pick these up by accident.
+        """
+        await self._query(
+            "MERGE (t:TableMapping {source: $source}) "
+            "SET t.label = $label, t.key = $key, t.name = $name, "
+            "t.standalone = $standalone, t.derived = $derived, "
+            "t.description = coalesce($description, t.description)",
+            {
+                "source": mapping.source,
+                "label": mapping.label,
+                "key": mapping.key,
+                "name": mapping.name,
+                "standalone": bool(mapping.standalone),
+                "derived": bool(mapping.derived),
+                "description": mapping.description,
+            },
+        )
+        # MERGE is not atomic across concurrent writers: two processes that first
+        # touch one graph together — two CI jobs, two workers — each miss the
+        # other's node and create their own, and every later load() then reads
+        # each child twice and refuses the mapping as self-contradictory. The
+        # oldest node stays; the others go, children and all, before this
+        # mapping's children are written under the one that remains.
+        await self._query(
+            "MATCH (t:TableMapping {source: $source}) "
+            "WITH t ORDER BY ID(t) "
+            "WITH collect(t) AS all "
+            "WHERE size(all) > 1 "
+            "UNWIND all[1..] AS dup "
+            "OPTIONAL MATCH (dup)-[:MAPS_COLUMN|MAPS_LINK|MAPS_LINK_COLUMN]->(c) "
+            "DETACH DELETE c, dup",
+            {"source": mapping.source},
+        )
+        for child in ("MAPS_COLUMN", "MAPS_LINK", "MAPS_LINK_COLUMN"):
+            await self._query(
+                f"MATCH (t:TableMapping {{source: $source}})-[:{child}]->(c) DETACH DELETE c",
+                {"source": mapping.source},
+            )
+        for prop_name, column in mapping.typed_properties.items():
+            await self._query(
+                "MATCH (t:TableMapping {source: $source}) "
+                "MERGE (t)-[:MAPS_COLUMN]->(c:MappedColumn {property: $prop}) "
+                "SET c.column = $column, c.type = $type, c.description = $description",
+                {
+                    "source": mapping.source,
+                    "prop": prop_name,
+                    "column": column.name,
+                    "type": column.type,
+                    "description": column.description,
+                },
+            )
+        for link in mapping.links:
+            # ``to`` is part of the identity. Two links by one column to two
+            # labels are a legal declaration, and merging on type and column
+            # alone stored only the second.
+            await self._query(
+                "MATCH (t:TableMapping {source: $source}) "
+                "MERGE (t)-[:MAPS_LINK]->(l:MappedLink {type: $type, to: $to, by: $by}) "
+                "SET l.name = $name, l.description = $description",
+                {
+                    "source": mapping.source,
+                    "type": link.type,
+                    "by": link.by,
+                    "to": link.to,
+                    "name": link.name,
+                    "description": link.description,
+                },
+            )
+            # A link's columns are hung off the TableMapping rather than off the
+            # MappedLink, so the replace sweep above reaches them in one pass and
+            # cannot orphan them. Keyed by the link they belong to, because one
+            # table may declare several.
+            for prop_name, column in link.typed_properties.items():
+                await self._query(
+                    "MATCH (t:TableMapping {source: $source}) "
+                    "MERGE (t)-[:MAPS_LINK_COLUMN]->(c:MappedLinkColumn "
+                    "{link_type: $link_type, link_to: $link_to, link_by: $link_by, "
+                    "property: $prop}) "
+                    "SET c.column = $column, c.type = $type, c.description = $description",
+                    {
+                        "source": mapping.source,
+                        "link_type": link.type,
+                        "link_to": link.to,
+                        "link_by": link.by,
+                        "prop": prop_name,
+                        "column": column.name,
+                        "type": column.type,
+                        "description": column.description,
+                    },
+                )
+
+    async def drop_table_mapping(self, source: str) -> None:
+        """Remove a stored table mapping and its column and link children.
+
+        The mapping only; the entity and relation types it contributed stay,
+        because another source or a document may be using them. The caller
+        decides what to do about the properties the table wrote.
+        """
+        await self._query(
+            "MATCH (t:TableMapping {source: $source}) "
+            "OPTIONAL MATCH (t)-[:MAPS_COLUMN|MAPS_LINK|MAPS_LINK_COLUMN]->(c) "
+            "DETACH DELETE c, t",
+            {"source": source},
         )
 
     async def _upsert_relation_type(self, rt: Relation) -> None:
@@ -449,7 +830,10 @@ class OntologyStore:
             "-[:TARGET]->(t:Entity {label: $tgt}) "
             "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            "p.description = coalesce($description, p.description), "
+            # Sticky, as for entity properties: a link column a table signs
+            # stays out of the extraction prompt after a reload.
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "rel_label": rel_label,
                 "src": src,
@@ -457,6 +841,7 @@ class OntologyStore:
                 "name": prop.name,
                 "type": prop.type,
                 "description": prop.description,
+                "structured": bool(prop.structured),
             },
         )
 
@@ -467,12 +852,14 @@ class OntologyStore:
             "WHERE NOT (r)-[:SOURCE]->() "
             "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "SET p.type = $type, "
-            "p.description = coalesce($description, p.description)",
+            "p.description = coalesce($description, p.description), "
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "rel_label": rel_label,
                 "name": prop.name,
                 "type": prop.type,
                 "description": prop.description,
+                "structured": bool(prop.structured),
             },
         )
 
@@ -546,12 +933,14 @@ class OntologyStore:
             "MATCH (r:Relation {label: $rel_label}) "
             "MERGE (r)-[:HAS_PROPERTY]->(p:Property {label: $name}) "
             "ON CREATE SET p.type = $type "
-            "SET p.description = coalesce($description, p.description)",
+            "SET p.description = coalesce($description, p.description), "
+            "p.structured = (coalesce(p.structured, false) OR $structured)",
             {
                 "rel_label": rel_label,
                 "name": attribute.name,
                 "type": attribute.type,
                 "description": attribute.description,
+                "structured": bool(attribute.structured),
             },
         )
 
@@ -589,7 +978,8 @@ class OntologyStore:
             "MATCH (new)-[:TARGET]->(t:Entity {label: $tgt}) "
             "WHERE existing <> new "
             "MERGE (new)-[:HAS_PROPERTY]->(p2:Property {label: p.label}) "
-            "SET p2.type = p.type, p2.description = p.description",
+            "SET p2.type = p.type, p2.description = p.description, "
+            "p2.structured = (coalesce(p2.structured, false) OR coalesce(p.structured, false))",
             {"rel_label": rel_label, "src": src, "tgt": tgt},
         )
 
@@ -599,9 +989,29 @@ class OntologyStore:
         Only updates the ``label`` property on the ontology graph's
         ``:Entity`` node — the underlying data-graph rename is the
         caller's responsibility (handled by ``GraphRAG.rename_entity``).
+
+        The table mappings that name the label follow it: a ``:TableMapping``
+        whose rows are ``old`` and a ``:MappedLink`` pointing at ``old``. Left
+        behind, the stored ontology would say ``entities=[new]`` and
+        ``tables=[... -> old]``, which the validator refuses — and it refuses
+        on every later ``load()``, so a rename that forgot them locked every
+        entry point until ``delete_all()``.
         """
         await self._query(
             "MATCH (e:Entity {label: $old}) SET e.label = $new",
+            {"old": old, "new": new},
+        )
+        await self._query(
+            "MATCH (t:TableMapping {label: $old}) SET t.label = $new",
+            {"old": old, "new": new},
+        )
+        await self._query(
+            "MATCH (:TableMapping)-[:MAPS_LINK]->(l:MappedLink {to: $old}) SET l.to = $new",
+            {"old": old, "new": new},
+        )
+        await self._query(
+            "MATCH (:TableMapping)-[:MAPS_LINK_COLUMN]->(c:MappedLinkColumn {link_to: $old}) "
+            "SET c.link_to = $new",
             {"old": old, "new": new},
         )
 

@@ -17,20 +17,23 @@ from graphrag_sdk.core.models import (
 )
 from graphrag_sdk.core.providers import Embedder
 from graphrag_sdk.ingestion.resolution_strategies.base import (
+    RESOLUTION_DISTINCT_IDS,
+    RESOLUTION_SKIP_PAIRS,
     flatten_remap,
     remap_relationships,
 )
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     _RULES,
     LLMVerifiedResolution,
-    labels_compatible,
-    _pair_distance,
     _is_acronym,
     _name_tokens,
+    _pair_distance,
     _parse_batch_verdicts,
+    differ_only_in_digits,
+    labels_compatible,
 )
 
-from .conftest import MockLLM
+from .conftest import MockEmbedder, MockLLM
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -199,6 +202,137 @@ class TestPhase1ExactMatch:
         result = await resolver.resolve(gd, ctx)
         assert result.merged_count == 0
         assert len(result.nodes) == 2
+
+    async def test_declared_distinct_and_settled_pairs_are_not_merged_on_their_name(self):
+        """Two keyed rows called Alice Smith and a mention of the name.
+
+        The caller says the rows are distinct and the mention's pairs settled.
+        Phase 1 used to merge all three on the name before the hints were read,
+        and the LLM was asked to summarise the descriptions of a merge that the
+        caller had ruled out. Now the hinted nodes skip the name merge; the
+        embedding phase, which honours the hints, is where they are judged.
+        """
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="e-1", label="Person", properties={"name": "Alice Smith"}),
+                GraphNode(id="e-2", label="Person", properties={"name": "Alice Smith"}),
+                GraphNode(id="mention", label="Person", properties={"name": "Alice Smith"}),
+                GraphNode(id="b1", label="Person", properties={"name": "Bob"}),
+                GraphNode(id="b2", label="Person", properties={"name": "bob"}),
+            ],
+            relationships=[],
+        )
+        ctx = Context(
+            metadata={
+                RESOLUTION_DISTINCT_IDS: {"e-1", "e-2"},
+                RESOLUTION_SKIP_PAIRS: {
+                    frozenset(("mention", "e-1")),
+                    frozenset(("mention", "e-2")),
+                },
+            }
+        )
+        llm = MockLLM(["YES"] * 4, strict=True)
+        resolver = LLMVerifiedResolution(llm=llm, embedder=MockEmbedder())
+
+        result = await resolver.resolve(gd, ctx)
+
+        assert {n.id for n in result.nodes} >= {"e-1", "e-2", "mention"}
+        assert not ({"e-1", "e-2", "mention"} & set(result.remap)), "no hinted node was remapped"
+        assert result.merged_count == 1, "Bob and bob still merge: nothing was said about them"
+        assert llm._call_index == 0, "nothing about the hinted nodes was put to the model"
+
+
+# ── Phase 1 description + provenance merging ─────────────────────────────────
+#
+# These exercise the same-label half of exact_match_merge() in
+# resolution_strategies/base.py, which LLMVerifiedResolution is now the only
+# caller of. Coverage moved here from the deleted test_description_merge.py /
+# test_semantic_resolution.py suites.
+
+
+class TestPhase1DescriptionMerge:
+    @staticmethod
+    def _alice(node_id: str, description: str = "", source_chunk_ids=None) -> GraphNode:
+        props: dict = {"name": "Alice", "description": description}
+        if source_chunk_ids:
+            props["source_chunk_ids"] = source_chunk_ids
+        return GraphNode(id=node_id, label="Person", properties=props)
+
+    async def test_descriptions_concatenated_below_threshold(self, ctx):
+        """Fewer descriptions than force_summary_threshold → plain concatenation,
+        no LLM call."""
+        llm = MockLLM(responses=["should not be used"])
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", description="An engineer"),
+                self._alice("a2", description="Works at Acme"),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(llm=llm, force_summary_threshold=3)
+        result = await resolver.resolve(gd, ctx)
+
+        assert result.merged_count == 1
+        desc = result.nodes[0].properties["description"]
+        assert "An engineer" in desc
+        assert "Works at Acme" in desc
+        assert " | " in desc
+        assert llm._call_index == 0
+
+    async def test_llm_summary_at_threshold(self, ctx):
+        """At or above force_summary_threshold the descriptions are replaced by
+        the LLM summary."""
+        summary = "Alice is a versatile professional."
+        llm = MockLLM(responses=[summary])
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", description="An engineer"),
+                self._alice("a2", description="Works at Acme"),
+                self._alice("a3", description="Likes GraphRAG"),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(llm=llm, force_summary_threshold=3)
+        result = await resolver.resolve(gd, ctx)
+
+        assert len(result.nodes) == 1
+        assert result.nodes[0].properties["description"] == summary
+        assert llm._call_index == 1
+
+    async def test_no_llm_falls_back_to_concat_above_threshold(self, ctx):
+        """Past the threshold but with no LLM → concatenation rather than a
+        dropped description."""
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", description="desc A"),
+                self._alice("a2", description="desc B"),
+                self._alice("a3", description="desc C"),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(llm=None, force_summary_threshold=3)
+        result = await resolver.resolve(gd, ctx)
+
+        desc = result.nodes[0].properties["description"]
+        assert desc == "desc A | desc B | desc C"
+
+    async def test_source_chunk_ids_unioned(self, ctx):
+        """source_chunk_ids from every duplicate survive the merge — this is what
+        orphan cleanup and delete_document() depend on."""
+        gd = GraphData(
+            nodes=[
+                self._alice("a1", source_chunk_ids=["c1"]),
+                self._alice("a2", source_chunk_ids=["c2"]),
+                self._alice("a3", source_chunk_ids=["c1", "c3"]),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution()
+        result = await resolver.resolve(gd, ctx)
+
+        assert len(result.nodes) == 1
+        src_ids = result.nodes[0].properties["source_chunk_ids"]
+        assert sorted(src_ids) == ["c1", "c2", "c3"]
 
 
 # ── Hard merge zone (similarity >= hard_threshold) ───────────────────────────
@@ -740,9 +874,9 @@ class TestBatchedVerification:
         batched_llm = MockLLM(
             responses=["\n".join(f"{n}. x vs y | rule: 4 | NO" for n in range(1, 200))]
         )
-        await LLMVerifiedResolution(
-            llm=batched_llm, embedder=ControlledEmbedder(vectors)
-        ).resolve(graph(), ctx)
+        await LLMVerifiedResolution(llm=batched_llm, embedder=ControlledEmbedder(vectors)).resolve(
+            graph(), ctx
+        )
 
         per_pair_llm = MockLLM(responses=["NO"] * 500)
         await LLMVerifiedResolution(
@@ -1517,8 +1651,12 @@ class TestUnifiedStage:
         29% more recall -- with `wrong` pinned at exactly 2 in all six runs.
         0.55 and 0.50 landed inside 0.65's noise band. See RESULTS.md P3.42.
         """
-        assert LLMVerifiedResolution(llm=MockLLM([]), embedder=ControlledEmbedder(
-            {})).unified_threshold == 0.65
+        assert (
+            LLMVerifiedResolution(
+                llm=MockLLM([]), embedder=ControlledEmbedder({})
+            ).unified_threshold
+            == 0.65
+        )
 
     async def test_embeds_name_and_description_not_the_name_alone(self, ctx):
         """The signal change. Names alone cannot separate real duplicates:
@@ -1868,9 +2006,7 @@ class TestAbsorbedLabelIsPreserved:
 
         # upsert_nodes now issues a second query to promote merged labels, so
         # the property write is located explicitly rather than by position.
-        upserts = [
-            c[0][1] for c in conn.query.call_args_list if "MERGE" in c[0][0]
-        ]
+        upserts = [c[0][1] for c in conn.query.call_args_list if "MERGE" in c[0][0]]
         assert upserts, "no upsert query was issued"
         params = upserts[0]
         props = params["batch"][0]["properties"] if "batch" in params else params["properties"]
@@ -1914,8 +2050,7 @@ class TestDefaultBatchSizeIsBounded:
         windows = LLMVerifiedResolution()._pack(blocks)
         largest = max(stop - start for start, stop in windows)
         assert largest <= 40, (
-            f"{largest} pairs in one call; measured unreliable above ~60, "
-            "bimodal at 155"
+            f"{largest} pairs in one call; measured unreliable above ~60, bimodal at 155"
         )
 
     def test_the_old_budget_would_have_failed_this(self):
@@ -1966,8 +2101,10 @@ class TestPairCountCapIndependentOfTokens:
     def test_the_tighter_of_the_two_limits_wins(self):
         """Long blocks stay token-bound, below the count cap."""
         long_block = (
-            "Name: Ada Lovelace\nDescription: " + ("a long factual sentence " * 30)
-            + "\nName: A. Lovelace\nDescription: " + ("a long factual sentence " * 30)
+            "Name: Ada Lovelace\nDescription: "
+            + ("a long factual sentence " * 30)
+            + "\nName: A. Lovelace\nDescription: "
+            + ("a long factual sentence " * 30)
             + "\nSimilarity: 0.83\n"
         )
         windows = LLMVerifiedResolution()._pack([long_block] * 500)
@@ -2034,9 +2171,7 @@ class TestAmbiguousClusteringDistances:
         """The behaviour around the clamp is unchanged: a rejected pair stays
         split, and the pair does reach the LLM rather than merging on cosine."""
         vec = _unit([0.505994, 0.40823, 0.039448, 0.75879])
-        embedder = ControlledEmbedder(
-            {"Paris: The capital.": vec, "Paris: The heiress.": vec}
-        )
+        embedder = ControlledEmbedder({"Paris: The capital.": vec, "Paris: The heiress.": vec})
         gd = GraphData(
             nodes=[
                 GraphNode(
@@ -2074,14 +2209,27 @@ class TestMaxLlmPairsTruncation:
     thousand (RESULTS.md P3.52).
     """
 
-    @staticmethod
-    def _spread_nodes(count: int) -> list[GraphNode]:
+    # Distinct words, not indices: names that differ only in their digits
+    # ("Person 0" / "Person 1") are held apart by differ_only_in_digits before
+    # they ever become candidates, which would empty this fixture and leave the
+    # cap with nothing to truncate.
+    _SURNAMES = (
+        "Ashford Beaumont Carraway Dunhill Ellingham Fairweather Godwin Harlow "
+        "Ingram Jarvis Kettering Lockhart Mortimer Norbury Oakes Pemberton"
+    ).split()
+
+    @classmethod
+    def _spread_nodes(cls, count: int) -> list[GraphNode]:
         """Nodes whose pairwise cosines all land inside the ambiguous zone."""
+        assert count <= len(cls._SURNAMES), "add more surnames"
         return [
             GraphNode(
                 id=f"n{i}",
                 label="Person",
-                properties={"name": f"Person {i}", "description": f"Bio {i}."},
+                properties={
+                    "name": f"{cls._SURNAMES[i]}",
+                    "description": f"Bio of {cls._SURNAMES[i]}.",
+                },
             )
             for i in range(count)
         ]
@@ -2155,9 +2303,9 @@ class TestMaxLlmPairsTruncation:
         with caplog.at_level(logging.WARNING):
             await resolver.resolve(GraphData(nodes=nodes, relationships=[]), ctx)
 
-        assert not [
-            r for r in caplog.records if "max_llm_pairs" in r.message
-        ], "an inert cap must not warn"
+        assert not [r for r in caplog.records if "max_llm_pairs" in r.message], (
+            "an inert cap must not warn"
+        )
 
     async def test_the_progress_line_counts_pairs_actually_sent(self, ctx, caplog):
         """The original defect: the pre-cap count was reported as the number
@@ -2242,26 +2390,35 @@ class TestLabelFamilyGate:
         }
         gd = GraphData(
             nodes=[
-                GraphNode(id="n1", label=label_a,
-                          properties={"name": "Eleanor Whitford", "description": desc}),
-                GraphNode(id="n2", label=label_b,
-                          properties={"name": "Whitford Archive", "description": desc}),
+                GraphNode(
+                    id="n1",
+                    label=label_a,
+                    properties={"name": "Eleanor Whitford", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label=label_b,
+                    properties={"name": "Whitford Archive", "description": desc},
+                ),
             ],
             relationships=[],
         )
         return gd, ControlledEmbedder(vectors)
 
-    @pytest.mark.parametrize("a,b,expected", [
-        ("Person", "Organization", False),
-        ("Person", "Location", False),
-        ("Organization", "Location", False),
-        ("Person", "Person", True),
-        ("Organization", "Company", True),
-        ("Location", "City", True),
-        ("Person", "Engineer", True),      # unknown label -> LLM decides
-        ("Person", "__Entity__", True),    # generic label -> wildcard
-        ("Product", "Technology", True),   # same family (work)
-    ])
+    @pytest.mark.parametrize(
+        "a,b,expected",
+        [
+            ("Person", "Organization", False),
+            ("Person", "Location", False),
+            ("Organization", "Location", False),
+            ("Person", "Person", True),
+            ("Organization", "Company", True),
+            ("Location", "City", True),
+            ("Person", "Engineer", True),  # unknown label -> LLM decides
+            ("Person", "__Entity__", True),  # generic label -> wildcard
+            ("Product", "Technology", True),  # same family (work)
+        ],
+    )
     def test_labels_compatible(self, a: str, b: str, expected: bool) -> None:
         assert labels_compatible(a, b) is expected
         assert labels_compatible(b, a) is expected
@@ -2323,10 +2480,16 @@ class TestCrossLabelVote:
         }
         gd = GraphData(
             nodes=[
-                GraphNode(id="n1", label="Person",
-                          properties={"name": "Ada Lovelace", "description": desc}),
-                GraphNode(id="n2", label="Engineer",
-                          properties={"name": "A. Lovelace", "description": desc}),
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"name": "Ada Lovelace", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label="Engineer",
+                    properties={"name": "A. Lovelace", "description": desc},
+                ),
             ],
             relationships=[],
         )
@@ -2386,12 +2549,21 @@ class TestHardMergesSurviveAnEmptyLLMBatch:
         }
         gd = GraphData(
             nodes=[
-                GraphNode(id="n1", label="Location",
-                          properties={"name": "Cape Morrow Lighthouse", "description": desc}),
-                GraphNode(id="n2", label="Location",
-                          properties={"name": "the Cape Morrow light", "description": desc}),
-                GraphNode(id="n3", label="Location",
-                          properties={"name": "Ashford Beacon", "description": desc}),
+                GraphNode(
+                    id="n1",
+                    label="Location",
+                    properties={"name": "Cape Morrow Lighthouse", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label="Location",
+                    properties={"name": "the Cape Morrow light", "description": desc},
+                ),
+                GraphNode(
+                    id="n3",
+                    label="Location",
+                    properties={"name": "Ashford Beacon", "description": desc},
+                ),
             ],
             relationships=[],
         )
@@ -2400,11 +2572,11 @@ class TestHardMergesSurviveAnEmptyLLMBatch:
     async def test_max_llm_pairs_zero_still_applies_hard_merges(self, ctx):
         gd, embedder = self._three_nodes()
         llm = PairScriptedLLM({})
-        result = await LLMVerifiedResolution(
-            llm=llm, embedder=embedder, max_llm_pairs=0
-        ).resolve(gd, ctx)
+        result = await LLMVerifiedResolution(llm=llm, embedder=embedder, max_llm_pairs=0).resolve(
+            gd, ctx
+        )
 
-        assert llm.asked == []           # nothing was verified, as asked
+        assert llm.asked == []  # nothing was verified, as asked
         assert result.merged_count == 1  # ...but cosine 1.0 still merged
         assert len(result.nodes) == 2
 
@@ -2418,19 +2590,28 @@ class TestHardMergesSurviveAnEmptyLLMBatch:
         }
         gd = GraphData(
             nodes=[
-                GraphNode(id="n1", label="Location",
-                          properties={"name": "Cape Morrow Lighthouse", "description": desc}),
-                GraphNode(id="n2", label="Location",
-                          properties={"name": "the Cape Morrow light", "description": desc}),
-                GraphNode(id="n3", label="Person",
-                          properties={"name": "Eleanor Whitford", "description": desc}),
+                GraphNode(
+                    id="n1",
+                    label="Location",
+                    properties={"name": "Cape Morrow Lighthouse", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label="Location",
+                    properties={"name": "the Cape Morrow light", "description": desc},
+                ),
+                GraphNode(
+                    id="n3",
+                    label="Person",
+                    properties={"name": "Eleanor Whitford", "description": desc},
+                ),
             ],
             relationships=[],
         )
         llm = PairScriptedLLM({})
-        result = await LLMVerifiedResolution(
-            llm=llm, embedder=ControlledEmbedder(vectors)
-        ).resolve(gd, ctx)
+        result = await LLMVerifiedResolution(llm=llm, embedder=ControlledEmbedder(vectors)).resolve(
+            gd, ctx
+        )
 
         assert llm.asked == []
         assert result.merged_count == 1
@@ -2453,10 +2634,16 @@ class TestCrossLabelPassHonoursTheGuards:
         }
         gd = GraphData(
             nodes=[
-                GraphNode(id="n1", label=label_a,
-                          properties={"name": "Eleanor Whitford", "description": desc}),
-                GraphNode(id="n2", label=label_b,
-                          properties={"name": "Whitford Archive", "description": desc}),
+                GraphNode(
+                    id="n1",
+                    label=label_a,
+                    properties={"name": "Eleanor Whitford", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label=label_b,
+                    properties={"name": "Whitford Archive", "description": desc},
+                ),
             ],
             relationships=[],
         )
@@ -2530,3 +2717,123 @@ class TestThresholdKnobs:
                 unified_stage=False,
             )
         assert "without LLM verification" not in caplog.text
+
+
+# ── Names that differ only in digits ──────────────────────────────────────────
+
+
+class TestCodesStayApart:
+    """Measured on a graph where a JSON export was read as text: the Person
+    names it yielded were ids, and ``P-021`` merged into ``P-011`` because the
+    two embed almost identically. Digits are how such names differ, so a pair
+    that is equal without them is not one thing, however close it embeds."""
+
+    @pytest.mark.parametrize(
+        "a, b",
+        [
+            ("P-011", "P-021"),
+            ("GPT-3", "GPT-4"),
+            ("Q1 2024", "Q2 2024"),
+            ("Windows 10", "windows 11"),
+            ("1801.02681", "1912.03771"),
+        ],
+    )
+    def test_differ_only_in_digits(self, a, b):
+        assert differ_only_in_digits(a, b)
+
+    @pytest.mark.parametrize(
+        "a, b",
+        [
+            ("P-011", "P-011"),  # the same name is phase 1's business, not a code pair
+            ("P-011", "p-011 "),
+            ("Tolkien", "J.R.R. Tolkien"),
+            ("COVID-19", "COVID 19"),
+            ("Acme", "Acme Corp"),
+        ],
+    )
+    def test_other_pairs_are_left_to_the_usual_rules(self, a, b):
+        assert not differ_only_in_digits(a, b)
+
+    async def test_identical_vectors_do_not_merge_codes(self, ctx):
+        vec = _unit([1.0, 0.0, 0.0, 0.0])
+        embedder = ControlledEmbedder({"P-011": vec, "P-021": vec})
+        llm = MockLLM(responses=["YES"])
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="p11", label="Person", properties={"name": "P-011"}),
+                GraphNode(id="p21", label="Person", properties={"name": "P-021"}),
+            ],
+            relationships=[],
+        )
+        resolver = LLMVerifiedResolution(
+            llm=llm, embedder=embedder, hard_threshold=0.95, soft_threshold=0.80
+        )
+        result = await resolver.resolve(gd, ctx)
+        assert result.merged_count == 0
+        assert len(result.nodes) == 2
+        assert llm._call_index == 0, "not asked either: the model is inconsistent on codes"
+
+
+class TestRemapChainsAcrossPhases:
+    """An edge must never be re-pointed at a node a later phase removed.
+
+    Phase 1 records ``dup -> A`` and ``exact_match_merge``'s Stage 7 flattens
+    what it can see. Phases 2-5 then merge the Phase-1 survivor A into B and
+    ``id_remap.update(fuzzy_remap)`` adds that hop *after* Stage 7 has already
+    run, so the combined mapping is two hops deep and Stage 7 never saw it.
+    A single lookup lands the edge on A, which is gone from the node list.
+    """
+
+    async def test_an_edge_on_a_phase_1_loser_follows_the_chain_to_the_end(self, ctx):
+        # dup and A share a normalised name → Phase 1 merges dup into A.
+        # A and B embed identically → Phase 2-5 hard-merges one into the other.
+        # "b" first: union-find keeps the lower-indexed node, so the Phase-1
+        # survivor "a" becomes the Phase 2-5 loser and the chain dup -> a -> b
+        # forms across the two phases.
+        nodes = [
+            GraphNode(id="b", label="Person", properties={"name": "Ada King"}),
+            GraphNode(id="a", label="Person", properties={"name": "Ada Lovelace"}),
+            GraphNode(id="dup", label="Person", properties={"name": "ada lovelace"}),
+            GraphNode(id="x", label="Place", properties={"name": "London"}),
+        ]
+        rels = [
+            GraphRelationship(start_node_id="dup", end_node_id="x", type="RELATES", properties={})
+        ]
+        same = _unit([1.0, 1.0, 0.0, 0.0])
+        far = _unit([0.0, 0.0, 0.0, 1.0])
+        embedder = ControlledEmbedder({"Ada Lovelace": same, "Ada King": same, "London": far})
+        resolver = LLMVerifiedResolution(
+            llm=MockLLM(responses=[]), embedder=embedder, hard_threshold=0.95
+        )
+
+        result = await resolver.resolve(GraphData(nodes=nodes, relationships=rels), ctx)
+
+        surviving = {n.id for n in result.nodes}
+        for rel in result.relationships:
+            assert rel.start_node_id in surviving, (
+                f"edge start {rel.start_node_id!r} is not a surviving node; "
+                "it was re-pointed at a node a later phase removed"
+            )
+            assert rel.end_node_id in surviving, (
+                f"edge end {rel.end_node_id!r} is not a surviving node"
+            )
+
+    async def test_no_remap_target_is_itself_remapped(self, ctx):
+        """The returned remap must be flat: no value is also a key."""
+        nodes = [
+            GraphNode(id="b", label="Person", properties={"name": "Ada King"}),
+            GraphNode(id="a", label="Person", properties={"name": "Ada Lovelace"}),
+            GraphNode(id="dup", label="Person", properties={"name": "ada lovelace"}),
+        ]
+        same = _unit([1.0, 1.0, 0.0, 0.0])
+        embedder = ControlledEmbedder({"Ada Lovelace": same, "Ada King": same})
+        resolver = LLMVerifiedResolution(
+            llm=MockLLM(responses=[]), embedder=embedder, hard_threshold=0.95
+        )
+
+        result = await resolver.resolve(GraphData(nodes=nodes, relationships=[]), ctx)
+
+        surviving = {n.id for n in result.nodes}
+        assert result.remap, "the fixture must actually produce merges"
+        for src, dst in result.remap.items():
+            assert dst in surviving, f"{src!r} -> {dst!r}, which is not a surviving node"

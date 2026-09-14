@@ -5,11 +5,16 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
+from collections.abc import Iterable
 from enum import Enum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
+
+from graphrag_sdk.core.tables import TableMapping
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,50 @@ class DataModel(BaseModel):
 
 
 # ── Graph Data Types ─────────────────────────────────────────────
+
+
+#: Node labels the graph store reserves for corpus bookkeeping. They must not
+#: be used as entity types: an entity carrying one of these labels corrupts
+#: document-level queries and is never marked ``__Entity__``, so it silently
+#: disappears from deduplication and retrieval. Single source of truth for
+#: ``GraphStore._STRUCTURAL_LABELS``, the Cypher generator's label allow-list
+#: and :py:func:`reject_reserved_labels`.
+RESERVED_NODE_LABELS: frozenset[str] = frozenset({"Chunk", "Document"})
+
+
+def reject_reserved_labels(types: Iterable[str]) -> list[str]:
+    """Reject entity types that collide with the store's structural labels.
+
+    ``Document`` and ``Chunk`` are used by the graph store for corpus
+    bookkeeping. An extracted entity carrying one of those labels fails two
+    ways at once, both silently:
+
+    1. Document-level queries (``MATCH (p:Document) ...``) start returning
+       extracted entities, so document counts and lookups are wrong. This was
+       found in the field as an 11-document corpus reporting 106 documents.
+    2. ``GraphStore._write_nodes`` marks a node as an entity only when its
+       label is *not* structural, so the node never receives ``__Entity__``
+       and is dropped from deduplication and retrieval. It is written, then
+       ignored.
+
+    Neither failure raises, so the graph just quietly degrades. Fail here
+    instead, before the label is persisted anywhere, where the caller can act
+    on it. The match is exact, like the store's own membership test and
+    FalkorDB's labels: ``document`` is a distinct (if confusing) label that
+    the store handles correctly, so it is not rejected.
+    """
+    types = list(types)
+    clashes = sorted({str(t).strip() for t in types if str(t).strip() in RESERVED_NODE_LABELS})
+    if clashes:
+        raise ValueError(
+            f"Entity label(s) {clashes} clash with the reserved label(s) "
+            f"{sorted(RESERVED_NODE_LABELS)}, which are used internally for corpus "
+            "bookkeeping; reusing them silently corrupts document counts and "
+            "removes the entity from deduplication and retrieval. "
+            "Rename the type (e.g. 'Document' -> 'Publication', "
+            "'Chunk' -> 'TextSegment')."
+        )
+    return types
 
 
 class GraphNode(DataModel):
@@ -93,6 +142,48 @@ class TextChunks(DataModel):
     chunks: list[TextChunk] = Field(default_factory=list)
 
 
+_URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def stable_document_id(source: str) -> str:
+    """Document node id for a loader ``source`` when the caller gives none.
+
+    Filesystem paths are normalised (``./``, ``../``, doubled slashes) so the
+    same file spelled two ways is one document. Anything with a URI scheme
+    (``https://``, ``s3://`` …) is returned verbatim: ``os.path.normpath`` would
+    collapse ``https://`` to ``https:/`` and resolve ``..`` inside the query
+    string, merging distinct URLs into one id.
+    """
+    if _URI_SCHEME.match(source):
+        return source
+    return os.path.normpath(source)
+
+
+# Separator ``GraphRAG.update()`` uses to build the transient id of the
+# Document written during its crash-safe cutover (``<id>__pending__<8hex>``).
+# Reserved: a real Document id containing it would be picked up by the
+# ``STARTS WITH "<id>__pending__"`` recovery scan.
+PENDING_ID_MARKER = "__pending__"
+
+
+def ensure_no_pending_marker(document_id: str) -> None:
+    """Raise ``ValueError`` if ``document_id`` contains :data:`PENDING_ID_MARKER`.
+
+    Applied to every Document id that is *not* a pending id — explicit ids in
+    ``GraphRAG.ingest()`` / ``update()`` / ``delete_document()`` and ids the
+    ingestion pipeline derives from a source path — so a file called
+    ``foo__pending__bar.txt`` can never be mistaken for an interrupted update
+    of ``foo`` and rolled back or rolled forward over the real document.
+    """
+    if PENDING_ID_MARKER in document_id:
+        raise ValueError(
+            f"document_id '{document_id}' contains the reserved substring "
+            f"'{PENDING_ID_MARKER}' which is used internally by the update() "
+            "state-machine cutover. Pick a different id (or rename the "
+            "source file) to avoid prefix-collision with pending nodes."
+        )
+
+
 class DocumentInfo(DataModel):
     """Metadata about the source document."""
 
@@ -131,6 +222,20 @@ class DocumentRecord(DataModel):
 
     path: str | None = None
     content_hash: str | None = None
+    kind: str | None = None
+    """How the document was written: ``"structured"`` for a mapped source.
+
+    Read so an update cannot re-interpret a table as prose. Absent on documents
+    written before this field existed, and on every extracted document, so treat
+    ``None`` as "prose".
+    """
+    table: str | None = None
+    """The signature of the table a structured Document was written from.
+
+    The prefix that table's columns are stored under (``hr`` for ``hr__grade``),
+    which is how a Document loaded under a caller's own id is traced back to its
+    declaration. ``None`` on prose, and on tables written before it was stamped.
+    """
 
 
 class ChunkEntityRow(DataModel):
@@ -220,6 +325,18 @@ class Attribute(DataModel):
     name: str
     type: str = "STRING"  # STRING, INTEGER, FLOAT, BOOLEAN, DATE, LIST
     description: str | None = None
+    structured: bool = False
+    """True when a structured source's mapping declared this property.
+
+    Such a property has an owner: the table the mapping describes, and its name
+    carries that table's signature — ``employees__title``, not ``title``. Nothing
+    else can write that name, so a job title the extractor reads from a memo
+    cannot overwrite what the HR export spelled; it lands unsigned, under its own
+    name, and both are on the node.
+
+    Read by the prompt builders, which surface the type so generated Cypher can
+    aggregate over the column instead of treating it as prose.
+    """
 
     @model_validator(mode="after")
     def _normalize_type(self) -> Attribute:
@@ -297,6 +414,93 @@ class Ontology(DataModel):
 
     entities: list[Entity] = Field(default_factory=list)
     relations: list[Relation] = Field(default_factory=list)
+    tables: list[TableMapping] = Field(default_factory=list)
+    """How tabular sources become nodes. A mapping is part of the schema.
+
+    Kept here rather than passed per ``ingest()`` call so that a second load of
+    the same table needs no mapping argument, a changed mapping can be diffed
+    against the stored one, and ``save_ontology()`` carries one reviewable
+    object. Each mapping signs the properties it writes with its source, so two
+    tables describing one entity cannot overwrite each other.
+    """
+
+    @model_validator(mode="after")
+    def _refuse_duplicate_sources(self) -> Ontology:
+        """One source, one mapping. Two would race on the same properties."""
+        seen: set[str] = set()
+        for mapping in self.tables:
+            if mapping.source in seen:
+                raise ValueError(
+                    f"Table mapping for {mapping.source!r} is declared twice. "
+                    f"One source has one mapping; merge them."
+                )
+            seen.add(mapping.source)
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_an_unconnected_new_label(self) -> Ontology:
+        """A mapping may add a label, but then it has to say how it connects.
+
+        A mapping's rows are only reachable from the rest of the graph through
+        something: a ``Link`` to another label, or the entity type already being
+        part of the ontology. A mapping that introduces a label with neither
+        produces an island — rows that are queryable and that no document, no
+        entity and no question can ever reach.
+
+        Usually that is a typo in ``label``, and it is the expensive kind: the
+        load succeeds, the counts look right, and the rows are simply somewhere
+        nobody will look. ``standalone=True`` is how you say you meant it, so an
+        island is something declared rather than something a slip produced.
+
+        A label a sibling mapping already connected counts as declared, so a
+        second table adding properties to ``Person`` does not have to repeat how
+        ``Person`` connects. So does a label a sibling's ``Link`` points at: the
+        table owning ``Organization`` is reached through every ``WORKS_AT`` edge
+        that keys it, which is exactly how a placeholder is meant to be filled.
+        """
+        known = {entity.label for entity in self.entities}
+        known |= {m.label for m in self.tables if m.links or m.standalone}
+        known |= {link.to for m in self.tables for link in m.links}
+        stranded = [
+            m for m in self.tables if m.label not in known and not m.links and not m.standalone
+        ]
+        if stranded:
+            detail = "; ".join(f"{m.source!r} declares {m.label!r}" for m in stranded)
+            raise ValueError(
+                f"A table mapping adds a label the ontology does not have and does "
+                f"not say how it connects: {detail}. Its rows would be an island "
+                f"nothing can reach. Either add the label to the ontology's "
+                f"entities, give the mapping a Link to something, or say the island "
+                f"is deliberate with standalone=True."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_colliding_signatures(self) -> Ontology:
+        """Two sources whose names reduce to one signature would overwrite.
+
+        ``signature_for`` is not injective — ``hr.csv``, ``HR.CSV`` and
+        ``hr csv.csv`` do not all reduce alike, but plenty of pairs do, and a
+        shared signature means a shared property namespace. Caught here, where
+        every mapping is visible at once, because neither mapping can see the
+        other on its own.
+        """
+        by_signature: dict[str, list[str]] = {}
+        for mapping in self.tables:
+            by_signature.setdefault(mapping.signature, []).append(mapping.source)
+        collisions = {sig: srcs for sig, srcs in by_signature.items() if len(srcs) > 1}
+        if collisions:
+            detail = "; ".join(
+                f"{sig!r} claimed by {', '.join(sorted(srcs))}"
+                for sig, srcs in sorted(collisions.items())
+            )
+            raise ValueError(
+                f"Two table mappings reduce to one property signature: {detail}. "
+                f"Every property a source writes is stored as "
+                f"'<signature>__<property>', so these would silently overwrite "
+                f"each other. Rename one of the files."
+            )
+        return self
 
     @model_validator(mode="after")
     def _warn_on_undeclared_pattern_labels(self) -> Ontology:
@@ -545,23 +749,96 @@ class Ontology(DataModel):
             else:
                 rel_by_label[r.label] = r
 
-        return Ontology(
-            entities=list(ent_by_label.values()),
-            relations=list(rel_by_label.values()),
+        # model_copy, not a fresh Ontology(...): rebuilding by listing fields is
+        # how a newly added field silently disappears. That already happened once
+        # in this codebase — GraphData rebuilt by field list lost `mentions`, and
+        # every extracted entity lost its provenance with it.
+        merged_tables = {mapping.source: mapping for mapping in self.tables}
+        for mapping in other.tables:
+            merged_tables.setdefault(mapping.source, mapping)
+        return self.model_copy(
+            update={
+                "entities": list(ent_by_label.values()),
+                "relations": list(rel_by_label.values()),
+                "tables": list(merged_tables.values()),
+            }
         )
+
+    def tables_naming(self, label: str) -> dict[str, str]:
+        """``source -> how`` for every mapping that names ``label``.
+
+        A mapping names a label as the type of its rows or as the target of a
+        ``Link``. Either way it is a declaration that the label exists, and it
+        is registered again on every first touch — so an entity dropped from
+        under it comes back at the next start, after every node it described
+        was deleted. :meth:`GraphRAG.drop_entity` refuses on this instead.
+        """
+        naming: dict[str, str] = {}
+        for mapping in self.tables:
+            if mapping.label == label:
+                naming[mapping.source] = "its rows"
+                continue
+            links = sorted(link.type for link in mapping.links if link.to == label)
+            if links:
+                naming[mapping.source] = "Link " + ", ".join(links)
+        return naming
 
 
 # ── Extraction / Resolution Output Types ─────────────────────────
 
 
 class GraphData(DataModel):
-    """Entities and relationships extracted from text."""
+    """Entities and relationships extracted from text.
+
+    The report fields exist because a per-chunk extraction failure is
+    otherwise invisible: failures are swallowed, so a document where every
+    call failed returns exactly what a document containing no entities
+    returns — same type, same empty lists, no exception. Callers had no way
+    to tell "nothing to find" from "found nothing because everything broke",
+    and a *partial* failure silently shipped a half-empty graph that looked
+    successful.
+
+    - ``chunks_attempted``: chunks that were sent to extraction.
+    - ``chunks_skipped``: chunks never attempted because the latency budget
+      ran out first. A truncated run is *not* a healthy short one; this is
+      how the caller tells them apart.
+    - ``failed_chunks``: uids whose entity extraction (step 1) raised. These
+      chunks produced no entities of their own.
+    - ``relation_failed_chunks``: uids whose entity extraction succeeded but
+      whose relationship extraction (step 2) failed. Their entities are in
+      the graph; their edges are not. Disjoint from ``failed_chunks``.
+
+    Read the lists, not the entity counts: a successful extraction can
+    legitimately yield zero entities (``chunks_attempted > 0``,
+    ``failed_chunks == []``), and a run with every chunk in
+    ``relation_failed_chunks`` has a complete node set and no edges. Both
+    lists carry chunk uids so the caller can retry just those (see
+    ``BackfillExecutor``, which follows the same convention) rather than
+    re-ingesting the document.
+    """
 
     nodes: list[GraphNode] = Field(default_factory=list)
     relationships: list[GraphRelationship] = Field(default_factory=list)
     mentions: list[EntityMention] = Field(default_factory=list)
     extracted_entities: list[ExtractedEntity] = Field(default_factory=list)
     extracted_relations: list[ExtractedRelation] = Field(default_factory=list)
+    chunks_attempted: int = 0
+    chunks_skipped: int = 0
+    failed_chunks: list[str] = Field(default_factory=list)
+    relation_failed_chunks: list[str] = Field(default_factory=list)
+
+    @property
+    def extraction_failed(self) -> bool:
+        """True when entity extraction failed for every attempted chunk.
+
+        This is the "no chunk produced entities" signal. Step-2 (relationship)
+        failures do not count: those chunks still contributed their nodes, so
+        a caller that aborts or retries on this flag would otherwise discard a
+        good entity extraction. Check ``relation_failed_chunks`` for lost
+        edges. A genuinely empty document reports ``chunks_attempted == 0``
+        and is not a failure.
+        """
+        return self.chunks_attempted > 0 and len(self.failed_chunks) == self.chunks_attempted
 
 
 class ExtractedEntity(DataModel):
@@ -703,7 +980,15 @@ class RagResult(DataModel):
 
 
 class IngestionResult(DataModel):
-    """Result from an ingestion pipeline run."""
+    """Result from an ingestion pipeline run.
+
+    ``metadata["extraction"]`` carries the per-chunk extraction report
+    computed by the extraction strategy (see ``GraphData``):
+    ``chunks_attempted``, ``chunks_skipped``, ``failed_chunks``,
+    ``relation_failed_chunks`` and ``extraction_failed``. Read it to tell an
+    empty document from one whose extraction calls failed or were cut short
+    by the latency budget.
+    """
 
     document_info: DocumentInfo = Field(default_factory=DocumentInfo)
     nodes_created: int = 0
@@ -725,6 +1010,133 @@ class FinalizeResult(DataModel):
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
+    property_conflicts: list[str] = Field(default_factory=list)
+    """One logical property supplied by more than one table, measured on the graph.
+
+    Signing keeps every value — ``hr__grade`` and ``finance__grade`` — so this is
+    not a failure and nothing was lost. Each entry names the property, the
+    tables supplying it, how many entities hold a value from more than one of
+    them and on how many of those the values differ::
+
+        "Person.grade — supplied by finance.csv, hr.csv; 1 of 2 entities hold different values"
+
+    Reported even when every value agrees, because the overlap is also the
+    thing that makes a question ambiguous: asked for "the grade", a query has to
+    pick a source, and it will pick one silently.
+
+    Under signing this is one condition, not two. Before it, a second table
+    overwriting a property was a *loss* and two tables offering the same answer
+    was an *ambiguity*; now the first cannot happen, so only the ambiguity is
+    left to report.
+    """
+
+    unresolved_references: dict[str, int] = Field(default_factory=dict)
+    """Per label, reference stubs no source ever filled in.
+
+    A ``Link`` writes its target on the promise that the table owning it will
+    arrive. A stub still flagged at the end means it did not — the export was
+    never loaded, or the keys do not match. The graph looks complete until a
+    question needs the target's columns.
+    """
+
+    entities_without_a_name: dict[str, int] = Field(default_factory=dict)
+    """Per label, mapped entities with no display name.
+
+    Legitimate for a fact export keyed on a reading id, and identical in shape to
+    a wrong ``name=`` column. Nothing without a name can join to prose, so it is
+    worth seeing either way.
+    """
+
+    proposed_mappings: list[str] = Field(default_factory=list)
+    """Tables running on a mapping nobody declared.
+
+    Loaded without a ``TableMapping`` in the ontology, so the SDK proposed one —
+    from the model, held to the measured columns, or failing that the file read
+    as-is with no name column and so no join. The proposal is in the ontology
+    and every later load uses it. Declare a ``TableMapping`` for the source to
+    replace it, or ``drop_table()`` to remove it.
+    """
+
+    mapping_changed: list[str] = Field(default_factory=list)
+    """Sources whose declared mapping differs from the one already stored.
+
+    The stored mapping is replaced and any property it no longer declares is
+    removed from the nodes. Reported so a change made by editing code, rather
+    than deliberately, does not pass unnoticed.
+    """
+
+    stale_signed_properties: list[str] = Field(default_factory=list)
+    """Signed properties left on an entity by a source that no longer mentions it.
+
+    A re-sync, ``delete_document()`` and ``drop_table()`` all take a table's
+    columns back from the rows it stopped listing, so on a graph this version
+    wrote the list is empty. What it catches is a graph written before that
+    retraction existed, or a cleanup interrupted before it ran: the entity
+    survives -- another source still mentions it -- with the first source's
+    values on it, belonging to nobody and reading as current.
+
+    Reported rather than removed: the graph cannot tell "that source dropped the
+    row" from "that source has not been reloaded yet", and guessing would delete
+    live data. Non-empty here means re-load the named source, or accept that
+    those values are historical.
+    """
+
+    probable_duplicates: list[str] = Field(default_factory=list)
+    """Same-label entities that probably denote one thing and did not merge.
+
+    The merge is exact string equality on the display name, so two sources that
+    spell a name differently leave two nodes: an HR export's "Maya Ellison" and a
+    board review's "M. Ellison" become two people, one holding her age and the
+    other holding what she did. Every question needing both then comes back wrong
+    while looking answered, and nothing used to say so.
+
+    Not merged on a guess, because a merge in the graph cannot be undone. Two
+    ways to close them: fix the spelling in the source, which fixes it for good;
+    or pass ``finalize(resolver=...)`` the same strategy ``ingest`` takes, and
+    let it judge each pair with the document's evidence — what it decided is in
+    ``resolved_duplicates``. Either way the decision is yours or your resolver's,
+    never a threshold's. Non-empty here is a prompt to look at your data, not a
+    failure.
+    """
+
+    resolved_duplicates: list[str] = Field(default_factory=list)
+    """Pairs the resolver passed to ``finalize()`` judged one thing, and were merged.
+
+    As ``label 'duplicate' -> 'survivor'``. The resolver decided identity, the
+    same way it does within a document; the merge kept the node a table wrote,
+    so the entity is still the one the table's next re-sync finds, and every
+    typed value the table signed onto it. What prose knew — description, mentions,
+    relationships — moved onto it. Empty when resolution was disabled
+    (``finalize(resolve=False)``) or the resolver judged no pair one thing.
+    """
+
+    rejected_duplicates: list[str] = Field(default_factory=list)
+    """Pairs the resolver passed to ``finalize()`` judged to be two things.
+
+    As ``label 'a' | 'b'``. Remembered on the graph as a ``DISTINCT_FROM`` edge,
+    so the next ``finalize()`` neither asks about the pair again nor merges it
+    on a threshold, and so the pair leaves ``probable_duplicates``: it is decided.
+    The memory goes with either node — delete or re-read the document and the
+    pair is judged afresh. Empty when resolution was disabled
+    (``finalize(resolve=False)``) or the resolver judged no pair two things.
+    """
+
+    unmerged_name_collisions: dict[str, list[str]] = Field(default_factory=dict)
+    """Names that exist under more than one label, mapped to those labels.
+
+    Never merged, deliberately: matching on name *and* label is what stops
+    "Apple" the company joining "Apple" the fruit. But it is also the fingerprint
+    of an ingest-order mistake — a document read before a mapping was declared
+    has its entities labelled by guesswork, and a table declaring the same name
+    under its own label can no longer join them. Non-empty here with
+    ``entities_deduplicated == 0`` is the signature of that, and the fix is to
+    declare mappings up front.
+
+    Keyed by the name as it is spelled in the data, so it can be searched for.
+    Entities are grouped for merging under a canonical form of the name — lower
+    cased, legal suffixes dropped — which is an internal key and never appears
+    here.
+    """
 
 
 class UpdateResult(IngestionResult):
@@ -803,6 +1215,10 @@ class ApplyChangesResult(DataModel):
     failures are wrapped as ``BatchEntry`` with ``error`` set; the batch
     never raises. Callers branch on ``entry.is_success`` (or check
     ``entry.error_type`` for specific failures).
+
+    A table in ``added`` or ``modified`` is reported in the same result type
+    as a prose file, with the structured counts -- ``records``, ``entities``,
+    ``references``, ``edges`` -- in ``result.metadata``.
     """
 
     added: list[BatchEntry[IngestionResult]] = Field(default_factory=list)

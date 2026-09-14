@@ -48,6 +48,18 @@ def description_list(props: dict) -> list[str]:
     same texts joined with ``" | "``, which is what search and prompts read).
     An unmerged node has only ``description``. Either way this returns the
     list, deduplicated, empty strings dropped.
+
+    A node holding only ``description`` contributes it as **one** member, and
+    is deliberately not split on ``" | "``. Splitting would recover the members
+    of a survivor written before ``descriptions`` existed, but nothing
+    distinguishes that node from a fresh one whose single description happens
+    to contain the separator ("CEO | founder of Acme"), and the two failures
+    are not symmetric. Splitting a fresh node invents members that were never
+    written: the count drives ``force_summary_threshold``, so it buys LLM
+    summary calls nothing asked for, and the invented entries are rendered as
+    separate bullets in the prompts below. Not splitting a legacy survivor
+    costs only granularity — every character is still carried, and the
+    re-joined ``description`` is byte-identical either way.
     """
     raw = props.get("descriptions")
     items: list[str] = []
@@ -55,9 +67,7 @@ def description_list(props: dict) -> list[str]:
         items = [str(d).strip() for d in raw]
     else:
         single = str(props.get("description") or "").strip()
-        # A survivor written before ``descriptions`` existed may hold a
-        # joined string; split it so old graphs merge the same way.
-        items = single.split(" | ") if single else []
+        items = [single] if single else []
     out: list[str] = []
     for d in items:
         if d and d not in out:
@@ -412,7 +422,13 @@ async def exact_match_merge(
         set_merged_descriptions(
             cl_survivor, [n for n in sl_survivors_in_cand if n.id != cl_survivor.id]
         )
-        cl_survivor.properties["description"] = cl_summary
+        # Only when the model actually wrote one. ``cl_summary`` is the second
+        # line of the verdict, so a reply of "YES Person\n" — verdict line, no
+        # body — yields "". Assigning that unconditionally would blank the
+        # description ``set_merged_descriptions`` just built from every member,
+        # and it is the field search, the fulltext index and the prompts read.
+        if cl_summary:
+            cl_survivor.properties["description"] = cl_summary
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
     # cl-survivor becomes sl-loser → cl-survivor directly) ──
@@ -463,13 +479,35 @@ def remap_relationships(
     relationships: list[GraphRelationship],
     id_remap: dict[str, str],
 ) -> list[GraphRelationship]:
-    """Remap relationship endpoints using id_remap and deduplicate."""
+    """Remap relationship endpoints using id_remap and deduplicate.
+
+    The dedup key includes ``properties["rel_type"]``, not just
+    ``rel.type``. Every data edge is written with ``rel.type ==
+    "RELATES"`` and its *semantic* type in the ``rel_type`` property
+    (see ``GraphExtraction._relations_to_relationships``), so a key of
+    ``(start, rel.type, end)`` reads as "one edge per entity pair" and
+    silently discards every fact after the first: ``Alice WORKS_AT
+    Acme`` and ``Alice FOUNDED Acme`` collapse, and the second is
+    dropped here — in Python, before anything reaches the graph.
+
+    Structural edges (``MENTIONED_IN``, ``PART_OF``, ``NEXT_CHUNK``)
+    carry no ``rel_type``; they fall back to ``""`` and keep their
+    previous one-edge-per-pair behaviour.
+
+    ``id_remap`` is flattened first. A multi-pass resolver records each
+    hop separately (``dup -> A`` in one pass, ``A -> B`` in the next), and
+    the single lookup below would otherwise re-point an edge at ``A``,
+    which that later pass removed. Flattening here rather than at each
+    call site means no caller can forget it; it is a no-op on a mapping
+    that is already one hop deep.
+    """
+    id_remap = flatten_remap(id_remap)
     deduplicated_rels: list[GraphRelationship] = []
-    seen_rels: set[tuple[str, str, str]] = set()
+    seen_rels: set[tuple[str, str, str, str]] = set()
     for rel in relationships:
         start = id_remap.get(rel.start_node_id, rel.start_node_id)
         end = id_remap.get(rel.end_node_id, rel.end_node_id)
-        rel_key = (start, rel.type, end)
+        rel_key = (start, rel.type, rel.properties.get("rel_type", ""), end)
         if rel_key not in seen_rels:
             seen_rels.add(rel_key)
             deduplicated_rels.append(
@@ -481,6 +519,29 @@ def remap_relationships(
                 )
             )
     return deduplicated_rels
+
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs already judged to
+#: be two things. A strategy must not merge such a pair and should not spend a
+#: call asking about it again. Set by the caller.
+RESOLUTION_SKIP_PAIRS = "resolution_skip_pairs"
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the caller wants
+#: judged even where the strategy's own candidate search would not surface them —
+#: a table's "M. Ellison" beside a document's "Maya Ellison", which a name rule
+#: spotted and an embedding threshold did not. Set by the caller.
+RESOLUTION_ASK_PAIRS = "resolution_ask_pairs"
+
+#: ``ctx.metadata`` key: ``set[str]`` of node ids whose identity was declared, not
+#: extracted — rows of a table, each keyed. No two of them are one thing, so a
+#: strategy should not merge, or ask about, a pair drawn from this set. Set by
+#: the caller; a set rather than pairs because a table has n rows and n² pairs.
+RESOLUTION_DISTINCT_IDS = "resolution_distinct_ids"
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the strategy
+#: examined and judged to be two things. Written by the strategy, so the caller
+#: can remember the answer and pass it back as ``RESOLUTION_SKIP_PAIRS`` next time.
+RESOLUTION_REJECTED_PAIRS = "resolution_rejected_pairs"
 
 
 class ResolutionStrategy(ABC):
@@ -495,6 +556,16 @@ class ResolutionStrategy(ABC):
             async def resolve(self, graph_data, ctx):
                 # Use embeddings to find near-duplicate entities
                 ...
+
+    A strategy is run within one document by ``ingest`` and, when passed to
+    ``finalize(resolver=...)``, over the whole graph. In the second setting the
+    caller knows things the strategy does not, and says so through
+    ``ctx.metadata``: :data:`RESOLUTION_SKIP_PAIRS` are pairs already decided
+    against, :data:`RESOLUTION_DISTINCT_IDS` are ids that are pairwise distinct
+    by declaration, :data:`RESOLUTION_ASK_PAIRS` are pairs it wants an answer
+    on. A strategy that judges pairs reports the ones it rejected under
+    :data:`RESOLUTION_REJECTED_PAIRS`. All four are optional; a strategy that
+    ignores them is still correct, only less economical.
     """
 
     @abstractmethod

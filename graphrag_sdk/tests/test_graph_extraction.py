@@ -4,31 +4,36 @@ from __future__ import annotations
 
 import json
 
-
 import pytest
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import (
+    RESERVED_NODE_LABELS,
+    Entity,
     ExtractedEntity,
     Ontology,
-    Entity,
     Relation,
     TextChunk,
     TextChunks,
 )
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+    DEFAULT_ENTITY_TYPES,
     EntityExtractor,
     LLMExtractor,
+    is_valid_entity_name,
 )
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
-    GraphExtraction,
+    DEFAULT_RELATION_TYPES,
     VERIFY_EXTRACT_RELS_PROMPT,
+    GraphExtraction,
     _format_entity_types,
     _format_relation_patterns,
+    _reject_reserved_labels,
+    _relationship_type_instruction,
 )
+from graphrag_sdk.storage.graph_store import GraphStore
 
 from .conftest import MockLLM, MockLLMWithGraphExtraction
-
 
 # ── Helpers ────────────────────────────────────────────────────
 
@@ -574,17 +579,163 @@ class TestSpansMerging:
         assert "chunk-1" in merged[0].spans
 
 
-class TestNoiseFilteringPrompt:
-    """Bug 4: VERIFY_EXTRACT_RELS_PROMPT should contain noise-filtering instructions."""
+class TestNoiseFiltering:
+    """Bug 4: operator/abbreviation/short-token noise must be filtered out.
 
-    def test_prompt_contains_operator_filtering(self):
-        assert "symbolic" in VERIFY_EXTRACT_RELS_PROMPT.lower()
+    These rules used to live as instructions inside VERIFY_EXTRACT_RELS_PROMPT
+    and were asserted by checking the prompt's wording. They now live in
+    ``is_valid_entity_name`` instead, after measurement showed the LLM does not
+    reliably act on verification instructions (RESULTS.md P2.10). Asserting the
+    behaviour rather than the prompt text is also what these tests should have
+    done in the first place: the old version passed whether or not anything was
+    actually filtered.
+    """
 
-    def test_prompt_contains_abbreviation_filtering(self):
-        assert "non-domain-specific" in VERIFY_EXTRACT_RELS_PROMPT
+    @pytest.mark.parametrize("name", ["+=", "->", "++", "==", "!="])
+    def test_operator_tokens_rejected(self, name):
+        assert not is_valid_entity_name(name)
 
-    def test_prompt_contains_short_token_filtering(self):
-        assert "1-2 characters" in VERIFY_EXTRACT_RELS_PROMPT
+    @pytest.mark.parametrize("name", ["sh", "cd", "ls", "rm", "cp", "mv"])
+    def test_shell_abbreviations_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["dt", "bg", "fn"])
+    def test_generic_short_tokens_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["AI", "US", "UK", "Go", "EU", "UN", "IT"])
+    def test_real_acronyms_kept(self, name):
+        """The filter must not take widely-recognised acronyms with it."""
+        assert is_valid_entity_name(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["CD", "LS", "RM", "PS", "CAT", "ENV", "ETC", "VAR", "BIN", "USR", "SED", "AWK"],
+    )
+    def test_uppercase_shell_tokens_still_rejected(self, name):
+        """The acronym exemption excuses a token from the *pronoun* rows only.
+
+        Before, `is_acronym` skipped the whole stoplist, so an all-caps heading
+        or OCR'd text put `CD`/`ETC` straight into the graph and the shell-token
+        filter was defeated for uppercase input.
+        """
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["ONE", "MAN", "BOY"])
+    def test_uppercase_generic_nouns_still_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["us", "it", "he", "we"])
+    def test_lowercase_pronouns_still_rejected(self, name):
+        assert not is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
+    def test_specific_dates_rejected_when_ontology_lacks_date_type(self, name):
+        """A date pins down a moment; unless the ontology asks for Date nodes it
+        is an attribute, not an entity."""
+        assert not is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("name", ["1823", "1957", "1003 ce", "14 january 1904"])
+    def test_specific_dates_kept_when_ontology_has_date(self, name):
+        """An ontology that declares Date (the defaults do) keeps date nodes."""
+        assert is_valid_entity_name(name, DEFAULT_ENTITY_TYPES)
+        assert is_valid_entity_name(name, ["Person", "date"])
+
+    @pytest.mark.parametrize("name", ["1823.", "(14 January 1904)", "1957,", "'1003 ce'"])
+    def test_specific_dates_with_edge_punctuation_still_rejected(self, name):
+        """Extraction leaves sentence punctuation on a date at a boundary;
+        that must not let it past the gate as a "different" name."""
+        assert not is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("name", ["Bronze Age", "1990s", "Victorian era", "Ming dynasty"])
+    def test_periods_kept_when_ontology_lacks_date_type(self, name):
+        """A span of time is a topic, not a moment, and stays an entity."""
+        assert is_valid_entity_name(name, ["Person", "Location"])
+
+    @pytest.mark.parametrize("word", ["baggage", "package", "opera", "camera"])
+    def test_period_words_match_whole_words_only(self, word):
+        """`age`/`era` need a leading boundary too, or any word ending in them
+        is misread as a period and exempted from the date rule."""
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            _DATE_PERIOD_RE,
+        )
+
+        assert _DATE_PERIOD_RE.search(word) is None
+
+    @pytest.mark.parametrize("name", ["1823", "1984", "747"])
+    def test_dates_kept_without_an_ontology(self, name):
+        """No ontology, no date rule: the caller has not said dates are unwanted.
+
+        This is what lets grounded discovery see "1984" and "747" -- it has no
+        ontology yet, that is the point of discovery.
+        """
+        assert is_valid_entity_name(name)
+        assert is_valid_entity_name(name, None)
+
+    @pytest.mark.parametrize("name", ["1984", "747", "1969"])
+    def test_ner_anchor_labels_do_not_drive_the_date_gate(self, name):
+        """Grounded discovery hands NER its broad anchor labels, not an
+        ontology. Those must not make the parser drop numeric-looking mentions
+        before catalog linking, or `Book`/`Aircraft` never get discovered."""
+        from graphrag_sdk.discovery.pipeline import _NER_ANCHOR_LABELS
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            _parse_predictions,
+        )
+
+        preds = [{"text": name, "label": "event", "score": 0.9, "start": 0, "end": 4}]
+        parsed = _parse_predictions(preds, _NER_ANCHOR_LABELS, "chunk-0", 0.5)
+        assert [e.name for e in parsed] == [name]
+        llm_parsed = LLMExtractor._parse_response(
+            json.dumps([{"name": name, "type": "event"}]), _NER_ANCHOR_LABELS, "chunk-0"
+        )
+        assert [e.name for e in llm_parsed] == [name]
+
+    async def test_extraction_applies_date_gate_to_step1_output(self, ctx):
+        """Extractors no longer know the ontology, so GraphExtraction must
+        apply the date rule itself -- including to step-1 entities that fall
+        through unverified when step 2 fails."""
+
+        class _DateExtractor(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return [
+                    ExtractedEntity(name=n, type=t, source_chunk_ids=[source_chunk_id])
+                    for n, t in (("Alice", "Person"), ("1823", "Date"))
+                ]
+
+        async def _names(ontology: Ontology) -> set[str]:
+            # Step 2 returns garbage, so the step-1 entities are used as-is.
+            strategy = GraphExtraction(
+                llm=MockLLM(responses=["not json"]), entity_extractor=_DateExtractor()
+            )
+            result = await strategy.extract(_make_chunks("Alice was born in 1823."), ontology, ctx)
+            return {n.properties["name"] for n in result.nodes}
+
+        no_date = await _names(
+            Ontology(entities=[Entity(label="Person"), Entity(label="Location")])
+        )
+        assert "Alice" in no_date and "1823" not in no_date
+
+        with_date = await _names(Ontology(entities=[Entity(label="Person"), Entity(label="Date")]))
+        assert {"Alice", "1823"} <= with_date
+
+    @pytest.mark.parametrize("name", ["1820s", "19th century", "Abbasid era"])
+    def test_periods_kept(self, name):
+        """A period is something facts attach to, so it stays a node."""
+        assert is_valid_entity_name(name)
+
+    @pytest.mark.parametrize("name", ["Boeing 747", "COVID-19"])
+    def test_numeric_names_not_mistaken_for_dates(self, name):
+        assert is_valid_entity_name(name)
+
+    def test_prompt_still_asks_the_llm_to_verify(self):
+        """Removing this instruction was tried and reverted (RESULTS.md P2.12).
+
+        Without it the LLM emitted 813 entities instead of 719 and entity
+        precision fell 0.645 -> 0.551. The code-side rules above are a floor,
+        not a replacement.
+        """
+        assert "REMOVE any entity" in VERIFY_EXTRACT_RELS_PROMPT
+        assert "VERIFY the entities" in VERIFY_EXTRACT_RELS_PROMPT
 
 
 class TestEntityTypeDescriptions:
@@ -836,3 +987,551 @@ class TestGraphExtractionSchemaAttributes:
         )
         assert len(ents) == 1
         assert ents[0].attributes == {}
+
+
+class TestFailedChunkReporting:
+    """Finding #7: a broken extraction must not look like an empty document.
+
+    Before the fix, per-chunk failures were swallowed and replaced with
+    empty results, so a document whose chunks all failed returned byte
+    identical output to a document that genuinely contained no entities.
+    These three arms mirror the benchmark harness that proved it.
+    """
+
+    class _ScriptedExtractor(EntityExtractor):
+        """Fails on the first ``n_fail`` chunks, returns [] for the rest."""
+
+        def __init__(self, n_fail: int) -> None:
+            self._n_fail = n_fail
+            self.calls = 0
+
+        async def extract_entities(
+            self, text: str, entity_types: list[str], source_chunk_id: str
+        ) -> list[ExtractedEntity]:
+            index = self.calls
+            self.calls += 1
+            if index < self._n_fail:
+                raise RuntimeError(f"simulated NER failure on chunk {index}")
+            return []
+
+    async def _run(self, n_fail: int, ctx, *, silent_llm: bool = False):
+        extractor = self._ScriptedExtractor(n_fail)
+        # silent_llm: step 2 also yields nothing, so the graph really is empty
+        # in every arm and only the new fields can tell the arms apart.
+        llm = (
+            _mock_hybrid_llm(step1_entities=[], step2_entities=[], step2_relationships=[])
+            if silent_llm
+            else _mock_hybrid_llm()
+        )
+        strategy = GraphExtraction(llm=llm, entity_extractor=extractor)
+        chunks = _make_chunks("one.", "two.", "three.", "four.")
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        # Guard against the instrument silently not running: if the extractor
+        # was never called, every assertion below is vacuously true.
+        assert extractor.calls == 4, "extractor did not run on all 4 chunks"
+        return result
+
+    async def test_empty_document_is_not_reported_as_failed(self, ctx):
+        result = await self._run(0, ctx)
+        assert result.chunks_attempted == 4
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_total_failure_is_reported(self, ctx):
+        result = await self._run(4, ctx)
+        assert result.chunks_attempted == 4
+        assert len(result.failed_chunks) == 4
+        assert result.extraction_failed is True
+
+    async def test_partial_failure_reports_only_the_failed_chunks(self, ctx):
+        result = await self._run(2, ctx)
+        assert result.chunks_attempted == 4
+        assert len(result.failed_chunks) == 2
+        # Not a total failure: the surviving chunks did their job.
+        assert result.extraction_failed is False
+
+    async def test_empty_and_broken_are_distinguishable(self, ctx):
+        """The finding itself: these two used to be identical."""
+        empty = await self._run(0, ctx, silent_llm=True)
+        broken = await self._run(4, ctx, silent_llm=True)
+        assert empty.nodes == broken.nodes == []
+        assert (empty.chunks_attempted, empty.failed_chunks, empty.extraction_failed) != (
+            broken.chunks_attempted,
+            broken.failed_chunks,
+            broken.extraction_failed,
+        )
+
+    async def test_failed_chunks_are_retryable_ids(self, ctx):
+        """A count is not enough; the caller must be able to re-ingest."""
+        result = await self._run(2, ctx)
+        chunks = _make_chunks("one.", "two.", "three.", "four.")
+        known = {c.uid for c in chunks.chunks}
+        assert set(result.failed_chunks) <= known
+        assert all(isinstance(uid, str) and uid for uid in result.failed_chunks)
+
+    async def test_no_chunks_reports_nothing_attempted(self, ctx):
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=self._ScriptedExtractor(0)
+        )
+        result = await strategy.extract(TextChunks(chunks=[]), Ontology(), ctx)
+        assert result.chunks_attempted == 0
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_successful_extraction_reports_no_failures(self, ctx):
+        """Guard the happy path: normal ingests must stay clean."""
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        chunks = _make_chunks("Alice is a software engineer at Acme Corp.")
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        assert len(result.nodes) > 0
+        assert result.chunks_attempted == 1
+        assert result.chunks_skipped == 0
+        assert result.failed_chunks == []
+        assert result.relation_failed_chunks == []
+        assert result.extraction_failed is False
+
+
+class _FlakyBatchLLM(MockLLM):
+    """MockLLM whose ``abatch_invoke`` fails (or returns nothing) for chosen
+    prompt indices, the way a timed-out provider call surfaces through
+    ``LLMBatchItem``."""
+
+    def __init__(self, response: str, *, fail: tuple[int, ...] = (), none: tuple[int, ...] = ()):
+        super().__init__(responses=[response])
+        self._fail = set(fail)
+        self._none = set(none)
+
+    async def abatch_invoke(self, prompts, **kwargs):
+        from graphrag_sdk.core.providers.base import LLMBatchItem
+
+        items = []
+        for i, prompt in enumerate(prompts):
+            if i in self._fail:
+                items.append(LLMBatchItem(index=i, error=RuntimeError(f"timeout on {i}")))
+            elif i in self._none:
+                items.append(LLMBatchItem(index=i, response=None))
+            else:
+                items.append(LLMBatchItem(index=i, response=self.invoke(prompt)))
+        return items
+
+
+_STEP1_JSON = json.dumps(
+    [{"name": "Alice", "type": "Person", "description": "An engineer"}]
+)
+_STEP2_JSON = json.dumps(
+    {
+        "entities": [{"name": "Alice", "type": "Person", "description": "An engineer"}],
+        "relationships": [],
+    }
+)
+# Step 2 verifying nothing makes the strategy fall back to step-1 entities,
+# so per-chunk node counts below reflect what step 1 produced.
+_STEP2_EMPTY_JSON = json.dumps({"entities": [], "relationships": []})
+
+
+class TestLLMExtractorStep1FailureIsRecorded:
+    """Review finding: only the local-extractor branch recorded step-1
+    failures. On the default ``LLMExtractor`` path a timed-out NER call was
+    appended as ``[]`` and the chunk reported clean."""
+
+    async def test_not_ok_item_lands_in_failed_chunks(self, ctx):
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, fail=(1, 3))
+        strategy = GraphExtraction(
+            llm=MockLLM(responses=[_STEP2_JSON]),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c.", "d."), Ontology(), ctx)
+        assert result.chunks_attempted == 4
+        assert result.failed_chunks == ["chunk-1", "chunk-3"]
+        assert result.extraction_failed is False
+
+    async def test_none_response_lands_in_failed_chunks(self, ctx):
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, none=(0,))
+        strategy = GraphExtraction(
+            llm=MockLLM(responses=[_STEP2_JSON]),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b."), Ontology(), ctx)
+        assert result.failed_chunks == ["chunk-0"]
+
+    async def test_all_llm_step1_failures_is_total_failure(self, ctx):
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, fail=(0, 1))
+        strategy = GraphExtraction(
+            llm=MockLLM(responses=[_STEP2_JSON]),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b."), Ontology(), ctx)
+        assert result.extraction_failed is True
+
+
+class TestRelationFailureIsSeparateFromExtractionFailure:
+    """Review finding: a step-2 failure used to land in ``failed_chunks``, so
+    ``extraction_failed`` was True for a run that wrote a complete node set."""
+
+    class _Entities(EntityExtractor):
+        async def extract_entities(self, text, entity_types, source_chunk_id):
+            return [
+                ExtractedEntity(
+                    name=f"E{source_chunk_id}",
+                    type="Person",
+                    description="",
+                    source_chunk_ids=[source_chunk_id],
+                )
+            ]
+
+    async def test_step2_failure_keeps_entities_and_is_not_extraction_failed(self, ctx):
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_EMPTY_JSON, fail=(0, 1, 2)),
+            entity_extractor=self._Entities(),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c."), Ontology(), ctx)
+        # Every chunk lost its relations...
+        assert result.relation_failed_chunks == ["chunk-0", "chunk-1", "chunk-2"]
+        # ...but every chunk's entities are in the graph.
+        assert len(result.nodes) == 3
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_partial_step2_failure(self, ctx):
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_EMPTY_JSON, fail=(1,)),
+            entity_extractor=self._Entities(),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c."), Ontology(), ctx)
+        assert result.relation_failed_chunks == ["chunk-1"]
+        assert result.failed_chunks == []
+        assert len(result.nodes) == 3
+
+    async def test_step1_failure_is_not_double_counted_as_relation_failure(self, ctx):
+        """A chunk that already failed step 1 and then fails step 2 belongs in
+        ``failed_chunks`` only; the two lists stay disjoint."""
+        step1_llm = _FlakyBatchLLM(_STEP1_JSON, fail=(0,))
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_JSON, fail=(0,)),
+            entity_extractor=LLMExtractor(step1_llm),
+        )
+        result = await strategy.extract(_make_chunks("a.", "b."), Ontology(), ctx)
+        assert result.failed_chunks == ["chunk-0"]
+        assert result.relation_failed_chunks == []
+
+    async def test_relation_failure_warning_does_not_claim_nothing_contributed(self, ctx, caplog):
+        import logging
+
+        strategy = GraphExtraction(
+            llm=_FlakyBatchLLM(_STEP2_JSON, fail=(0,)),
+            entity_extractor=self._Entities(),
+        )
+        with caplog.at_level(logging.WARNING):
+            await strategy.extract(_make_chunks("a."), Ontology(), ctx)
+        text = " ".join(r.getMessage() for r in caplog.records)
+        assert "contributed nothing" not in text
+        assert "relationship" in text
+
+
+class _TruncatingContext(Context):
+    """Context whose budget runs out after ``allow`` ``budget_exceeded`` reads,
+    so the truncation path can be exercised without wall-clock timing."""
+
+    allow: int = 0
+
+    @property
+    def budget_exceeded(self) -> bool:  # type: ignore[override]
+        if self.allow > 0:
+            self.allow -= 1
+            return False
+        return True
+
+
+class TestBudgetTruncationIsReported:
+    """Review finding: ``chunks_attempted`` was the post-truncation count, so a
+    40-chunk document cut to 3 by the budget looked like a healthy 3-chunk one."""
+
+    async def test_truncated_run_reports_skipped_chunks(self):
+        ctx = _TruncatingContext()
+        ctx.allow = 3
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        chunks = _make_chunks(*[f"chunk {i}." for i in range(10)])
+        result = await strategy.extract(chunks, Ontology(), ctx)
+        assert result.chunks_attempted == 3
+        assert result.chunks_skipped == 7
+        assert result.failed_chunks == []
+        assert result.extraction_failed is False
+
+    async def test_truncated_run_is_distinguishable_from_short_document(self, ctx):
+        truncated_ctx = _TruncatingContext()
+        truncated_ctx.allow = 3
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        truncated = await strategy.extract(
+            _make_chunks(*[f"c{i}." for i in range(10)]), Ontology(), truncated_ctx
+        )
+        healthy = await strategy.extract(_make_chunks("c0.", "c1.", "c2."), Ontology(), ctx)
+        assert truncated.chunks_attempted == healthy.chunks_attempted == 3
+        assert (truncated.chunks_skipped, healthy.chunks_skipped) == (7, 0)
+
+    async def test_budget_exhausted_before_start_reports_everything_skipped(self):
+        ctx = Context(latency_budget_ms=0.0)
+        assert ctx.budget_exceeded
+        strategy = GraphExtraction(
+            llm=_mock_hybrid_llm(), entity_extractor=LLMExtractor(_mock_hybrid_llm())
+        )
+        result = await strategy.extract(_make_chunks("a.", "b.", "c."), Ontology(), ctx)
+        assert result.nodes == []
+        assert result.chunks_attempted == 0
+        assert result.chunks_skipped == 3
+        assert result.extraction_failed is False
+
+
+class TestReservedNodeLabels:
+    """`Document`/`Chunk` are the graph store's bookkeeping labels.
+
+    Reusing one as an entity type used to corrupt the graph silently: document
+    counts picked up extracted entities (an 11-document corpus reported 106),
+    and `GraphStore._write_nodes` skips `__Entity__` for structural labels, so
+    the entity vanished from dedup and retrieval without any error.
+    """
+
+    @pytest.mark.parametrize("bad", ["Document", "Chunk"])
+    def test_reserved_entity_type_is_rejected(self, bad):
+        llm = MockLLM()
+        with pytest.raises(ValueError, match="reserved label"):
+            GraphExtraction(
+                llm=llm,
+                entity_extractor=LLMExtractor(llm),
+                entity_types=["Person", bad],
+            )
+
+    @pytest.mark.parametrize("ok", ["document", "chunk", "DOCUMENT"])
+    def test_match_is_exact_like_the_store(self, ok):
+        """FalkorDB labels are case-sensitive and `GraphStore._write_nodes`
+        tests membership exactly, so `document` is a distinct label the store
+        handles correctly (it gets `__Entity__`; `MATCH (d:Document)` never
+        sees it). Rejecting it would break configs that used to work."""
+        llm = MockLLM()
+        extractor = GraphExtraction(
+            llm=llm, entity_extractor=LLMExtractor(llm), entity_types=["Person", ok]
+        )
+        assert ok in extractor.entity_types
+
+    def test_error_names_the_offending_label(self):
+        llm = MockLLM()
+        with pytest.raises(ValueError, match="Document"):
+            GraphExtraction(
+                llm=llm,
+                entity_extractor=LLMExtractor(llm),
+                entity_types=["Document"],
+            )
+
+    def test_non_reserved_types_still_allowed(self):
+        llm = MockLLM()
+        extractor = GraphExtraction(
+            llm=llm,
+            entity_extractor=LLMExtractor(llm),
+            entity_types=["Publication", "TextSegment"],
+        )
+        assert extractor.entity_types == ["Publication", "TextSegment"]
+
+    def test_ontology_labels_are_checked_too(self):
+        """The ontology path assigns entity types without going through
+        __init__, so it needs its own guard or the fix is bypassable."""
+        with pytest.raises(ValueError, match="reserved label"):
+            _reject_reserved_labels(["Person", "Document"])
+
+    def test_store_and_extractor_share_one_definition(self):
+        """Hardcoded copies would drift; the bug returns when they do."""
+        from graphrag_sdk.retrieval.strategies import cypher_generation
+
+        assert GraphStore._STRUCTURAL_LABELS is RESERVED_NODE_LABELS
+        # The Cypher generator's allow-list is the third copy; it adds the
+        # `__Entity__` marker on top of the store's structural labels.
+        assert cypher_generation._STRUCTURAL_LABELS == RESERVED_NODE_LABELS | {"__Entity__"}
+
+
+class TestDefaultRelationTypes:
+    """The shipped relation vocabulary — the counterpart to DEFAULT_ENTITY_TYPES.
+
+    Entity extraction always shipped a default type list; relations shipped
+    nothing, so the prompt asked the model to invent a label per edge. Measured
+    on an 11-document corpus that produced 447 distinct labels against 30 in
+    gold. Supplying a default list doubled exact triple F1 (0.065 -> 0.134) with
+    no loss of recall, and held across five unrelated Wikipedia domains
+    (vocabulary 2.2-2.9x smaller, 10-18% -> 66-81% of edges on the list).
+    """
+
+    def test_default_is_applied_when_nothing_is_passed(self):
+        ge = GraphExtraction(llm=MockLLM())
+        assert ge.relation_types == list(DEFAULT_RELATION_TYPES)
+        assert len(ge.relation_types) > 0
+
+    def test_explicit_list_overrides_the_default(self):
+        ge = GraphExtraction(llm=MockLLM(), relation_types=["eats", "owns"])
+        assert ge.relation_types == ["eats", "owns"]
+
+    def test_empty_list_restores_open_vocabulary(self):
+        """``[]`` is a request, not an omission.
+
+        Guards the ``is None`` check: a truthiness test would silently swap an
+        explicit open-vocabulary request for the default list.
+        """
+        ge = GraphExtraction(llm=MockLLM(), relation_types=[])
+        assert ge.relation_types == []
+
+    def test_default_list_is_not_shared_between_instances(self):
+        a = GraphExtraction(llm=MockLLM())
+        b = GraphExtraction(llm=MockLLM())
+        a.relation_types.append("mutated")
+        assert "mutated" not in b.relation_types
+        assert "mutated" not in DEFAULT_RELATION_TYPES
+
+    def test_default_labels_are_well_formed(self):
+        """UPPER_SNAKE_CASE is the ``rel_type`` convention everywhere else in
+        the repo (``Relation`` docstring, docs/graph-schema, discovery prompt,
+        the open-vocabulary instruction). ``rel_type`` is compared
+        case-sensitively in Cypher and in ``_prune``, so a lower-case default
+        would split the same predicate into two strings across runs."""
+        for label in DEFAULT_RELATION_TYPES:
+            assert label == label.upper(), f"{label} is not UPPER_SNAKE_CASE"
+            assert " " not in label, f"{label} contains a space"
+            assert label.replace("_", "").isalpha(), f"{label} has odd characters"
+        assert len(set(DEFAULT_RELATION_TYPES)) == len(DEFAULT_RELATION_TYPES)
+
+    def test_default_list_renders_as_preference_not_restriction(self):
+        """The default is guidance, not a filter, and the prompt must say so:
+        nothing prunes an off-list label on this path, so the rendered text
+        cannot claim one is required."""
+        rels = [Relation(label=lbl) for lbl in DEFAULT_RELATION_TYPES]
+        block = _format_relation_patterns(rels, strict=False)
+        assert "## Preferred Relationships" in block
+        assert "Allowed" not in block
+        for label in DEFAULT_RELATION_TYPES:
+            assert label in block
+        instruction = _relationship_type_instruction(rels, strict=False)
+        assert "prefer one of" in instruction
+        assert "MUST" not in instruction
+        # Off-list labels get the same casing rule as the open-vocabulary path.
+        assert "UPPER_SNAKE_CASE" in instruction
+
+    def test_declared_ontology_renders_as_restriction(self):
+        """``Ontology.relations`` is enforced by ``_prune``, so MUST is honest there."""
+        rels = [Relation(label="WORKS_AT")]
+        assert "## Allowed Relationships" in _format_relation_patterns(rels, strict=True)
+        assert "MUST be one of" in _relationship_type_instruction(rels, strict=True)
+
+    def test_open_vocabulary_prompt_when_list_is_empty(self):
+        assert _format_relation_patterns([]) == ""
+        assert _format_relation_patterns([], strict=False) == ""
+        assert "UPPER_SNAKE_CASE" in _relationship_type_instruction([])
+
+    def test_blank_labels_are_rejected(self):
+        """``entity_types`` is validated; a blank relation label would render
+        as a bare ``- `` bullet in the prompt."""
+        with pytest.raises(ValueError, match="blank"):
+            GraphExtraction(llm=MockLLM(), relation_types=["OWNS", "  "])
+        with pytest.raises(ValueError, match="blank"):
+            GraphExtraction(llm=MockLLM(), relation_types=[""])
+
+    def test_labels_are_stripped(self):
+        ge = GraphExtraction(llm=MockLLM(), relation_types=[" OWNS ", "EATS"])
+        assert ge.relation_types == ["OWNS", "EATS"]
+
+
+class TestRelationVocabularyInStep2Prompt:
+    """End-to-end coverage of the ``if ontology.relations:`` fork in ``extract``.
+
+    The behaviour lives in the prompt the step-2 LLM actually receives, not in
+    the helpers, so these drive ``extract`` with a capturing LLM.
+    """
+
+    @staticmethod
+    def _capture_llm(captured: list[str]) -> MockLLM:
+        class CaptureLLM(MockLLM):
+            def invoke(self, prompt, **kwargs):
+                captured.append(prompt)
+                return super().invoke(prompt, **kwargs)
+
+        return CaptureLLM(
+            responses=[
+                json.dumps([{"name": "Alice", "type": "Person", "description": "A person"}]),
+                json.dumps(
+                    {
+                        "entities": [
+                            {"name": "Alice", "type": "Person", "description": "A person"}
+                        ],
+                        "relationships": [],
+                    }
+                ),
+            ]
+        )
+
+    async def test_default_vocabulary_reaches_step2_prompt_without_ontology(self, ctx):
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), Ontology(), ctx)
+
+        assert len(captured) >= 2
+        step2 = captured[1]
+        assert "## Preferred Relationships" in step2
+        for label in DEFAULT_RELATION_TYPES:
+            assert f"- {label}\n" in step2
+        assert "prefer one of the relationship types" in step2
+        assert "MUST be one of" not in step2
+        assert "## Allowed Relationships" not in step2
+
+    async def test_ontology_relations_override_instance_relation_types(self, ctx):
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(
+            llm=llm,
+            entity_extractor=LLMExtractor(llm),
+            relation_types=["EATS", "FEARS"],
+        )
+        ontology = Ontology(
+            entities=[Entity(label="Person"), Entity(label="Company")],
+            relations=[Relation(label="WORKS_AT", patterns=[("Person", "Company")])],
+        )
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), ontology, ctx)
+
+        step2 = captured[1]
+        assert "## Allowed Relationships" in step2
+        assert "- WORKS_AT (Person \u2192 Company)" in step2
+        assert "EATS" not in step2
+        assert "FEARS" not in step2
+        assert "MUST be one of" in step2
+        assert "## Preferred Relationships" not in step2
+
+    async def test_empty_relation_types_leaves_vocabulary_open(self, ctx):
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(
+            llm=llm, entity_extractor=LLMExtractor(llm), relation_types=[]
+        )
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), Ontology(), ctx)
+
+        step2 = captured[1]
+        assert "Relationships\n- " not in step2.split("## Instructions")[0]
+        assert "a descriptive relationship label in UPPER_SNAKE_CASE" in step2
+        for label in DEFAULT_RELATION_TYPES:
+            assert f"- {label}\n" not in step2
+
+    async def test_endpoints_must_come_from_the_verified_list(self, ctx):
+        """The pre-extracted list is input the model may prune or extend;
+        an endpoint that is not in the returned entities has no node and is
+        dropped downstream, so the prompt must point at the *verified* list."""
+        captured: list[str] = []
+        llm = self._capture_llm(captured)
+        extractor = GraphExtraction(llm=llm, entity_extractor=LLMExtractor(llm))
+
+        await extractor.extract(_make_chunks("Alice works at Acme."), Ontology(), ctx)
+
+        step2 = captured[1]
+        assert "from the verified entity list you return" in step2
+        assert "from the entity list above" not in step2
