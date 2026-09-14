@@ -620,8 +620,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
         # having agreed. Say it once, at construction.
         if unified_stage and hard_threshold <= unified_threshold:
             logger.warning(
-                "hard_threshold (%s) <= unified_threshold (%s): every candidate pair "
-                "will be merged without LLM verification",
+                "hard_threshold (%s) <= unified_threshold (%s): every SAME-label "
+                "candidate pair will be merged without LLM verification. Cross-label "
+                "pairs are unaffected — _needs_llm keeps them off the hard path, and "
+                "the label family gate may drop them before that.",
                 hard_threshold,
                 unified_threshold,
             )
