@@ -3304,3 +3304,164 @@ class TestAnUnansweredVoteIsNotAPermanentRejection:
         assert len(result.nodes) == 2
         # ...but nothing is remembered as decided, so a later run can re-ask.
         assert not ctx.metadata.get(RESOLUTION_REJECTED_PAIRS)
+
+
+class TestClusteringIsBoundedPerComponent:
+    """The distance matrix is built per connected component of the near-pair
+    graph. Nodes in different components are the 1.0 filler apart and can never
+    merge at this cut, so splitting by component is exact — and it is what stops
+    the allocation being the whole group squared on a mostly-duplicate graph.
+
+    Note what can actually reach this code: a pair is a "near pair" only when
+    ``1 - sim <= 1 - hard_threshold``, i.e. ``sim >= hard_threshold`` — and a
+    SAME-label pair at that similarity was hard-merged and never became
+    ambiguous. So the only pairs here are cross-label ones, which
+    ``_same_cluster`` then excludes via ``_needs_llm``. The clustering cannot
+    currently auto-merge anything; these tests pin the allocation bound and the
+    fallback direction, not a merge outcome.
+    """
+
+    @staticmethod
+    def _two_cross_label_groups():
+        """Two cross-label pairs above the hard threshold, far from each other."""
+        desc = "A place on the coast."
+        specs = [
+            ("Cape Morrow Lighthouse", "Location", 0.0),
+            ("Cape Morrow light", "Landmark", 0.001),
+            ("Ashford Beacon", "Location", 1.2),
+            ("Ashford beacon tower", "Landmark", 1.201),
+        ]
+        vectors = {f"{nm}: {desc}": _angle(a) for nm, _lbl, a in specs}
+        gd = GraphData(
+            nodes=[
+                GraphNode(id=f"n{k}", label=lbl, properties={"name": nm, "description": desc})
+                for k, (nm, lbl, _a) in enumerate(specs)
+            ],
+            relationships=[],
+        )
+        return gd, ControlledEmbedder(vectors)
+
+    async def test_components_cluster_independently(self, ctx):
+        gd, embedder = self._two_cross_label_groups()
+        llm = PairScriptedLLM(
+            {
+                frozenset({"Cape Morrow Lighthouse", "Cape Morrow light"}): True,
+                frozenset({"Ashford Beacon", "Ashford beacon tower"}): True,
+            }
+        )
+        result = await LLMVerifiedResolution(
+            llm=llm, embedder=embedder, label_family_gate=False, cross_label_vote=False
+        ).resolve(gd, ctx)
+        # Each pair merges on its own YES; the two groups never join.
+        assert len(result.nodes) == 2
+
+    async def test_an_oversized_component_goes_to_verification(self, ctx, caplog, monkeypatch):
+        """The fallback must fail towards asking, never towards merging."""
+        import graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution as mod
+
+        monkeypatch.setattr(mod, "_MAX_CLUSTER_COMPONENT", 1)
+        gd, embedder = self._two_cross_label_groups()
+        llm = PairScriptedLLM({})  # every pair answered NO
+        with caplog.at_level(logging.INFO):
+            result = await LLMVerifiedResolution(
+                llm=llm, embedder=embedder, label_family_gate=False, cross_label_vote=False
+            ).resolve(gd, ctx)
+
+        assert any("clustering bound" in r.message for r in caplog.records)
+        # Nothing auto-merged: the pairs were asked about and refused.
+        assert len(result.nodes) == 4
+
+
+class TestDefinitiveRejectionsArePersisted:
+    """A definitive NO is remembered so a later run need not pay to re-ask it;
+    an unanswered pair is not, so it stays askable.
+    """
+
+    @staticmethod
+    def _pair():
+        desc = "Ran the Whitford archive."
+        vectors = {"Eleanor Whitford": _angle(0.0), "Whitford Eleanor": _angle(0.1)}
+        gd = GraphData(
+            nodes=[
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"name": "Eleanor Whitford", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label="Engineer",
+                    properties={"name": "Whitford Eleanor", "description": desc},
+                ),
+            ],
+            relationships=[],
+        )
+        return gd, ControlledEmbedder(vectors)
+
+    async def test_pass2_explicit_no_is_remembered(self, ctx):
+        gd, embedder = self._pair()
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Eleanor"}): False})
+        await LLMVerifiedResolution(
+            llm=llm,
+            embedder=embedder,
+            unified_stage=False,
+            cross_label_merge=True,
+            cross_label_min_descriptions=0,
+            label_family_gate=False,
+            cross_label_vote=False,
+        ).resolve(gd, ctx)
+        assert frozenset({"n1", "n2"}) in ctx.metadata.get(RESOLUTION_REJECTED_PAIRS, set())
+
+    async def test_an_unanswered_pass2_pair_is_not_remembered(self, ctx):
+        class _Mute(MockLLM):
+            def invoke(self, prompt: str, **kwargs):
+                self._call_index += 1
+                return LLMResponse(content="I cannot help with that.")
+
+        gd, embedder = self._pair()
+        await LLMVerifiedResolution(
+            llm=_Mute(responses=[""]),
+            embedder=embedder,
+            unified_stage=False,
+            cross_label_merge=True,
+            cross_label_min_descriptions=0,
+            label_family_gate=False,
+            cross_label_vote=False,
+        ).resolve(gd, ctx)
+        assert not ctx.metadata.get(RESOLUTION_REJECTED_PAIRS)
+
+
+class TestPass2CapOfZeroSendsNothing:
+    """cross_label_max_pairs=0 must not reach the provider at all: an empty
+    block list still packs into one (0, 0) window, i.e. an empty prompt.
+    """
+
+    async def test_no_llm_call_is_made(self, ctx):
+        desc = "Ran the Whitford archive."
+        vectors = {"Eleanor Whitford": _angle(0.0), "Whitford Eleanor": _angle(0.1)}
+        gd = GraphData(
+            nodes=[
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"name": "Eleanor Whitford", "description": desc},
+                ),
+                GraphNode(
+                    id="n2",
+                    label="Engineer",
+                    properties={"name": "Whitford Eleanor", "description": desc},
+                ),
+            ],
+            relationships=[],
+        )
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Eleanor"}): True})
+        result = await LLMVerifiedResolution(
+            llm=llm,
+            embedder=ControlledEmbedder(vectors),
+            unified_stage=False,
+            cross_label_merge=True,
+            cross_label_min_descriptions=0,
+            cross_label_max_pairs=0,
+        ).resolve(gd, ctx)
+        assert llm._call_index == 0
+        assert len(result.nodes) == 2

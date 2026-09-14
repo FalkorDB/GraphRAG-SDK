@@ -51,6 +51,11 @@ logger = logging.getLogger(__name__)
 # Group key used when the unified stage disables label bucketing entirely.
 _UNIFIED_GROUP = "*"
 
+# Largest near-duplicate component to run hierarchical clustering over. The
+# distance matrix is n^2 float32, so this caps one allocation at about 16 MB;
+# anything larger sends its pairs to verification instead of auto-merging.
+_MAX_CLUSTER_COMPONENT = 2000
+
 _DIGITS = re.compile(r"\d+")
 
 
@@ -970,6 +975,15 @@ class LLMVerifiedResolution(ResolutionStrategy):
             f"({dict(door_counts)}), {len(capped)} sent to LLM"
         )
 
+        if not capped:
+            # cross_label_max_pairs=0 is a legal way to say "do not verify
+            # anything here". Falling through would hand _verify_batched an
+            # empty block list, and _pack([]) yields a single (0, 0) window —
+            # an empty verification prompt sent to the provider, which is the
+            # opposite of honouring the cap. Nothing below can merge without a
+            # verdict, so there is nothing to lose by returning now.
+            return {}, 0
+
         node_id_to_name = {n.id: _name(n) for n in nodes}
         adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for rel in relationships:
@@ -1068,8 +1082,15 @@ class LLMVerifiedResolution(ResolutionStrategy):
             parent[ry] = rx
             return True
 
+        rejected: set[frozenset[str]] = ctx.metadata.setdefault(RESOLUTION_REJECTED_PAIRS, set())
         yes_positions = [pos for pos in range(len(capped)) if verdicts.get(pos)]
         unanswered = [pos for pos in range(len(capped)) if pos not in verdicts]
+        for pos in range(len(capped)):
+            # An explicit NO is a decision worth persisting; an unanswered pair
+            # is not, and must stay askable on a later run.
+            if verdicts.get(pos) is False:
+                i, j, _sim, _door = capped[pos]
+                rejected.add(frozenset((valid[i].id, valid[j].id)))
         if unanswered:
             logger.warning(
                 "PASS 2 left %d of %d pairs unanswered; they stay unmerged",
@@ -1129,8 +1150,14 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 else:
                     vetoed += 1
                     i, j = capped[pos][0], capped[pos][1]
+                    # Same distinction as everywhere else: an explicit NO on the
+                    # re-ask is remembered, an unanswered one only withdraws the
+                    # YES.
+                    if k in second:
+                        rejected.add(frozenset((valid[i].id, valid[j].id)))
                     logger.debug(
-                        "PASS 2 cross-label vote vetoed '%s' (%s) + '%s' (%s)",
+                        "PASS 2 cross-label vote %s '%s' (%s) + '%s' (%s)",
+                        "vetoed" if k in second else "left unconfirmed",
                         names[i],
                         valid[i].label,
                         names[j],
@@ -1270,6 +1297,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
             # second vote ever ran.
             label_gate=labels_compatible if self.label_family_gate else None,
             cross_label_vote=self.cross_label_vote,
+            rejected_out=ctx.metadata.setdefault(RESOLUTION_REJECTED_PAIRS, set()),
         )
         deduplicated_nodes = held_out + deduplicated_nodes
         ctx.log(
@@ -1652,18 +1680,61 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     for gi, gj, sim_val in ambiguous_pairs
                     if _pair_distance(sim_val) <= cut
                 ]
-                amb_set = {i for i, _, _ in near_pairs} | {j for _, j, _ in near_pairs}
-                amb_indices = sorted(amb_set)
-                idx_map = {v: k for k, v in enumerate(amb_indices)}
-                n_amb = len(amb_indices)
+                # Per CONNECTED COMPONENT of the near-pair graph, not over all
+                # of them at once. Restricting to near-pair nodes alone is not
+                # enough: in a graph that is mostly near-duplicates every node
+                # is incident to one, and the matrix is the whole group squared
+                # again (~10 GiB at 50k). Two nodes in different components are
+                # 1.0 apart — the filler — so they can never merge at a cut this
+                # small, which makes per-component clustering exact rather than
+                # an approximation, and bounds each matrix by its component.
+                comp_parent: dict[int, int] = {}
+
+                def _comp_find(x: int) -> int:
+                    comp_parent.setdefault(x, x)
+                    while comp_parent[x] != x:
+                        comp_parent[x] = comp_parent[comp_parent[x]]
+                        x = comp_parent[x]
+                    return x
+
+                for gi, gj, _sim in near_pairs:
+                    ri, rj = _comp_find(gi), _comp_find(gj)
+                    if ri != rj:
+                        comp_parent[rj] = ri
+
+                components: dict[int, list[int]] = defaultdict(list)
+                for node in sorted(comp_parent):
+                    components[_comp_find(node)].append(node)
 
                 node_to_comm: dict[int, int] = {}
-                if n_amb >= 2:
-                    # Condensed distance matrix for scipy
-                    dist_matrix = np.ones((n_amb, n_amb), dtype=np.float32)
+                next_comm = 1
+                oversized = 0
+                pairs_by_comp: dict[int, list[tuple[int, int, float]]] = defaultdict(list)
+                for gi, gj, sim_val in near_pairs:
+                    pairs_by_comp[_comp_find(gi)].append((gi, gj, sim_val))
+
+                for root, members in components.items():
+                    n_c = len(members)
+                    if n_c < 2:
+                        continue
+                    if n_c > _MAX_CLUSTER_COMPONENT:
+                        # Bounded fallback: no hierarchical clustering for this
+                        # component. Its pairs simply stay ambiguous and go to
+                        # verification, which costs LLM calls but cannot merge
+                        # anything unasked — the safe direction to fail in.
+                        oversized += 1
+                        logger.warning(
+                            "Near-duplicate component of %d nodes exceeds the %d-node "
+                            "clustering bound; its pairs go to verification instead",
+                            n_c,
+                            _MAX_CLUSTER_COMPONENT,
+                        )
+                        continue
+                    local = {v: k for k, v in enumerate(members)}
+                    dist_matrix = np.ones((n_c, n_c), dtype=np.float32)
                     np.fill_diagonal(dist_matrix, 0.0)
-                    for gi, gj, sim_val in near_pairs:
-                        ai, aj = idx_map[gi], idx_map[gj]
+                    for gi, gj, sim_val in pairs_by_comp[root]:
+                        ai, aj = local[gi], local[gj]
                         dist = _pair_distance(sim_val)
                         dist_matrix[ai, aj] = dist
                         dist_matrix[aj, ai] = dist
@@ -1671,7 +1742,18 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     condensed = ssd.squareform(dist_matrix)
                     linkage = sch.linkage(condensed, method="average")
                     cluster_labels = sch.fcluster(linkage, t=cut, criterion="distance")
-                    node_to_comm = {amb_indices[k]: int(cluster_labels[k]) for k in range(n_amb)}
+                    # Offset so cluster ids stay unique ACROSS components:
+                    # scipy numbers from 1 within each call.
+                    base = next_comm
+                    for k, node in enumerate(members):
+                        node_to_comm[node] = base + int(cluster_labels[k])
+                    next_comm = base + int(cluster_labels.max()) + 1
+
+                if oversized:
+                    ctx.log(
+                        f"{oversized} near-duplicate component(s) over the clustering "
+                        "bound went to verification instead of auto-merging"
+                    )
 
                 def _same_cluster(gi: int, gj: int) -> bool:
                     return (

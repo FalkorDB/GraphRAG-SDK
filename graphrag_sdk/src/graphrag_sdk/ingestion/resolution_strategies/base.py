@@ -143,6 +143,7 @@ async def exact_match_merge(
     resolve_property: str = "name",
     label_gate: Callable[[str, str], bool] | None = None,
     cross_label_vote: bool = False,
+    rejected_out: set[frozenset[str]] | None = None,
 ) -> tuple[list[GraphNode], dict[str, str], int]:
     """Phase 1: group nodes by normalized name and merge exact duplicates.
 
@@ -290,6 +291,9 @@ async def exact_match_merge(
                     "name": entity_name,
                     "descriptions": all_descs,
                     "types": sorted(labels),
+                    # The nodes that carry on from the same-label pass; a
+                    # definitive NO about this group is a decision about them.
+                    "ids": [sl_entries[i]["nodes"][0].id for i in indices],
                 }
             )
 
@@ -330,6 +334,20 @@ async def exact_match_merge(
     if prompts and llm is not None:
         batch_results = await llm.abatch_invoke(prompts)
 
+    def _record_rejection(cl_idx: int) -> None:
+        """Remember a DEFINITIVE refusal so a later run need not pay to re-ask.
+
+        Only ever called for an explicit NO — never for a failed call or an
+        unparseable reply, which carry no decision at all. Recording those
+        would turn one transient error into a permanent "distinct" verdict.
+        """
+        if rejected_out is None:
+            return
+        ids = cl_candidates[cl_idx]["ids"]
+        for x in range(len(ids)):
+            for y in range(x + 1, len(ids)):
+                rejected_out.add(frozenset((ids[x], ids[y])))
+
     # ── Stage 4: parse results ──
     sl_summaries: dict[int, str] = {}  # sl_entry_idx -> summary text
     cl_approvals: dict[int, tuple[str, str]] = {}  # cl_idx -> (chosen_type, summary)
@@ -349,7 +367,11 @@ async def exact_match_merge(
             content = item.response.content.strip()
             first_line = content.split("\n", 1)[0].strip()
             if not first_line.upper().startswith("YES"):
-                # NO or malformed → fail-safe: preserve homographs.
+                # NO or malformed → fail-safe: preserve homographs. Only the
+                # explicit NO is a decision; a malformed reply is not one, and
+                # must stay askable on a later run.
+                if first_line.upper().startswith("NO"):
+                    _record_rejection(cl_idx)
                 continue
             parts = first_line.split(None, 1)
             chosen = parts[1].strip() if len(parts) >= 2 else ""
@@ -389,10 +411,15 @@ async def exact_match_merge(
         for k, cl_idx in enumerate(revote_idx):
             if not agreed.get(k):
                 logger.debug(
-                    "Cross-label vote vetoed the phase-1 merge of '%s' (%s)",
+                    "Cross-label vote %s the phase-1 merge of '%s' (%s)",
+                    "vetoed" if k in agreed else "left unconfirmed",
                     cl_candidates[cl_idx]["name"],
                     cl_candidates[cl_idx]["types"],
                 )
+                # An explicit NO on the re-ask is a decision; an unanswered one
+                # only withdraws the approval.
+                if k in agreed:
+                    _record_rejection(cl_idx)
                 del cl_approvals[cl_idx]
 
     # ── Stage 5: apply same-label merges, producing one survivor per sl group ──
