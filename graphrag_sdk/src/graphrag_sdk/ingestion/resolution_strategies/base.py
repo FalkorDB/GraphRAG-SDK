@@ -83,6 +83,28 @@ def set_merged_descriptions(survivor: GraphNode, members: list[GraphNode]) -> li
     return merged
 
 
+def merge_source_ids(survivor: GraphNode, members: list[GraphNode]) -> list[str]:
+    """Rule for every merge: the survivor keeps **every** member's provenance.
+
+    ``source_chunk_ids`` is the link back to the chunks an entity was extracted
+    from — it drives chunk retrieval and the ``MENTIONED_IN`` edges. Extraction
+    sets it on every node, so a "copy the keys the survivor lacks" rule never
+    copies it and the duplicate's chunks are lost. Stage 1 and Stage 5 in this
+    module union it explicitly; strategies must do the same. Returns the union.
+    """
+    merged: list[str] = []
+    for node in [survivor, *members]:
+        raw = node.properties.get("source_chunk_ids") or []
+        if not isinstance(raw, list):
+            raw = [raw]
+        for sid in raw:
+            if sid and sid not in merged:
+                merged.append(sid)
+    if merged:
+        survivor.properties["source_chunk_ids"] = merged
+    return merged
+
+
 def _pick_canonical_label(nodes: list[GraphNode]) -> str:
     """Heuristic label selection: most frequent non-Unknown label wins.
 

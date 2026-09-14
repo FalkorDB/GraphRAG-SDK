@@ -37,6 +37,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     ResolutionStrategy,
     exact_match_merge,
     flatten_remap,
+    merge_source_ids,
     remap_relationships,
     set_merged_descriptions,
 )
@@ -337,9 +338,16 @@ _BATCH_HEADER = (
 def _parse_batch_verdicts(text: str, count: int) -> dict[int, bool]:
     """Read one verdict per line out of a batched reply.
 
-    Takes the leading number and the LAST YES/NO on the line, because the
-    "rule:" segment can itself contain one. A line that cannot be read is
-    simply absent from the result, and an absent verdict never merges.
+    _BATCH_HEADER puts the verdict in the final ``|`` segment, so that segment
+    is read first and its FIRST YES/NO wins: the "rule:" segment can contain a
+    YES/NO of its own, and a model that appends prose ("YES - same entity, no
+    narrowing") puts another after the verdict. Scanning the whole line for the
+    last match got both of those wrong in one direction or the other. A line
+    with no ``|`` falls back to the last match on the line, which is the best
+    available guess when the segments are not there to separate them.
+
+    A line that cannot be read is simply absent from the result, and an absent
+    verdict never merges.
     """
     verdicts: dict[int, bool] = {}
     for line in (text or "").splitlines():
@@ -349,7 +357,14 @@ def _parse_batch_verdicts(text: str, count: int) -> dict[int, bool]:
         index = int(head.group(1))
         if not 1 <= index <= count:
             continue
-        found = re.findall(r"\b(YES|NO)\b", line[head.end() :], re.IGNORECASE)
+        tail = line[head.end() :]
+        if "|" in tail:
+            verdict_segment = tail.rsplit("|", 1)[-1]
+            first = re.search(r"\b(YES|NO)\b", verdict_segment, re.IGNORECASE)
+            if first:
+                verdicts[index] = first.group(1).upper() == "YES"
+                continue
+        found = re.findall(r"\b(YES|NO)\b", tail, re.IGNORECASE)
         if found:
             verdicts[index] = found[-1].upper() == "YES"
 
@@ -400,7 +415,10 @@ class LLMVerifiedResolution(ResolutionStrategy):
         hard_threshold: Similarity at or above which entities are merged
             without LLM confirmation (default: 0.95).
         soft_threshold: Similarity below which pairs are skipped entirely
-            (default: 0.65).
+            (default: 0.65). **Only consulted when ``unified_stage=False``** —
+            the unified candidate stage uses ``unified_threshold`` as its floor.
+            Passing this while leaving ``unified_stage`` at its default has no
+            effect on candidate generation.
 
             Was 0.80. That left a coverage hole: Stage 2 asked the LLM only
             about same-label pairs at or above 0.80, while the cross-label
@@ -567,6 +585,20 @@ class LLMVerifiedResolution(ResolutionStrategy):
             )
         if not 0.0 <= unified_threshold <= 1.0:
             raise ValueError(f"unified_threshold ({unified_threshold}) must be in [0.0, 1.0]")
+        # unified_threshold is the candidate floor whenever the unified stage is
+        # on, which makes `hard_threshold <= unified_threshold` an empty LLM
+        # band: every pair that clears the floor also clears the hard cutoff and
+        # merges unasked. That is a legitimate way to say "no LLM confirmation",
+        # so it is not an error — but it is rarely what someone tuning
+        # unified_threshold upward means, and silence there reads as the LLM
+        # having agreed. Say it once, at construction.
+        if unified_stage and hard_threshold <= unified_threshold:
+            logger.warning(
+                "hard_threshold (%s) <= unified_threshold (%s): every candidate pair "
+                "will be merged without LLM verification",
+                hard_threshold,
+                unified_threshold,
+            )
         self.llm = llm
         self.embedder = embedder
         self.hard_threshold = hard_threshold
@@ -811,12 +843,23 @@ class LLMVerifiedResolution(ResolutionStrategy):
         token_sets = [_name_tokens(nm) for nm in names]
 
         candidates: list[tuple[int, int, float, str]] = []
+        gated_pairs = 0
         for i in range(len(valid)):
             for j in range(i + 1, len(valid)):
                 if valid[i].label == valid[j].label:
                     continue  # PASS 1 already owns same-label pairs
                 sim = float(sims[i, j])
                 if sim < self.cross_label_rank_floor:
+                    continue
+                # The family gate belongs here most of all: this pass exists to
+                # look at pairs whose labels DIFFER, so it is where "Person vs
+                # Institution" actually shows up. Guarding it on unified_stage
+                # (as the unified candidate loop does) left it inert here —
+                # PASS 2 only runs when unified_stage is False — and the
+                # documented promise that cross-family pairs are "dropped
+                # before the LLM" did not hold on this path.
+                if self.label_family_gate and not labels_compatible(valid[i].label, valid[j].label):
+                    gated_pairs += 1
                     continue
                 if token_sets[i] & token_sets[j]:
                     door = "token"
@@ -827,6 +870,12 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 else:
                     continue
                 candidates.append((i, j, sim, door))
+
+        if gated_pairs:
+            ctx.log(
+                f"PASS 2 (cross-label): label family gate dropped {gated_pairs} "
+                "cross-family candidate pair(s)"
+            )
 
         if not candidates:
             ctx.log("PASS 2 (cross-label): no candidate pairs")
@@ -887,8 +936,8 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 x = parent[x]
             return x
 
-        confirmed_pairs = 0
-        for pos, (i, j, sim, door) in enumerate(capped):
+        yes_positions: list[int] = []
+        for pos, (i, j, _sim, _door) in enumerate(capped):
             item = by_index.get(pos)
             if item is None or not item.ok:
                 logger.warning(
@@ -900,6 +949,61 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 continue
             if not item.response.content.strip().upper().startswith("YES"):
                 continue
+            yes_positions.append(pos)
+
+        # Second opinion, same rule the unified stage applies to its cross-label
+        # YESes: ask again with A and B swapped and keep only the answers the
+        # model gives consistently. EVERY pair here is cross-label by
+        # construction, so the whole pass is the case the vote was written for;
+        # guarding it on unified_stage left these YESes accepted on a single
+        # coin-flip answer while `cross_label_vote=True` claimed otherwise.
+        vetoed = 0
+        if self.cross_label_vote and yes_positions:
+            swapped = [
+                _VERIFY_PROMPT_INTRO
+                + _CROSS_LABEL_PAIR_BLOCK.format(
+                    name_a=names[capped[pos][1]],
+                    label_a=valid[capped[pos][1]].label,
+                    desc_a=_desc(valid[capped[pos][1]]),
+                    neighbors_a=_fmt_neighbors(valid[capped[pos][1]].id),
+                    name_b=names[capped[pos][0]],
+                    label_b=valid[capped[pos][0]].label,
+                    desc_b=_desc(valid[capped[pos][0]]),
+                    neighbors_b=_fmt_neighbors(valid[capped[pos][0]].id),
+                    similarity=capped[pos][2],
+                )
+                + "\n\n"
+                + _RULES
+                + _VERIFY_PROMPT_ANSWER
+                for pos in yes_positions
+            ]
+            second = await self.llm.abatch_invoke(swapped, max_concurrency=self.max_llm_concurrency)
+            second_by_index = {item.index: item for item in second}
+            agreed: list[int] = []
+            for k, pos in enumerate(yes_positions):
+                item = second_by_index.get(k)
+                ok = (
+                    item is not None
+                    and item.ok
+                    and item.response.content.strip().upper().startswith("YES")
+                )
+                if ok:
+                    agreed.append(pos)
+                else:
+                    vetoed += 1
+                    i, j = capped[pos][0], capped[pos][1]
+                    logger.debug(
+                        "PASS 2 cross-label vote vetoed '%s' (%s) + '%s' (%s)",
+                        names[i],
+                        valid[i].label,
+                        names[j],
+                        valid[j].label,
+                    )
+            yes_positions = agreed
+
+        confirmed_pairs = 0
+        for pos in yes_positions:
+            i, j, sim, door = capped[pos]
             confirmed_pairs += 1
             logger.debug(
                 "PASS 2 merge '%s' (%s) + '%s' (%s) sim=%.3f door=%s",
@@ -943,9 +1047,22 @@ class LLMVerifiedResolution(ResolutionStrategy):
             # `merged_labels='Engineer'`. GraphNode.label is a single str, so
             # widening it would ripple through storage and query building;
             # the property is additive and loses nothing.
+            dups = [valid[mi] for mi in members[1:]]
+            # Both run BEFORE the "copy keys the survivor lacks" loop below,
+            # not after. That loop copies any key the survivor is missing, and a
+            # dup merged in an earlier phase carries a `descriptions` LIST. Copied
+            # first, it becomes what description_list() reads for the survivor, so
+            # the survivor's own `description` is never seen by
+            # set_merged_descriptions and is silently dropped. Measured on
+            # Alicia(D3) + [Alice(D1), alice(D2)]: the survivor came out as
+            # "D1 | D2" with D3 gone. base.py Stage 5 orders it this way for the
+            # same reason. source_chunk_ids has the same shape of defect — the
+            # survivor always has one, so the dup's chunks were never copied at
+            # all; base.py unions them on both of its merge paths.
+            set_merged_descriptions(survivor, dups)
+            merge_source_ids(survivor, dups)
             merged_labels: list[str] = []
-            for mi in members[1:]:
-                dup = valid[mi]
+            for dup in dups:
                 remap[dup.id] = survivor.id
                 if dup.label != survivor.label and dup.label not in merged_labels:
                     merged_labels.append(dup.label)
@@ -957,16 +1074,21 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 for key, value in dup.properties.items():
                     if key not in survivor.properties:
                         survivor.properties[key] = value
-            set_merged_descriptions(survivor, [valid[mi] for mi in members[1:]])
             if merged_labels:
                 existing = str(survivor.properties.get("merged_labels", "") or "")
-                kept = [p for p in existing.split(" | ") if p]
+                # Filtered on survivor.label like the collection loop above: the
+                # copy loop can hand the survivor a dup's merged_labels, and a
+                # node must never list its OWN label among the ones it absorbed.
+                kept = [p for p in existing.split(" | ") if p and p != survivor.label]
                 for lbl in merged_labels:
                     if lbl not in kept:
                         kept.append(lbl)
                 survivor.properties["merged_labels"] = " | ".join(kept)
 
-        ctx.log(f"PASS 2 (cross-label): {confirmed_pairs} pairs confirmed → {len(remap)} merged")
+        ctx.log(
+            f"PASS 2 (cross-label): {confirmed_pairs} pairs confirmed → {len(remap)} merged"
+            + (f" ({vetoed} YES vetoed on second vote)" if vetoed else "")
+        )
         return remap, len(remap)
 
     async def resolve(
@@ -977,7 +1099,12 @@ class LLMVerifiedResolution(ResolutionStrategy):
         ctx.log(
             f"LLMVerifiedResolution: {len(graph_data.nodes)} nodes, "
             f"{len(graph_data.relationships)} rels | "
-            f"hard={self.hard_threshold}, soft={self.soft_threshold}"
+            f"hard={self.hard_threshold}, "
+            + (
+                f"unified={self.unified_threshold}"
+                if self.unified_stage
+                else f"soft={self.soft_threshold}"
+            )
         )
 
         # ── Phase 1: Normalized name exact-match merge ────────────────────────
@@ -1369,85 +1496,91 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         )
                     requests.append(req)
 
-                if not blocks:
-                    continue
+                # Guarded, not `continue`d. `blocks` is empty whenever no
+                # pair reached the LLM — max_llm_pairs=0, or the family
+                # gate dropping every candidate — and continuing the label
+                # loop here skipped cluster building below, throwing away
+                # the hard merges already unioned into `parent`. Measured:
+                # with max_llm_pairs=0 and two identical vectors (cosine
+                # 1.0), merged_count came back 0 and both nodes survived.
+                if blocks:
+                    if self.batch_verification:
+                        confirmed = await self._verify_batched(blocks)
+                    else:
+                        confirmed = await self._verify_one_by_one(blocks, requests)
 
-                if self.batch_verification:
-                    confirmed = await self._verify_batched(blocks)
-                else:
-                    confirmed = await self._verify_one_by_one(blocks, requests)
-
-                # Second opinion on cross-label YESes. A YES on "Eleanor
-                # Whitford (Person) = Whitford Archive (Organization)" flipped
-                # between identical runs; asking again with A and B swapped and
-                # requiring agreement keeps only the answers the model gives
-                # consistently. Same-label pairs are not re-asked.
-                vetoed = 0
-                if self.unified_stage and self.cross_label_vote:
-                    recheck = [
-                        req
-                        for req in requests
-                        if confirmed.get(req.prompt_index) and req.node_a.label != req.node_b.label
-                    ]
-                    if recheck:
-                        swapped_blocks = [
-                            _CROSS_LABEL_PAIR_BLOCK.format(
-                                name_a=str(req.node_b.properties.get("name", req.node_b.id)),
-                                label_a=req.node_b.label,
-                                desc_a=str(
-                                    req.node_b.properties.get("description", "(no description)")
-                                ),
-                                neighbors_a=_fmt_neighbors(req.node_b.id),
-                                name_b=str(req.node_a.properties.get("name", req.node_a.id)),
-                                label_b=req.node_a.label,
-                                desc_b=str(
-                                    req.node_a.properties.get("description", "(no description)")
-                                ),
-                                neighbors_b=_fmt_neighbors(req.node_a.id),
-                                similarity=req.similarity,
-                            )
-                            for req in recheck
+                    # Second opinion on cross-label YESes. A YES on "Eleanor
+                    # Whitford (Person) = Whitford Archive (Organization)" flipped
+                    # between identical runs; asking again with A and B swapped and
+                    # requiring agreement keeps only the answers the model gives
+                    # consistently. Same-label pairs are not re-asked.
+                    vetoed = 0
+                    if self.unified_stage and self.cross_label_vote:
+                        recheck = [
+                            req
+                            for req in requests
+                            if confirmed.get(req.prompt_index)
+                            and req.node_a.label != req.node_b.label
                         ]
-                        swapped_reqs = [
-                            _VerificationRequest(
-                                node_a=req.node_b,
-                                node_b=req.node_a,
-                                idx_a=req.idx_b,
-                                idx_b=req.idx_a,
-                                similarity=req.similarity,
-                                label=req.label,
-                                prompt_index=k,
-                            )
-                            for k, req in enumerate(recheck)
-                        ]
-                        if self.batch_verification:
-                            second = await self._verify_batched(swapped_blocks)
-                        else:
-                            second = await self._verify_one_by_one(swapped_blocks, swapped_reqs)
-                        for k, req in enumerate(recheck):
-                            if not second.get(k):
-                                confirmed[req.prompt_index] = False
-                                vetoed += 1
-                                logger.debug(
-                                    "Cross-label vote vetoed '%s' (%s) + '%s' (%s)",
-                                    req.node_a.properties.get("name", req.node_a.id),
-                                    req.node_a.label,
-                                    req.node_b.properties.get("name", req.node_b.id),
-                                    req.node_b.label,
+                        if recheck:
+                            swapped_blocks = [
+                                _CROSS_LABEL_PAIR_BLOCK.format(
+                                    name_a=str(req.node_b.properties.get("name", req.node_b.id)),
+                                    label_a=req.node_b.label,
+                                    desc_a=str(
+                                        req.node_b.properties.get("description", "(no description)")
+                                    ),
+                                    neighbors_a=_fmt_neighbors(req.node_b.id),
+                                    name_b=str(req.node_a.properties.get("name", req.node_a.id)),
+                                    label_b=req.node_a.label,
+                                    desc_b=str(
+                                        req.node_a.properties.get("description", "(no description)")
+                                    ),
+                                    neighbors_b=_fmt_neighbors(req.node_a.id),
+                                    similarity=req.similarity,
                                 )
+                                for req in recheck
+                            ]
+                            swapped_reqs = [
+                                _VerificationRequest(
+                                    node_a=req.node_b,
+                                    node_b=req.node_a,
+                                    idx_a=req.idx_b,
+                                    idx_b=req.idx_a,
+                                    similarity=req.similarity,
+                                    label=req.label,
+                                    prompt_index=k,
+                                )
+                                for k, req in enumerate(recheck)
+                            ]
+                            if self.batch_verification:
+                                second = await self._verify_batched(swapped_blocks)
+                            else:
+                                second = await self._verify_one_by_one(swapped_blocks, swapped_reqs)
+                            for k, req in enumerate(recheck):
+                                if not second.get(k):
+                                    confirmed[req.prompt_index] = False
+                                    vetoed += 1
+                                    logger.debug(
+                                        "Cross-label vote vetoed '%s' (%s) + '%s' (%s)",
+                                        req.node_a.properties.get("name", req.node_a.id),
+                                        req.node_a.label,
+                                        req.node_b.properties.get("name", req.node_b.id),
+                                        req.node_b.label,
+                                    )
 
-                llm_confirmed = 0
-                for req in requests:
-                    if confirmed.get(req.prompt_index):
-                        union(req.idx_a, req.idx_b)
-                        llm_confirmed += 1
+                    llm_confirmed = 0
+                    for req in requests:
+                        if confirmed.get(req.prompt_index):
+                            union(req.idx_a, req.idx_b)
+                            llm_confirmed += 1
 
-                total_llm += llm_confirmed
-                ctx.log(
-                    f"Label '{label}': {len(capped)} ambiguous pairs → "
-                    f"{llm_confirmed} LLM-confirmed merges"
-                    + (f" ({vetoed} cross-label YES vetoed on second vote)" if vetoed else "")
-                )
+                    total_llm += llm_confirmed
+                    ctx.log(
+                        f"Label '{label}': {len(capped)} ambiguous pairs → "
+                        f"{llm_confirmed} LLM-confirmed merges"
+                        + (f" ({vetoed} cross-label YES vetoed on second vote)" if vetoed else "")
+                    )
 
             # Build clusters from Union-Find
             clusters: dict[int, list[int]] = defaultdict(list)
@@ -1477,9 +1610,22 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 # the properties. GraphNode.label is a single str, so widening
                 # it would ripple through storage and query building; keeping
                 # the evidence in a property is additive and loses nothing.
+                dups = [valid_nodes[mi] for mi in members[1:]]
+                # Both run BEFORE the "copy keys the survivor lacks" loop below,
+                # not after. That loop copies any key the survivor is missing, and a
+                # dup merged in an earlier phase carries a `descriptions` LIST. Copied
+                # first, it becomes what description_list() reads for the survivor, so
+                # the survivor's own `description` is never seen by
+                # set_merged_descriptions and is silently dropped. Measured on
+                # Alicia(D3) + [Alice(D1), alice(D2)]: the survivor came out as
+                # "D1 | D2" with D3 gone. base.py Stage 5 orders it this way for the
+                # same reason. source_chunk_ids has the same shape of defect — the
+                # survivor always has one, so the dup's chunks were never copied at
+                # all; base.py unions them on both of its merge paths.
+                set_merged_descriptions(survivor, dups)
+                merge_source_ids(survivor, dups)
                 merged_labels: list[str] = []
-                for mi in members[1:]:
-                    dup = valid_nodes[mi]
+                for dup in dups:
                     remap[dup.id] = survivor.id
                     if dup.label != survivor.label and dup.label not in merged_labels:
                         merged_labels.append(dup.label)
@@ -1489,11 +1635,13 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     for key, value in dup.properties.items():
                         if key not in survivor.properties:
                             survivor.properties[key] = value
-                set_merged_descriptions(survivor, [valid_nodes[mi] for mi in members[1:]])
                 if merged_labels:
                     # Same " | " convention as `description` above.
                     existing = str(survivor.properties.get("merged_labels", "") or "")
-                    kept = [p for p in existing.split(" | ") if p]
+                    # Filtered on survivor.label like the collection loop above:
+                    # the copy loop can hand the survivor a dup's merged_labels,
+                    # and a node must never list its OWN label as absorbed.
+                    kept = [p for p in existing.split(" | ") if p and p != survivor.label]
                     for lbl in merged_labels:
                         if lbl not in kept:
                             kept.append(lbl)

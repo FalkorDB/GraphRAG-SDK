@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 
 import pytest
 
@@ -76,15 +77,39 @@ class PairScriptedLLM(MockLLM):
         super().__init__(responses=["NO\nunscripted pair"])
         self._verdicts = verdicts
         self.asked: list[frozenset[str]] = []
+        self.batched_calls = 0
 
-    def invoke(self, prompt: str, **kwargs):
+    def _lookup(self, prompt: str) -> bool | None:
         for names, verdict in self._verdicts.items():
             if all(f"Name: {n}\n" in prompt for n in names):
                 self.asked.append(names)
-                self._call_index += 1
-                return LLMResponse(content="YES\nsame" if verdict else "NO\ndifferent")
+                return verdict
+        return None
+
+    def invoke(self, prompt: str, **kwargs):
         self._call_index += 1
-        return LLMResponse(content="NO\nunscripted")
+        # A batched prompt gets a batched reply, in the numbered format
+        # _BATCH_HEADER asks for. Answering one bare "YES" made every batched
+        # test unparseable for count > 1, so each one silently fell through to
+        # the individual-retry path and the batch-parse path was never covered.
+        sections = re.split(r"--- Pair (\d+) ---", prompt)
+        if len(sections) > 1:
+            self.batched_calls += 1
+            lines = []
+            for k in range(1, len(sections), 2):
+                number, body = sections[k], sections[k + 1]
+                names = [m.strip() for m in re.findall(r"Name: (.+)", body)]
+                verdict = self._lookup(body)
+                if verdict is None:
+                    verdict = False
+                pair = " vs ".join(names[:2]) if names else "?"
+                lines.append(f"{number}. {pair} | rule: test | {'YES' if verdict else 'NO'}")
+            return LLMResponse(content="\n".join(lines))
+
+        verdict = self._lookup(prompt)
+        if verdict is None:
+            return LLMResponse(content="NO\nunscripted")
+        return LLMResponse(content="YES\nsame" if verdict else "NO\ndifferent")
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -571,6 +596,19 @@ class TestParseBatchVerdicts:
         """The rule text may mention a verdict; only the final one counts."""
         text = "1. A vs B | rule: 1b says YES when it is only a fuller label | YES"
         assert _parse_batch_verdicts(text, 1) == {1: True}
+
+    def test_prose_after_the_verdict_does_not_invert_it(self):
+        """The verdict opens the final segment; anything after it is commentary.
+
+        "no narrowing" here contains a word-boundary NO, so scanning the whole
+        line for the LAST match read this YES as a NO and dropped the merge.
+        """
+        text = "3. A vs B | rule: 1b | YES - same entity, no narrowing"
+        assert _parse_batch_verdicts(text, 3) == {3: True}
+
+    def test_prose_after_a_no_keeps_it_a_no(self):
+        text = "1. A vs B | rule: 2 | NO - different people, yes really"
+        assert _parse_batch_verdicts(text, 1) == {1: False}
 
     def test_ignores_out_of_range_numbers(self):
         text = "1. A vs B | YES\n7. stray line | YES"
@@ -1078,7 +1116,11 @@ class TestCrossLabelPass:
             ],
             relationships=[],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
+        # cross_label_vote off: the count here is "every pair was asked once",
+        # which the second vote would otherwise inflate with re-asks.
+        resolver = LLMVerifiedResolution(
+            llm=llm, embedder=embedder, unified_stage=False, cross_label_vote=False
+        )
         result = await resolver.resolve(gd, ctx)
         assert llm._call_index == 3, "all three pairs must be asked"
         assert len(result.nodes) == 1, "two YES answers must chain all three"
@@ -1176,7 +1218,11 @@ class TestCrossLabelPass:
             ],
             relationships=[],
         )
-        resolver = LLMVerifiedResolution(llm=llm, embedder=embedder, unified_stage=False)
+        # cross_label_vote off: this test counts calls to show WHICH door formed
+        # the pair, and a confirmed pair now costs a second, swapped call.
+        resolver = LLMVerifiedResolution(
+            llm=llm, embedder=embedder, unified_stage=False, cross_label_vote=False
+        )
         result = await resolver.resolve(gd, ctx)
         assert llm._call_index == 1, "only the vector door can form this pair"
         assert len(result.nodes) == 1
@@ -2317,3 +2363,170 @@ class TestCrossLabelVote:
         result = await resolver.resolve(gd, ctx)
         assert len(llm.asked) == 1
         assert len(result.nodes) == 1
+
+
+class TestHardMergesSurviveAnEmptyLLMBatch:
+    """No pair reaching the LLM must not cancel the merges cosine already made.
+
+    `blocks` comes out empty whenever nothing is sent for verification —
+    max_llm_pairs=0, or the family gate dropping every candidate. Skipping the
+    rest of the label group there also skipped cluster building, discarding the
+    hard merges already unioned into the Union-Find.
+    """
+
+    @staticmethod
+    def _three_nodes():
+        """Two nodes on one point (cosine 1.0, a hard merge) plus a third far
+        enough away to be an ambiguous pair that would have gone to the LLM."""
+        desc = "Keeper of the Cape Morrow light."
+        vectors = {
+            f"Cape Morrow Lighthouse: {desc}": _angle(0.0),
+            f"the Cape Morrow light: {desc}": _angle(0.0),
+            f"Ashford Beacon: {desc}": _angle(0.6),
+        }
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="n1", label="Location",
+                          properties={"name": "Cape Morrow Lighthouse", "description": desc}),
+                GraphNode(id="n2", label="Location",
+                          properties={"name": "the Cape Morrow light", "description": desc}),
+                GraphNode(id="n3", label="Location",
+                          properties={"name": "Ashford Beacon", "description": desc}),
+            ],
+            relationships=[],
+        )
+        return gd, ControlledEmbedder(vectors)
+
+    async def test_max_llm_pairs_zero_still_applies_hard_merges(self, ctx):
+        gd, embedder = self._three_nodes()
+        llm = PairScriptedLLM({})
+        result = await LLMVerifiedResolution(
+            llm=llm, embedder=embedder, max_llm_pairs=0
+        ).resolve(gd, ctx)
+
+        assert llm.asked == []           # nothing was verified, as asked
+        assert result.merged_count == 1  # ...but cosine 1.0 still merged
+        assert len(result.nodes) == 2
+
+    async def test_every_candidate_gated_still_applies_hard_merges(self, ctx):
+        """Same shape, reached through the family gate instead of the cap."""
+        desc = "Keeper of the Cape Morrow light."
+        vectors = {
+            f"Cape Morrow Lighthouse: {desc}": _angle(0.0),
+            f"the Cape Morrow light: {desc}": _angle(0.0),
+            f"Eleanor Whitford: {desc}": _angle(0.6),
+        }
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="n1", label="Location",
+                          properties={"name": "Cape Morrow Lighthouse", "description": desc}),
+                GraphNode(id="n2", label="Location",
+                          properties={"name": "the Cape Morrow light", "description": desc}),
+                GraphNode(id="n3", label="Person",
+                          properties={"name": "Eleanor Whitford", "description": desc}),
+            ],
+            relationships=[],
+        )
+        llm = PairScriptedLLM({})
+        result = await LLMVerifiedResolution(
+            llm=llm, embedder=ControlledEmbedder(vectors)
+        ).resolve(gd, ctx)
+
+        assert llm.asked == []
+        assert result.merged_count == 1
+        assert len(result.nodes) == 2
+
+
+class TestCrossLabelPassHonoursTheGuards:
+    """PASS 2 is the pass made of cross-label pairs, so both cross-label guards
+    have to apply there. Both were written `self.unified_stage and ...`, and
+    PASS 2 only runs when unified_stage is False — so on the one path that has
+    a real cross-label stage, neither was doing anything.
+    """
+
+    @staticmethod
+    def _pair(label_a: str, label_b: str):
+        desc = "Founded the Whitford Archive and ran the lighthouse."
+        vectors = {
+            "Eleanor Whitford": _angle(0.0),
+            "Whitford Archive": _angle(0.3),
+        }
+        gd = GraphData(
+            nodes=[
+                GraphNode(id="n1", label=label_a,
+                          properties={"name": "Eleanor Whitford", "description": desc}),
+                GraphNode(id="n2", label=label_b,
+                          properties={"name": "Whitford Archive", "description": desc}),
+            ],
+            relationships=[],
+        )
+        return gd, ControlledEmbedder(vectors)
+
+    def _resolver(self, llm, embedder, **kw):
+        opts = dict(
+            unified_stage=False,
+            cross_label_merge=True,
+            cross_label_min_descriptions=0,
+            cross_label_vote=False,
+        )
+        opts.update(kw)
+        return LLMVerifiedResolution(llm=llm, embedder=embedder, **opts)
+
+    async def test_cross_family_pair_is_never_asked(self, ctx):
+        gd, embedder = self._pair("Person", "Organization")
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Archive"}): True})
+        result = await self._resolver(llm, embedder, label_family_gate=True).resolve(gd, ctx)
+        assert llm.asked == []
+        assert len(result.nodes) == 2
+
+    async def test_same_family_pair_still_reaches_the_llm(self, ctx):
+        """The gate must drop cross-FAMILY pairs only, not the whole pass."""
+        gd, embedder = self._pair("Person", "Engineer")
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Archive"}): True})
+        result = await self._resolver(llm, embedder, label_family_gate=True).resolve(gd, ctx)
+        assert llm.asked
+        assert len(result.nodes) == 1
+
+    async def test_second_vote_vetoes_an_unrepeatable_yes(self, ctx):
+        gd, embedder = self._pair("Person", "Engineer")
+        llm = FlipFlopLLM(frozenset({"Eleanor Whitford", "Whitford Archive"}))
+        result = await self._resolver(
+            llm, embedder, label_family_gate=False, cross_label_vote=True
+        ).resolve(gd, ctx)
+        assert len(llm.asked) == 2  # asked, then asked again with A/B swapped
+        assert len(result.nodes) == 2
+
+    async def test_second_vote_keeps_a_repeated_yes(self, ctx):
+        gd, embedder = self._pair("Person", "Engineer")
+        llm = PairScriptedLLM({frozenset({"Eleanor Whitford", "Whitford Archive"}): True})
+        result = await self._resolver(
+            llm, embedder, label_family_gate=False, cross_label_vote=True
+        ).resolve(gd, ctx)
+        assert len(llm.asked) == 2
+        assert len(result.nodes) == 1
+
+
+class TestThresholdKnobs:
+    """The floor actually in use is the one reported, and an empty LLM band is
+    announced rather than mistaken for the LLM having agreed."""
+
+    def test_empty_llm_band_warns(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            LLMVerifiedResolution(llm=MockLLM([]), hard_threshold=0.95, unified_threshold=0.97)
+        assert "without LLM verification" in caplog.text
+
+    def test_normal_band_is_silent(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            LLMVerifiedResolution(llm=MockLLM([]), hard_threshold=0.95, unified_threshold=0.65)
+        assert "without LLM verification" not in caplog.text
+
+    def test_the_stage_off_path_is_not_second_guessed(self, caplog):
+        """soft_threshold is the floor there; unified_threshold is not read."""
+        with caplog.at_level(logging.WARNING):
+            LLMVerifiedResolution(
+                llm=MockLLM([]),
+                hard_threshold=0.95,
+                unified_threshold=0.97,
+                unified_stage=False,
+            )
+        assert "without LLM verification" not in caplog.text
