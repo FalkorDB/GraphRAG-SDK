@@ -2503,22 +2503,42 @@ class TestDefaultResolver:
         from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship
 
         nodes = [
-            GraphNode(id="p1", label="Person", properties={"name": "Alice", "description": "engineer"}),
-            GraphNode(id="p2", label="Person", properties={"name": "alice", "description": "born 1970"}),
-            GraphNode(id="p3", label="Person", properties={"name": "Alice", "description": "lives in Paris"}),
-            GraphNode(id="o1", label="Organization", properties={"name": "Alice", "description": "a company"}),
+            GraphNode(
+                id="p1", label="Person", properties={"name": "Alice", "description": "engineer"}
+            ),
+            GraphNode(
+                id="p2", label="Person", properties={"name": "alice", "description": "born 1970"}
+            ),
+            GraphNode(
+                id="p3",
+                label="Person",
+                properties={"name": "Alice", "description": "lives in Paris"},
+            ),
+            GraphNode(
+                id="o1",
+                label="Organization",
+                properties={"name": "Alice", "description": "a company"},
+            ),
             GraphNode(id="x", label="Location", properties={"name": "Paris", "description": ""}),
         ]
-        rels = [GraphRelationship(start_node_id="p2", end_node_id="x", type="RELATES", properties={})]
+        rels = [
+            GraphRelationship(start_node_id="p2", end_node_id="x", type="RELATES", properties={})
+        ]
         graphrag.llm.abatch_invoke = AsyncMock(side_effect=AssertionError("LLM must not be called"))
 
-        res = await graphrag._default_ingest_resolver().resolve(GraphData(nodes=nodes, relationships=rels), Context())
+        res = await graphrag._default_ingest_resolver().resolve(
+            GraphData(nodes=nodes, relationships=rels), Context()
+        )
 
         ids = {n.id for n in res.nodes}
         assert len(ids) == 3 and "o1" in ids and "x" in ids  # 3 Persons → 1, Organization kept
         survivor = next(n for n in res.nodes if n.label == "Person")
         assert res.merged_count == 2
-        assert set(survivor.properties["description"].split(" | ")) == {"engineer", "born 1970", "lives in Paris"}
+        assert set(survivor.properties["description"].split(" | ")) == {
+            "engineer",
+            "born 1970",
+            "lives in Paris",
+        }
         assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
         assert res.relationships[0].end_node_id == "x"
 
@@ -2531,5 +2551,3 @@ class TestDefaultResolver:
         mine = ExactMatchResolution()
         await graphrag.ingest(text="Airbus builds aircraft.", resolver=mine)
         assert captured["resolver"] is mine
-
-

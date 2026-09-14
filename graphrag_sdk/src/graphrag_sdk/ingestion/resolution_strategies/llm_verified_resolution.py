@@ -1577,28 +1577,49 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 # Build a distance matrix (1 - sim) for nodes involved in ambiguous pairs,
                 # then use average-linkage fcluster to find tight groups.
                 # Intra-cluster pairs → hard merge; cross-cluster pairs → LLM.
-                amb_set = {i for i, j, _ in ambiguous_pairs} | {j for i, j, _ in ambiguous_pairs}
-                amb_indices = sorted(amb_set)
-                idx_map = {v: k for k, v in enumerate(amb_indices)}
-                n_amb = len(amb_indices)
-
-                # Condensed distance matrix for scipy
-                dist_matrix = np.ones((n_amb, n_amb), dtype=np.float32)
-                np.fill_diagonal(dist_matrix, 0.0)
-                for gi, gj, sim_val in ambiguous_pairs:
-                    ai, aj = idx_map[gi], idx_map[gj]
-                    dist = _pair_distance(sim_val)
-                    dist_matrix[ai, aj] = dist
-                    dist_matrix[aj, ai] = dist
-
-                condensed = ssd.squareform(dist_matrix)
-                linkage = sch.linkage(condensed, method="average")
                 # Cut at distance = 1 - hard_threshold: only cluster nodes that are
                 # very similar (near the hard-merge boundary). Nodes in the wider
                 # soft..hard ambiguous zone but spanning multiple tight groups go to LLM.
                 cut = 1.0 - self.hard_threshold
-                cluster_labels = sch.fcluster(linkage, t=cut, criterion="distance")
-                node_to_comm = {amb_indices[k]: int(cluster_labels[k]) for k in range(n_amb)}
+
+                # Only nodes that touch an edge at or inside the cut can end up
+                # sharing a cluster. Every other distance in this matrix is the
+                # 1.0 filler, and average linkage's first merge happens at the
+                # smallest pairwise distance, so a node whose every distance is
+                # 1.0 can never join anything at a cut this small — it is a
+                # singleton either way, and `_same_cluster` needs two members.
+                # Restricting the matrix to the incident nodes is therefore
+                # exact, and it is what keeps this bounded: the unified stage
+                # puts every node in ONE group, so the old
+                # `np.ones((n_amb, n_amb))` over every ambiguous node was the
+                # whole graph squared once each node had an ambiguous neighbour
+                # (50k nodes ≈ 9.3 GiB, allocated before max_llm_pairs can cap
+                # anything). The label buckets used to bound it by accident.
+                near_pairs = [
+                    (gi, gj, sim_val)
+                    for gi, gj, sim_val in ambiguous_pairs
+                    if _pair_distance(sim_val) <= cut
+                ]
+                amb_set = {i for i, _, _ in near_pairs} | {j for _, j, _ in near_pairs}
+                amb_indices = sorted(amb_set)
+                idx_map = {v: k for k, v in enumerate(amb_indices)}
+                n_amb = len(amb_indices)
+
+                node_to_comm: dict[int, int] = {}
+                if n_amb >= 2:
+                    # Condensed distance matrix for scipy
+                    dist_matrix = np.ones((n_amb, n_amb), dtype=np.float32)
+                    np.fill_diagonal(dist_matrix, 0.0)
+                    for gi, gj, sim_val in near_pairs:
+                        ai, aj = idx_map[gi], idx_map[gj]
+                        dist = _pair_distance(sim_val)
+                        dist_matrix[ai, aj] = dist
+                        dist_matrix[aj, ai] = dist
+
+                    condensed = ssd.squareform(dist_matrix)
+                    linkage = sch.linkage(condensed, method="average")
+                    cluster_labels = sch.fcluster(linkage, t=cut, criterion="distance")
+                    node_to_comm = {amb_indices[k]: int(cluster_labels[k]) for k in range(n_amb)}
 
                 def _same_cluster(gi: int, gj: int) -> bool:
                     return (

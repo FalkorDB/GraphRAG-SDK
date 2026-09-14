@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -3011,3 +3012,31 @@ class TestPhase1HonoursTheFamilyGate:
             llm=llm, embedder=ControlledEmbedder({}), cross_label_min_descriptions=1
         ).resolve(gd, ctx)
         assert llm._call_index > 0
+
+
+class TestFinalizeResolverUsesTheLiveFloor:
+    """`finalize()` lowers the candidate floor because names differ more across
+    sources than within one document. It set `soft_threshold`, which the
+    unified stage — on by default — never reads, so the lowered floor did
+    nothing and the 0.60-0.65 band was dropped anyway.
+    """
+
+    def test_both_floors_are_lowered_together(self):
+        from graphrag_sdk.api.main import _CROSS_SOURCE_SOFT_THRESHOLD, GraphRAG
+
+        resolver = GraphRAG._default_finalize_resolver(
+            SimpleNamespace(llm=MockLLM([]), embedder=ControlledEmbedder({}))
+        )
+        assert resolver.soft_threshold == _CROSS_SOURCE_SOFT_THRESHOLD
+        assert resolver.unified_threshold == _CROSS_SOURCE_SOFT_THRESHOLD
+
+    def test_the_floor_the_resolver_will_actually_use_is_the_lowered_one(self):
+        from graphrag_sdk.api.main import _CROSS_SOURCE_SOFT_THRESHOLD, GraphRAG
+
+        resolver = GraphRAG._default_finalize_resolver(
+            SimpleNamespace(llm=MockLLM([]), embedder=ControlledEmbedder({}))
+        )
+        live_floor = (
+            resolver.unified_threshold if resolver.unified_stage else resolver.soft_threshold
+        )
+        assert live_floor == _CROSS_SOURCE_SOFT_THRESHOLD

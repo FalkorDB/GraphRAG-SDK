@@ -4607,8 +4607,17 @@ class GraphRAG:
         once — a NO is remembered on the graph and two rows of one table are
         never a question — which is what makes this affordable as a default.
         """
+        # Set on BOTH floors. LLMVerifiedResolution reads soft_threshold only
+        # when unified_stage is off, and that now defaults to ON — so passing
+        # soft_threshold alone left finalize() silently running the 0.65 unified
+        # default and dropping exactly the 0.60-0.65 band this method exists to
+        # reach ("Ms. Raman" against "Priya Raman" at 0.70 is the easy case; the
+        # band below it is where cross-source pairs actually sit).
         return LLMVerifiedResolution(
-            self.llm, self.embedder, soft_threshold=_CROSS_SOURCE_SOFT_THRESHOLD
+            self.llm,
+            self.embedder,
+            soft_threshold=_CROSS_SOURCE_SOFT_THRESHOLD,
+            unified_threshold=_CROSS_SOURCE_SOFT_THRESHOLD,
         )
 
     async def finalize(

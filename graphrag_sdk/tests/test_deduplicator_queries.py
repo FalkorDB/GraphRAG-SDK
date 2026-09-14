@@ -50,7 +50,7 @@ def test_incoming_remap_anchors_on_the_duplicate() -> None:
 def test_every_remap_query_looks_up_the_duplicate_by_indexed_id(query: str) -> None:
     """No remap query may start from a bare label scan over all entities."""
     first_match = query.index("MATCH ")
-    opening = query[first_match:first_match + 60]
+    opening = query[first_match : first_match + 60]
     assert "$dup_id" in opening or "$survivor_id" in opening, (
         "the first MATCH must be an id lookup so the index is used:\n" + query
     )
@@ -80,28 +80,35 @@ from graphrag_sdk.storage.deduplicator import (  # noqa: E402
 
 
 class TestNormalizeEntityName:
-    @pytest.mark.parametrize("a,b", [
-        ("The University of Barcelona", "University of Barcelona"),
-        ("Jardín Mecánico", "Jardin Mecanico"),
-        ("Ayuntamiento de Calarosa.", "ayuntamiento de calarosa"),
-        ("  Cape  Morrow   Light ", "Cape Morrow Light"),
-    ])
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("The University of Barcelona", "University of Barcelona"),
+            ("Jardín Mecánico", "Jardin Mecanico"),
+            ("Ayuntamiento de Calarosa.", "ayuntamiento de calarosa"),
+            ("  Cape  Morrow   Light ", "Cape Morrow Light"),
+        ],
+    )
     def test_variants_fold_together(self, a: str, b: str) -> None:
         assert normalize_entity_name(a) == normalize_entity_name(b)
 
     def test_generational_suffix_is_preserved(self) -> None:
         """A father and his son are different people, not a formatting variant."""
-        assert (normalize_entity_name("Elias Whitford, Jr.")
-                != normalize_entity_name("Elias Whitford"))
+        assert normalize_entity_name("Elias Whitford, Jr.") != normalize_entity_name(
+            "Elias Whitford"
+        )
 
     def test_an_all_article_name_does_not_normalize_to_empty(self) -> None:
         assert normalize_entity_name("The") != ""
 
-    @pytest.mark.parametrize("a,b", [
-        ("東京", "大阪"),
-        ("القاهرة", "بغداد"),
-        ("東京", "Tokyo"),
-    ])
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("東京", "大阪"),
+            ("القاهرة", "بغداد"),
+            ("東京", "Tokyo"),
+        ],
+    )
     def test_non_latin_names_do_not_collapse_together(self, a: str, b: str) -> None:
         """ASCII folding leaves nothing of a CJK or Arabic name.
 
@@ -114,12 +121,15 @@ class TestNormalizeEntityName:
     def test_non_latin_name_still_folds_case_and_whitespace(self) -> None:
         assert normalize_entity_name("  東京  ") == normalize_entity_name("東京")
 
-    @pytest.mark.parametrize("a,b", [
-        ("Отдел 5", "Кабинет 5"),          # ASCII fold left only "5"
-        ("東京, Japan", "大阪, Japan"),      # ... only "japan"
-        ("Школа №1", "Гимназия №1"),       # NFKD maps № -> "No"
-        ("北京 University", "上海 University"),
-    ])
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("Отдел 5", "Кабинет 5"),  # ASCII fold left only "5"
+            ("東京, Japan", "大阪, Japan"),  # ... only "japan"
+            ("Школа №1", "Гимназия №1"),  # NFKD maps № -> "No"
+            ("北京 University", "上海 University"),
+        ],
+    )
     def test_mixed_script_names_keep_their_non_latin_part(self, a: str, b: str) -> None:
         """One surviving ASCII token must not become the whole grouping key.
 
@@ -137,21 +147,27 @@ class TestIsAcronymOf:
     def test_matches_initials_skipping_stopwords(self) -> None:
         assert is_acronym_of("AIHS", "Ashford Island Historical Society")
 
-    @pytest.mark.parametrize("short,long", [
-        ("AIHS", "Ashford Island Historical Trust"),   # wrong final initial
-        ("ABC", "Alpha"),                              # long form is one word
-        ("A", "Alpha Beta"),                           # too short to be evidence
-        ("VERYLONGACRONYM", "Very Long Acronym"),      # implausible length
-        ("A1HS", "Ashford Island Historical Society"),  # not alphabetic
-    ])
+    @pytest.mark.parametrize(
+        "short,long",
+        [
+            ("AIHS", "Ashford Island Historical Trust"),  # wrong final initial
+            ("ABC", "Alpha"),  # long form is one word
+            ("A", "Alpha Beta"),  # too short to be evidence
+            ("VERYLONGACRONYM", "Very Long Acronym"),  # implausible length
+            ("A1HS", "Ashford Island Historical Society"),  # not alphabetic
+        ],
+    )
     def test_rejects_implausible_pairs(self, short: str, long: str) -> None:
         assert not is_acronym_of(short, long)
 
-    @pytest.mark.parametrize("short,long", [
-        ("Bo", "Ben Ottoson"),
-        ("Al", "Anna Lindqvist"),
-        ("Jo", "Jane Oliver"),
-    ])
+    @pytest.mark.parametrize(
+        "short,long",
+        [
+            ("Bo", "Ben Ottoson"),
+            ("Al", "Anna Lindqvist"),
+            ("Jo", "Jane Oliver"),
+        ],
+    )
     def test_two_letter_names_are_not_acronym_evidence(self, short: str, long: str) -> None:
         """Any two-letter name spells the initials of some two-word name.
 
@@ -180,13 +196,18 @@ class TestNameGrouping:
         out = EntityDeduplicator._merge_acronym_groups(list(groups.values()))
         assert sorted(len(g) for g in out) == [1, 1]
 
-    @pytest.mark.parametrize("a,b", [
-        ("Los Angeles", "Angeles"),
-        ("Le Mans", "Mans"),
-        ("A.I.", "I"),
-    ])
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("Los Angeles", "Angeles"),
+            ("Le Mans", "Mans"),
+            ("A.I.", "I"),
+        ],
+    )
     def test_foreign_articles_and_dotted_acronyms_do_not_collide(
-        self, a: str, b: str,
+        self,
+        a: str,
+        b: str,
     ) -> None:
         assert normalize_entity_name(a) != normalize_entity_name(b)
 
@@ -219,8 +240,10 @@ class TestAcronymFold:
 
     def test_unrelated_short_names_do_not_chain(self) -> None:
         """The classic transitive-merge disaster: everything short collapsing."""
-        groups = [[_ent(str(i), n, "Organization")] for i, n in
-                  enumerate(["ABC", "XYZ", "QRS", "Alpha Beta Corp"])]
+        groups = [
+            [_ent(str(i), n, "Organization")]
+            for i, n in enumerate(["ABC", "XYZ", "QRS", "Alpha Beta Corp"])
+        ]
         out = EntityDeduplicator._merge_acronym_groups(groups)
         assert max(len(g) for g in out) <= 2
 
@@ -283,12 +306,13 @@ class TestAcronymFold:
         """A name-folded group carries every member's label."""
         groups = [
             [_ent("1", "AIHS", "Organization")],
-            [_ent("2", "Ashford Island Historical Society", "Location"),
-             _ent("3", "Ashford Island Historical Society", "Organization")],
+            [
+                _ent("2", "Ashford Island Historical Society", "Location"),
+                _ent("3", "Ashford Island Historical Society", "Organization"),
+            ],
         ]
         out = EntityDeduplicator._merge_acronym_groups(groups)
         assert sorted(len(g) for g in out) == [3]
-
 
 
 class TestMergePreservesDescriptions:
@@ -327,10 +351,12 @@ class TestMergePreservesDescriptions:
         return [c for c in graph.query_raw.call_args_list if "DETACH DELETE" in c.args[0]]
 
     async def test_losing_description_is_preserved(self):
-        dedup, graph = self._dedup([
-            ["e1", "Cape Morrow Light", "a lighthouse on Cape Morrow", "Location"],
-            ["e2", "cape morrow light", "first lit in 1871", "Location"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Cape Morrow Light", "a lighthouse on Cape Morrow", "Location"],
+                ["e2", "cape morrow light", "first lit in 1871", "Location"],
+            ]
+        )
         merged = await dedup.deduplicate()
         assert merged == 1
         writes = self._description_writes(graph)
@@ -339,27 +365,33 @@ class TestMergePreservesDescriptions:
         assert "a lighthouse on Cape Morrow" in writes[0]
 
     async def test_same_name_different_label_is_not_merged(self):
-        dedup, graph = self._dedup([
-            ["e1", "Paris", "the capital of France", "Location"],
-            ["e2", "Paris", "a prince of Troy", "Person"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Paris", "the capital of France", "Location"],
+                ["e2", "Paris", "a prince of Troy", "Person"],
+            ]
+        )
         merged = await dedup.deduplicate()
         assert merged == 0
         assert self._description_writes(graph) == []
 
     async def test_identical_descriptions_are_not_concatenated(self):
-        dedup, graph = self._dedup([
-            ["e1", "Alice", "an engineer", "Person"],
-            ["e2", "alice", "an engineer", "Person"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Alice", "an engineer", "Person"],
+                ["e2", "alice", "an engineer", "Person"],
+            ]
+        )
         await dedup.deduplicate()
         assert self._description_writes(graph) == []
 
     async def test_empty_description_does_not_produce_a_separator(self):
-        dedup, graph = self._dedup([
-            ["e1", "Bob", "a physicist", "Person"],
-            ["e2", "bob", "", "Person"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Bob", "a physicist", "Person"],
+                ["e2", "bob", "", "Person"],
+            ]
+        )
         await dedup.deduplicate()
         for w in self._description_writes(graph):
             assert not w.startswith(" | ") and not w.endswith(" | ")
@@ -371,20 +403,24 @@ class TestMergePreservesDescriptions:
         a node described as ``"first lit in 1871"`` used to append it again.
         Across incremental finalize cycles that compounds on hub entities.
         """
-        dedup, graph = self._dedup([
-            ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
-            ["e2", "cape morrow light", "first lit in 1871", "Location"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
+                ["e2", "cape morrow light", "first lit in 1871", "Location"],
+            ]
+        )
         merged = await dedup.deduplicate()
         assert merged == 1
         assert self._description_writes(graph) == []
 
     async def test_segments_accumulate_once_across_a_group(self):
-        dedup, graph = self._dedup([
-            ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
-            ["e2", "cape morrow light", "first lit in 1871", "Location"],
-            ["e3", "Cape  Morrow  Light", "first lit in 1871 | automated in 1960", "Location"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
+                ["e2", "cape morrow light", "first lit in 1871", "Location"],
+                ["e3", "Cape  Morrow  Light", "first lit in 1871 | automated in 1960", "Location"],
+            ]
+        )
         await dedup.deduplicate()
         writes = self._description_writes(graph)
         # e3 has the longest description and survives; the others fold in once.
@@ -397,10 +433,12 @@ class TestMergePreservesDescriptions:
         survivor's description written afterwards, with the write's failure
         swallowed -- the duplicate's unique text was gone for good.
         """
-        dedup, graph = self._dedup([
-            ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
-            ["e2", "cape morrow light", "first lit in 1871", "Location"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
+                ["e2", "cape morrow light", "first lit in 1871", "Location"],
+            ]
+        )
         await dedup.deduplicate()
         deletes = self._delete_calls(graph)
         assert len(deletes) == 1
@@ -418,10 +456,13 @@ class TestMergePreservesDescriptions:
         success. Binding the survivor in the delete statement makes a missing
         one a no-op, and the empty result must not count as merged.
         """
-        dedup, graph = self._dedup([
-            ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
-            ["e2", "cape morrow light", "first lit in 1871", "Location"],
-        ], survivor_exists=False)
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
+                ["e2", "cape morrow light", "first lit in 1871", "Location"],
+            ],
+            survivor_exists=False,
+        )
         with caplog.at_level("WARNING", logger="graphrag_sdk.storage.deduplicator"):
             merged = await dedup.deduplicate()
         assert merged == 0
@@ -431,10 +472,12 @@ class TestMergePreservesDescriptions:
         """Entity nodes carry ``source_chunk_ids`` read back by
         ``CachedChunkExtraction``; deleting the duplicate outright dropped
         its half."""
-        dedup, graph = self._dedup([
-            ["e1", "Alice", "an engineer", "Person"],
-            ["e2", "alice", "", "Person"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Alice", "an engineer", "Person"],
+                ["e2", "alice", "", "Person"],
+            ]
+        )
         await dedup.deduplicate()
         (delete,) = self._delete_calls(graph)
         q = delete.args[0]
@@ -449,10 +492,17 @@ class TestAcronymMerge:
     async def test_long_form_survives_regardless_of_description_length(self):
         """``backfill_entity_embeddings`` embeds the *name* only. Keeping
         ``AIHS`` would leave the entity vector-indexed as an opaque string."""
-        dedup, graph = self._dedup([
-            ["a", "AIHS", "a much longer description that used to win the survivor slot", "Organization"],
-            ["b", "Ashford Island Historical Society", "short", "Organization"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                [
+                    "a",
+                    "AIHS",
+                    "a much longer description that used to win the survivor slot",
+                    "Organization",
+                ],
+                ["b", "Ashford Island Historical Society", "short", "Organization"],
+            ]
+        )
         merged = await dedup.deduplicate()
         assert merged == 1
         (delete,) = self._delete_calls(graph)
@@ -460,10 +510,12 @@ class TestAcronymMerge:
         assert delete.args[1]["survivor_id"] == "b"
 
     async def test_absorbed_acronym_is_recorded_as_an_alias(self):
-        dedup, graph = self._dedup([
-            ["a", "AIHS", "", "Organization"],
-            ["b", "Ashford Island Historical Society", "", "Organization"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["a", "AIHS", "", "Organization"],
+                ["b", "Ashford Island Historical Society", "", "Organization"],
+            ]
+        )
         await dedup.deduplicate()
         (delete,) = self._delete_calls(graph)
         q, params = delete.args
@@ -471,10 +523,12 @@ class TestAcronymMerge:
         assert params["aliases"] == ["AIHS"]
 
     async def test_spelling_variant_is_not_an_alias(self):
-        dedup, graph = self._dedup([
-            ["e1", "Cape Morrow Light", "", "Location"],
-            ["e2", "cape morrow light", "", "Location"],
-        ])
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Cape Morrow Light", "", "Location"],
+                ["e2", "cape morrow light", "", "Location"],
+            ]
+        )
         await dedup.deduplicate()
         (delete,) = self._delete_calls(graph)
         assert "aliases" not in delete.args[1]
@@ -523,6 +577,4 @@ class TestFuzzyMerge:
             "descs": ["a physicist", "born in Leeds"],
             "aliases": ["J. Doe"],
         }
-        assert (
-            "SET s.description = $desc, s.descriptions = $descs, s.aliases = $aliases" in q
-        )
+        assert "SET s.description = $desc, s.descriptions = $descs, s.aliases = $aliases" in q
