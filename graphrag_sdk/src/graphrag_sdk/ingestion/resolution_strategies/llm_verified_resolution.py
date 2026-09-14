@@ -1214,6 +1214,7 @@ class LLMVerifiedResolution(ResolutionStrategy):
             # cross-family homograph before the embedding stage's gate or the
             # second vote ever ran.
             label_gate=labels_compatible if self.label_family_gate else None,
+            cross_label_vote=self.cross_label_vote,
         )
         deduplicated_nodes = held_out + deduplicated_nodes
         ctx.log(

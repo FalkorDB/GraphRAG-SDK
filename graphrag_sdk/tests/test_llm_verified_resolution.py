@@ -3040,3 +3040,70 @@ class TestFinalizeResolverUsesTheLiveFloor:
             resolver.unified_threshold if resolver.unified_stage else resolver.soft_threshold
         )
         assert live_floor == _CROSS_SOURCE_SOFT_THRESHOLD
+
+
+class TestPhase1SecondVote:
+    """Phase 1 merges on the name alone, so one YES was the only thing between
+    a same-name homograph and a merge. The same second vote the embedding
+    stage applies now guards it: the approval must be repeated with the
+    candidate types listed in the opposite order.
+    """
+
+    @staticmethod
+    def _homograph():
+        return GraphData(
+            nodes=[
+                GraphNode(
+                    id="a",
+                    label="Person",
+                    properties={"name": "Paris", "description": "Prince of Troy."},
+                ),
+                GraphNode(
+                    id="b",
+                    label="Engineer",
+                    properties={"name": "Paris", "description": "Built the walls."},
+                ),
+                GraphNode(
+                    id="c",
+                    label="Engineer",
+                    properties={"name": "Paris", "description": "Son of Priam."},
+                ),
+            ],
+            relationships=[],
+        )
+
+    class _FlipFlop(MockLLM):
+        """YES the first time each prompt shape is asked, NO the second."""
+
+        def __init__(self) -> None:
+            super().__init__(responses=["YES Person"])
+            self.calls = 0
+
+        def invoke(self, prompt: str, **kwargs):
+            self._call_index += 1
+            self.calls += 1
+            return LLMResponse(
+                content="YES Person\nMerged." if self.calls == 1 else "NO\nDifferent."
+            )
+
+    async def test_an_unrepeatable_yes_does_not_merge(self, ctx):
+        llm = self._FlipFlop()
+        result = await LLMVerifiedResolution(
+            llm=llm,
+            embedder=ControlledEmbedder({}),
+            cross_label_min_descriptions=1,
+            label_family_gate=False,
+        ).resolve(self._homograph(), ctx)
+        assert llm.calls >= 2, "the approval must be re-asked"
+        assert {n.label for n in result.nodes} == {"Person", "Engineer"}
+
+    async def test_the_vote_can_be_turned_off(self, ctx):
+        llm = self._FlipFlop()
+        result = await LLMVerifiedResolution(
+            llm=llm,
+            embedder=ControlledEmbedder({}),
+            cross_label_min_descriptions=1,
+            label_family_gate=False,
+            cross_label_vote=False,
+        ).resolve(self._homograph(), ctx)
+        assert {n.label for n in result.nodes} == {"Person"}

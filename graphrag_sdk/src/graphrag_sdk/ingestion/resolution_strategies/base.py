@@ -142,6 +142,7 @@ async def exact_match_merge(
     cross_label_min_descriptions: int = 3,
     resolve_property: str = "name",
     label_gate: Callable[[str, str], bool] | None = None,
+    cross_label_vote: bool = False,
 ) -> tuple[list[GraphNode], dict[str, str], int]:
     """Phase 1: group nodes by normalized name and merge exact duplicates.
 
@@ -359,6 +360,40 @@ async def exact_match_merge(
                 else " | ".join(cl_candidates[cl_idx]["descriptions"])
             )
             cl_approvals[cl_idx] = (chosen, cl_summary)
+
+    # ── Stage 4b: second opinion on cross-label approvals ──
+    # The same rule the embedding stage applies to its cross-label YESes, and
+    # for the same reason: this phase merges on the NAME alone, so a single
+    # approval is the only thing standing between a homograph and a merge.
+    # Asked again with the candidate types listed in the opposite order —
+    # the analogue of swapping A and B — and only the approvals the model
+    # repeats survive. A failed or malformed re-ask is not agreement.
+    if cross_label_vote and cl_approvals and llm is not None:
+        revote_idx = sorted(cl_approvals)
+        revote_prompts = [
+            _SUMMARY_WITH_TYPE_PROMPT.format(
+                entity_name=cl_candidates[cl_idx]["name"],
+                max_tokens=max_summary_tokens,
+                types=", ".join(reversed(cl_candidates[cl_idx]["types"])),
+                descriptions="\n".join(f"- {d}" for d in cl_candidates[cl_idx]["descriptions"]),
+            )
+            for cl_idx in revote_idx
+        ]
+        second = await llm.abatch_invoke(revote_prompts)
+        agreed: dict[int, bool] = {}
+        for item in second:
+            if not item.ok:
+                continue
+            first_line = item.response.content.strip().split("\n", 1)[0].strip()
+            agreed[item.index] = first_line.upper().startswith("YES")
+        for k, cl_idx in enumerate(revote_idx):
+            if not agreed.get(k):
+                logger.debug(
+                    "Cross-label vote vetoed the phase-1 merge of '%s' (%s)",
+                    cl_candidates[cl_idx]["name"],
+                    cl_candidates[cl_idx]["types"],
+                )
+                del cl_approvals[cl_idx]
 
     # ── Stage 5: apply same-label merges, producing one survivor per sl group ──
     sl_survivor_by_idx: dict[int, GraphNode] = {}
