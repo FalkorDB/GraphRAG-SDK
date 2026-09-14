@@ -900,8 +900,22 @@ class LLMVerifiedResolution(ResolutionStrategy):
         names = [_name(n) for n in valid]
         token_sets = [_name_tokens(nm) for nm in names]
 
+        # What the caller has already settled, read exactly as the embedding
+        # pass reads it. Without this, finalize() could re-merge a cross-label
+        # pair the model had already rejected on an earlier run, or fuse two
+        # rows the caller declared distinct — the doors below do not care what
+        # a previous run decided, so the resolver's contract was only being
+        # honoured on one of its two passes.
+        skip_pairs: set[frozenset[str]] = set(ctx.metadata.get(RESOLUTION_SKIP_PAIRS) or ())
+        distinct_ids: set[str] = set(ctx.metadata.get(RESOLUTION_DISTINCT_IDS) or ())
+
+        def _settled(gi: int, gj: int) -> bool:
+            pair = frozenset((valid[gi].id, valid[gj].id))
+            return pair in skip_pairs or pair <= distinct_ids
+
         candidates: list[tuple[int, int, float, str]] = []
         gated_pairs = 0
+        settled_pairs = 0
         for i in range(len(valid)):
             sims_i = mat_normed[i] @ mat_normed.T
             for j in range(i + 1, len(valid)):
@@ -909,6 +923,9 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     continue  # PASS 1 already owns same-label pairs
                 sim = float(sims_i[j])
                 if sim < self.cross_label_rank_floor:
+                    continue
+                if (skip_pairs or distinct_ids) and _settled(i, j):
+                    settled_pairs += 1
                     continue
                 # The family gate belongs here most of all: this pass exists to
                 # look at pairs whose labels DIFFER, so it is where "Person vs
@@ -929,6 +946,9 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 else:
                     continue
                 candidates.append((i, j, sim, door))
+
+        if settled_pairs:
+            ctx.log(f"PASS 2 (cross-label): {settled_pairs} pair(s) already settled by the caller")
 
         if gated_pairs:
             ctx.log(
@@ -1009,13 +1029,44 @@ class LLMVerifiedResolution(ResolutionStrategy):
             )
         )
 
+        # Same cluster-family bookkeeping as the unified path, for the same
+        # reason: the gate above is PAIRWISE and Union-Find is transitive, so
+        # Person~Engineer plus Engineer~Institution (Engineer belongs to no
+        # known family, so both are admitted) would otherwise land Person and
+        # Institution in one cluster — the pair the gate refuses to ask about.
         parent = list(range(len(valid)))
+        cluster_families: dict[int, set[str]] = {}
+        for k in range(len(valid)):
+            fam = _LABEL_TO_FAMILY.get((valid[k].label or "").strip().lower())
+            cluster_families[k] = {fam} if fam else set()
+        blocked_unions = 0
 
         def find(x: int) -> int:
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
+
+        def union(x: int, y: int) -> bool:
+            nonlocal blocked_unions
+            rx, ry = find(x), find(y)
+            if rx == ry:
+                return False
+            if self.label_family_gate:
+                merged_families = cluster_families[rx] | cluster_families[ry]
+                if len(merged_families) > 1:
+                    blocked_unions += 1
+                    logger.debug(
+                        "PASS 2 family gate blocked a transitive union of %s with %s",
+                        sorted(cluster_families[rx]),
+                        sorted(cluster_families[ry]),
+                    )
+                    return False
+                cluster_families[rx] = merged_families
+            else:
+                cluster_families[rx] = cluster_families[rx] | cluster_families[ry]
+            parent[ry] = rx
+            return True
 
         yes_positions = [pos for pos in range(len(capped)) if verdicts.get(pos)]
         unanswered = [pos for pos in range(len(capped)) if pos not in verdicts]
@@ -1100,9 +1151,13 @@ class LLMVerifiedResolution(ResolutionStrategy):
                 sim,
                 door,
             )
-            ri, rj = find(i), find(j)
-            if ri != rj:
-                parent[rj] = ri
+            union(i, j)
+
+        if blocked_unions:
+            ctx.log(
+                f"PASS 2 (cross-label): family gate blocked {blocked_unions} "
+                "transitive cross-family union(s)"
+            )
 
         clusters: dict[int, list[int]] = defaultdict(list)
         for i in range(len(valid)):
@@ -1521,10 +1576,6 @@ class LLMVerifiedResolution(ResolutionStrategy):
 
             if gated_pairs:
                 ctx.log(f"Label family gate dropped {gated_pairs} cross-family candidate pair(s)")
-            if blocked_unions:
-                ctx.log(
-                    f"Label family gate blocked {blocked_unions} transitive cross-family union(s)"
-                )
 
             def _codes_apart(gi: int, gj: int) -> bool:
                 return differ_only_in_digits(
@@ -1795,16 +1846,30 @@ class LLMVerifiedResolution(ResolutionStrategy):
                             else:
                                 second = await self._verify_one_by_one(swapped_blocks, swapped_reqs)
                             for k, req in enumerate(recheck):
-                                if not second.get(k):
+                                if second.get(k):
+                                    continue
+                                vetoed += 1
+                                if k in second:
+                                    # An explicit NO on the re-ask: a real
+                                    # disagreement, worth remembering.
                                     confirmed[req.prompt_index] = False
-                                    vetoed += 1
-                                    logger.debug(
-                                        "Cross-label vote vetoed '%s' (%s) + '%s' (%s)",
-                                        req.node_a.properties.get("name", req.node_a.id),
-                                        req.node_a.label,
-                                        req.node_b.properties.get("name", req.node_b.id),
-                                        req.node_b.label,
-                                    )
+                                else:
+                                    # No verdict at all — a failed call or an
+                                    # unparseable reply. Drop the YES, but do
+                                    # NOT record False: the later loop persists
+                                    # a False into RESOLUTION_REJECTED_PAIRS,
+                                    # which would turn one transient failure
+                                    # into a permanent "these are distinct" that
+                                    # no later run ever retries.
+                                    confirmed.pop(req.prompt_index, None)
+                                logger.debug(
+                                    "Cross-label vote %s '%s' (%s) + '%s' (%s)",
+                                    "vetoed" if k in second else "left unconfirmed",
+                                    req.node_a.properties.get("name", req.node_a.id),
+                                    req.node_a.label,
+                                    req.node_b.properties.get("name", req.node_b.id),
+                                    req.node_b.label,
+                                )
 
                     llm_confirmed = 0
                     for req in requests:
@@ -1826,6 +1891,14 @@ class LLMVerifiedResolution(ResolutionStrategy):
                         f"{llm_confirmed} LLM-confirmed merges"
                         + (f" ({vetoed} cross-label YES vetoed on second vote)" if vetoed else "")
                     )
+
+            # Reported here, not beside the pairwise `gated_pairs` count: every
+            # union() call has now happened, and before them the counter is
+            # necessarily zero.
+            if blocked_unions:
+                ctx.log(
+                    f"Label family gate blocked {blocked_unions} transitive cross-family union(s)"
+                )
 
             # Build clusters from Union-Find
             clusters: dict[int, list[int]] = defaultdict(list)
