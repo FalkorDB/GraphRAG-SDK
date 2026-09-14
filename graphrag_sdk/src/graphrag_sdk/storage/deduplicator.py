@@ -119,8 +119,8 @@ def is_acronym_of(short: str, long: str) -> bool:
     return key == _expansion_key(normalize_entity_name(long))
 
 
-def _merge_description(current: str, absorbed: str) -> str:
-    """Join two descriptions with ``" | "``, keeping each segment once.
+def _merge_description_segments(current: str, absorbed: str) -> list[str]:
+    """The merged member descriptions of two nodes, each kept once.
 
     Segments are compared individually, not whole strings: once a survivor
     holds ``"a lighthouse | first lit in 1871"``, absorbing a node described as
@@ -132,7 +132,12 @@ def _merge_description(current: str, absorbed: str) -> str:
         for seg in (s.strip() for s in str(text or "").split(" | ")):
             if seg and seg not in segments:
                 segments.append(seg)
-    return " | ".join(segments)
+    return segments
+
+
+def _merge_description(current: str, absorbed: str) -> str:
+    """:func:`_merge_description_segments`, joined with ``" | "``."""
+    return " | ".join(_merge_description_segments(current, absorbed))
 
 
 # Cypher queries for remapping edges from a duplicate to a survivor entity.
@@ -719,12 +724,21 @@ class EntityDeduplicator:
 
         # Concatenated with " | ", matching LLMVerifiedResolution's survivor
         # rule, so both mechanisms leave the same shape behind.
-        description = _merge_description(
+        segments = _merge_description_segments(
             survivor.get("description") or "", dup.get("description") or ""
         )
+        description = " | ".join(segments)
         if description != (survivor.get("description") or ""):
+            # Both forms, together. Resolution writes ``descriptions`` (the
+            # members) alongside ``description`` (those members joined), and
+            # ``description_list`` prefers the list wherever it is present. A
+            # survivor updated here without it would keep whatever array
+            # ingest-time resolution left behind and silently report fewer
+            # members than its own ``description`` holds.
             sets.append("s.description = $desc")
+            sets.append("s.descriptions = $descs")
             params["desc"] = description
+            params["descs"] = segments
 
         aliases = self._merged_aliases(survivor, dup)
         if aliases != list(survivor.get("aliases") or []):
@@ -735,7 +749,7 @@ class EntityDeduplicator:
         if keep_props is not None and dup_props is not None:
             carry = properties_to_carry(keep_props, dup_props, never=self._NEVER_CARRY)
             # Handled above, or by the absorb query itself.
-            for handled in ("description", "aliases", "source_chunk_ids"):
+            for handled in ("description", "descriptions", "aliases", "source_chunk_ids"):
                 carry.pop(handled, None)
         if carry:
             sets.append("s += $carry")

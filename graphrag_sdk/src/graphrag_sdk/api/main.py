@@ -344,6 +344,15 @@ class GraphRAG:
         # Deduplication engine
         self._deduplicator = EntityDeduplicator(self._graph_store, self.embedder)
 
+        # Cross-document deduplication only happens in ``finalize()`` — the
+        # ingest-time resolver sees one document at a time and can never
+        # compare "Airbus" in doc 1 against "Airbus SE" in doc 9. Nothing in
+        # the API forces ``finalize()``, so a caller who skips it silently
+        # queries a graph that was never deduplicated. Track ingests since the
+        # last dedup so the read path can say so once.
+        self._docs_since_dedup = 0
+        self._finalize_reminder_emitted = False
+
         # Persistent ontology graph (``<data_graph>__ontology``). Always-on,
         # always the anchor: ``self.ontology`` is registered into it on first
         # connection, and ``get_ontology()`` / retrieval always read from it.
@@ -1857,7 +1866,10 @@ class GraphRAG:
           ``chunker=FixedSizeChunking(...)``
           if you need character-window chunking.
         - Extractor: GraphExtraction with configured LLM
-        - Resolver: ExactMatchResolution
+        - Resolver: ExactMatchResolution — zero LLM cost; same name + same
+          label within the document, descriptions kept as a list, edges
+          re-pointed to the survivor. Cross-document duplicates are merged
+          once, in :meth:`finalize`.
 
         Args:
             source: File path (or list of paths) — file mode only.
@@ -2711,13 +2723,17 @@ class GraphRAG:
             loader=loader or TextLoader(),
             chunker=chunker or SentenceTokenCapChunking(),
             extractor=extractor or self._default_extractor(),
-            resolver=resolver or ExactMatchResolution(),
+            resolver=resolver or self._default_ingest_resolver(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             ontology=self._global_ontology,
         )
 
         result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
+
+        # Cross-document duplicates can only be resolved by finalize(); see
+        # _warn_if_dedup_pending.
+        self._docs_since_dedup += 1
 
         if not _skip_post:
             # Post-ingestion: create indices only.
@@ -2883,6 +2899,22 @@ class GraphRAG:
             llm=self.llm,
             entity_types=entity_types,
         )
+
+    def _default_ingest_resolver(self) -> ResolutionStrategy:
+        """Return the default ingest-time resolver: ``ExactMatchResolution``.
+
+        Ingest is per document, so a resolver here can only ever compare the
+        entities of one file with each other — and the extractor has already
+        collapsed those by ``(name, type)``. The duplicates that matter
+        (``Airbus`` in one PDF, ``Airbus SE`` in another) are cross-document and
+        are unreachable from this step by construction; they are merged once,
+        in :meth:`finalize`. Ingest stays zero-LLM-cost for resolution: no
+        ``llm`` is passed, so ``ExactMatchResolution`` neither summarises merged
+        descriptions (they are kept as a list and joined with ``" | "``) nor
+        merges same-name nodes of different labels. Pass a resolver to
+        ``ingest()`` to change this per call.
+        """
+        return ExactMatchResolution(llm=None, cross_label_merge=False)
 
     @staticmethod
     def _default_loader_for(source: str) -> LoaderStrategy:
@@ -3530,7 +3562,7 @@ class GraphRAG:
             loader=loader or TextLoader(),  # unused (text is provided below)
             chunker=chunker or SentenceTokenCapChunking(),
             extractor=active_extractor,
-            resolver=resolver or ExactMatchResolution(),
+            resolver=resolver or self._default_ingest_resolver(),
             graph_store=self._graph_store,
             vector_store=self._vector_store,
             ontology=self._global_ontology,
@@ -3560,7 +3592,7 @@ class GraphRAG:
                 "extracted_chunks": cache_wrapper.extracted_chunk_count,
             }
 
-        return await self._finish_update(
+        update_result = await self._finish_update(
             resolved_id=resolved_id,
             pending_id=pending_id,
             doc_path=doc_path,
@@ -3574,6 +3606,15 @@ class GraphRAG:
             result_metadata=result_metadata,
             ctx=ctx,
         )
+
+        # A revised document brings in new entities the same way a fresh one
+        # does, and the ingest-time resolver only ever sees this one document —
+        # so update() accumulates exactly the cross-document duplicates
+        # finalize() exists to remove. Arm the reminder here too, or a session
+        # that ingests, finalizes, then updates a hundred files reads a graph
+        # full of duplicates in silence. See _warn_if_dedup_pending.
+        self._docs_since_dedup += 1
+        return update_result
 
     async def _finish_update(
         self,
@@ -4084,6 +4125,7 @@ class GraphRAG:
 
         ctx.log(f"Retrieve: {question[:80]}...")
         ctx.ensure_budget("graph config validation")
+        self._warn_if_dedup_pending()
 
         # Make sure the retrieval strategy sees the persisted ontology, even
         # when the user is querying an existing graph without ingesting first.
@@ -4502,12 +4544,43 @@ class GraphRAG:
             Total number of duplicate entities merged.
         """
         await self._ensure_ontology_initialized()
-        return await self._deduplicator.deduplicate(
+        merged = await self._deduplicator.deduplicate(
             fuzzy=fuzzy,
             similarity_threshold=similarity_threshold,
             batch_size=batch_size,
             declared_labels=self._mapping_declared_labels(),
             resolver=resolver,
+        )
+        # The graph has now been swept globally, so the pending-dedup reminder
+        # no longer applies. Reset here rather than in finalize() so a caller
+        # who runs dedup directly is also covered.
+        self._docs_since_dedup = 0
+        self._finalize_reminder_emitted = False
+        return merged
+
+    def _warn_if_dedup_pending(self) -> None:
+        """Warn once when reading a graph that was never deduplicated.
+
+        The ingest-time resolver only ever sees a single document
+        (``IngestionPipeline`` calls it with that document's extraction), so
+        cross-document duplicates — "Airbus" in one PDF and "Airbus SE" in
+        another — survive ingestion by design and are removed only by
+        :meth:`deduplicate_entities`, which runs inside :meth:`finalize`.
+
+        Nothing requires that call, so it is possible to ingest hundreds of
+        documents and query a graph full of duplicates with no indication that
+        a step was missed. Emitted once per pending batch, on the read path,
+        because that is where the consequence is felt.
+        """
+        if self._docs_since_dedup <= 0 or self._finalize_reminder_emitted:
+            return
+        self._finalize_reminder_emitted = True
+        logger.warning(
+            "%d document(s) ingested without a deduplication pass. "
+            "Cross-document duplicates (e.g. 'Airbus' and 'Airbus SE' from "
+            "different files) are still present and will affect retrieval. "
+            "Call finalize() — or deduplicate_entities() — after ingestion.",
+            self._docs_since_dedup,
         )
 
     def _mapping_declared_labels(self) -> set[str]:
@@ -4524,7 +4597,7 @@ class GraphRAG:
             if any(prop.structured for prop in entity.properties)
         }
 
-    def _default_resolver(self) -> ResolutionStrategy:
+    def _default_finalize_resolver(self) -> ResolutionStrategy:
         """The strategy :meth:`finalize` judges the whole graph with when given none.
 
         Names differ more across sources than within one document: a table's
@@ -4560,7 +4633,7 @@ class GraphRAG:
                 "Priya Raman" against a document's "Ms. Raman". By default an
                 ``LLMVerifiedResolution`` over this instance's ``llm`` and
                 ``embedder``, tuned for names that differ across sources — see
-                :meth:`_default_resolver`. Pass your own to replace it.
+                :meth:`_default_finalize_resolver`. Pass your own to replace it.
             resolve: ``False`` skips that judgement entirely: the graph is
                 deduplicated on exact names only, close pairs are reported in
                 ``FinalizeResult.probable_duplicates`` and left alone, and no
@@ -4601,7 +4674,7 @@ class GraphRAG:
         if not resolve:
             resolver = None
         elif resolver is None:
-            resolver = self._default_resolver()
+            resolver = self._default_finalize_resolver()
         dedup_count = await self.deduplicate_entities(resolver=resolver)
         ctx_log(f"finalize: deduplicated {dedup_count} entities")
         resolved = list(getattr(self._deduplicator, "resolved_pairs", []) or [])

@@ -520,6 +520,9 @@ class TestFuzzyMerge:
             "survivor_id": "e1",
             "dup_id": "e2",
             "desc": "a physicist | born in Leeds",
+            "descs": ["a physicist", "born in Leeds"],
             "aliases": ["J. Doe"],
         }
-        assert "SET s.description = $desc, s.aliases = $aliases" in q
+        assert (
+            "SET s.description = $desc, s.descriptions = $descs, s.aliases = $aliases" in q
+        )

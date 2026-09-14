@@ -533,7 +533,7 @@ class TestFinalizeJudgesByDefault:
         self, real_falkordb_rag_factory
     ):
         rag = self._rag(real_falkordb_rag_factory, MockLLM())
-        judge = rag._default_resolver()
+        judge = rag._default_finalize_resolver()
 
         assert isinstance(judge, LLMVerifiedResolution)
         assert judge.llm is rag.llm and judge.embedder is rag.embedder

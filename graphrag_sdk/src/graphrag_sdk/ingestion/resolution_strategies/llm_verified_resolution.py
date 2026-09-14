@@ -39,6 +39,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     RESOLUTION_SKIP_PAIRS,
     ResolutionStrategy,
     exact_match_merge,
+    flatten_remap,
     remap_relationships,
 )
 
@@ -208,6 +209,15 @@ class LLMVerifiedResolution(ResolutionStrategy):
                     else:
                         merged_count += 1
                 id_remap.update(fuzzy_remap)
+                # Phase 1 recorded dup -> A and exact_match_merge's Stage 7
+                # flattened what it could see. This update adds A -> B after
+                # that ran, so the combined mapping is two hops deep on any
+                # node Phase 1 merged into a survivor that Phases 2-5 then
+                # merged onward. Flatten here, at the point the second hop is
+                # introduced, so what resolve() returns is always one hop:
+                # every consumer of ``remap`` otherwise has to walk the chain
+                # itself, and each one that forgets re-points at a removed id.
+                id_remap = flatten_remap(id_remap)
                 deduplicated_nodes = final_nodes
                 ctx.log(
                     f"Phase 2-5 (embedding+LLM): {hard_merges} hard merges, "

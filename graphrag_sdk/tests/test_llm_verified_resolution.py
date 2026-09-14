@@ -692,3 +692,72 @@ class TestCodesStayApart:
         assert result.merged_count == 0
         assert len(result.nodes) == 2
         assert llm._call_index == 0, "not asked either: the model is inconsistent on codes"
+
+
+class TestRemapChainsAcrossPhases:
+    """An edge must never be re-pointed at a node a later phase removed.
+
+    Phase 1 records ``dup -> A`` and ``exact_match_merge``'s Stage 7 flattens
+    what it can see. Phases 2-5 then merge the Phase-1 survivor A into B and
+    ``id_remap.update(fuzzy_remap)`` adds that hop *after* Stage 7 has already
+    run, so the combined mapping is two hops deep and Stage 7 never saw it.
+    A single lookup lands the edge on A, which is gone from the node list.
+    """
+
+    async def test_an_edge_on_a_phase_1_loser_follows_the_chain_to_the_end(self, ctx):
+        # dup and A share a normalised name → Phase 1 merges dup into A.
+        # A and B embed identically → Phase 2-5 hard-merges one into the other.
+        # "b" first: union-find keeps the lower-indexed node, so the Phase-1
+        # survivor "a" becomes the Phase 2-5 loser and the chain dup -> a -> b
+        # forms across the two phases.
+        nodes = [
+            GraphNode(id="b", label="Person", properties={"name": "Ada King"}),
+            GraphNode(id="a", label="Person", properties={"name": "Ada Lovelace"}),
+            GraphNode(id="dup", label="Person", properties={"name": "ada lovelace"}),
+            GraphNode(id="x", label="Place", properties={"name": "London"}),
+        ]
+        rels = [
+            GraphRelationship(
+                start_node_id="dup", end_node_id="x", type="RELATES", properties={}
+            )
+        ]
+        same = _unit([1.0, 1.0, 0.0, 0.0])
+        far = _unit([0.0, 0.0, 0.0, 1.0])
+        embedder = ControlledEmbedder(
+            {"Ada Lovelace": same, "Ada King": same, "London": far}
+        )
+        resolver = LLMVerifiedResolution(
+            llm=MockLLM(responses=[]), embedder=embedder, hard_threshold=0.95
+        )
+
+        result = await resolver.resolve(GraphData(nodes=nodes, relationships=rels), ctx)
+
+        surviving = {n.id for n in result.nodes}
+        for rel in result.relationships:
+            assert rel.start_node_id in surviving, (
+                f"edge start {rel.start_node_id!r} is not a surviving node; "
+                "it was re-pointed at a node a later phase removed"
+            )
+            assert rel.end_node_id in surviving, (
+                f"edge end {rel.end_node_id!r} is not a surviving node"
+            )
+
+    async def test_no_remap_target_is_itself_remapped(self, ctx):
+        """The returned remap must be flat: no value is also a key."""
+        nodes = [
+            GraphNode(id="b", label="Person", properties={"name": "Ada King"}),
+            GraphNode(id="a", label="Person", properties={"name": "Ada Lovelace"}),
+            GraphNode(id="dup", label="Person", properties={"name": "ada lovelace"}),
+        ]
+        same = _unit([1.0, 1.0, 0.0, 0.0])
+        embedder = ControlledEmbedder({"Ada Lovelace": same, "Ada King": same})
+        resolver = LLMVerifiedResolution(
+            llm=MockLLM(responses=[]), embedder=embedder, hard_threshold=0.95
+        )
+
+        result = await resolver.resolve(GraphData(nodes=nodes, relationships=[]), ctx)
+
+        surviving = {n.id for n in result.nodes}
+        assert result.remap, "the fixture must actually produce merges"
+        for src, dst in result.remap.items():
+            assert dst in surviving, f"{src!r} -> {dst!r}, which is not a surviving node"
