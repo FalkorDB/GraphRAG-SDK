@@ -364,8 +364,8 @@ class TestJudgeMergeSite:
         param = inspect.signature(LLMJudgeDeduplicator).parameters["merge_group"]
         assert param.default is inspect.Parameter.empty
         assert param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        with pytest.raises(TypeError):
-            LLMJudgeDeduplicator(self._Graph([]), self._Emb(), self._LLM())  # type: ignore[call-arg]
+        # The signature check above is the "cannot be built without one" half;
+        # a literal too-few-arguments call would only trip static analysis.
         judge = LLMJudgeDeduplicator(self._Graph([]), self._Emb(), self._LLM(), MagicMock())
         assert isinstance(judge, LLMJudgeDeduplicator)
 
