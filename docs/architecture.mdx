@@ -1,7 +1,7 @@
 ---
-title: "GraphRAG SDK Architecture: Ingestion and Retrieval"
+title: "GraphRAG SDK Pipeline Architecture"
 sidebarTitle: "Architecture"
-description: "How GraphRAG SDK's strategy-based ingestion and retrieval pipelines fit together, with every algorithmic step as a swappable ABC."
+description: "How GraphRAG SDK's strategy-based ingestion and retrieval pipelines fit together, with pluggable ABCs for extraction, resolution, chunking, and loading."
 ---
 
 GraphRAG SDK v2 follows a **strategy-based pipeline architecture**. Every algorithmic concern is an abstract base class (ABC) with swappable implementations. The system has two main flows: **ingestion** (document to knowledge graph) and **retrieval** (question to answer).
