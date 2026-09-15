@@ -239,9 +239,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted. `SAME_AS.agreement` is the number of passes that said SAME, so
   a cross-set link written without the vote carries `1`, never `2`.
   Description vectors are cached on the node (`description_embedding`,
-  keyed on `description_embedding_hash`, the digest of the text), so a
-  later run embeds only descriptions that are new or changed; the judge's
-  `embedded` count leaves out a node its own merges then deleted.
+  keyed on `description_embedding_hash`, the digest of the text, the
+  embedder's `model_name` and the vector's dimension), so a later run
+  embeds only descriptions that are new, changed, or embedded by another
+  model; a cached vector of another dimension than the ones embedded now is
+  re-embedded with a warning rather than dropped. The judge's `embedded`
+  count leaves out a node its own merges then deleted. If the
+  `DISTINCT_FROM` pairs cannot be read, the fuzzy, resolver and judge
+  phases are skipped with a warning (`last_judge_stats["skipped_reason"]`)
+  instead of running as if none existed. A label holding `|` — the
+  separator of the `merged_labels` record — is refused by a mapping and by
+  a merge, and the record is split on the exact `" | "`.
   `deduplicate_entities(judge_llm=...)` without `judge=True` warns that the
   judge did not run. An adoption into a declared label drops the labels the
   adopted guess had itself absorbed, not only its primary.

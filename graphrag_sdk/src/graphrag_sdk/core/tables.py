@@ -183,13 +183,22 @@ def _check_label(label: str) -> str:
     quotes them. What is not fine is a label the sanitiser has to *change*, since
     the graph would then silently hold something other than what was declared:
     ``Org`) DETACH DELETE (n) //`` was written as a label reading
-    ``Org) DETACH DELETE (n) //``, harmless but nonsense.
+    ``Org) DETACH DELETE (n) //``, harmless but nonsense. A ``|`` is refused
+    for a related reason: a merge records the labels it absorbed in one
+    ``merged_labels`` string joined with ``" | "``, so a label holding the
+    separator would be read back as two.
     """
     if sanitize_cypher_label(label) != label:
         raise MappingError(
             f"label {label!r} contains characters that cannot be written as a "
             "label, so the graph would hold a different name than the one "
             "declared. Remove them from the label."
+        )
+    if "|" in label:
+        raise MappingError(
+            f"label {label!r} contains '|', which separates labels in the "
+            "merged_labels record a merge leaves behind, so the label would be "
+            f"read back as two. Use another character: {label.replace('|', '/')!r}."
         )
     return label
 

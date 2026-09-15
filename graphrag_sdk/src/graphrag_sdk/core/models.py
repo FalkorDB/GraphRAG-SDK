@@ -1009,7 +1009,7 @@ class FinalizeResult(DataModel):
     entities_deduplicated: int = 0
     entities_linked: int = 0
     judge_llm_calls: int = 0
-    judge_stats: dict[str, int] = Field(default_factory=dict)
+    judge_stats: dict[str, int | str] = Field(default_factory=dict)
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)

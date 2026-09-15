@@ -82,7 +82,9 @@ def label_for_merge(label: Any) -> str | None:
     ``Legal Entity``, ``Org-Unit`` and ``Ünïcode`` are as valid here as they are
     in a mapping. What is refused is a label the sanitiser would have to
     *change* (a stray backtick — the graph would then hold a name nobody
-    declared) and a structural label.
+    declared), a structural label, and one containing ``|`` — the character
+    that separates labels in the ``merged_labels`` record, so ``A|B`` written
+    there would read back as two labels (see :func:`split_merged_labels`).
     """
     if not isinstance(label, str):
         return None
@@ -90,16 +92,22 @@ def label_for_merge(label: Any) -> str | None:
         safe = sanitize_cypher_label(label)
     except ValueError:
         return None
-    if safe != label.strip() or safe in _STRUCTURAL_LABELS:
+    if safe != label.strip() or safe in _STRUCTURAL_LABELS or "|" in safe:
         return None
     return safe
 
 
 def split_merged_labels(value: Any) -> list[str]:
-    """The labels recorded in a ``merged_labels`` property, in order."""
+    """The labels recorded in a ``merged_labels`` property, in order.
+
+    Split on the exact ``" | "`` every writer joins with, not on a bare ``|``:
+    a label such as ``A|B`` recorded by an older run must come back as the one
+    label it was, not as ``A`` and ``B``, which would then be filtered out of
+    the primary-label choice as if they had been absorbed.
+    """
     if not isinstance(value, str):
         return []
-    return [part.strip() for part in value.split("|") if part.strip()]
+    return [part.strip() for part in value.split(" | ") if part.strip()]
 
 
 def normalize_entity_name(name: str) -> str:
@@ -568,8 +576,9 @@ class EntityDeduplicator:
         self.resolved_pairs: list[str] = []
         # Pairs the resolver judged distinct on the last run, as "label 'a' | 'b'".
         self.rejected_pairs: list[str] = []
-        # Stats of the last LLM-judged phase (see LLMJudgeDeduplicator.deduplicate).
-        self.last_judge_stats: dict[str, int] = {}
+        # Stats of the last LLM-judged phase (see LLMJudgeDeduplicator.deduplicate);
+        # {"skipped_reason": ...} when the phase was asked for and did not run.
+        self.last_judge_stats: dict[str, int | str] = {}
 
     async def deduplicate(
         self,
@@ -660,7 +669,8 @@ class EntityDeduplicator:
         """
         try:
             survivors = await self._fetch_all_entities(batch_size)
-            decided = await self._fetch_distinct_pairs()
+            # A report merges nothing, so an unreadable set leaves nothing out.
+            decided = await self._fetch_distinct_pairs() or set()
             alive = {ent["id"] for ent in survivors}
             # A mention left between two rows first: it is an exact name match
             # that did not merge, which is the finding most worth a look. One a
@@ -1058,7 +1068,11 @@ class EntityDeduplicator:
         # distinct is not re-decided by a cosine score, and a mention two rows
         # could own is not handed to either by one.
         keyed = {ent["id"] for ent in entities if ent.get("is_stub") is not None}
-        decided = await self._fetch_distinct_pairs() | self._undecidable_pairs
+        distinct = await self._fetch_distinct_pairs()
+        if distinct is None:
+            self._protection_unavailable("phase 2 (fuzzy)")
+            return 0
+        decided = distinct | self._undecidable_pairs
 
         raw_vectors = await self._embedder.aembed_documents([e["name"] for e in entities])
         valid = [(ent, vec) for ent, vec in zip(entities, raw_vectors) if vec]
@@ -1169,6 +1183,9 @@ class EntityDeduplicator:
         # Ellison" — which an embedding cut tuned for one document's spellings
         # would not surface.
         decided = await self._fetch_distinct_pairs()
+        if decided is None:
+            self._protection_unavailable("phase 3 (resolver)")
+            return 0
         undecidable = self._undecidable_pairs
         # Two keyed nodes are two rows, and :func:`_keep_declared_identities_apart`
         # would refuse the merge anyway; saying so up front saves the resolver a
@@ -1269,10 +1286,18 @@ class EntityDeduplicator:
         judged distinct are neither asked nor merged. What the judge adds on top
         of :meth:`_absorb` is the label union: an ``Organization`` in one file
         and the same ``Company`` in another end up as one node carrying both.
+
+        The protection set is read first: if it cannot be, the phase does not
+        run (no model is called, nothing merges) and ``last_judge_stats`` says
+        so in ``skipped_reason``.
         """
+        decided = await self._fetch_distinct_pairs()
+        if decided is None:
+            self._protection_unavailable("phase 4 (judge)")
+            self.last_judge_stats = {"skipped_reason": "distinct_pairs_unavailable"}
+            return 0
         entities = await self._fetch_all_entities(batch_size)
         by_id = {entity["id"]: entity for entity in entities}
-        decided = await self._fetch_distinct_pairs()
         skip = decided | self._undecidable_pairs
         # Two keyed nodes are two rows: _keep_declared_identities_apart would
         # refuse the merge, so the judge is not asked — the same hint the
@@ -1291,8 +1316,8 @@ class EntityDeduplicator:
             logger.warning("LLM judge failed over the graph: %s", exc)
             # Merges committed before the failure are real; report them.
             self.last_judge_stats = dict(judge.last_stats)
-            return self.last_judge_stats.get("merged", 0)
-        merged = self.last_judge_stats.get("merged", 0)
+            return int(self.last_judge_stats.get("merged", 0) or 0)
+        merged = int(self.last_judge_stats.get("merged", 0) or 0)
         logger.info(f"EntityDeduplicator phase 4 (judge): merged {merged} duplicates")
         return merged
 
@@ -1403,16 +1428,34 @@ class EntityDeduplicator:
             )
         return edges
 
-    async def _fetch_distinct_pairs(self) -> set[frozenset[str]]:
-        """Pairs a resolver judged to be two things on an earlier run."""
+    async def _fetch_distinct_pairs(self) -> set[frozenset[str]] | None:
+        """Pairs a resolver judged to be two things on an earlier run.
+
+        ``None`` when the read fails: an unavailable protection set is not an
+        empty one. Every phase that merges (fuzzy, resolver, judge) skips its
+        run on ``None`` — the same rule :meth:`_absorb` follows when it cannot
+        read both nodes — because proceeding blind could ``DETACH DELETE`` a
+        node someone already decided is a different thing. Only the near-miss
+        report, which merges nothing, treats ``None`` as nothing to leave out.
+        """
         try:
             result = await self._graph.query_raw(
                 f"MATCH (a:__Entity__)-[:{DISTINCT_FROM}]-(b:__Entity__) RETURN a.id, b.id"
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Could not read %s edges: %s", DISTINCT_FROM, exc)
             logger.debug("Could not read %s edges", DISTINCT_FROM, exc_info=True)
-            return set()
+            return None
         return {frozenset((a, b)) for a, b in result.result_set or [] if a != b}
+
+    @staticmethod
+    def _protection_unavailable(phase: str) -> None:
+        logger.warning(
+            "EntityDeduplicator %s skipped: the %s pairs could not be read, and a merge "
+            "that cannot see which pairs were already judged distinct is not safe to make",
+            phase,
+            DISTINCT_FROM,
+        )
 
     async def _remember_distinct(
         self, pairs: set[frozenset[str]], by_id: dict[str, dict[str, Any]], decided_by: str

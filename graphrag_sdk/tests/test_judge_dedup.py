@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from types import SimpleNamespace
 
@@ -1023,8 +1024,10 @@ def test_embedded_counts_only_vectors_on_nodes_still_here():
     assert stats["embedded"] == 2  # ...but e2 is gone
 
 
-def _hash(text):
-    return LLMJudgeDeduplicator._desc_hash(text)
+def _hash(text, dim=3, embedder=None):
+    """The cache key the judge writes: text, embedder identity and dimension."""
+    dd = LLMJudgeDeduplicator(None, embedder or FakeEmbedder({}), None, RecordingMerge())
+    return dd._desc_hash(text, dim)
 
 
 def test_description_vectors_are_cached_on_the_node_and_keyed_on_the_text():
@@ -1080,3 +1083,217 @@ def test_a_failed_description_cache_write_does_not_abort_the_phase():
     stats, merge = _run(graph, ScriptedLLM([[IBM], [IBM]]))
     assert stats["merged"] == 1 and merge.groups == [["e1", "e2"]]
     assert any("SET e.description_embedding" in c[0] for c in graph.calls)
+
+
+# Two entities whose names are deliberately far apart, so only the description
+# door can nominate the pair; their descriptions embed identically.
+FAR_ROWS = [
+    ("f1", "Zephyr Holdings", "Anvil maker in Ohio.", ["Organization"], None, [1.0, 0.0, 0.0]),
+    ("f2", "Quantum Bakery", "Ohio anvil manufacturer.", ["Company"], None, [0.0, 1.0, 0.0]),
+]
+FAR_DESC = {
+    "Anvil maker in Ohio.": [0.6, 0.8, 0.0],
+    "Ohio anvil manufacturer.": [0.6, 0.8, 0.0],
+}
+FAR_SAME = {"Zephyr Holdings", "Quantum Bakery"}
+
+
+class _SpyEmbedder(FakeEmbedder):
+    def __init__(self, table, model_name=None):
+        super().__init__(table)
+        self.seen: list[list[str]] = []
+        if model_name is not None:
+            self.model_name = model_name
+
+    async def aembed_documents(self, texts, **kw):
+        self.seen.append(list(texts))
+        return await super().aembed_documents(texts, **kw)
+
+
+def test_a_cached_description_vector_of_another_dimension_is_re_embedded(caplog):
+    """One node holds a 4-dim description vector under a hash that matches its
+    text at that dimension; the other needs a fresh 3-dim one. Zeroing the odd
+    row (the old rule) silently lost the pair for good: the fresh row was
+    written back beside it and no later run saw a miss. The stale row must be
+    re-embedded in this run, the pair nominated, and a second run over the
+    healed graph embed nothing."""
+    embedder = _SpyEmbedder(FAR_DESC)
+    stale_vec = [0.0, 0.0, 0.0, 1.0]
+    rows = [
+        (*FAR_ROWS[0], None, stale_vec, _hash(FAR_ROWS[0][2], dim=4, embedder=embedder)),
+        (*FAR_ROWS[1], None, None, None),
+    ]
+    graph = ScriptedGraph(rows)
+    dd = LLMJudgeDeduplicator(
+        graph, embedder, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge()
+    )
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
+        stats = asyncio.run(dd.deduplicate())
+    assert stats["candidates"] == 1 and stats["merged"] == 1
+    assert embedder.seen == [[FAR_ROWS[1][2]], [FAR_ROWS[0][2]]]  # fresh first, then the stale row
+    assert any("re-embedding" in r.message for r in caplog.records)
+    (write,) = [c for c in graph.calls if "SET e.description_embedding = vecf32" in c[0]]
+    assert {(it["id"], it["h"]) for it in write[1]["items"]} == {
+        ("f2", _hash(FAR_ROWS[1][2], embedder=embedder)),
+        ("f1", _hash(FAR_ROWS[0][2], embedder=embedder)),
+    }
+
+    # the healed graph: every row cached at the current dimension, no embed call
+    rows = [(*r, None, FAR_DESC[r[2]], _hash(r[2], embedder=embedder)) for r in FAR_ROWS]
+    graph = ScriptedGraph(rows)
+    embedder.seen.clear()
+    dd = LLMJudgeDeduplicator(
+        graph, embedder, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge()
+    )
+    stats = asyncio.run(dd.deduplicate())
+    assert stats["candidates"] == 1 and stats["merged"] == 1 and embedder.seen == []
+    assert not any("SET e.description_embedding" in c[0] for c in graph.calls)
+
+
+def test_a_description_vector_from_another_embedder_is_a_cache_miss():
+    """Two 3-dim models are two keys: a vector written under ``model-a`` is
+    not reused by ``model-b`` even though text and dimension agree."""
+    old = _SpyEmbedder(FAR_DESC, model_name="model-a")
+    rows = [(*r, None, FAR_DESC[r[2]], _hash(r[2], embedder=old)) for r in FAR_ROWS]
+    assert _hash(FAR_ROWS[0][2], embedder=old) != _hash(FAR_ROWS[0][2])
+
+    new = _SpyEmbedder(FAR_DESC, model_name="model-b")
+    graph = ScriptedGraph(rows)
+    dd = LLMJudgeDeduplicator(graph, new, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge())
+    stats = asyncio.run(dd.deduplicate())
+    assert stats["merged"] == 1
+    assert new.seen == [[r[2] for r in FAR_ROWS]]  # both re-embedded...
+    (write,) = [c for c in graph.calls if "SET e.description_embedding = vecf32" in c[0]]
+    assert [it["h"] for it in write[1]["items"]] == [_hash(r[2], embedder=new) for r in FAR_ROWS]
+
+    # ...and the same model reuses them
+    graph = ScriptedGraph(rows)
+    old.seen.clear()
+    dd = LLMJudgeDeduplicator(graph, old, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge())
+    assert asyncio.run(dd.deduplicate())["merged"] == 1 and old.seen == []
+
+
+def test_an_all_cached_graph_of_mixed_dimensions_heals_itself():
+    """Nothing new to embed and the cached rows disagree on dimension: one is
+    embedded to learn the current dimension, and the rows that do not match
+    it are re-embedded, so the pair is nominated instead of one row zeroed."""
+    embedder = _SpyEmbedder(FAR_DESC)
+    rows = [
+        (*FAR_ROWS[0], None, [0.0, 0.0, 0.0, 1.0], _hash(FAR_ROWS[0][2], dim=4, embedder=embedder)),
+        (*FAR_ROWS[1], None, FAR_DESC[FAR_ROWS[1][2]], _hash(FAR_ROWS[1][2], embedder=embedder)),
+    ]
+    graph = ScriptedGraph(rows)
+    dd = LLMJudgeDeduplicator(
+        graph, embedder, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge()
+    )
+    stats = asyncio.run(dd.deduplicate())
+    assert stats["candidates"] == 1 and stats["merged"] == 1
+    assert embedder.seen == [[FAR_ROWS[0][2]]]  # the probe was the stale row itself; nothing else
+
+
+def test_judge_phase_is_skipped_when_the_distinct_pairs_cannot_be_read(caplog):
+    """A failed ``DISTINCT_FROM`` read is not an empty protection set. The
+    judge phase makes no LLM call and merges nothing — the same rule
+    ``_absorb`` follows when it cannot read both nodes — and says so."""
+
+    class G(_JudgeGraph):
+        async def query_raw(self, cypher, params=None):
+            if "DISTINCT_FROM" in cypher and "RETURN a.id, b.id" in cypher:
+                self.calls.append((cypher, params or {}))
+                raise RuntimeError("read timed out")
+            return await super().query_raw(cypher, params)
+
+    g = G()
+    llm = ScriptedLLM([[IBM], [IBM]])
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.deduplicator"):
+        n = asyncio.run(dd.deduplicate(judge_llm=llm))
+    assert n == 0 and llm.prompts == []
+    assert dd.last_judge_stats == {"skipped_reason": "distinct_pairs_unavailable"}
+    assert not any("DETACH DELETE" in c[0] for c in g.calls)
+    assert not any("SAME_AS" in c[0] for c in g.calls)
+    assert any("phase 4 (judge) skipped" in r.message for r in caplog.records)
+    # the read was attempted, and the judge never read the graph
+    assert any("DISTINCT_FROM" in c[0] for c in g.calls)
+    assert not any("RETURN e.id, e.name, e.description" in c[0] for c in g.calls)
+
+
+def test_resolver_phase_is_skipped_when_the_distinct_pairs_cannot_be_read(caplog):
+    from graphrag_sdk.core.models import ResolutionResult
+    from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
+
+    class MergesEverything(ResolutionStrategy):
+        asked = 0
+
+        async def resolve(self, graph_data, context):
+            MergesEverything.asked += 1
+            keep = graph_data.nodes[0]
+            return ResolutionResult(
+                nodes=[keep],
+                relationships=[],
+                merged_count=len(graph_data.nodes) - 1,
+                remap={n.id: keep.id for n in graph_data.nodes[1:]},
+            )
+
+    class G(_JudgeGraph):
+        async def query_raw(self, cypher, params=None):
+            if "DISTINCT_FROM" in cypher and "RETURN a.id, b.id" in cypher:
+                raise RuntimeError("read timed out")
+            if "[r:RELATES]->(b:__Entity__)" in cypher:
+                return SimpleNamespace(result_set=[])
+            return await super().query_raw(cypher, params)
+
+    g = G()
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.deduplicator"):
+        n = asyncio.run(dd.deduplicate(resolver=MergesEverything()))
+    assert n == 0 and MergesEverything.asked == 0
+    assert not any("DETACH DELETE" in c[0] for c in g.calls)
+    assert any("phase 3 (resolver) skipped" in r.message for r in caplog.records)
+
+    # the fuzzy phase too: every name embeds alike here, so without the rule
+    # the two Organizations would fold into one
+    g = G(rows=ACME_ROWS)
+    dd = EntityDeduplicator(g, FakeEmbedder({}))
+    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.deduplicator"):
+        n = asyncio.run(dd.deduplicate(fuzzy=True))
+    assert n == 0 and not any("DETACH DELETE" in c[0] for c in g.calls)
+    assert any("phase 2 (fuzzy) skipped" in r.message for r in caplog.records)
+
+
+def test_a_label_holding_the_separator_is_refused_and_a_recorded_one_reads_back_whole():
+    """``A|B`` is a label the sanitiser accepts but the ``merged_labels``
+    record cannot hold: joined with ``" | "`` and split on a bare ``|`` it came
+    back as ``A`` and ``B``, and both were then treated as absorbed labels at
+    the primary-label choice. The merge refuses it, and a legacy record that
+    already holds one reads back as the single label it was."""
+    from graphrag_sdk.storage.deduplicator import label_for_merge, split_merged_labels
+
+    assert label_for_merge("A|B") is None and label_for_merge("A | B") is None
+    assert label_for_merge("Legal Entity") == "Legal Entity"
+    assert split_merged_labels("A|B") == ["A|B"]
+    assert split_merged_labels("Company | A|B | Organization") == ["Company", "A|B", "Organization"]
+    assert split_merged_labels("Company | Organization") == ["Company", "Organization"]
+
+    # at write: the judge's label union drops it, with the others kept
+    g = _JudgeGraph(rows=ACME_ROWS)
+    dd = EntityDeduplicator(g, FakeEmbedder(ACME_DESC))
+    by_id = {e["id"]: e for e in asyncio.run(dd._fetch_all_entities(500))}
+    assert asyncio.run(dd._absorb(by_id["a"], by_id["b"], add_labels=["A|B", "Company"]))
+    (absorb,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
+    assert "A|B" not in absorb[0] and "SET s:`Company`" in absorb[0]
+    assert absorb[1]["merged_labels"] == "Company"
+
+    # at read: a node whose record holds A|B keeps its real primary label
+    g = _LabelledGraph(
+        {
+            "a": {
+                "name": "Airbus",
+                "description": "Planemaker.",
+                "labels": ["A", "B", "Organization"],
+                "merged_labels": "A|B",
+            },
+        }
+    )
+    (ent,) = asyncio.run(EntityDeduplicator(g, FakeEmbedder({}))._fetch_all_entities(500))
+    assert ent["label"] == "A"  # not filtered out as if A and B had been absorbed

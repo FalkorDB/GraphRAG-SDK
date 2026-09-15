@@ -547,9 +547,41 @@ class LLMJudgeDeduplicator:
                 vecs[i] = e["embedding"]
         return vecs
 
-    @staticmethod
-    def _desc_hash(description: str) -> str:
-        return hashlib.sha256(description.encode("utf-8")).hexdigest()
+    def _embedder_id(self) -> str:
+        """What produced a vector: the model's name where the embedder gives
+        one, else its class — enough that two models are two keys."""
+        try:
+            name = getattr(self._embedder, "model_name", None)
+            text = str(name).strip() if name is not None else ""
+        except Exception:
+            text = ""
+        return text or type(self._embedder).__name__
+
+    def _desc_hash(self, description: str, dim: int) -> str:
+        """Cache key of a description vector: the text, the embedder that
+        produced it and the vector's dimension. The text alone let a model
+        swap keep every stale vector: its hash still matched, so the row was
+        reused beside new-model rows it could not be compared with."""
+        payload = f"{self._embedder_id()}\n{dim}\n{description}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    async def _embed_descriptions(
+        self, ents: list[dict], idxs: list[int], rows: dict[int, list[float]]
+    ) -> list[dict[str, Any]]:
+        """Embed ``ents[i]["description"]`` for each ``i`` into ``rows`` and
+        return the cache writes (``{id, v, h}``) for the ones that embedded."""
+        raw = await self._embedder.aembed_documents([ents[i]["description"] for i in idxs])
+        for i, v in zip(idxs, raw):
+            rows[i] = list(v) if v is not None else []
+        return [
+            {
+                "id": ents[i]["id"],
+                "v": rows[i],
+                "h": self._desc_hash(ents[i]["description"], len(rows[i])),
+            }
+            for i in idxs
+            if rows.get(i)
+        ]
 
     async def _desc_vectors(self, ents: list[dict]) -> np.ndarray:
         """Description embeddings, one row per entity; a zero row where there
@@ -557,13 +589,22 @@ class LLMJudgeDeduplicator:
 
         A vector is reused from ``e.description_embedding`` when the stored
         ``e.description_embedding_hash`` is the digest of the description the
-        node holds now; otherwise the description is embedded and both are
-        written back, so a later run pays only for descriptions that changed
-        (a merge joined them, a re-ingest rewrote them) or are new. The
-        digest, not a write hook, is what invalidates: every site that
-        rewrites a description leaves a stale hash behind, and a stale hash
-        is simply a miss. Writing the cache is best effort — a failure there
-        costs the next run an embedding, not this run its verdict.
+        node holds now, under this embedder, at the stored vector's dimension
+        (:meth:`_desc_hash`); otherwise the description is embedded and both
+        are written back, so a later run pays only for descriptions that
+        changed (a merge joined them, a re-ingest rewrote them), are new, or
+        were embedded by another model. The digest, not a write hook, is what
+        invalidates: every site that rewrites a description leaves a stale
+        hash behind, and a stale hash is simply a miss. Writing the cache is
+        best effort — a failure there costs the next run an embedding, not
+        this run its verdict.
+
+        A cached row whose length differs from what the embedder returns now
+        is stale whatever its hash says (the same model name configured at
+        another dimension): it is re-embedded in this run, with a warning,
+        rather than zeroed. Zeroing it — the old behaviour — dropped the
+        entity from description nomination for good, since the fresh rows
+        were written back beside it and the graph never saw a miss again.
 
         An entity without a description is not given its name here: the
         description door's gate (0.55) is lower than the name door's (0.65),
@@ -578,32 +619,44 @@ class LLMJudgeDeduplicator:
         not nominated by description.
         """
         have = [i for i, e in enumerate(ents) if (e["description"] or "").strip()]
-        hashes = {i: self._desc_hash(ents[i]["description"]) for i in have}
-        cached = {
-            i
-            for i in have
-            if ents[i].get("desc_embedding") and ents[i].get("desc_embedding_hash") == hashes[i]
-        }
+        cached: set[int] = set()
+        for i in have:
+            vec = ents[i].get("desc_embedding")
+            if vec and ents[i].get("desc_embedding_hash") == self._desc_hash(
+                ents[i]["description"], len(vec)
+            ):
+                cached.add(i)
         missing = [i for i in have if i not in cached]
         rows: dict[int, list[float]] = {i: list(ents[i]["desc_embedding"]) for i in cached}
+        if not missing and len({len(v) for v in rows.values()}) > 1:
+            # Every row is cached and they disagree on dimension; nothing fresh
+            # says which is current, so embed one to find out.
+            missing = [min(cached)]
+        items: list[dict[str, Any]] = []
         if missing:
-            raw = await self._embedder.aembed_documents([ents[i]["description"] for i in missing])
-            for i, v in zip(missing, raw):
-                rows[i] = list(v) if v is not None else []
-            items = [
-                {"id": ents[i]["id"], "v": rows[i], "h": hashes[i]} for i in missing if rows.get(i)
-            ]
-            for k in range(0, len(items), 200):
-                try:
-                    await self._graph.query_raw(
-                        "UNWIND $items AS it MATCH (e:__Entity__ {id: it.id}) "
-                        f"SET e.{DESC_EMBEDDING_KEY} = vecf32(it.v), "
-                        f"e.{DESC_EMBEDDING_HASH_KEY} = it.h",
-                        {"items": items[k : k + 200]},
-                    )
-                except Exception as exc:
-                    logger.warning("judge dedup: could not cache description vectors: %s", exc)
-                    break
+            items = await self._embed_descriptions(ents, missing, rows)
+            fresh_dim = next((len(rows[i]) for i in missing if rows.get(i)), 0)
+            stale = [i for i in sorted(cached) if fresh_dim and len(rows[i]) != fresh_dim]
+            if stale:
+                logger.warning(
+                    "judge dedup: %d cached description vector(s) are not %d-dimensional "
+                    "like the ones embedded now; re-embedding them (the embedder changed "
+                    "since they were written)",
+                    len(stale),
+                    fresh_dim,
+                )
+                items += await self._embed_descriptions(ents, stale, rows)
+        for k in range(0, len(items), 200):
+            try:
+                await self._graph.query_raw(
+                    "UNWIND $items AS it MATCH (e:__Entity__ {id: it.id}) "
+                    f"SET e.{DESC_EMBEDDING_KEY} = vecf32(it.v), "
+                    f"e.{DESC_EMBEDDING_HASH_KEY} = it.h",
+                    {"items": items[k : k + 200]},
+                )
+            except Exception as exc:
+                logger.warning("judge dedup: could not cache description vectors: %s", exc)
+                break
         dim = max((len(v) for v in rows.values()), default=0)
         vecs = np.zeros((len(ents), dim), dtype=np.float32)
         for i, v in rows.items():

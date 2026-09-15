@@ -344,6 +344,13 @@ class TestNamesMustBeUsable:
     def test_a_label_a_graph_can_hold_is_accepted(self, label):
         assert NodeMapping(label=label, key="k").label == label
 
+    @pytest.mark.parametrize("label", ["A|B", "A | B", "Org|"])
+    def test_a_label_holding_the_merged_labels_separator_is_rejected(self, label):
+        """A merge records the labels it absorbed as one ``" | "``-joined
+        string, so a label holding ``|`` would be read back as two."""
+        with pytest.raises(MappingError, match="separates labels"):
+            NodeMapping(label=label, key="k")
+
 
 class TestCastingRefusesValuesThatPoisonQueries:
     @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "NaN", "Infinity"])

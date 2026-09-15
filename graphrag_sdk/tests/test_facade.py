@@ -2640,15 +2640,21 @@ class TestDefaultResolver:
 
     async def test_finalize_runs_the_judge_with_the_facade_llm(self, graphrag, monkeypatch):
         seen: dict = {}
+        order: list[str] = []
 
         async def fake_dedup(**kw):
             seen.update(kw)
+            order.append("dedup")
+            return 0
+
+        async def fake_backfill(*a, **kw):
+            order.append("backfill")
             return 0
 
         monkeypatch.setattr(graphrag._deduplicator, "deduplicate", fake_dedup)
         graphrag._deduplicator.last_judge_stats = {"merged": 2, "linked": 3, "llm_calls": 4}
         graphrag._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
-        graphrag._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
+        graphrag._vector_store.backfill_entity_embeddings = AsyncMock(side_effect=fake_backfill)
         graphrag._vector_store.embed_relationships = AsyncMock(return_value=0)
         graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
 
@@ -2656,9 +2662,10 @@ class TestDefaultResolver:
         assert seen["judge_llm"] is graphrag.llm and seen["judge_vote"] is True
         assert result.entities_linked == 3 and result.judge_llm_calls == 4
         assert result.judge_stats == {"merged": 2, "linked": 3, "llm_calls": 4}
-        # embeddings are backfilled BEFORE dedup so the judge reuses them
-        calls = [c for c in graphrag._vector_store.backfill_entity_embeddings.mock_calls]
-        assert calls
+        # Dedup (with the judge) runs first, so a duplicate about to be removed
+        # is not embedded; the judge writes the name vectors it needs itself,
+        # and the backfill then covers whatever is still missing one.
+        assert order == ["dedup", "backfill"]
 
         seen.clear()
         result = await graphrag.finalize(judge=False)

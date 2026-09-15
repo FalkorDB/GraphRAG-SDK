@@ -293,7 +293,9 @@ class GraphStore:
             if not isinstance(raw, str):
                 continue
             extra: set[str] = set()
-            for part in raw.split("|"):
+            # The exact delimiter every writer joins with; a bare "|" would
+            # read a label such as "A|B" back as two.
+            for part in raw.split(" | "):
                 part = part.strip()
                 # The survivor already carries its own label.
                 if not part or part == node.label:
