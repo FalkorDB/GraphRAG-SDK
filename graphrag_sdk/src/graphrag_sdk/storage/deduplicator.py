@@ -58,6 +58,10 @@ _ACRONYM_STOPWORDS = frozenset({"of", "the", "and", "for", "de", "la", "del", "a
 _MIN_ACRONYM_LEN = 3
 _MAX_ACRONYM_LEN = 6
 
+# A label the judge phase may add to a survivor; anything else is not
+# interpolated into Cypher.
+_SAFE_LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_ -]*")
+
 
 def normalize_entity_name(name: str) -> str:
     """Fold accents, punctuation and a leading English article for grouping.
@@ -1129,16 +1133,37 @@ class EntityDeduplicator:
     async def _deduplicate_with_judge(
         self, judge_llm: LLMInterface, batch_size: int, vote: bool
     ) -> int:
-        """Run :class:`LLMJudgeDeduplicator` over the whole graph."""
+        """Let the judge decide identity across the whole graph, then merge by our rules.
+
+        The judge (:class:`LLMJudgeDeduplicator`) nominates candidate pairs by
+        name and description similarity, has the model partition small sets
+        twice and keeps only the pairs both passes agree on. What it hands back
+        is *identity*; *how to merge* stays here, through the same
+        :meth:`_absorb` path as every other phase — the survivor is the one
+        :func:`_survivor_rank` picks, two keyed rows never fold into each other,
+        a mention two rows could own stays apart, and pairs a resolver already
+        judged distinct are neither asked nor merged. What the judge adds on top
+        of :meth:`_absorb` is the label union: an ``Organization`` in one file
+        and the same ``Company`` in another end up as one node carrying both.
+        """
+        entities = await self._fetch_all_entities(batch_size)
+        by_id = {entity["id"]: entity for entity in entities}
+        decided = await self._fetch_distinct_pairs()
+        skip = decided | self._undecidable_pairs
+
+        async def merge_group(members: list[dict[str, Any]]) -> tuple[str, set[str]]:
+            return await self._merge_judged_group(members, by_id, decided)
+
         judge = LLMJudgeDeduplicator(
             self._graph,
             self._embedder,
             judge_llm,
             self._remap_entity_edges,
             vote=vote,
+            merge_group=merge_group,
         )
         try:
-            self.last_judge_stats = await judge.deduplicate(batch_size)
+            self.last_judge_stats = await judge.deduplicate(batch_size, skip_pairs=skip)
         except Exception as exc:
             logger.warning("LLM judge failed over the graph: %s", exc)
             self.last_judge_stats = {}
@@ -1146,6 +1171,61 @@ class EntityDeduplicator:
         merged = self.last_judge_stats.get("merged", 0)
         logger.info(f"EntityDeduplicator phase 4 (judge): merged {merged} duplicates")
         return merged
+
+    async def _merge_judged_group(
+        self,
+        members: list[dict[str, Any]],
+        by_id: dict[str, dict[str, Any]],
+        decided: set[frozenset[str]],
+    ) -> tuple[str, set[str]]:
+        """Merge one group the judge agreed on; ``(survivor id, ids absorbed)``.
+
+        ``members`` are the judge's rows (they carry every label of each node);
+        the merge ranks and folds the rows :meth:`_fetch_all_entities` read, so
+        a table's row survives a mention by the same rule as phase 1 and 3.
+        """
+        known = [by_id[m["id"]] for m in members if m["id"] in by_id]
+        if len(known) < 2:
+            return (known[0]["id"] if known else members[0]["id"]), set()
+        known.sort(key=_survivor_rank, reverse=True)
+        survivor = known[0]
+        duplicates = _keep_declared_identities_apart(survivor, known[1:])
+        duplicates = self._keep_undecidable_mentions_apart(survivor, duplicates, known)
+        # Transitivity can put a pair the model never saw as a candidate into
+        # one group; a NO remembered on the graph still holds.
+        duplicates = [
+            dup for dup in duplicates if frozenset((dup["id"], survivor["id"])) not in decided
+        ]
+
+        labels_by_id = {m["id"]: [lab for lab in m.get("labels") or [] if lab] for m in members}
+        absorbed: set[str] = set()
+        for dup in duplicates:
+            if not await self._absorb(survivor, dup):
+                continue
+            absorbed.add(dup["id"])
+            logger.info(
+                "Judge merged %s %r -> %r", survivor["label"], dup["name"], survivor["name"]
+            )
+        if not absorbed:
+            return survivor["id"], absorbed
+
+        gained = sorted(
+            {
+                lab
+                for dup_id in absorbed
+                for lab in labels_by_id.get(dup_id, [])
+                if lab not in labels_by_id.get(survivor["id"], []) and _SAFE_LABEL.fullmatch(lab)
+            }
+        )
+        if gained:
+            try:
+                await self._graph.query_raw(
+                    "MATCH (s:__Entity__ {id: $id})" + "".join(f" SET s:`{lab}`" for lab in gained),
+                    {"id": survivor["id"]},
+                )
+            except Exception as exc:
+                logger.warning("Failed to add labels %s to %s: %s", gained, survivor["id"], exc)
+        return survivor["id"], absorbed
 
     async def _describe_structured_entities(self, by_id: dict[str, dict[str, Any]]) -> None:
         """Give each structured entity a description made of its signed values.

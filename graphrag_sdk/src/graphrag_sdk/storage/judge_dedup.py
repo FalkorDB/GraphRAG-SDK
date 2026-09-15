@@ -13,8 +13,12 @@
 #   5. ask again with every set shuffled; a pair is a duplicate only if BOTH
 #      passes agree. Pairs the passes disagree on become SAME_AS edges.
 #   6. merge agreed groups: survivor keeps every member's label, description
-#      is the members' descriptions joined with " | ", names of the merged
-#      members are kept in ``aliases``, RELATES/MENTIONED_IN edges remapped.
+#      is the members' descriptions joined with " | " (the list itself kept in
+#      ``descriptions``), names of the merged members are kept in ``aliases``,
+#      RELATES/MENTIONED_IN edges remapped. Inside ``EntityDeduplicator`` the
+#      merge itself is delegated to its ``_absorb`` rules (survivor rank,
+#      property carry, provenance union) via the ``merge_group`` hook; the
+#      standalone ``_merge_group`` below is the fallback.
 #
 # Measured on the benchmark corpus (RESULTS.md P3.119-P3.124): grouping loses
 # 0 gold pairs; the two-pass vote cuts wrong merges ~65 % at 2x LLM cost; a
@@ -351,6 +355,12 @@ class LLMJudgeDeduplicator:
             move RELATES/MENTIONED_IN identically.
         vote: run the second shuffled pass (default True). ``False`` halves
             LLM cost and roughly triples wrong merges.
+        merge_group: optional ``async (members: list[dict]) -> (survivor_id,
+            absorbed_ids)`` that performs the merge of one agreed group.
+            ``EntityDeduplicator`` supplies its own so a judge merge obeys the
+            same rules as every other phase (a table row survives a mention,
+            two keyed rows never merge, properties and provenance are carried).
+            Without it :meth:`_merge_group` writes the merge directly.
     """
 
     def __init__(
@@ -363,6 +373,7 @@ class LLMJudgeDeduplicator:
         vote: bool = True,
         max_concurrency: int = 8,
         seed: int = 0,
+        merge_group: Any = None,
     ) -> None:
         self._graph = graph_store
         self._embedder = embedder
@@ -371,6 +382,7 @@ class LLMJudgeDeduplicator:
         self._vote = vote
         self._conc = max_concurrency
         self._seed = seed
+        self._merge_hook = merge_group
 
     async def _fetch_entities(self, batch_size: int) -> list[dict]:
         out: list[dict] = []
@@ -444,12 +456,12 @@ class LLMJudgeDeduplicator:
             same |= pairs_from_response(item.response.content or "", orders[item.index])
         return same, len(prompts), failed
 
-    async def _merge_group(self, ids: list[str], byid: dict[str, dict]) -> int:
+    async def _merge_group(self, ids: list[str], byid: dict[str, dict]) -> tuple[str, set[str]]:
         """Merge ``ids`` into the member with the longest description. Survivor
         gains every member's labels, ``aliases`` gets the merged names,
         ``descriptions`` becomes the list of every member's descriptions and
         ``description`` their ' | ' join. Edges are moved to the survivor before
-        each loser is deleted. Returns the number of nodes deleted."""
+        each loser is deleted. Returns the survivor id and the ids deleted."""
         ids = sorted(ids, key=lambda i: (-len(byid[i]["description"]), i))
         surv, dups = ids[0], ids[1:]
         s = byid[surv]
@@ -459,7 +471,7 @@ class LLMJudgeDeduplicator:
             for nm in [byid[i]["name"], *byid[i]["aliases"]]:
                 if nm and nm != s["name"] and nm not in aliases:
                     aliases.append(nm)
-        deleted = 0
+        deleted: set[str] = set()
         for d in dups:
             if not await self._remap(d, surv):
                 logger.warning("judge dedup: edge remap incomplete for %s -> %s, kept", d, surv)
@@ -468,7 +480,7 @@ class LLMJudgeDeduplicator:
                 await self._graph.query_raw(
                     "MATCH (e:__Entity__ {id: $d}) DETACH DELETE e", {"d": d}
                 )
-                deleted += 1
+                deleted.add(d)
             except Exception as exc:
                 logger.warning("judge dedup: failed to delete %s: %s", d, exc)
         desc_list = merge_description_list([byid[i] for i in ids])
@@ -480,9 +492,18 @@ class LLMJudgeDeduplicator:
             + label_clause,
             {"id": surv, "desc": new_desc, "descs": desc_list, "aliases": aliases},
         )
-        return deleted
+        return surv, deleted
 
-    async def deduplicate(self, batch_size: int = 500) -> dict[str, int]:
+    async def deduplicate(
+        self, batch_size: int = 500, *, skip_pairs: set[frozenset[str]] | None = None
+    ) -> dict[str, int]:
+        """Run the judge over the whole graph and return its stats.
+
+        ``skip_pairs`` are id pairs already decided elsewhere — a resolver's
+        ``DISTINCT_FROM`` verdicts, a mention two keyed rows could equally own —
+        which are neither nominated nor linked, so a NO remembered on the graph
+        is not re-litigated by a second model.
+        """
         ents = await self._fetch_entities(batch_size)
         stats = {
             "entities": len(ents),
@@ -507,6 +528,12 @@ class LLMJudgeDeduplicator:
             edges[k] = max(v, edges.get(k, -1.0))
         for k, v in name_in_desc_pairs(ents).items():
             edges.setdefault(k, v)
+        if skip_pairs:
+            edges = {
+                (a, b): v
+                for (a, b), v in edges.items()
+                if frozenset((ents[a]["id"], ents[b]["id"])) not in skip_pairs
+            }
         stats["candidates"] = len(edges)
         if not edges:
             return stats
@@ -525,6 +552,16 @@ class LLMJudgeDeduplicator:
             agreed, disagreed = same1 & same2, same1 ^ same2
         else:
             agreed, disagreed = same1, set()
+        if skip_pairs:
+            # The model never saw these pairs as candidates, but a partition of
+            # a set can still put them in one group; a decided pair stays decided.
+            decided = {
+                (a, b)
+                for a, b in agreed | disagreed
+                if frozenset((ents[a]["id"], ents[b]["id"])) in skip_pairs
+            }
+            agreed -= decided
+            disagreed -= decided
         stats["agreed_pairs"], stats["disagreed_pairs"] = len(agreed), len(disagreed)
 
         uf = _UF(list(range(len(ents))))
@@ -537,11 +574,20 @@ class LLMJudgeDeduplicator:
         root_id: dict[int, str] = {}
         for r, members in groups.items():
             ids = [ents[i]["id"] for i in members]
-            if len(ids) >= 2:
-                stats["merged"] += await self._merge_group(ids, byid)
-            surv = sorted(ids, key=lambda i: (-len(byid[i]["description"]), i))[0]
+            if len(ids) < 2:
+                root_id[members[0]] = ids[0]
+                continue
+            if self._merge_hook is not None:
+                surv, absorbed = await self._merge_hook([byid[i] for i in ids])
+            else:
+                surv, absorbed = await self._merge_group(ids, byid)
+            stats["merged"] += len(absorbed)
             for i in members:
-                root_id[i] = surv
+                # A member the merge rules kept apart (two rows of one table)
+                # is still its own node, so a link must point at it, not at
+                # the survivor it was not folded into.
+                eid = ents[i]["id"]
+                root_id[i] = surv if (eid in absorbed or eid == surv) else eid
 
         for a, b in sorted(disagreed):
             ra, rb = root_id[a], root_id[b]

@@ -260,26 +260,77 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
     assert upd[0][1]["aliases"] == ["Globex Ltd"]
 
 
+class _JudgeGraph:
+    """Answers the exact phase's paged fetch and the judge's fetch with the
+    same three entities, in each query's row shape; records every call."""
+
+    def __init__(self, rows=ROWS, distinct=()):
+        self.calls: list[tuple[str, dict]] = []
+        self.rows = list(rows)
+        self.distinct = list(distinct)
+        # id, name, description, label, aliases, is_stub, degree
+        self.page = [(r[0], r[1], r[2], r[3][0], r[4], None, 0) for r in self.rows]
+
+    async def query_raw(self, cypher, params=None):
+        self.calls.append((cypher, params or {}))
+        if "SKIP" in cypher:
+            # every phase re-reads the graph; one page, then the end
+            rows = self.page if params.get("offset", 0) == 0 else []
+            return SimpleNamespace(result_set=list(rows))
+        if "RETURN e.id, e.name, e.description" in cypher:
+            return SimpleNamespace(result_set=list(self.rows))
+        if "DISTINCT_FROM" in cypher and "RETURN a.id, b.id" in cypher:
+            return SimpleNamespace(result_set=list(self.distinct))
+        if "DETACH DELETE dup RETURN s.id" in cypher:
+            return SimpleNamespace(result_set=[[params["survivor_id"]]])
+        return SimpleNamespace(result_set=[])
+
+
 @pytest.mark.parametrize("judge", [False, True])
 def test_entity_deduplicator_judge_toggle(judge):
-    class G:
-        def __init__(self):
-            self.calls = []
-
-        async def query_raw(self, cypher, params=None):
-            self.calls.append(cypher)
-            if "SKIP" in cypher:
-                return SimpleNamespace(result_set=[])
-            if "RETURN e.id, e.name, e.description" in cypher:
-                return SimpleNamespace(result_set=list(ROWS))
-            return SimpleNamespace(result_set=[])
-
-    g = G()
+    g = _JudgeGraph()
     llm = ScriptedLLM([[IBM], [IBM]])
     dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
     n = asyncio.run(dd.deduplicate(judge_llm=llm if judge else None))
     assert n == (1 if judge else 0)
     assert bool(dd.last_judge_stats) is judge
+
+
+def test_judge_merges_through_absorb_and_unions_labels():
+    """Inside EntityDeduplicator the judge decides identity and ``_absorb``
+    performs the merge: one atomic absorb-and-delete write carrying the
+    descriptions list and aliases, then the survivor gains the loser's label."""
+    g = _JudgeGraph()
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    n = asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[IBM], [IBM]])))
+    assert n == 1 and dd.last_judge_stats["merged"] == 1
+    # the judge's own direct write is not used; the shared absorb path is
+    assert not any(
+        c[0].startswith("MATCH (s:__Entity__ {id: $id}) SET s.description") for c in g.calls
+    )
+    absorb = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
+    assert len(absorb) == 1
+    # survivor rank: equal provenance and degree, so the longest description
+    # ("American computer firm; IBM.") keeps its node
+    assert absorb[0][1]["survivor_id"] == "e2" and absorb[0][1]["dup_id"] == "e1"
+    assert absorb[0][1]["descs"] == [
+        "American computer firm; IBM.",
+        "Computer company founded 1911.",
+    ]
+    assert absorb[0][1]["aliases"] == ["IBM"]
+    labels = [c for c in g.calls if "SET s:`" in c[0]]
+    assert len(labels) == 1
+    assert labels[0][1] == {"id": "e2"} and "SET s:`Organization`" in labels[0][0]
+    assert "SET s:`Company`" not in labels[0][0]  # already the survivor's own
+
+
+def test_judge_never_merges_a_pair_a_resolver_judged_distinct():
+    g = _JudgeGraph(distinct=[("e1", "e2")])
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    n = asyncio.run(dd.deduplicate(judge_llm=ScriptedLLM([[IBM], [IBM]])))
+    assert n == 0 and dd.last_judge_stats["merged"] == 0
+    assert not any("DETACH DELETE" in c[0] for c in g.calls)
+    assert not any("SAME_AS" in c[0] for c in g.calls)
 
 
 def test_remap_queries_bind_survivor_before_merge():
