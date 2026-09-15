@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 import re
@@ -61,6 +62,12 @@ PROMPT_TOKEN_BUDGET = 3000
 # capped too, so no single field can push a set past it.
 MAX_DESC_CHARS = 600
 MAX_NAME_CHARS = 120
+# Where a description's vector is kept between runs, and the digest of the
+# text it was computed from. The digest is the cache key: a description a
+# merge or a re-ingest has changed no longer matches, so the vector is
+# recomputed rather than trusted stale.
+DESC_EMBEDDING_KEY = "description_embedding"
+DESC_EMBEDDING_HASH_KEY = "description_embedding_hash"
 _STOP = frozenset(
     "the a an of and in on at to for de la le el les du des von van der al ibn bin y et".split()
 )
@@ -464,6 +471,7 @@ class LLMJudgeDeduplicator:
         # Stats of the run in progress, so a caller that catches a failure
         # part-way can still report the merges that were committed.
         self.last_stats: dict[str, int] = {}
+        self._embedded_ids: set[str] = set()
 
     async def _fetch_entities(self, batch_size: int) -> list[dict]:
         """Every named entity. A node without a name — a fact row keyed on a
@@ -476,7 +484,7 @@ class LLMJudgeDeduplicator:
                 "MATCH (e:__Entity__) WHERE e.id > $last "
                 "RETURN e.id, e.name, e.description, "
                 "[l IN labels(e) WHERE l <> '__Entity__'], e.aliases, e.embedding, "
-                "e.descriptions "
+                f"e.descriptions, e.{DESC_EMBEDDING_KEY}, e.{DESC_EMBEDDING_HASH_KEY} "
                 "ORDER BY e.id LIMIT $limit",
                 {"last": last, "limit": batch_size},
             )
@@ -486,6 +494,8 @@ class LLMJudgeDeduplicator:
                 if not name or not str(name).strip():
                     continue
                 descs = row[6] if len(row) > 6 else None
+                desc_emb = row[7] if len(row) > 7 else None
+                desc_hash = row[8] if len(row) > 8 else None
                 out.append(
                     {
                         "id": eid,
@@ -496,6 +506,8 @@ class LLMJudgeDeduplicator:
                         "label": (labels or [""])[0] if labels else "",
                         "aliases": list(aliases or []),
                         "embedding": list(emb) if emb else None,
+                        "desc_embedding": list(desc_emb) if desc_emb else None,
+                        "desc_embedding_hash": str(desc_hash) if desc_hash else None,
                     }
                 )
             if len(rows) < batch_size:
@@ -505,7 +517,10 @@ class LLMJudgeDeduplicator:
 
     async def _name_vectors(self, ents: list[dict]) -> np.ndarray:
         """Name embeddings: reuse ``e.embedding`` where present, embed the rest
-        and persist them so every entity keeps a name vector for retrieval."""
+        and persist them so every entity keeps a name vector for retrieval.
+        The ids written are kept in ``self._embedded_ids`` so the run's
+        ``embedded`` count can leave out a node a later merge deletes."""
+        self._embedded_ids = set()
         missing = [i for i, e in enumerate(ents) if not e["embedding"]]
         if missing:
             fresh = await self._embedder.aembed_documents([ents[i]["name"] for i in missing])
@@ -524,6 +539,7 @@ class LLMJudgeDeduplicator:
                         {"items": items},
                     )
                     self.last_stats["embedded"] = self.last_stats.get("embedded", 0) + len(items)
+                    self._embedded_ids.update(it["id"] for it in items)
         dim = max((len(e["embedding"]) for e in ents if e["embedding"]), default=0)
         vecs = np.zeros((len(ents), dim), dtype=np.float32)
         for i, e in enumerate(ents):
@@ -531,9 +547,23 @@ class LLMJudgeDeduplicator:
                 vecs[i] = e["embedding"]
         return vecs
 
+    @staticmethod
+    def _desc_hash(description: str) -> str:
+        return hashlib.sha256(description.encode("utf-8")).hexdigest()
+
     async def _desc_vectors(self, ents: list[dict]) -> np.ndarray:
         """Description embeddings, one row per entity; a zero row where there
         is nothing to embed or the embedder returned nothing.
+
+        A vector is reused from ``e.description_embedding`` when the stored
+        ``e.description_embedding_hash`` is the digest of the description the
+        node holds now; otherwise the description is embedded and both are
+        written back, so a later run pays only for descriptions that changed
+        (a merge joined them, a re-ingest rewrote them) or are new. The
+        digest, not a write hook, is what invalidates: every site that
+        rewrites a description leaves a stale hash behind, and a stale hash
+        is simply a miss. Writing the cache is best effort — a failure there
+        costs the next run an embedding, not this run its verdict.
 
         An entity without a description is not given its name here: the
         description door's gate (0.55) is lower than the name door's (0.65),
@@ -548,15 +578,35 @@ class LLMJudgeDeduplicator:
         not nominated by description.
         """
         have = [i for i, e in enumerate(ents) if (e["description"] or "").strip()]
-        raw = (
-            await self._embedder.aembed_documents([ents[i]["description"] for i in have])
-            if have
-            else []
-        )
-        rows = [list(v) if v is not None else [] for v in raw]
-        dim = max((len(v) for v in rows), default=0)
+        hashes = {i: self._desc_hash(ents[i]["description"]) for i in have}
+        cached = {
+            i
+            for i in have
+            if ents[i].get("desc_embedding") and ents[i].get("desc_embedding_hash") == hashes[i]
+        }
+        missing = [i for i in have if i not in cached]
+        rows: dict[int, list[float]] = {i: list(ents[i]["desc_embedding"]) for i in cached}
+        if missing:
+            raw = await self._embedder.aembed_documents([ents[i]["description"] for i in missing])
+            for i, v in zip(missing, raw):
+                rows[i] = list(v) if v is not None else []
+            items = [
+                {"id": ents[i]["id"], "v": rows[i], "h": hashes[i]} for i in missing if rows.get(i)
+            ]
+            for k in range(0, len(items), 200):
+                try:
+                    await self._graph.query_raw(
+                        "UNWIND $items AS it MATCH (e:__Entity__ {id: it.id}) "
+                        f"SET e.{DESC_EMBEDDING_KEY} = vecf32(it.v), "
+                        f"e.{DESC_EMBEDDING_HASH_KEY} = it.h",
+                        {"items": items[k : k + 200]},
+                    )
+                except Exception as exc:
+                    logger.warning("judge dedup: could not cache description vectors: %s", exc)
+                    break
+        dim = max((len(v) for v in rows.values()), default=0)
         vecs = np.zeros((len(ents), dim), dtype=np.float32)
-        for i, v in zip(have, rows):
+        for i, v in rows.items():
             if len(v) == dim and dim:
                 vecs[i] = v
         return vecs
@@ -739,6 +789,10 @@ class LLMJudgeDeduplicator:
                 continue
             surv, absorbed = await self._merge([byid[i] for i in ids])
             stats["merged"] += len(absorbed)
+            # A name vector written this run to a node the merge then deleted
+            # is not a vector the graph holds; the count is of those it does.
+            stats["embedded"] -= len(self._embedded_ids & set(absorbed))
+            self._embedded_ids -= set(absorbed)
             for i in idxs:
                 # A member the merge rules kept apart (two rows of one table)
                 # is still its own node, so a link must point at it, not at
@@ -750,10 +804,12 @@ class LLMJudgeDeduplicator:
         # to the same survivors are one edge, and a pair the merges have made
         # protected (B~C disagreed, B folded into A, A|C decided) is not linked.
         # ``agreement`` records how many passes said SAME: 1 for a pair the
-        # passes split on, 2 for one both passes agreed on but that reached
-        # across two sets and so is linked rather than merged.
+        # passes split on; for one that reached across two sets and so is
+        # linked rather than merged, the number of passes that saw it — 2 with
+        # the vote, 1 without. A single pass never writes ``agreement = 2``.
+        passes = 2 if self._vote else 1
         links: dict[tuple[str, str], int] = {}
-        for (a, b), votes in [*((p, 1) for p in disagreed), *((p, 2) for p in cross_set)]:
+        for (a, b), votes in [*((p, 1) for p in disagreed), *((p, passes) for p in cross_set)]:
             ra, rb = root_id[a], root_id[b]
             if ra == rb or protected(ra, rb):
                 continue

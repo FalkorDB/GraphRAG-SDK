@@ -530,7 +530,9 @@ class GraphStore:
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
     # ``True`` must not land on the node first and then have to be undone.
-    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+    _NEVER_CARRY_ON_RECONCILE = frozenset(
+        {"id", "embedding", "is_stub", "description_embedding", "description_embedding_hash"}
+    )
 
     async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
         """Copy what only the old node knew onto the new one, then delete the old.

@@ -933,3 +933,150 @@ def test_primary_label_does_not_flip_to_an_absorbed_one():
     dd = EntityDeduplicator(g, FakeEmbedder({}))
     (ent,) = asyncio.run(dd._fetch_all_entities(500))
     assert ent["label"] == "Organization" and ent["labels"] == ["Organization", "Company"]
+
+
+def test_primary_label_falls_back_the_same_way_whatever_the_order():
+    """When every Cypher label is on record as absorbed there is no primary
+    to prefer; the fallback must still not depend on the order ``labels(e)``
+    happens to list them in, or the grouping key flips between runs."""
+    for order in (["Organization", "Company"], ["Company", "Organization"]):
+        g = _LabelledGraph(
+            {
+                "a": {
+                    "name": "Airbus",
+                    "description": "Planemaker.",
+                    "labels": list(order),
+                    "merged_labels": "Company | Organization",
+                },
+            }
+        )
+        (ent,) = asyncio.run(EntityDeduplicator(g, FakeEmbedder({}))._fetch_all_entities(500))
+        assert ent["label"] == "Company"
+
+
+def test_adoption_does_not_inherit_the_guesses_the_guess_absorbed():
+    """Adopting ``Carbon Farming [Concept, merged_labels=Practice]`` into the
+    declared ``MitigationPractice`` drops ``Concept``, the extractor's guess.
+    ``Practice`` reached the node by the same route — an earlier merge of
+    another guess — and is dropped with it, not stamped on the declared
+    entity by the back door."""
+    g = _LabelledGraph(
+        {
+            "d": {
+                "name": "Carbon Farming",
+                "description": "Declared by the mapping.",
+                "labels": ["MitigationPractice"],
+            },
+            "x": {
+                "name": "Carbon Farming",
+                "description": "Guessed from prose.",
+                "labels": ["Concept", "Practice"],
+                "merged_labels": "Practice",
+            },
+        }
+    )
+    dd = EntityDeduplicator(g, FakeEmbedder({}))
+    n = asyncio.run(dd.deduplicate(declared_labels={"MitigationPractice"}))
+    assert n == 1 and set(g.nodes) == {"d"}
+    assert g.nodes["d"]["labels"] == ["MitigationPractice"]
+    assert "merged_labels" not in g.nodes["d"]
+    (absorb,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
+    assert "SET s:`" not in absorb[0] and "merged_labels" not in absorb[1]
+    # the description still crossed over: only the labels were refused
+    assert g.nodes["d"]["description"] == "Declared by the mapping. | Guessed from prose."
+
+
+def test_a_cross_set_link_without_the_vote_records_one_pass():
+    """With ``vote=False`` a straddling pair the single pass agreed on is
+    still linked rather than merged; ``agreement`` must say one pass saw it,
+    not the 2 that everywhere else means both passes agreed."""
+    names = ["Acme", "Acme Corp", "Acme Inc", "Acme Ltd", "Acme Group"]
+    rows = [(f"e{i}", n, f"desc {i}", ["Organization"], None, None) for i, n in enumerate(names)]
+    chain = {n: [np.cos(i * 0.6), np.sin(i * 0.6), 0.0] for i, n in enumerate(names)}
+    desc = {f"desc {i}": v for i, v in enumerate(np.eye(4).tolist())}
+    desc["desc 2"] = desc["desc 0"]
+
+    class Emb(FakeEmbedder):
+        async def aembed_documents(self, texts, **kw):
+            return [chain.get(t) or self.table.get(t, [0.0, 0.0, 0.0]) for t in texts]
+
+    graph = ScriptedGraph(rows)
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(graph, Emb(desc), ScriptedLLM([[set(names)]]), merge, vote=False)
+    stats = asyncio.run(dd.deduplicate())
+    assert stats["llm_calls"] == 1 and stats["linked"] == 1 and stats["disagreed_pairs"] == 0
+    assert merge.groups == [["e0", "e1", "e2", "e3"]]
+    (link,) = [c for c in graph.calls if "SAME_AS" in c[0]]
+    assert {link[1]["a"], link[1]["b"]} == {"e0", "e4"} and link[1]["votes"] == 1
+
+
+def test_embedded_counts_only_vectors_on_nodes_still_here():
+    """Every name is embedded before the judge merges; a vector written to a
+    node the merge then deleted is not one the graph holds, so the count the
+    caller adds to ``entities_embedded`` leaves it out."""
+    rows = [(*r[:5], None) for r in ROWS]
+    graph = ScriptedGraph(rows)
+    stats, merge = _run(graph, ScriptedLLM([[IBM], [IBM]]))
+    writes = [c for c in graph.calls if "SET e.embedding = vecf32" in c[0]]
+    assert sum(len(w[1]["items"]) for w in writes) == 3  # all three were written...
+    assert merge.groups == [["e1", "e2"]] and stats["merged"] == 1
+    assert stats["embedded"] == 2  # ...but e2 is gone
+
+
+def _hash(text):
+    return LLMJudgeDeduplicator._desc_hash(text)
+
+
+def test_description_vectors_are_cached_on_the_node_and_keyed_on_the_text():
+    """A description vector whose recorded hash is the digest of the node's
+    current description is reused; a stale hash (the description changed
+    since) or no vector at all is embedded and written back with its hash."""
+    rows = [
+        # id, name, description, labels, aliases, embedding, descriptions, desc vec, desc hash
+        (*ROWS[0], None, [1.0, 0.0, 0.0], _hash(ROWS[0][2])),  # fresh: reused
+        (*ROWS[1], None, [0.0, 1.0, 0.0], _hash("an older description")),  # stale: redone
+        (*ROWS[2], None, None, None),  # never embedded
+    ]
+    graph = ScriptedGraph(rows)
+    embedder = FakeEmbedder(DESC_EMB)
+    seen: list[list[str]] = []
+    inner = embedder.aembed_documents
+
+    async def spy(texts, **kw):
+        seen.append(list(texts))
+        return await inner(texts, **kw)
+
+    embedder.aembed_documents = spy
+    dd = LLMJudgeDeduplicator(graph, embedder, ScriptedLLM([[IBM], [IBM]]), RecordingMerge())
+    stats = asyncio.run(dd.deduplicate())
+    assert stats["merged"] == 1  # the cached vector took part in the nomination
+    assert seen == [[ROWS[1][2], ROWS[2][2]]]  # e1's description was not re-embedded
+    (write,) = [c for c in graph.calls if "SET e.description_embedding = vecf32" in c[0]]
+    assert [(it["id"], it["h"]) for it in write[1]["items"]] == [
+        ("e2", _hash(ROWS[1][2])),
+        ("e3", _hash(ROWS[2][2])),
+    ]
+    assert write[1]["items"][0]["v"] == DESC_EMB[ROWS[1][2]]
+
+    # a run over a graph where every description is cached embeds nothing
+    rows = [(*r, None, DESC_EMB[r[2]], _hash(r[2])) for r in ROWS]
+    graph = ScriptedGraph(rows)
+    seen.clear()
+    dd = LLMJudgeDeduplicator(graph, embedder, ScriptedLLM([[IBM], [IBM]]), RecordingMerge())
+    stats = asyncio.run(dd.deduplicate())
+    assert stats["merged"] == 1 and seen == []
+    assert not any("SET e.description_embedding" in c[0] for c in graph.calls)
+
+
+def test_a_failed_description_cache_write_does_not_abort_the_phase():
+    class Graph(ScriptedGraph):
+        async def query_raw(self, cypher, params=None):
+            if "SET e.description_embedding" in cypher:
+                self.calls.append((cypher, params or {}))
+                raise RuntimeError("write failed")
+            return await super().query_raw(cypher, params)
+
+    graph = Graph(ROWS)
+    stats, merge = _run(graph, ScriptedLLM([[IBM], [IBM]]))
+    assert stats["merged"] == 1 and merge.groups == [["e1", "e2"]]
+    assert any("SET e.description_embedding" in c[0] for c in graph.calls)

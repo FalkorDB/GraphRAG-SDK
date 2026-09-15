@@ -229,10 +229,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labels are recorded in `merged_labels` as well as set as Cypher labels, so
   a survivor's later merge carries them on and its primary label stays the
   one it was written as; label validity follows `sanitize_cypher_label`.
-  Agreements are unioned within one set only, a set whose prompt failed in
-  one pass is left unjudged rather than counted as a disagreement, and the
+  Agreements are unioned within one set only — so a genuine duplicate pair
+  that reached the judge as a straddling 2-member set beside a dense set
+  (a chain A–B–C–D–E arrives as `[A,B,C,D]` and `[D,E]`) is linked, never
+  merged, once its endpoint has merged inside the dense set: a deliberate
+  trade of recall for the chain guarantee. A set whose prompt failed in one
+  pass is left unjudged rather than counted as a disagreement, and the
   entity text in the judge prompt is flattened, quoted and declared
-  untrusted.
+  untrusted. `SAME_AS.agreement` is the number of passes that said SAME, so
+  a cross-set link written without the vote carries `1`, never `2`.
+  Description vectors are cached on the node (`description_embedding`,
+  keyed on `description_embedding_hash`, the digest of the text), so a
+  later run embeds only descriptions that are new or changed; the judge's
+  `embedded` count leaves out a node its own merges then deleted.
+  `deduplicate_entities(judge_llm=...)` without `judge=True` warns that the
+  judge did not run. An adoption into a declared label drops the labels the
+  adopted guess had itself absorbed, not only its primary.
 
 - `GraphExtraction`'s verification prompt now tells the model that entity
   descriptions are later used to decide whether two entities from different

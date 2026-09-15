@@ -20,6 +20,8 @@ import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, LLMResponse
 from graphrag_sdk.ingestion.resolution_strategies.base import (
@@ -404,17 +406,20 @@ class TestJudgeMergeSite:
         assert all(c[1].get("dup_id") == "a" for c in g.calls if "MERGE (s)-[" in c[0])
 
     def test_the_judge_needs_a_merge_hook(self):
-        """``merge_group`` is a required positional parameter with no default:
-        the judge cannot be built without a merge site, and builds with one."""
+        """``merge_group`` is a required parameter with no default: the judge
+        cannot be built without a merge site, and builds with one. The bad
+        call goes through ``functools.partial`` so the failure path really
+        runs without a literal too-few-arguments call for static analysis to
+        flag."""
+        import functools
         import inspect
 
         param = inspect.signature(LLMJudgeDeduplicator).parameters["merge_group"]
         assert param.default is inspect.Parameter.empty
-        assert param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-        # The signature check above is the "cannot be built without one" half;
-        # a literal too-few-arguments call would only trip static analysis.
-        judge = LLMJudgeDeduplicator(self._Graph([]), self._Emb(), self._LLM(), MagicMock())
-        assert isinstance(judge, LLMJudgeDeduplicator)
+        build = functools.partial(LLMJudgeDeduplicator, self._Graph([]), self._Emb(), self._LLM())
+        with pytest.raises(TypeError):
+            build()
+        assert isinstance(build(MagicMock()), LLMJudgeDeduplicator)
 
 
 class TestRemapChainsAreFlattened:

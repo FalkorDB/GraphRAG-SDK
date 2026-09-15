@@ -25,7 +25,11 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     RESOLUTION_SKIP_PAIRS,
 )
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
-from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator
+from graphrag_sdk.storage.judge_dedup import (
+    DESC_EMBEDDING_HASH_KEY,
+    DESC_EMBEDDING_KEY,
+    LLMJudgeDeduplicator,
+)
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 if TYPE_CHECKING:
@@ -758,6 +762,7 @@ class EntityDeduplicator:
         dup: dict[str, Any],
         *,
         add_labels: Iterable[str] = (),
+        inherit_labels: bool = True,
     ) -> bool:
         """Remap ``dup``'s edges onto ``survivor``, fold its data in, delete it.
 
@@ -780,8 +785,11 @@ class EntityDeduplicator:
         and the ones recorded in its ``merged_labels`` — plus ``add_labels``,
         the labels the caller wants unioned (the judge phase passes the
         loser's own label; an adoption into a declared label passes none, so
-        the extractor's guess is dropped). The union is written to the
-        survivor's own ``merged_labels`` too.
+        the extractor's guess is dropped). ``inherit_labels=False`` drops the
+        inherited ones as well: what the duplicate absorbed earlier has the
+        same provenance as its own primary, so a caller that refuses the one
+        can refuse the others. The union is written to the survivor's own
+        ``merged_labels`` too.
         Cypher labels alone would not survive: the phases read one primary
         label per node, so a survivor that later loses to another node would
         be deleted with its extra labels unread; the property travels. Labels
@@ -824,13 +832,18 @@ class EntityDeduplicator:
         # earlier merges gave it, on the graph or on record — plus what the
         # caller asks for. The duplicate's primary label itself is the
         # caller's call: the judge unions it (``add_labels``); an adoption
-        # into a declared label deliberately drops the extractor's guess.
+        # into a declared label deliberately drops the extractor's guess, and
+        # with it (``inherit_labels=False``) the guesses that guess absorbed.
         dup_primary = str(dup.get("label") or "").strip()
-        wanted: list[str] = [
-            *(lab for lab in dup_labels if lab not in keep_labels and lab != dup_primary),
-            *split_merged_labels(dup_props.get(MERGED_LABELS_KEY)),
-            *add_labels,
-        ]
+        inherited: list[str] = (
+            [
+                *(lab for lab in dup_labels if lab not in keep_labels and lab != dup_primary),
+                *split_merged_labels(dup_props.get(MERGED_LABELS_KEY)),
+            ]
+            if inherit_labels
+            else []
+        )
+        wanted: list[str] = [*inherited, *add_labels]
         primary = str(survivor.get("label") or "").strip()
         recorded = split_merged_labels(keep_props.get(MERGED_LABELS_KEY))
         # ``survivor.get("labels")`` is the full list where the caller fetched
@@ -1482,6 +1495,12 @@ class EntityDeduplicator:
         Distinguishing that from the ordering mistake would need to know whether
         the label existed at extraction time, which is not recorded.
 
+        The adopted node's labels do not travel: its primary is the guess this
+        pass exists to correct, and the labels it absorbed in earlier merges
+        (``merged_labels``, extra Cypher labels) are guesses of the same
+        provenance — stamping ``Practice`` on the declared entity while dropping
+        ``Concept`` would treat two identical guesses oppositely.
+
         Measured on the same files, prose first: 0 merged before, 5 after.
         """
         if not self._declared_labels:
@@ -1511,7 +1530,7 @@ class EntityDeduplicator:
                 for duplicate in groups[(norm_name, label)]:
                     if duplicate["id"] == survivor["id"]:
                         continue
-                    if await self._absorb(survivor, duplicate):
+                    if await self._absorb(survivor, duplicate, inherit_labels=False):
                         merged += 1
                         logger.info(
                             "Adopted %r from inferred label %r into declared label %r",
@@ -1613,7 +1632,9 @@ class EntityDeduplicator:
                 absorbed = split_merged_labels(row[8]) if len(row) > 8 else []
                 label = row[3] if len(row) > 3 and row[3] else ""
                 if labels:
-                    label = next((lab for lab in labels if lab not in absorbed), label or labels[0])
+                    # Every label on record as absorbed leaves no primary to
+                    # prefer; the smallest is at least the same one every run.
+                    label = next((lab for lab in labels if lab not in absorbed), min(labels))
                 entities.append(
                     {
                         "id": row[0],
@@ -1636,8 +1657,11 @@ class EntityDeduplicator:
             )
         return entities
 
-    # Written by the system, never carried across from a duplicate.
-    _NEVER_CARRY = frozenset({"id", "embedding"})
+    # Written by the system, never carried across from a duplicate. The judge's
+    # cached description vector is keyed on the description it was computed
+    # from; the survivor's is the joined one, so the duplicate's would only be
+    # a miss it had to store.
+    _NEVER_CARRY = frozenset({"id", "embedding", DESC_EMBEDDING_KEY, DESC_EMBEDDING_HASH_KEY})
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
         """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.

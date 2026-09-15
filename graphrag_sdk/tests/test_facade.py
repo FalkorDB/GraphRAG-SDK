@@ -316,7 +316,7 @@ class TestGraphRAGDeduplicateEntities:
         assert count == 1  # one duplicate merged
 
     async def test_deduplicate_entities_judge_is_opt_in(
-        self, mock_conn, embedder, llm, monkeypatch
+        self, mock_conn, embedder, llm, monkeypatch, caplog
     ):
         """The standalone ``deduplicate_entities()`` makes no LLM call unless
         asked — a caller running it after every ingest batch must not start
@@ -343,10 +343,17 @@ class TestGraphRAGDeduplicateEntities:
         await g.deduplicate_entities(judge=True, judge_llm=other, judge_vote=False)
         assert seen["judge_llm"] is other and seen["judge_vote"] is False
 
-        # judge_llm alone does not switch the phase on
+        # judge_llm alone does not switch the phase on — but a judge model is
+        # an unambiguous signal the caller wanted the judge, so it says so
         seen.clear()
-        await g.deduplicate_entities(judge_llm=other)
+        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
+            await g.deduplicate_entities(judge_llm=other)
         assert seen["judge_llm"] is None
+        assert "judge_llm was given but judge=False" in caplog.text
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
+            await g.deduplicate_entities(judge=True, judge_llm=other)
+        assert "judge_llm was given" not in caplog.text
 
     async def test_finalize_runs_the_judge_by_default(self, mock_conn, embedder, llm, monkeypatch):
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)

@@ -4576,6 +4576,8 @@ class GraphRAG:
             judge: run the LLM-judged phase (default False here; ``True`` in
                 :meth:`finalize`). ``False`` = no judge LLM calls.
             judge_llm: Judge model; defaults to this instance's ``llm``.
+                Only read with ``judge=True`` — given alone it is ignored,
+                with a warning, since the phase is off here by default.
                 A gpt-4.1-class model is strongly recommended — on the
                 benchmark corpus it made 9 wrong merges where gpt-4o-mini
                 made 51.
@@ -4588,6 +4590,11 @@ class GraphRAG:
             ``self._deduplicator.last_judge_stats``.
         """
         await self._ensure_ontology_initialized()
+        if judge_llm is not None and not judge:
+            logger.warning(
+                "deduplicate_entities: judge_llm was given but judge=False, so the judge "
+                "phase does not run; pass judge=True to use it (finalize() runs it by default)"
+            )
         merged = await self._deduplicator.deduplicate(
             fuzzy=fuzzy,
             similarity_threshold=similarity_threshold,
@@ -4760,8 +4767,9 @@ class GraphRAG:
 
         # Step 3: Entity name embeddings, after dedup so the duplicates the merge
         # just removed are not embedded first. The judge phase has already
-        # embedded and stored the names it read; this covers the rest, and the
-        # reported count is every vector written this call to a node still here.
+        # embedded and stored the names it read, net of any node its own merges
+        # then deleted; this covers the rest, and the reported count is every
+        # vector written this call to a node still here.
         entity_count = await self._vector_store.backfill_entity_embeddings()
         entity_count += int(judge_stats.get("embedded", 0) or 0)
         ctx_log(f"finalize: embedded {entity_count} entities")
