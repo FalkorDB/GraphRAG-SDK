@@ -23,6 +23,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     RESOLUTION_DISTINCT_IDS,
     RESOLUTION_REJECTED_PAIRS,
     RESOLUTION_SKIP_PAIRS,
+    description_list,
 )
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
 from graphrag_sdk.storage.judge_dedup import (
@@ -173,20 +174,53 @@ def is_acronym_of(short: str, long: str) -> bool:
     return key == _expansion_key(normalize_entity_name(long))
 
 
-def _merge_description_segments(current: str, absorbed: str) -> list[str]:
-    """The merged member descriptions of two nodes, each kept once.
+def _merge_description_members(current: list[str], absorbed: list[str]) -> list[str]:
+    """The merged member descriptions of two nodes, each kept once, the
+    survivor's first.
 
-    Segments are compared individually, not whole strings: once a survivor
-    holds ``"a lighthouse | first lit in 1871"``, absorbing a node described as
-    ``"first lit in 1871"`` must not append it again. Across incremental
+    Members are compared individually, not whole strings: once a survivor
+    holds ``["a lighthouse", "first lit in 1871"]``, absorbing a node described
+    as ``"first lit in 1871"`` must not append it again. Across incremental
     finalize cycles that repetition compounds on hub entities.
     """
     segments: list[str] = []
-    for text in (current, absorbed):
-        for seg in (s.strip() for s in str(text or "").split(" | ")):
-            if seg and seg not in segments:
-                segments.append(seg)
+    for seg in (str(s or "").strip() for s in (*current, *absorbed)):
+        if seg and seg not in segments:
+            segments.append(seg)
     return segments
+
+
+def _description_members(props: dict[str, Any]) -> list[str]:
+    """A node's member descriptions, by the rule every merge path shares.
+
+    :func:`description_list`: the stored ``descriptions`` list where the node
+    has one; otherwise its ``description`` as **one** member, deliberately not
+    split on ``" | "`` — a fresh node's single description may contain the
+    separator (``"CEO | founder of Acme"``), and splitting it would invent
+    members that were never written and count them toward
+    ``force_summary_threshold``. The one addition: an empty stored list does
+    not hide a description the node does hold — the text is still a member,
+    because a merge that misread it would delete the only other copy.
+    """
+    members = description_list(props)
+    if members:
+        return members
+    single = str(props.get("description") or "").strip()
+    return [single] if single else []
+
+
+def _merge_description_segments(current: str, absorbed: str) -> list[str]:
+    """:func:`_merge_description_members` over two bare description strings,
+    each split on ``" | "``.
+
+    For the callers that hold only the joined text (:func:`properties_to_carry`
+    reads whatever properties a node has, and a reconcile writes ``description``
+    alone); the merge that also writes the ``descriptions`` list goes through
+    :func:`_description_members` so it never invents a member.
+    """
+    return _merge_description_members(
+        str(current or "").split(" | "), str(absorbed or "").split(" | ")
+    )
 
 
 def _merge_description(current: str, absorbed: str) -> str:
@@ -874,19 +908,26 @@ class EntityDeduplicator:
         sets: list[str] = []
         params: dict[str, Any] = {"survivor_id": survivor["id"], "dup_id": dup["id"]}
 
-        # Concatenated with " | ", matching LLMVerifiedResolution's survivor
-        # rule, so both mechanisms leave the same shape behind.
-        segments = _merge_description_segments(
-            survivor.get("description") or "", dup.get("description") or ""
+        # Joined with " | ", matching LLMVerifiedResolution's survivor rule,
+        # so both mechanisms leave the same shape behind — and counted by the
+        # same rule (``description_list``): the stored ``descriptions`` list
+        # where a node has one, a lone ``description`` as a single member.
+        segments = _merge_description_members(
+            _description_members(keep_props), _description_members(dup_props)
         )
         description = " | ".join(segments)
-        if description != (survivor.get("description") or ""):
+        stored = _string_list(keep_props.get("descriptions"))
+        if description != (survivor.get("description") or "") or segments != stored:
             # Both forms, together. Resolution writes ``descriptions`` (the
             # members) alongside ``description`` (those members joined), and
             # ``description_list`` prefers the list wherever it is present. A
             # survivor updated here without it would keep whatever array
             # ingest-time resolution left behind and silently report fewer
-            # members than its own ``description`` holds.
+            # members than its own ``description`` holds. The list is also
+            # written when the text is unchanged but the graph's list is not
+            # these members: two nodes with the same description and no list
+            # would otherwise delete one member unrecorded, and a list an
+            # earlier writer left short would stay out of step with the text.
             sets.append("s.description = $desc")
             sets.append("s.descriptions = $descs")
             params["desc"] = description
@@ -937,6 +978,7 @@ class EntityDeduplicator:
             return False
 
         survivor["description"] = description
+        survivor["descriptions"] = segments
         survivor["aliases"] = aliases
         if "is_stub" in carry:
             survivor["is_stub"] = carry["is_stub"]

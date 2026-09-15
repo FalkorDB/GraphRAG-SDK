@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import random
 import re
@@ -283,9 +284,13 @@ def render_set(members: list[int], ents: list[dict]) -> str:
     """One numbered line per member: name, every label, capped description.
 
     The fields are document text and the model is told so; each is flattened
-    to one line by :func:`_field`, and the description is quoted, so the line
+    to one line by :func:`_field`, and the description is rendered as a JSON
+    string — quotes and backslashes escaped, still one line — so the line
     grammar ``N. name [labels] — "description"`` stays unambiguous whatever a
-    document put in it.
+    document put in it. A bare f-string quote would let a ``"`` inside the
+    description close the field, and everything after it would read to the
+    model as prompt prose rather than as the entity's data; an accepted answer
+    deletes a node, so the boundary has to hold.
     """
     lines = []
     for i, idx in enumerate(members, 1):
@@ -294,7 +299,7 @@ def render_set(members: list[int], ents: list[dict]) -> str:
         labels = labels or _field(ent.get("label"), MAX_NAME_CHARS) or "Entity"
         name = _field(ent["name"], MAX_NAME_CHARS)
         desc = _field(ent.get("description"), MAX_DESC_CHARS)
-        shown = f'"{desc}"' if desc else "(no description)"
+        shown = json.dumps(desc, ensure_ascii=False) if desc else "(no description)"
         lines.append(f"{i}. {name} [{labels}] — {shown}")
     return "\n".join(lines)
 

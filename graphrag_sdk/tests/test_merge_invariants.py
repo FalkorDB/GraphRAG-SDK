@@ -253,16 +253,19 @@ class TestLLMVerifiedMergeSites:
         assert set(res.nodes[0].properties["descriptions"]) == {"D1", "D2", "D3"}
 
 
-def _props_read(rows, params):
+def _props_read(rows, params, stored=None):
     """Answer ``_read_properties`` from fetched rows ``(id, name, desc, label,
     aliases, ...)`` the way the graph would: ``[props(k), props(d), labels(k),
-    labels(d)]``; no row when either node is missing."""
+    labels(d)]``; no row when either node is missing. ``stored`` adds
+    properties the page does not carry, per id — the ``descriptions`` list an
+    earlier merge left on a node."""
     by_id = {r[0]: r for r in rows}
 
     def props(r):
         out = {"name": r[1], "description": r[2]}
         if len(r) > 4 and r[4]:
             out["aliases"] = list(r[4])
+        out.update((stored or {}).get(r[0], {}))
         return out
 
     def labels(r):
@@ -286,9 +289,15 @@ class TestFinalizeExactPhase:
             ["e2", "cape morrow light", "earlier | first lit 1871", "Location", None, None, 0],
         ]
 
-    async def test_three_rules(self):
+    # e2 is a survivor of an earlier merge: it holds the members list as well
+    # as the joined text, the shape every merge writes.
+    _STORED = {"e2": {"descriptions": ["earlier", "first lit 1871"]}}
+
+    @staticmethod
+    async def _run(rows, stored=None):
+        """``deduplicate()`` over ``rows``; returns ``(merged, graph, order)``."""
         graph = MagicMock()
-        pages = [SimpleNamespace(result_set=self._rows()), SimpleNamespace(result_set=[])]
+        pages = [SimpleNamespace(result_set=list(rows)), SimpleNamespace(result_set=[])]
         order: list[str] = []
 
         async def query_raw(q, params=None):
@@ -296,26 +305,98 @@ class TestFinalizeExactPhase:
             if "RETURN e.id AS id" in q:
                 return pages.pop(0) if pages else SimpleNamespace(result_set=[])
             if "properties(k), properties(d)" in q:
-                return _props_read(self._rows(), params)
+                return _props_read(rows, params, stored)
             if "DETACH DELETE dup RETURN s.id" in q:
                 return SimpleNamespace(result_set=[[params["survivor_id"]]])
             return SimpleNamespace(result_set=[])
 
         graph.query_raw = AsyncMock(side_effect=query_raw)
         merged = await EntityDeduplicator(graph, MagicMock()).deduplicate()
+        return merged, graph, order
+
+    @staticmethod
+    def _description_writes(graph):
+        return [
+            c.args[1]
+            for c in graph.query_raw.call_args_list
+            if "s.descriptions = $descs" in c.args[0]
+        ]
+
+    async def test_three_rules(self):
+        merged, graph, order = await self._run(self._rows(), self._STORED)
         assert merged == 1
-        write = next(
-            c for c in graph.query_raw.call_args_list if "s.descriptions = $descs" in c.args[0]
-        )
+        (write,) = self._description_writes(graph)
         # rule 1: list + joined string; survivor = longest description (e2), whose
         # own earlier members are kept intact, then the loser's
-        assert write.args[1]["survivor_id"] == "e2"
-        assert write.args[1]["descs"] == ["earlier", "first lit 1871", "a lighthouse"]
-        assert write.args[1]["desc"] == "earlier | first lit 1871 | a lighthouse"
+        assert write["survivor_id"] == "e2"
+        assert write["descs"] == ["earlier", "first lit 1871", "a lighthouse"]
+        assert write["desc"] == "earlier | first lit 1871 | a lighthouse"
         # rule 3: every remap query ran before the DETACH DELETE
         i_delete = next(i for i, q in enumerate(order) if "DETACH DELETE dup" in q)
         i_remaps = [i for i, q in enumerate(order) if "MERGE (s)-[" in q or "MERGE (a)-[" in q]
         assert i_remaps and max(i_remaps) < i_delete
+
+    async def test_a_lone_description_is_one_member_even_with_the_separator_in_it(self):
+        """Rule 1 by ``description_list``'s rule: a node holding only
+        ``description`` is ONE member, not split on ``" | "``. Nothing tells a
+        pre-``descriptions`` survivor from a fresh node whose single text
+        contains the separator, and splitting the fresh one invents members
+        that were never written — persisted, and counted toward
+        ``force_summary_threshold``."""
+        rows = [
+            ["e1", "Maya Ellison", "CEO | founder of Acme", "Person", None, None, 0],
+            ["e2", "maya ellison", "born 1970", "Person", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows)
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["survivor_id"] == "e1"
+        assert write["descs"] == ["CEO | founder of Acme", "born 1970"]
+        assert write["desc"] == "CEO | founder of Acme | born 1970"
+
+    async def test_the_same_description_on_both_nodes_still_records_the_member(self):
+        """Rule 1 when the text does not change: two nodes with the same
+        description and no list. The joined string is the survivor's own, so
+        a write gated on the text alone skipped the list — and the deleted
+        node's member was never recorded. The list is written whenever the
+        graph's list is not these members."""
+        rows = [
+            ["e1", "Alice", "an engineer", "Person", None, None, 0],
+            ["e2", "alice", "an engineer", "Person", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows)
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["descs"] == ["an engineer"]
+        assert write["desc"] == "an engineer"
+
+    async def test_a_list_left_short_by_an_earlier_writer_is_brought_up_to_date(self):
+        """The survivor's text already holds the duplicate's member, but the
+        stored list does not: joined text unchanged, list out of step. The
+        write is gated on the list as well, so the member lands in it."""
+        rows = [
+            ["e1", "Cape Morrow Light", "a lighthouse | first lit 1871", "Location", None, None, 0],
+            ["e2", "cape morrow light", "first lit 1871", "Location", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows, {"e1": {"descriptions": ["a lighthouse"]}})
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["survivor_id"] == "e1"
+        assert write["descs"] == ["a lighthouse", "first lit 1871"]
+        assert write["desc"] == "a lighthouse | first lit 1871"
+
+    async def test_an_empty_stored_list_does_not_hide_the_survivors_description(self):
+        """``description_list`` prefers the list wherever it is present; an
+        empty one would make the survivor's own text vanish from the merge.
+        The text is still a member — the duplicate's copy is about to go."""
+        rows = [
+            ["e1", "Alice", "an engineer", "Person", None, None, 0],
+            ["e2", "alice", "born 1970", "Person", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows, {"e1": {"descriptions": []}})
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["descs"] == ["an engineer", "born 1970"]
 
     async def test_a_failed_metadata_read_aborts_the_merge_before_any_write(self):
         """The union is built from what the graph holds. If that read fails,

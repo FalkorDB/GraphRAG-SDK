@@ -21,15 +21,18 @@ def _result(rows):
     return r
 
 
-def _props_read(rows, params):
+def _props_read(rows, params, stored=None):
     """Answer ``_read_properties`` from the fetched rows, as the graph would:
-    ``[props(survivor), props(dup), labels(survivor), labels(dup)]``."""
+    ``[props(survivor), props(dup), labels(survivor), labels(dup)]``.
+    ``stored`` adds properties the page does not carry, per id — the
+    ``descriptions`` list an earlier merge left on a node."""
     by_id = {r[0]: r for r in rows}
 
     def props(r):
         out = {"name": r[1], "description": r[2]}
         if len(r) > 4 and r[4]:
             out["aliases"] = list(r[4])
+        out.update((stored or {}).get(r[0], {}))
         return out
 
     k, d = by_id.get(params["survivor_id"]), by_id.get(params["dup_id"])
@@ -350,14 +353,14 @@ class TestMergePreservesDescriptions:
     """
 
     @staticmethod
-    def _dedup(rows, *, survivor_exists: bool = True):
+    def _dedup(rows, *, survivor_exists: bool = True, stored=None):
         graph = MagicMock()
 
         async def query_raw(q, params=None):
             if "MATCH (e:__Entity__)" in q and "RETURN" in q and "SKIP" in q:
                 return _result(rows if params["offset"] == 0 else [])
             if "properties(k), properties(d)" in q:
-                return _props_read(rows, params)
+                return _props_read(rows, params, stored)
             if "DETACH DELETE" in q:
                 # The absorb query RETURNs the survivor's id iff it matched.
                 return _result([[params["survivor_id"]]] if survivor_exists else [])
@@ -404,6 +407,10 @@ class TestMergePreservesDescriptions:
         assert self._description_writes(graph) == []
 
     async def test_identical_descriptions_are_not_concatenated(self):
+        """The text is not repeated — and the ``descriptions`` list is still
+        written, so the member the deleted node held is recorded: two nodes
+        with the same description and no list used to leave the survivor
+        without one, reporting fewer members than it absorbed."""
         dedup, graph = self._dedup(
             [
                 ["e1", "Alice", "an engineer", "Person"],
@@ -411,7 +418,13 @@ class TestMergePreservesDescriptions:
             ]
         )
         await dedup.deduplicate()
-        assert self._description_writes(graph) == []
+        assert self._description_writes(graph) == ["an engineer"]
+        (write,) = [
+            c
+            for c in graph.query_raw.call_args_list
+            if len(c.args) > 1 and isinstance(c.args[1], dict) and "descs" in c.args[1]
+        ]
+        assert write.args[1]["descs"] == ["an engineer"]
 
     async def test_empty_description_does_not_produce_a_separator(self):
         dedup, graph = self._dedup(
@@ -425,21 +438,46 @@ class TestMergePreservesDescriptions:
             assert not w.startswith(" | ") and not w.endswith(" | ")
 
     async def test_existing_segments_are_not_repeated(self):
-        """Dedup compares ``" | "`` segments, not whole strings.
+        """Dedup compares members, not whole strings.
 
-        Once a survivor holds ``"a lighthouse | first lit in 1871"``, absorbing
-        a node described as ``"first lit in 1871"`` used to append it again.
-        Across incremental finalize cycles that compounds on hub entities.
+        Once a survivor holds ``["a lighthouse", "first lit in 1871"]``,
+        absorbing a node described as ``"first lit in 1871"`` used to append
+        it again. Across incremental finalize cycles that compounds on hub
+        entities. The members are the survivor's stored ``descriptions``
+        list, the shape every merge writes.
         """
         dedup, graph = self._dedup(
             [
                 ["e1", "Cape Morrow Light", "a lighthouse | first lit in 1871", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
-            ]
+            ],
+            stored={"e1": {"descriptions": ["a lighthouse", "first lit in 1871"]}},
         )
         merged = await dedup.deduplicate()
         assert merged == 1
         assert self._description_writes(graph) == []
+
+    async def test_a_lone_description_holding_the_separator_is_one_member(self):
+        """A node with only ``description`` is one member, not split on
+        ``" | "`` — the rule ``description_list`` states: nothing tells a
+        pre-``descriptions`` survivor from a fresh node whose single text
+        contains the separator, and splitting the fresh one invents members
+        that count toward ``force_summary_threshold``."""
+        dedup, graph = self._dedup(
+            [
+                ["e1", "Maya Ellison", "CEO | founder of Acme", "Person"],
+                ["e2", "maya ellison", "born 1970", "Person"],
+            ]
+        )
+        merged = await dedup.deduplicate()
+        assert merged == 1
+        (write,) = [
+            c
+            for c in graph.query_raw.call_args_list
+            if len(c.args) > 1 and isinstance(c.args[1], dict) and "descs" in c.args[1]
+        ]
+        assert write.args[1]["descs"] == ["CEO | founder of Acme", "born 1970"]
+        assert write.args[1]["desc"] == "CEO | founder of Acme | born 1970"
 
     async def test_segments_accumulate_once_across_a_group(self):
         dedup, graph = self._dedup(
@@ -447,7 +485,8 @@ class TestMergePreservesDescriptions:
                 ["e1", "Cape Morrow Light", "a lighthouse", "Location"],
                 ["e2", "cape morrow light", "first lit in 1871", "Location"],
                 ["e3", "Cape  Morrow  Light", "first lit in 1871 | automated in 1960", "Location"],
-            ]
+            ],
+            stored={"e3": {"descriptions": ["first lit in 1871", "automated in 1960"]}},
         )
         await dedup.deduplicate()
         writes = self._description_writes(graph)
