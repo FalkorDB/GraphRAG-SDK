@@ -70,7 +70,11 @@ class ExactMatchResolution(ResolutionStrategy):
             summarises rather than concatenating.
         max_summary_tokens: Token ceiling requested for that summary.
         cross_label_merge: Whether same-name/different-label groups are
-            put to the LLM at all.
+            put to the LLM at all. Off by default, matching
+            :func:`exact_match_merge`: this class is the zero-LLM-cost
+            exact matcher, and passing an ``llm`` for description
+            summarisation alone must not also buy LLM-verified
+            cross-label merging that was never asked for.
         cross_label_min_descriptions: Evidence floor for that check.
     """
 
@@ -81,7 +85,7 @@ class ExactMatchResolution(ResolutionStrategy):
         llm: LLMInterface | None = None,
         force_summary_threshold: int = 3,
         max_summary_tokens: int = 500,
-        cross_label_merge: bool = True,
+        cross_label_merge: bool = False,
         cross_label_min_descriptions: int = 3,
     ) -> None:
         self.resolve_property = resolve_property

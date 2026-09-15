@@ -1,11 +1,19 @@
 ---
-title: "Ingestion"
-description: "How documents become a knowledge graph through the 9-step ingestion pipeline."
+title: "Document Ingestion Pipeline in GraphRAG SDK"
+sidebarTitle: "Ingestion"
+description: "How GraphRAG SDK turns raw documents into a knowledge graph through a 9-step ingestion pipeline, from chunking to entity resolution."
 ---
 
 When you call `rag.ingest("document.txt")`, the SDK transforms your raw text into a structured knowledge graph through a **9-step sequential pipeline**. Think of it as an assembly line: each step takes the output of the previous one, refines it, and passes it forward.
 
 This document explains what each step does, why it exists, and how to tune it.
+
+<Note>
+This pipeline is built for prose. For CSVs and other tabular sources, see
+[Structured Ingestion](/structured-ingestion): you declare what the columns mean
+and the graph is written deterministically, with no model in the loop, into the
+same graph your documents live in.
+</Note>
 
 ---
 
@@ -164,12 +172,18 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 - No embeddings, no LLM calls; zero added cost
 - Ingest is per document, so a resolver here can only compare one file's entities with each other — the cross-document duplicates that matter are handled once, at `finalize()`
 
+**Alternative: LLMVerifiedResolution**
+- Runs the same exact-match pass first, then compares the surviving names by embedding similarity within each label
+- Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.80) go to the LLM for a YES/NO verdict
+- Useful when the same entity is named inconsistently across documents (e.g., "Acme Corp" vs "Acme Corporation")
+
 **At `finalize()`: the LLM-judged cross-document phase**
-- Runs after the exact-name dedup phase, over every entity of every document
+- Runs after the exact-name dedup and the resolver pass, over every entity of every document
 - Name and description embeddings plus "A's name appears in B's description" nominate candidate pairs (no LLM); candidates form dense sets of ≤ 8
 - The judge LLM partitions each set into same-referent groups; a second pass over shuffled sets must agree
-- Both passes agree → **merge**: survivor = longest description, descriptions joined with `" | "`, every member's label added, other names kept in `aliases`, edges moved first, then the loser deleted
+- Both passes agree → **merge**, by the same rules as every finalize merge: a table's row survives a mention, every member's description is kept in `descriptions` (joined with `" | "` in `description`), other names kept in `aliases`, edges moved first, then the loser deleted; the survivor also gains every member's label
 - Only one pass agrees → **link**: a `SAME_AS` edge (`source='llm_judge'`), both nodes stay
+- Pairs a resolver remembered as `DISTINCT_FROM` are never asked again
 - `finalize(judge=False)` skips it; `judge_llm=` picks the model (gpt-4.1-class recommended); pass `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per document
 
 For details on resolution strategies, see [Strategies](/strategies).
@@ -271,8 +285,8 @@ stats = await rag.finalize()
 
 | Strategy | When to use |
 |----------|-------------|
-| `ExactMatchResolution` (ingest default) | Fast, deterministic, no LLM |
-| `LLMVerifiedResolution` (opt-in) | Embedding + LLM verification per document. Cross-document dedup is `finalize()`'s judge phase |
+| `ExactMatchResolution` (default) | Fast, deterministic. Good when extraction is consistent |
+| `LLMVerifiedResolution` | Multi-document ingestion where names vary. Costs embedding calls, plus LLM calls for ambiguous pairs. Cross-document dedup is `finalize()`'s resolver and judge phases |
 
 ---
 
@@ -296,7 +310,7 @@ stats = await rag.finalize()
 | [`chunking_strategies/fixed_size.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/chunking_strategies/fixed_size.py) | FixedSizeChunking implementation |
 | [`extraction_strategies/graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
 | [`resolution_strategies/exact_match.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |
-| [`resolution_strategies/llm_verified_resolution.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/llm_verified_resolution.py) | LLMVerifiedResolution (opt-in) |
+| [`resolution_strategies/llm_verified_resolution.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/llm_verified_resolution.py) | LLMVerifiedResolution |
 | [`storage/judge_dedup.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/judge_dedup.py) | LLMJudgeDeduplicator — cross-document dedup at `finalize()` |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Batched node/relationship writes |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Chunk embedding + indexing |

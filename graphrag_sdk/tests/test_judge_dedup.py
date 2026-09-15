@@ -233,8 +233,9 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
             self.pages = [
                 SimpleNamespace(
                     result_set=[
-                        ("a", "Mary Ann", "Schooner of 1855.", "Ship"),
-                        ("b", "mary ann", "Sloop.", "Ship"),
+                        # id, name, description, label, aliases, is_stub, degree
+                        ("a", "Globex Limited", "Maker of widgets.", "Organization", None, None, 0),
+                        ("b", "Globex Ltd", "Founded 1990.", "Organization", None, None, 0),
                     ]
                 ),
                 SimpleNamespace(result_set=[]),
@@ -243,19 +244,20 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
         async def query_raw(self, cypher, params=None):
             self.calls.append((cypher, params or {}))
             if "RETURN e.id" in cypher and "SKIP" in cypher:
-                return self.pages.pop(0)
-            if "count(" in cypher.lower() or "RETURN" in cypher:
-                return SimpleNamespace(result_set=[[1]])
+                return self.pages.pop(0) if self.pages else SimpleNamespace(result_set=[])
+            if "DETACH DELETE dup RETURN s.id" in cypher:
+                return SimpleNamespace(result_set=[[params["survivor_id"]]])
             return SimpleNamespace(result_set=[])
 
     g = G()
     dd = EntityDeduplicator(g, FakeEmbedder({}))
     n = asyncio.run(dd.deduplicate())
     assert n == 1
-    upd = [c for c in g.calls if "s.aliases" in c[0]]
+    upd = [c for c in g.calls if "s.aliases = $aliases" in c[0]]
     assert len(upd) == 1
-    assert upd[0][1]["desc"] == "Schooner of 1855. | Sloop."
-    assert upd[0][1]["aliases"] == ["mary ann"]
+    assert upd[0][1]["desc"] == "Maker of widgets. | Founded 1990."
+    assert upd[0][1]["descs"] == ["Maker of widgets.", "Founded 1990."]
+    assert upd[0][1]["aliases"] == ["Globex Ltd"]
 
 
 @pytest.mark.parametrize("judge", [False, True])

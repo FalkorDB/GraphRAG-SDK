@@ -1,4 +1,5 @@
 """Tests for storage/vector_store.py — Vector index management and search."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -96,22 +97,27 @@ class TestVectorStoreIndex:
         result = await vector_store.create_chunk_vector_index()
         assert result is True
 
-    async def test_create_index_returns_true_on_already_exists(
-        self, vector_store, mock_connection
-    ):
+    async def test_create_index_returns_true_on_already_exists(self, vector_store, mock_connection):
         """FalkorDB also returns 'already exists' for some index conflicts;
         same idempotent-success semantics."""
         mock_connection.query = AsyncMock(side_effect=Exception("Index already exists"))
         result = await vector_store.create_chunk_vector_index()
         assert result is True
 
-    async def test_create_index_returns_false_on_real_failure(
+    async def test_create_index_declares_already_indexed_as_expected(
         self, vector_store, mock_connection
     ):
+        """The call site, not ``FalkorDBConnection.query``, knows that CREATE
+        INDEX is idempotent -- it must say so, or the connection logs the
+        'already indexed' reply as an ERROR on every finalize()."""
+        mock_connection.query = AsyncMock(return_value=MagicMock())
+        await vector_store.create_chunk_vector_index()
+        kwargs = mock_connection.query.call_args.kwargs
+        assert set(kwargs["expected_errors"]) == {"already indexed", "already exists"}
+
+    async def test_create_index_returns_false_on_real_failure(self, vector_store, mock_connection):
         """A non-idempotent error (e.g. syntax) must surface as False."""
-        mock_connection.query = AsyncMock(
-            side_effect=Exception("Syntax error near 'CREATE'")
-        )
+        mock_connection.query = AsyncMock(side_effect=Exception("Syntax error near 'CREATE'"))
         result = await vector_store.create_chunk_vector_index()
         assert result is False
 
@@ -135,10 +141,13 @@ class TestVectorStoreIndexChunks:
         params = mock_connection.query.call_args[0][1]
         assert len(params["batch"]) == 2
 
-    async def test_index_chunks_no_embedder(self, vector_store_no_embedder):
+    async def test_index_chunks_no_embedder(self, vector_store_no_embedder, mock_connection):
+        """No embedder → ``None`` (not attempted), distinct from ``0`` (all
+        failed) so the ingestion pipeline does not read it as a shortfall."""
         chunks = TextChunks(chunks=[TextChunk(text="Hi", index=0)])
         result = await vector_store_no_embedder.index_chunks(chunks)
-        assert result == 0
+        assert result is None
+        mock_connection.query.assert_not_awaited()
 
     async def test_index_chunks_batch_fallback(self, vector_store, mock_connection, embedder):
         """When UNWIND batch fails, should fall back to individual queries."""
@@ -289,9 +298,7 @@ class TestVectorStoreBackfillEntityEmbeddings:
         # Third call: query entities → return empty (no more)
         empty_result = MagicMock()
         empty_result.result_set = []
-        mock_connection.query = AsyncMock(
-            side_effect=[entity_result, MagicMock(), empty_result]
-        )
+        mock_connection.query = AsyncMock(side_effect=[entity_result, MagicMock(), empty_result])
         result = await vector_store.backfill_entity_embeddings()
         assert result == 2
         # Second call should be the UNWIND batch write
@@ -310,10 +317,10 @@ class TestVectorStoreBackfillEntityEmbeddings:
         empty_result.result_set = []
         mock_connection.query = AsyncMock(
             side_effect=[
-                entity_result,      # fetch entities
-                Exception("batch"), # UNWIND fails
-                MagicMock(),         # individual e1 succeeds
-                empty_result,        # next fetch → empty
+                entity_result,  # fetch entities
+                Exception("batch"),  # UNWIND fails
+                MagicMock(),  # individual e1 succeeds
+                empty_result,  # next fetch → empty
             ]
         )
         result = await vector_store.backfill_entity_embeddings()

@@ -82,6 +82,7 @@ class VectorStore:
         self._embedder = embedder
         self.embedding_dimension = embedding_dimension
         self._indices_ensured: bool = False
+        self._id_indices_ensured: bool = False
 
     # ── Index Management ─────────────────────────────────────────
     #
@@ -99,13 +100,16 @@ class VectorStore:
         each index is in place — failures are not papered over as success.
         """
         try:
-            await self._conn.query(query)
+            # The connection cannot know this CREATE INDEX is idempotent; tell
+            # it, so the expected "already indexed" reply is not logged as an
+            # ERROR on every finalize() while any other failure still is.
+            await self._conn.query(query, expected_errors=_INDEX_EXISTS_MARKERS)
             if kind == "vector":
                 logger.info(
                     f"Created vector index on {descriptor} (dim={self.embedding_dimension})"
                 )
             else:
-                logger.info(f"Created fulltext index on {descriptor}")
+                logger.info(f"Created {kind} index on {descriptor}")
             return True
         except Exception as exc:
             msg = str(exc).lower()
@@ -181,7 +185,7 @@ class VectorStore:
 
     # ── Indexing ─────────────────────────────────────────────────
 
-    async def index_chunks(self, chunks: TextChunks) -> int:
+    async def index_chunks(self, chunks: TextChunks) -> int | None:
         """Embed and store vectors for all chunks.
 
         Uses batch embedding (``aembed_documents``) for efficiency,
@@ -191,11 +195,16 @@ class VectorStore:
             chunks: TextChunks collection to embed and index.
 
         Returns:
-            Number of chunks indexed.
+            Number of chunks indexed, or ``None`` when no embedder is
+            configured and indexing was not attempted. ``0`` means every
+            embedding was attempted and failed; the ingestion pipeline
+            treats that as an incomplete write and withholds the
+            Document's ``content_hash``, whereas ``None`` (nothing to do)
+            leaves the run complete.
         """
         if not self._embedder:
             logger.warning("No embedder configured — skipping chunk indexing")
-            return 0
+            return None
 
         if not chunks.chunks:
             return 0
@@ -590,6 +599,37 @@ class VectorStore:
 
     # ── Batch Operations ──────────────────────────────────────────
 
+    # Every write in the SDK is a MERGE on `id`: Document, Chunk and every
+    # entity. Without a range index each of those is a full label scan, so a
+    # single source's writes cost O(n^2) in the number of nodes it creates.
+    # Measured on a structured ingest before these existed: 500 rows in 0.36s,
+    # 1k in 1.13s, 2k in 3.98s, 4k in 15.21s — time quadrupling as rows doubled,
+    # which extrapolates to hours for a table of any real size. Prose never
+    # showed it because a document contributes few nodes per ingest.
+    _ID_INDEX_LABELS = ("Document", "Chunk", "__Entity__")
+
+    async def create_id_range_indices(self) -> bool:
+        """Range-index the ``id`` property on the labels the write path MERGEs.
+
+        Cheap and idempotent, but only attempted once per instance: re-running it
+        logs three "already indexed" failures per ingest, and these need to be in
+        place *before* a large write rather than after it.
+        """
+        if self._id_indices_ensured:
+            return True
+        ok = True
+        for label in self._ID_INDEX_LABELS:
+            ok = (
+                await self._try_create_index(
+                    f"CREATE INDEX FOR (n:`{label}`) ON (n.id)",
+                    f"{label}.id",
+                    "range",
+                )
+                and ok
+            )
+        self._id_indices_ensured = ok
+        return ok
+
     async def ensure_indices(self) -> dict[str, bool]:
         """Create all standard vector and fulltext indices (idempotent).
 
@@ -616,6 +656,7 @@ class VectorStore:
         results: dict[str, bool] = {}
 
         creators: list[tuple[str, Any]] = [
+            ("range_ids", self.create_id_range_indices),
             ("vector_Chunk", self.create_chunk_vector_index),
             ("vector_Entity", self.create_entity_vector_index),
             ("vector_RELATES", self.create_relates_vector_index),

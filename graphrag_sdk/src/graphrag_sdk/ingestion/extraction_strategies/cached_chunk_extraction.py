@@ -287,23 +287,23 @@ class CachedChunkExtraction(ExtractionStrategy):
                     # read. Dropping the edge here is safe because the chunk
                     # that cites it would already have been excluded.
                     continue
-                props = rel_by_pair.get(key)
-                if props is None:
-                    props = {"source_chunk_ids": []}
+                rel_props = rel_by_pair.get(key)
+                if rel_props is None:
+                    rel_props = {"source_chunk_ids": []}
                     if rel.rel_type:
-                        props["rel_type"] = rel.rel_type
+                        rel_props["rel_type"] = rel.rel_type
                     if rel.description:
-                        props["description"] = rel.description
+                        rel_props["description"] = rel.description
                     if rel.fact:
-                        props["fact"] = rel.fact
+                        rel_props["fact"] = rel.fact
                     if rel.src_name:
-                        props["src_name"] = rel.src_name
+                        rel_props["src_name"] = rel.src_name
                     if rel.tgt_name:
-                        props["tgt_name"] = rel.tgt_name
-                    rel_by_pair[key] = props
+                        rel_props["tgt_name"] = rel.tgt_name
+                    rel_by_pair[key] = rel_props
                 for new_uid in new_uids:
-                    if new_uid not in props["source_chunk_ids"]:
-                        props["source_chunk_ids"].append(new_uid)
+                    if new_uid not in rel_props["source_chunk_ids"]:
+                        rel_props["source_chunk_ids"].append(new_uid)
             relationships = [
                 GraphRelationship(start_node_id=s, end_node_id=e, type="RELATES", properties=p)
                 for (s, e), p in rel_by_pair.items()
@@ -334,6 +334,14 @@ class CachedChunkExtraction(ExtractionStrategy):
         mentions: list[EntityMention] = []
         extracted_entities = []
         extracted_relations = []
+        # Report fields are additive across parts: the cached part reports
+        # zero attempts (nothing was extracted), the inner strategy's part
+        # carries the real numbers. Summing keeps the report intact instead
+        # of silently resetting it here.
+        chunks_attempted = 0
+        chunks_skipped = 0
+        failed_chunks: list[str] = []
+        relation_failed_chunks: list[str] = []
 
         def _union_sources(old_props: dict[str, Any], new_props: dict[str, Any]) -> dict[str, Any]:
             merged = {**old_props, **new_props}
@@ -370,12 +378,20 @@ class CachedChunkExtraction(ExtractionStrategy):
             mentions.extend(part.mentions)
             extracted_entities.extend(part.extracted_entities)
             extracted_relations.extend(part.extracted_relations)
+            chunks_attempted += part.chunks_attempted
+            chunks_skipped += part.chunks_skipped
+            failed_chunks.extend(part.failed_chunks)
+            relation_failed_chunks.extend(part.relation_failed_chunks)
         return GraphData(
             nodes=list(nodes_by_id.values()),
             relationships=list(rels_by_key.values()),
             mentions=mentions,
             extracted_entities=extracted_entities,
             extracted_relations=extracted_relations,
+            chunks_attempted=chunks_attempted,
+            chunks_skipped=chunks_skipped,
+            failed_chunks=failed_chunks,
+            relation_failed_chunks=relation_failed_chunks,
         )
 
     async def extract(self, chunks: TextChunks, ontology: Ontology, ctx: Context) -> GraphData:

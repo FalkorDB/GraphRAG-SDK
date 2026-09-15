@@ -126,6 +126,74 @@ class TestExactMatchResolution:
             if rel.type == "LINK":
                 assert rel.end_node_id == survivor_id
 
+    async def test_distinct_facts_between_same_pair_are_kept(self, ctx):
+        """Two RELATES with different ``rel_type`` are two facts, not one.
+
+        Every data edge is written with ``type == "RELATES"`` and its
+        semantic type in ``properties["rel_type"]``. Keying dedup on
+        ``(start, rel.type, end)`` therefore reads as "one edge per entity
+        pair" and silently drops every fact after the first — here,
+        ``FOUNDED`` disappeared while ``WORKS_AT`` survived, in Python,
+        before the write ever reached the graph.
+        """
+        data = GraphData(
+            nodes=[
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "FOUNDED", "fact": "Alice founded Acme"},
+                ),
+            ],
+        )
+        resolver = ExactMatchResolution(resolve_property="name")
+        result = await resolver.resolve(data, ctx)
+        kept = sorted(r.properties["rel_type"] for r in result.relationships)
+        assert kept == ["FOUNDED", "WORKS_AT"], (
+            f"both facts must survive resolution — got {kept}. The dedup key "
+            "must include properties['rel_type'], since rel.type is always "
+            "'RELATES' for data edges."
+        )
+
+    async def test_identical_facts_between_same_pair_still_dedupe(self, ctx):
+        """The same fact twice is still one edge — the key got finer, not absent."""
+        data = GraphData(
+            nodes=[
+                GraphNode(id="alice", label="Person", properties={"name": "Alice"}),
+                GraphNode(id="acme", label="Organization", properties={"name": "Acme"}),
+            ],
+            relationships=[
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+                GraphRelationship(
+                    start_node_id="alice",
+                    end_node_id="acme",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT", "fact": "Alice works at Acme"},
+                ),
+            ],
+        )
+        resolver = ExactMatchResolution(resolve_property="name")
+        result = await resolver.resolve(data, ctx)
+        assert len(result.relationships) == 1, (
+            "two identical facts must still collapse to one edge — adding "
+            "rel_type to the key must not disable dedup"
+        )
+
 
 class TestCrossLabelMerge:
     """Bug 2: exact_match_merge with cross_label_merge=True groups by name
@@ -583,7 +651,7 @@ class TestExactMatchMatchesStage1:
             relationships=[],
         )
         llm = MockLLM(responses=["YES Technology\nGraph database and its vendor"])
-        result = await ExactMatchResolution(llm=llm).resolve(data, ctx)
+        result = await ExactMatchResolution(llm=llm, cross_label_merge=True).resolve(data, ctx)
         assert len(result.nodes) == 1
         assert result.merged_count == 2
         assert "Organization" in result.nodes[0].properties.get("merged_labels", "")
@@ -592,8 +660,11 @@ class TestExactMatchMatchesStage1:
         """Three or more descriptions are summarised, not concatenated."""
         data = GraphData(
             nodes=[
-                GraphNode(id=f"a{i}", label="Person",
-                          properties={"name": "Ada", "description": f"desc {i}"})
+                GraphNode(
+                    id=f"a{i}",
+                    label="Person",
+                    properties={"name": "Ada", "description": f"desc {i}"},
+                )
                 for i in range(3)
             ],
             relationships=[],
@@ -605,16 +676,20 @@ class TestExactMatchMatchesStage1:
 
     async def test_identical_to_stage_1_on_the_same_input(self, ctx):
         """Equivalence check: same nodes through both paths, same outcome."""
+
         def build() -> list[GraphNode]:
             return [
-                GraphNode(id="a1", label="Person",
-                          properties={"name": "Ada", "description": "d1",
-                                      "source_chunk_ids": ["c1"]}),
-                GraphNode(id="a2", label="Person",
-                          properties={"name": "ADA ", "description": "d2",
-                                      "source_chunk_ids": ["c2"]}),
-                GraphNode(id="b1", label="Person",
-                          properties={"name": "Bob", "description": "d3"}),
+                GraphNode(
+                    id="a1",
+                    label="Person",
+                    properties={"name": "Ada", "description": "d1", "source_chunk_ids": ["c1"]},
+                ),
+                GraphNode(
+                    id="a2",
+                    label="Person",
+                    properties={"name": "ADA ", "description": "d2", "source_chunk_ids": ["c2"]},
+                ),
+                GraphNode(id="b1", label="Person", properties={"name": "Bob", "description": "d3"}),
             ]
 
         stage1_nodes, stage1_remap, stage1_count = await exact_match_merge(build(), None)
@@ -672,12 +747,9 @@ class TestCrossLabelGroupingUsesTheSameKey:
 
     async def test_nameless_nodes_are_not_bucketed_together(self):
         nodes = [
-            GraphNode(id="alpha", label="Person",
-                      properties={"description": "some person"}),
-            GraphNode(id="beta", label="Location",
-                      properties={"description": "somewhere else"}),
-            GraphNode(id="gamma", label="Product",
-                      properties={"description": "a third thing"}),
+            GraphNode(id="alpha", label="Person", properties={"description": "some person"}),
+            GraphNode(id="beta", label="Location", properties={"description": "somewhere else"}),
+            GraphNode(id="gamma", label="Product", properties={"description": "a third thing"}),
         ]
         llm = MockLLM(responses=["YES Person\nmerged summary"])
         deduped, remap, count = await exact_match_merge(
@@ -692,12 +764,9 @@ class TestCrossLabelGroupingUsesTheSameKey:
     async def test_control_named_homographs_still_group(self):
         """Control: real same-name cross-label groups are still detected."""
         nodes = [
-            GraphNode(id="a", label="Person",
-                      properties={"name": "Ada", "description": "d1"}),
-            GraphNode(id="b", label="Person",
-                      properties={"name": "Ada", "description": "d2"}),
-            GraphNode(id="c", label="Scientist",
-                      properties={"name": "Ada", "description": "d3"}),
+            GraphNode(id="a", label="Person", properties={"name": "Ada", "description": "d1"}),
+            GraphNode(id="b", label="Person", properties={"name": "Ada", "description": "d2"}),
+            GraphNode(id="c", label="Scientist", properties={"name": "Ada", "description": "d3"}),
         ]
         llm = MockLLM(responses=["YES Person\nmerged summary"])
         deduped, _remap, count = await exact_match_merge(
@@ -707,3 +776,76 @@ class TestCrossLabelGroupingUsesTheSameKey:
         )
         assert count == 2
         assert len(deduped) == 1
+
+
+class TestSurvivorRank:
+    """Which of two duplicates survives a merge.
+
+    The rule matters beyond aesthetics: the survivor's id is the one that stays
+    in the graph, and a structured id is recomputed by every later ingest of the
+    same table. Keeping the other one silently breaks re-ingest.
+    """
+
+    @staticmethod
+    def _rank(**entity):
+        from graphrag_sdk.storage.deduplicator import _survivor_rank
+
+        return _survivor_rank(entity)
+
+    def test_a_keyed_node_outranks_one_extracted_from_prose(self):
+        keyed = self._rank(is_stub=False, description="")
+        prose = self._rank(is_stub=None, description="a much longer description")
+        assert keyed > prose
+
+    def test_a_real_node_outranks_a_placeholder(self):
+        real = self._rank(is_stub=False, description="")
+        stub = self._rank(is_stub=True, description="")
+        assert real > stub
+
+    def test_a_placeholder_still_outranks_a_prose_node(self):
+        """A stub's id also comes from a declared key, so it is reproducible."""
+        stub = self._rank(is_stub=True, description="")
+        prose = self._rank(is_stub=None, description="long description here")
+        assert stub > prose
+
+    def test_between_two_prose_nodes_the_longest_description_wins(self):
+        """The original rule, unchanged when nothing else separates the two."""
+        rich = self._rank(is_stub=None, description="a long, detailed description")
+        thin = self._rank(is_stub=None, description="short")
+        assert rich > thin
+
+    def test_between_two_prose_nodes_the_better_connected_one_outranks_the_richer(self):
+        """The name the graph points at is the one it keeps.
+
+        Measured: a resolver judged 'Austria' and 'Republik Österreich' one
+        country from a single citation, and the description rule then renamed
+        the node fifty-six rows pointed at. Every query by name missed after.
+        """
+        hub = self._rank(is_stub=None, description="a country", degree=126)
+        citation = self._rank(
+            is_stub=None,
+            description="Republik Österreich is referenced in the legislative materials",
+            degree=1,
+        )
+        assert hub > citation
+
+    def test_a_keyed_node_still_outranks_a_well_connected_prose_node(self):
+        """Degree is a tiebreak among equals in provenance, not a promotion."""
+        keyed = self._rank(is_stub=False, description="", degree=0)
+        prose = self._rank(is_stub=None, description="long description", degree=500)
+        assert keyed > prose
+
+    def test_a_placeholder_still_outranks_a_well_connected_prose_node(self):
+        stub = self._rank(is_stub=True, description="", degree=0)
+        prose = self._rank(is_stub=None, description="long description", degree=500)
+        assert stub > prose
+
+    def test_a_missing_degree_ranks_as_none(self):
+        """Callers that never fetched a degree keep the old ordering."""
+        assert self._rank(is_stub=None, description="x") == self._rank(
+            is_stub=None, description="x", degree=0
+        )
+
+    def test_a_missing_description_is_treated_as_empty(self):
+        """An entity with no description at all must still rank, not raise."""
+        assert self._rank(is_stub=None) == self._rank(is_stub=None, description="")

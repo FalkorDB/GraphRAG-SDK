@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from graphrag_sdk.core.context import Context
@@ -48,6 +49,18 @@ def description_list(props: dict) -> list[str]:
     same texts joined with ``" | "``, which is what search and prompts read).
     An unmerged node has only ``description``. Either way this returns the
     list, deduplicated, empty strings dropped.
+
+    A node holding only ``description`` contributes it as **one** member, and
+    is deliberately not split on ``" | "``. Splitting would recover the members
+    of a survivor written before ``descriptions`` existed, but nothing
+    distinguishes that node from a fresh one whose single description happens
+    to contain the separator ("CEO | founder of Acme"), and the two failures
+    are not symmetric. Splitting a fresh node invents members that were never
+    written: the count drives ``force_summary_threshold``, so it buys LLM
+    summary calls nothing asked for, and the invented entries are rendered as
+    separate bullets in the prompts below. Not splitting a legacy survivor
+    costs only granularity — every character is still carried, and the
+    re-joined ``description`` is byte-identical either way.
     """
     raw = props.get("descriptions")
     items: list[str] = []
@@ -55,9 +68,7 @@ def description_list(props: dict) -> list[str]:
         items = [str(d).strip() for d in raw]
     else:
         single = str(props.get("description") or "").strip()
-        # A survivor written before ``descriptions`` existed may hold a
-        # joined string; split it so old graphs merge the same way.
-        items = single.split(" | ") if single else []
+        items = [single] if single else []
     out: list[str] = []
     for d in items:
         if d and d not in out:
@@ -80,6 +91,28 @@ def set_merged_descriptions(survivor: GraphNode, members: list[GraphNode]) -> li
     if merged:
         survivor.properties["descriptions"] = merged
         survivor.properties["description"] = " | ".join(merged)
+    return merged
+
+
+def merge_source_ids(survivor: GraphNode, members: list[GraphNode]) -> list[str]:
+    """Rule for every merge: the survivor keeps **every** member's provenance.
+
+    ``source_chunk_ids`` is the link back to the chunks an entity was extracted
+    from — it drives chunk retrieval and the ``MENTIONED_IN`` edges. Extraction
+    sets it on every node, so a "copy the keys the survivor lacks" rule never
+    copies it and the duplicate's chunks are lost. Stage 1 and Stage 5 in this
+    module union it explicitly; strategies must do the same. Returns the union.
+    """
+    merged: list[str] = []
+    for node in [survivor, *members]:
+        raw = node.properties.get("source_chunk_ids") or []
+        if not isinstance(raw, list):
+            raw = [raw]
+        for sid in raw:
+            if sid and sid not in merged:
+                merged.append(sid)
+    if merged:
+        survivor.properties["source_chunk_ids"] = merged
     return merged
 
 
@@ -108,6 +141,9 @@ async def exact_match_merge(
     cross_label_merge: bool = False,
     cross_label_min_descriptions: int = 3,
     resolve_property: str = "name",
+    label_gate: Callable[[str, str], bool] | None = None,
+    cross_label_vote: bool = False,
+    rejected_out: set[frozenset[str]] | None = None,
 ) -> tuple[list[GraphNode], dict[str, str], int]:
     """Phase 1: group nodes by normalized name and merge exact duplicates.
 
@@ -192,6 +228,24 @@ async def exact_match_merge(
             labels = {sl_entries[i]["nodes"][0].label for i in indices}
             if len(labels) < 2:
                 continue
+            # Same safety policy as the embedding stage, applied here too.
+            # This phase merges on the NAME alone, with no vector filter, so a
+            # Person/Place homograph with enough descriptions reached the LLM
+            # and could be merged before any family gate or second vote ran —
+            # the caller's cross-family guarantees were simply absent from the
+            # first phase. A group spanning two different known families is not
+            # asked about at all; the members survive under their own labels.
+            if label_gate is not None:
+                ordered = sorted(labels)
+                if any(
+                    not label_gate(a, b) for k, a in enumerate(ordered) for b in ordered[k + 1 :]
+                ):
+                    logger.debug(
+                        "Label family gate dropped cross-label group %s for '%s'",
+                        ordered,
+                        _name_key,
+                    )
+                    continue
             total_orig_descs = sum(sl_entries[i]["orig_desc_count"] for i in indices)
             if total_orig_descs < cross_label_min_descriptions:
                 # Fail-safe: too little evidence to ask the LLM here, so
@@ -237,6 +291,9 @@ async def exact_match_merge(
                     "name": entity_name,
                     "descriptions": all_descs,
                     "types": sorted(labels),
+                    # The nodes that carry on from the same-label pass; a
+                    # definitive NO about this group is a decision about them.
+                    "ids": [sl_entries[i]["nodes"][0].id for i in indices],
                 }
             )
 
@@ -277,6 +334,20 @@ async def exact_match_merge(
     if prompts and llm is not None:
         batch_results = await llm.abatch_invoke(prompts)
 
+    def _record_rejection(cl_idx: int) -> None:
+        """Remember a DEFINITIVE refusal so a later run need not pay to re-ask.
+
+        Only ever called for an explicit NO — never for a failed call or an
+        unparseable reply, which carry no decision at all. Recording those
+        would turn one transient error into a permanent "distinct" verdict.
+        """
+        if rejected_out is None:
+            return
+        ids = cl_candidates[cl_idx]["ids"]
+        for x in range(len(ids)):
+            for y in range(x + 1, len(ids)):
+                rejected_out.add(frozenset((ids[x], ids[y])))
+
     # ── Stage 4: parse results ──
     sl_summaries: dict[int, str] = {}  # sl_entry_idx -> summary text
     cl_approvals: dict[int, tuple[str, str]] = {}  # cl_idx -> (chosen_type, summary)
@@ -296,7 +367,11 @@ async def exact_match_merge(
             content = item.response.content.strip()
             first_line = content.split("\n", 1)[0].strip()
             if not first_line.upper().startswith("YES"):
-                # NO or malformed → fail-safe: preserve homographs.
+                # NO or malformed → fail-safe: preserve homographs. Only the
+                # explicit NO is a decision; a malformed reply is not one, and
+                # must stay askable on a later run.
+                if first_line.upper().startswith("NO"):
+                    _record_rejection(cl_idx)
                 continue
             parts = first_line.split(None, 1)
             chosen = parts[1].strip() if len(parts) >= 2 else ""
@@ -307,6 +382,54 @@ async def exact_match_merge(
                 else " | ".join(cl_candidates[cl_idx]["descriptions"])
             )
             cl_approvals[cl_idx] = (chosen, cl_summary)
+
+    # ── Stage 4b: second opinion on cross-label approvals ──
+    # The same rule the embedding stage applies to its cross-label YESes, and
+    # for the same reason: this phase merges on the NAME alone, so a single
+    # approval is the only thing standing between a homograph and a merge.
+    # Asked again with the candidate types listed in the opposite order —
+    # the analogue of swapping A and B — and only the approvals the model
+    # repeats survive. A failed or malformed re-ask is not agreement.
+    if cross_label_vote and cl_approvals and llm is not None:
+        revote_idx = sorted(cl_approvals)
+        revote_prompts = [
+            _SUMMARY_WITH_TYPE_PROMPT.format(
+                entity_name=cl_candidates[cl_idx]["name"],
+                max_tokens=max_summary_tokens,
+                types=", ".join(reversed(cl_candidates[cl_idx]["types"])),
+                descriptions="\n".join(f"- {d}" for d in cl_candidates[cl_idx]["descriptions"]),
+            )
+            for cl_idx in revote_idx
+        ]
+        second = await llm.abatch_invoke(revote_prompts)
+        agreed: dict[int, bool] = {}
+        for item in second:
+            if not item.ok:
+                continue
+            first_line = item.response.content.strip().split("\n", 1)[0].strip().upper()
+            # Only a reply that actually says YES or NO is a verdict. Storing
+            # `startswith("YES")` put "MAYBE" — or an empty string — in as
+            # False, which the veto branch below then reads as an explicit NO
+            # and persists as a permanent distinct decision. A parse failure
+            # withdraws the approval without being remembered, the same rule
+            # the first vote uses.
+            if first_line.startswith("YES"):
+                agreed[item.index] = True
+            elif first_line.startswith("NO"):
+                agreed[item.index] = False
+        for k, cl_idx in enumerate(revote_idx):
+            if not agreed.get(k):
+                logger.debug(
+                    "Cross-label vote %s the phase-1 merge of '%s' (%s)",
+                    "vetoed" if k in agreed else "left unconfirmed",
+                    cl_candidates[cl_idx]["name"],
+                    cl_candidates[cl_idx]["types"],
+                )
+                # An explicit NO on the re-ask is a decision; an unanswered one
+                # only withdraws the approval.
+                if k in agreed:
+                    _record_rejection(cl_idx)
+                del cl_approvals[cl_idx]
 
     # ── Stage 5: apply same-label merges, producing one survivor per sl group ──
     sl_survivor_by_idx: dict[int, GraphNode] = {}
@@ -390,7 +513,13 @@ async def exact_match_merge(
         set_merged_descriptions(
             cl_survivor, [n for n in sl_survivors_in_cand if n.id != cl_survivor.id]
         )
-        cl_survivor.properties["description"] = cl_summary
+        # Only when the model actually wrote one. ``cl_summary`` is the second
+        # line of the verdict, so a reply of "YES Person\n" — verdict line, no
+        # body — yields "". Assigning that unconditionally would blank the
+        # description ``set_merged_descriptions`` just built from every member,
+        # and it is the field search, the fulltext index and the prompts read.
+        if cl_summary:
+            cl_survivor.properties["description"] = cl_summary
 
     # ── Stage 7: resolve transitive id_remap chains (sl-loser → sl-survivor →
     # cl-survivor becomes sl-loser → cl-survivor directly) ──
@@ -441,13 +570,35 @@ def remap_relationships(
     relationships: list[GraphRelationship],
     id_remap: dict[str, str],
 ) -> list[GraphRelationship]:
-    """Remap relationship endpoints using id_remap and deduplicate."""
+    """Remap relationship endpoints using id_remap and deduplicate.
+
+    The dedup key includes ``properties["rel_type"]``, not just
+    ``rel.type``. Every data edge is written with ``rel.type ==
+    "RELATES"`` and its *semantic* type in the ``rel_type`` property
+    (see ``GraphExtraction._relations_to_relationships``), so a key of
+    ``(start, rel.type, end)`` reads as "one edge per entity pair" and
+    silently discards every fact after the first: ``Alice WORKS_AT
+    Acme`` and ``Alice FOUNDED Acme`` collapse, and the second is
+    dropped here — in Python, before anything reaches the graph.
+
+    Structural edges (``MENTIONED_IN``, ``PART_OF``, ``NEXT_CHUNK``)
+    carry no ``rel_type``; they fall back to ``""`` and keep their
+    previous one-edge-per-pair behaviour.
+
+    ``id_remap`` is flattened first. A multi-pass resolver records each
+    hop separately (``dup -> A`` in one pass, ``A -> B`` in the next), and
+    the single lookup below would otherwise re-point an edge at ``A``,
+    which that later pass removed. Flattening here rather than at each
+    call site means no caller can forget it; it is a no-op on a mapping
+    that is already one hop deep.
+    """
+    id_remap = flatten_remap(id_remap)
     deduplicated_rels: list[GraphRelationship] = []
-    seen_rels: set[tuple[str, str, str]] = set()
+    seen_rels: set[tuple[str, str, str, str]] = set()
     for rel in relationships:
         start = id_remap.get(rel.start_node_id, rel.start_node_id)
         end = id_remap.get(rel.end_node_id, rel.end_node_id)
-        rel_key = (start, rel.type, end)
+        rel_key = (start, rel.type, rel.properties.get("rel_type", ""), end)
         if rel_key not in seen_rels:
             seen_rels.add(rel_key)
             deduplicated_rels.append(
@@ -459,6 +610,29 @@ def remap_relationships(
                 )
             )
     return deduplicated_rels
+
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs already judged to
+#: be two things. A strategy must not merge such a pair and should not spend a
+#: call asking about it again. Set by the caller.
+RESOLUTION_SKIP_PAIRS = "resolution_skip_pairs"
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the caller wants
+#: judged even where the strategy's own candidate search would not surface them —
+#: a table's "M. Ellison" beside a document's "Maya Ellison", which a name rule
+#: spotted and an embedding threshold did not. Set by the caller.
+RESOLUTION_ASK_PAIRS = "resolution_ask_pairs"
+
+#: ``ctx.metadata`` key: ``set[str]`` of node ids whose identity was declared, not
+#: extracted — rows of a table, each keyed. No two of them are one thing, so a
+#: strategy should not merge, or ask about, a pair drawn from this set. Set by
+#: the caller; a set rather than pairs because a table has n rows and n² pairs.
+RESOLUTION_DISTINCT_IDS = "resolution_distinct_ids"
+
+#: ``ctx.metadata`` key: ``set[frozenset[str]]`` of node-id pairs the strategy
+#: examined and judged to be two things. Written by the strategy, so the caller
+#: can remember the answer and pass it back as ``RESOLUTION_SKIP_PAIRS`` next time.
+RESOLUTION_REJECTED_PAIRS = "resolution_rejected_pairs"
 
 
 class ResolutionStrategy(ABC):
@@ -473,6 +647,16 @@ class ResolutionStrategy(ABC):
             async def resolve(self, graph_data, ctx):
                 # Use embeddings to find near-duplicate entities
                 ...
+
+    A strategy is run within one document by ``ingest`` and, when passed to
+    ``finalize(resolver=...)``, over the whole graph. In the second setting the
+    caller knows things the strategy does not, and says so through
+    ``ctx.metadata``: :data:`RESOLUTION_SKIP_PAIRS` are pairs already decided
+    against, :data:`RESOLUTION_DISTINCT_IDS` are ids that are pairwise distinct
+    by declaration, :data:`RESOLUTION_ASK_PAIRS` are pairs it wants an answer
+    on. A strategy that judges pairs reports the ones it rejected under
+    :data:`RESOLUTION_REJECTED_PAIRS`. All four are optional; a strategy that
+    ignores them is still correct, only less economical.
     """
 
     @abstractmethod

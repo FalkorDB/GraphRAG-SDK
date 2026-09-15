@@ -168,6 +168,20 @@ class TestRegisterEntityShape:
             ("Person", "birth_place", "STRING"),
         }
 
+    @pytest.mark.asyncio
+    async def test_reserved_label_is_refused_before_anything_is_written(
+        self, store_factory, fake_graph
+    ):
+        """`Document`/`Chunk` are the data graph's bookkeeping labels. A stored
+        reserved label would make every later `ingest()` fail at the extraction
+        step, after the Document and Chunk nodes were already written, so the
+        store refuses it up front -- this also covers `GraphRAG.add_entity`."""
+        store = store_factory()
+        bad = Ontology(entities=[Entity(label="Person"), Entity(label="Document")])
+        with pytest.raises(ValueError, match="reserved label"):
+            await store.register(bad)
+        assert not [c for c in fake_graph.calls if "MERGE" in c[0]]
+
 
 # ── register — relation shape ────────────────────────────────────
 
@@ -302,6 +316,27 @@ class TestLoad:
         }
         assert [(a.name, a.type) for a in by_label["WORKS_AT"].properties] == [("since", "DATE")]
         assert by_label["KNOWS"].patterns == [("Person", "Person")]
+
+    @pytest.mark.asyncio
+    async def test_a_relation_property_is_structured_if_any_pattern_node_says_so(
+        self, store_factory, fake_graph
+    ):
+        """One property node per pattern, and the rows come back in no
+        guaranteed order: the flag must not depend on which row is first."""
+        store = store_factory()
+        fake_graph.set_load_response(
+            patterned_relations=[
+                ["WORKS_AT", None, "Person", "Company"],
+                ["WORKS_AT", None, "Person", "Organization"],
+            ],
+            relation_properties=[
+                ["WORKS_AT", "since", "DATE", None, False],
+                ["WORKS_AT", "since", "DATE", None, True],
+            ],
+        )
+        ontology = await store.load()
+        (since,) = next(r for r in ontology.relations if r.label == "WORKS_AT").properties
+        assert since.structured is True
 
     @pytest.mark.asyncio
     async def test_open_relation_loaded_with_empty_patterns(self, store_factory, fake_graph):

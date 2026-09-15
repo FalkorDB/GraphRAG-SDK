@@ -1,4 +1,5 @@
 """Tests for retrieval/strategies/ — base (Template Method) and local retrieval."""
+
 from __future__ import annotations
 
 from typing import Any

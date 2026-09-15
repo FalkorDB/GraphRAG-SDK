@@ -244,6 +244,7 @@ guards the default.
 | 8 | [Ontology Lifecycle](graphrag_sdk/examples/08_ontology_lifecycle.py) | Declare an ontology, ingest with it, and round-trip it as JSON config |
 | 9 | [Ontology Evolution](graphrag_sdk/examples/09_ontology_evolution.py) | Mutating schema evolution — rename types and atomically add attributes with LLM backfill |
 | 10 | [Ontology Discovery](graphrag_sdk/examples/10_ontology_discovery.py) | Discover an ontology from raw sources and propose extensions as new docs arrive |
+| 11 | [Structured Ingestion](graphrag_sdk/examples/11_structured_ingestion.py) | Declared mappings end to end, with a re-ingest that corrects a row, adds one and drops one |
 | ★ | [Grounded Answers with Abstention](graphrag_sdk/examples/grounded_answers_with_abstention.py) | Cite the retrieved context behind an answer, and abstain when the graph has no supporting evidence |
 
 ---
@@ -274,7 +275,7 @@ Full documentation: **<https://docs.falkordb.com/graphrag>**
 - 2025-Q3: Sharper retrieval, deeper test coverage
 - 🎉 2026-04: Version 1.0 is released with a new set of benchmarks based on a year's worth of research and customer PoCs
   - 📦 Still on the v0.x API? Pin the legacy release: `pip install graphrag-sdk==0.8.2`
-- 2026-Q2: Production observability; expand ingestion support — tables, structured data
+- 2026-Q2: Production observability; **tabular ingestion** — load a CSV by declaring what its columns mean, so a row and a paragraph about the same thing become one node ([docs](https://docs.falkordb.com/graphrag/structured-ingestion))
 - 2026-Q3: Introduce Agentic GraphRAG; complete PDF ingestion
 - 2026-Q4: Smarter retrieval — dynamic traversal, temporal graph
 

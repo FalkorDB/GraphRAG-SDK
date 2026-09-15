@@ -865,23 +865,46 @@ class TestCachedUpdateIntegration:
         assert r.result_set[0][0] == 1
 
     async def test_no_op_short_circuit_unaffected(self, real_falkordb_rag_factory, scripted_llm):
+        """An unchanged re-``update()`` short-circuits on the stored hash.
+
+        The hash is only stamped when every write completed, and a chunk
+        whose extraction failed counts as incomplete — so step-1 NER is
+        stubbed: the default GLiNER extractor cannot load its tokenizer on
+        every CI runner, which would withhold the hash and fail this test
+        for a reason unrelated to caching. Step 2 still runs the scripted
+        LLM, as in the sibling tests.
+        """
+        from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import (
+            EntityExtractor,
+        )
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            GraphExtraction,
+        )
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
             ExactMatchResolution,
         )
+
+        class _NoLocalNER(EntityExtractor):
+            async def extract_entities(self, text, entity_types, source_chunk_id):
+                return []
 
         v1, _ = self._texts()
         llm = scripted_llm(
             [("Alice", "Person", "Engineer")],
             [("Carol", "Person", "Manager")],
         )
+        extractor = GraphExtraction(llm, entity_extractor=_NoLocalNER())
         rag = real_falkordb_rag_factory(llm=llm, resolver=ExactMatchResolution())
-        await rag.ingest(text=v1, document_id="doc-noop", chunker=self._chunker())
+        await rag.ingest(
+            text=v1, document_id="doc-noop", chunker=self._chunker(), extractor=extractor
+        )
 
         result = await rag.update(
             text=v1,
             document_id="doc-noop",
             chunker=self._chunker(),
             cache_unchanged_chunks=True,
+            extractor=extractor,
         )
         assert result.no_op is True
 
@@ -1055,6 +1078,36 @@ class TestInfrastructureErrorsPropagate:
         await strategy.extract(TextChunks(chunks=[_chunk("a")]), ontology, ctx)
         assert len(inner.calls) == 1, "fail-open path must still extract"
         assert strategy.cached_chunk_count == 0
+
+
+class TestMergePreservesExtractionReport:
+    """Review finding: ``_merge`` rebuilt ``GraphData`` field-by-field, so the
+    inner strategy's ``chunks_attempted`` / ``failed_chunks`` never reached
+    ``update()``. The cached part reports nothing attempted; the fresh part's
+    numbers must come through unchanged."""
+
+    def test_report_fields_are_summed_across_parts(self):
+        cached = GraphData(nodes=[], relationships=[])
+        fresh = GraphData(
+            nodes=[],
+            relationships=[],
+            chunks_attempted=3,
+            chunks_skipped=2,
+            failed_chunks=["n1"],
+            relation_failed_chunks=["n2"],
+        )
+        merged = CachedChunkExtraction._merge([cached, fresh])
+        assert merged.chunks_attempted == 3
+        assert merged.chunks_skipped == 2
+        assert merged.failed_chunks == ["n1"]
+        assert merged.relation_failed_chunks == ["n2"]
+        assert merged.extraction_failed is False
+
+    def test_total_failure_survives_merge(self):
+        cached = GraphData(nodes=[], relationships=[])
+        fresh = GraphData(chunks_attempted=2, failed_chunks=["n1", "n2"])
+        merged = CachedChunkExtraction._merge([cached, fresh])
+        assert merged.extraction_failed is True
 
 
 class TestRelationshipMergeUnion:
