@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
@@ -717,7 +718,13 @@ class EntityDeduplicator:
         self._report_cross_label_names(groups)
         return merged
 
-    async def _absorb(self, survivor: dict[str, Any], dup: dict[str, Any]) -> bool:
+    async def _absorb(
+        self,
+        survivor: dict[str, Any],
+        dup: dict[str, Any],
+        *,
+        add_labels: Iterable[str] = (),
+    ) -> bool:
         """Remap ``dup``'s edges onto ``survivor``, fold its data in, delete it.
 
         The remap migrates edges only, so ``DETACH DELETE`` would otherwise take
@@ -734,10 +741,21 @@ class EntityDeduplicator:
         there, and a survivor that no longer exists (deleted by an earlier merge
         in the same run) is detected rather than silently written past.
 
+        ``add_labels`` are labels the survivor gains in that same statement (the
+        judge phase's label union). Only identifier-shaped labels are
+        interpolated, backticked; anything else is dropped with a warning.
+
         Returns ``True`` only when the duplicate was actually deleted. The
         in-memory ``survivor`` is updated so a group's later duplicates build
         on the merged description and aliases.
         """
+        labels: list[str] = []
+        for lab in add_labels:
+            if isinstance(lab, str) and _SAFE_LABEL.fullmatch(lab):
+                labels.append(lab)
+            else:
+                logger.warning("Not adding label %r to %s: not an identifier", lab, survivor["id"])
+
         if not await self._remap_entity_edges(dup["id"], survivor["id"]):
             logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
             return False
@@ -793,6 +811,8 @@ class EntityDeduplicator:
         query = _ABSORB_QUERY_HEAD
         if sets:
             query += " WITH s, dup SET " + ", ".join(sets)
+        if labels:
+            query += " WITH s, dup" + "".join(f" SET s:`{lab}`" for lab in labels)
         query += " " + _ABSORB_QUERY_TAIL
 
         try:
@@ -1150,24 +1170,24 @@ class EntityDeduplicator:
         by_id = {entity["id"]: entity for entity in entities}
         decided = await self._fetch_distinct_pairs()
         skip = decided | self._undecidable_pairs
+        # Two keyed nodes are two rows: _keep_declared_identities_apart would
+        # refuse the merge, so the judge is not asked — the same hint the
+        # resolver phase gets as RESOLUTION_DISTINCT_IDS.
+        keyed = {e["id"] for e in entities if e.get("is_stub") is not None}
 
         async def merge_group(members: list[dict[str, Any]]) -> tuple[str, set[str]]:
-            return await self._merge_judged_group(members, by_id, decided)
+            return await self._merge_judged_group(members, by_id, skip)
 
-        judge = LLMJudgeDeduplicator(
-            self._graph,
-            self._embedder,
-            judge_llm,
-            self._remap_entity_edges,
-            vote=vote,
-            merge_group=merge_group,
-        )
+        judge = LLMJudgeDeduplicator(self._graph, self._embedder, judge_llm, merge_group, vote=vote)
         try:
-            self.last_judge_stats = await judge.deduplicate(batch_size, skip_pairs=skip)
+            self.last_judge_stats = await judge.deduplicate(
+                batch_size, skip_pairs=skip, distinct_ids=keyed
+            )
         except Exception as exc:
             logger.warning("LLM judge failed over the graph: %s", exc)
-            self.last_judge_stats = {}
-            return 0
+            # Merges committed before the failure are real; report them.
+            self.last_judge_stats = dict(judge.last_stats)
+            return self.last_judge_stats.get("merged", 0)
         merged = self.last_judge_stats.get("merged", 0)
         logger.info(f"EntityDeduplicator phase 4 (judge): merged {merged} duplicates")
         return merged
@@ -1176,13 +1196,15 @@ class EntityDeduplicator:
         self,
         members: list[dict[str, Any]],
         by_id: dict[str, dict[str, Any]],
-        decided: set[frozenset[str]],
+        skip: set[frozenset[str]],
     ) -> tuple[str, set[str]]:
         """Merge one group the judge agreed on; ``(survivor id, ids absorbed)``.
 
         ``members`` are the judge's rows (they carry every label of each node);
         the merge ranks and folds the rows :meth:`_fetch_all_entities` read, so
         a table's row survives a mention by the same rule as phase 1 and 3.
+        The loser's labels go onto the survivor in the same statement that
+        deletes it, so a failed write cannot leave a label behind with the node.
         """
         known = [by_id[m["id"]] for m in members if m["id"] in by_id]
         if len(known) < 2:
@@ -1191,40 +1213,29 @@ class EntityDeduplicator:
         survivor = known[0]
         duplicates = _keep_declared_identities_apart(survivor, known[1:])
         duplicates = self._keep_undecidable_mentions_apart(survivor, duplicates, known)
-        # Transitivity can put a pair the model never saw as a candidate into
-        # one group; a NO remembered on the graph still holds.
-        duplicates = [
-            dup for dup in duplicates if frozenset((dup["id"], survivor["id"])) not in decided
-        ]
 
         labels_by_id = {m["id"]: [lab for lab in m.get("labels") or [] if lab] for m in members}
+        survivor_labels = set(labels_by_id.get(survivor["id"], []))
         absorbed: set[str] = set()
         for dup in duplicates:
-            if not await self._absorb(survivor, dup):
+            # Transitivity can put a pair the model never saw as a candidate into
+            # one group; a NO remembered on the graph still holds — against the
+            # survivor and against everything already folded into it.
+            if any(frozenset((dup["id"], other)) in skip for other in (survivor["id"], *absorbed)):
+                logger.info(
+                    "Not merging %s into %s: the pair was already decided distinct",
+                    dup["id"],
+                    survivor["id"],
+                )
+                continue
+            gained = sorted(set(labels_by_id.get(dup["id"], [])) - survivor_labels)
+            if not await self._absorb(survivor, dup, add_labels=gained):
                 continue
             absorbed.add(dup["id"])
+            survivor_labels.update(gained)
             logger.info(
                 "Judge merged %s %r -> %r", survivor["label"], dup["name"], survivor["name"]
             )
-        if not absorbed:
-            return survivor["id"], absorbed
-
-        gained = sorted(
-            {
-                lab
-                for dup_id in absorbed
-                for lab in labels_by_id.get(dup_id, [])
-                if lab not in labels_by_id.get(survivor["id"], []) and _SAFE_LABEL.fullmatch(lab)
-            }
-        )
-        if gained:
-            try:
-                await self._graph.query_raw(
-                    "MATCH (s:__Entity__ {id: $id})" + "".join(f" SET s:`{lab}`" for lab in gained),
-                    {"id": survivor["id"]},
-                )
-            except Exception as exc:
-                logger.warning("Failed to add labels %s to %s: %s", gained, survivor["id"], exc)
         return survivor["id"], absorbed
 
     async def _describe_structured_entities(self, by_id: dict[str, dict[str, Any]]) -> None:

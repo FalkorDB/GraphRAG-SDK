@@ -4552,9 +4552,12 @@ class GraphRAG:
         other phase (survivor rank, descriptions list, aliases, provenance),
         and the survivor additionally gains every member's label;
         disagreements are written as ``SAME_AS`` edges instead of merged.
-        Pairs a resolver already judged distinct (``DISTINCT_FROM``) are never
-        asked again. Every entity ends up with a name embedding in
-        ``e.embedding``.
+        Pairs a resolver already judged distinct (``DISTINCT_FROM``), two rows
+        written from a declared key, and a mention two such rows could equally
+        own are never put to the judge. With ``judge=True`` every named entity
+        ends up with a name embedding in ``e.embedding`` (the judge writes the
+        missing ones); ``judge=False`` leaves that to
+        :meth:`backfill_entity_embeddings`, which :meth:`finalize` runs.
 
         Call after all documents are ingested.
 
@@ -4690,14 +4693,15 @@ class GraphRAG:
                 ``LLMVerifiedResolution`` over this instance's ``llm`` and
                 ``embedder``, tuned for names that differ across sources — see
                 :meth:`_default_finalize_resolver`. Pass your own to replace it.
-            resolve: ``False`` skips that judgement entirely: the graph is
-                deduplicated on exact names only, close pairs are reported in
-                ``FinalizeResult.probable_duplicates`` and left alone, and no
-                model is called by the resolver pass.
+            resolve: ``False`` skips the resolver pass: no model is called by
+                it, and the pairs it would have judged are left to the judge
+                phase (below) or, with ``judge=False`` too, reported in
+                ``FinalizeResult.probable_duplicates`` and left alone.
             judge: run the LLM-judged dedup phase (default True). It costs
                 roughly two LLM calls per ~3000 prompt tokens of candidate
-                sets; set ``False`` to skip it. ``resolve=False, judge=False``
-                is exact-name dedup only, with no LLM calls at all.
+                sets; set ``False`` to skip it. Only ``resolve=False,
+                judge=False`` is exact-name dedup alone, with no LLM calls at
+                all.
             judge_llm: judge model, defaults to this instance's ``llm``.
             judge_vote: require second-pass agreement (default True).
 

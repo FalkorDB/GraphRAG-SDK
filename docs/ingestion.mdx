@@ -183,7 +183,7 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 - The judge LLM partitions each set into same-referent groups; a second pass over shuffled sets must agree
 - Both passes agree → **merge**, by the same rules as every finalize merge: a table's row survives a mention, every member's description is kept in `descriptions` (joined with `" | "` in `description`), other names kept in `aliases`, edges moved first, then the loser deleted; the survivor also gains every member's label
 - Only one pass agrees → **link**: a `SAME_AS` edge (`source='llm_judge'`), both nodes stay
-- Pairs a resolver remembered as `DISTINCT_FROM` are never asked again
+- Pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked, grouped or linked
 - `finalize(judge=False)` skips it; `judge_llm=` picks the model (gpt-4.1-class recommended); pass `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per document
 
 For details on resolution strategies, see [Strategies](/strategies).

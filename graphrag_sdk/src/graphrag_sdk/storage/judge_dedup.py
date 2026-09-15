@@ -12,13 +12,16 @@
 #   4. ask the LLM to partition each set into same-referent groups
 #   5. ask again with every set shuffled; a pair is a duplicate only if BOTH
 #      passes agree. Pairs the passes disagree on become SAME_AS edges.
-#   6. merge agreed groups: survivor keeps every member's label, description
-#      is the members' descriptions joined with " | " (the list itself kept in
-#      ``descriptions``), names of the merged members are kept in ``aliases``,
-#      RELATES/MENTIONED_IN edges remapped. Inside ``EntityDeduplicator`` the
-#      merge itself is delegated to its ``_absorb`` rules (survivor rank,
-#      property carry, provenance union) via the ``merge_group`` hook; the
-#      standalone ``_merge_group`` below is the fallback.
+#   6. merge agreed groups through the caller's ``merge_group`` hook —
+#      ``EntityDeduplicator._merge_judged_group``, which applies its ``_absorb``
+#      rules (survivor rank, property carry, provenance union, descriptions
+#      list, aliases) and adds every member's label to the survivor. This
+#      class decides *identity* only; it never writes a merge itself.
+#
+# Pairs the caller has already settled — a resolver's ``DISTINCT_FROM``, a
+# mention two keyed rows could equally own (``skip_pairs``), and any two rows
+# written from a declared key (``distinct_ids``) — are dropped before the
+# model is asked, never unioned into one group, and never linked.
 #
 # Measured on the benchmark corpus (RESULTS.md P3.119-P3.124): grouping loses
 # 0 gold pairs; the two-pass vote cuts wrong merges ~65 % at 2x LLM cost; a
@@ -30,6 +33,7 @@ import logging
 import random
 import re
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import numpy as np
@@ -44,7 +48,14 @@ TOP_K = 10
 GROUP_CAP = 8
 MIN_DENSITY = 0.5
 NAME_IN_DESC_WEIGHT = 0.65
+# A name found inside more descriptions than this is a common word ("Company",
+# "Paris"), not an identifying mention; nominating it would pair one entity
+# with most of the graph and bypass the top-k bound of the embedding doors.
+NAME_IN_DESC_CAP = 50
 PROMPT_TOKEN_BUDGET = 3000
+# Longest description rendered per entity, so a set of GROUP_CAP members with
+# merged descriptions still fits the prompt budget.
+MAX_DESC_CHARS = 600
 _STOP = frozenset(
     "the a an of and in on at to for de la le el les du des von van der al ibn bin y et".split()
 )
@@ -165,9 +176,11 @@ def name_in_desc_pairs(ents: list[dict]) -> dict[tuple[int, int], float]:
     for i, ts in enumerate(nt):
         if not ts or not all(t in inv for t in ts):
             continue
-        for j in set.intersection(*(inv[t] for t in ts)):
-            if j != i:
-                out[(min(i, j), max(i, j))] = NAME_IN_DESC_WEIGHT
+        hits = set.intersection(*(inv[t] for t in ts)) - {i}
+        if len(hits) > NAME_IN_DESC_CAP:
+            continue
+        for j in hits:
+            out[(min(i, j), max(i, j))] = NAME_IN_DESC_WEIGHT
     return out
 
 
@@ -190,12 +203,20 @@ class _UF:
 
 
 def make_groups_dense(
-    edges: dict[tuple[int, int], float], cap: int = GROUP_CAP, min_density: float = MIN_DENSITY
+    edges: dict[tuple[int, int], float],
+    cap: int = GROUP_CAP,
+    min_density: float = MIN_DENSITY,
+    keep_apart: Callable[[int, int], bool] | None = None,
 ) -> list[list[int]]:
     """Connected components under a size cap that must stay dense: at least
     ``min_density`` of all member pairs are nominated edges. A chain A-B-C-D
     where only neighbours are similar cannot form; a real alias cluster can.
-    Edges left straddling two groups are kept as 2-member sets."""
+    Edges left straddling two groups are kept as 2-member sets.
+
+    ``keep_apart(i, j)`` names pairs already decided distinct; two components
+    are not joined when that would put such a pair in one set, so the model
+    is never shown — and never asked about — a pair the graph has settled.
+    """
     nodes = sorted({x for e in edges for x in e})
     uf = _UF(nodes)
     mem = {x: {x} for x in nodes}
@@ -206,6 +227,8 @@ def make_groups_dense(
             continue
         m = mem[ra] | mem[rb]
         if len(m) > cap:
+            continue
+        if keep_apart is not None and any(keep_apart(x, y) for x in mem[ra] for y in mem[rb]):
             continue
         ml = sorted(m)
         inner = sum(
@@ -228,11 +251,16 @@ def make_groups_dense(
 
 
 def render_set(members: list[int], ents: list[dict]) -> str:
-    return "\n".join(
-        f"{i}. {ents[idx]['name']} [{ents[idx]['label'] or 'Entity'}] — "
-        f"{ents[idx]['description'] or '(no description)'}"
-        for i, idx in enumerate(members, 1)
-    )
+    """One numbered line per member: name, every label, capped description."""
+    lines = []
+    for i, idx in enumerate(members, 1):
+        ent = ents[idx]
+        labels = "/".join(ent.get("labels") or []) or ent.get("label") or "Entity"
+        desc = (ent.get("description") or "").strip()
+        if len(desc) > MAX_DESC_CHARS:
+            desc = desc[: MAX_DESC_CHARS - 1].rstrip() + "…"
+        lines.append(f"{i}. {ent['name']} [{labels}] — {desc or '(no description)'}")
+    return "\n".join(lines)
 
 
 def pack_prompts(
@@ -242,7 +270,9 @@ def pack_prompts(
     Returns (prompts, orders) where orders[p][s] = member indices of set s in prompt p."""
     import tiktoken
 
-    enc = tiktoken.get_encoding("o200k_base")
+    # cl100k_base, as everywhere else in the SDK: it exists in every tiktoken
+    # the project allows (>=0.5), where o200k_base needs 0.7 and would raise.
+    enc = tiktoken.get_encoding("cl100k_base")
     base = len(enc.encode(JUDGE_PROMPT.format(n=0, sets="")))
     prompts: list[str] = []
     orders: list[list[list[int]]] = []
@@ -274,7 +304,12 @@ def pack_prompts(
 
 def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
     """Parse ``SET 2 GROUP: 1, 4`` lines into {set index: [0-based member groups]}.
-    Out-of-range numbers are dropped; an unmentioned set yields no groups (no merge)."""
+
+    Out-of-range numbers are dropped; an unmentioned set yields no groups (no
+    merge). A set whose groups overlap — ``1, 2`` and ``1, 3`` — is not a
+    partition, and taking it at face value would merge 2 and 3 through 1 though
+    the model never put them together; such a set yields no groups either.
+    """
     out: dict[int, list[list[int]]] = {}
     for line in text.splitlines():
         up = line.upper()
@@ -289,6 +324,11 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
         picked = sorted({x for x in nums if 0 <= x < sizes[si]})
         if picked:
             out.setdefault(si, []).append(picked)
+    for si, groups in list(out.items()):
+        listed = [x for grp in groups for x in grp]
+        if len(listed) != len(set(listed)):
+            logger.warning("judge dedup: set %d answered with overlapping groups; ignored", si + 1)
+            del out[si]
     return out
 
 
@@ -305,39 +345,6 @@ def pairs_from_response(text: str, order: list[list[int]]) -> set[tuple[int, int
     return out
 
 
-def merge_description_list(members: list[dict]) -> list[str]:
-    """Rule for every merge: the survivor keeps **every** member's description.
-
-    Each member may carry ``descriptions`` (a list, if it was merged before) or
-    only ``description`` (possibly an older ``" | "``-joined string). Returns
-    the flattened, deduplicated list in member order.
-    """
-    out: list[str] = []
-    for m in members:
-        raw = m.get("descriptions")
-        items = (
-            [str(d) for d in raw]
-            if isinstance(raw, list) and raw
-            else str(m.get("description") or "").split(" | ")
-        )
-        for d in items:
-            d = d.strip()
-            if d and d not in out:
-                out.append(d)
-    return out
-
-
-def merge_description(descriptions: list[str]) -> str:
-    """Joined form of the description list — what the fulltext index, search
-    and LLM prompts read. Kept alongside ``descriptions`` (the list)."""
-    seen: list[str] = []
-    for d in descriptions:
-        d = (d or "").strip()
-        if d and d not in seen:
-            seen.append(d)
-    return " | ".join(seen)
-
-
 # ── the deduplicator ────────────────────────────────────────────────────────
 
 
@@ -350,17 +357,15 @@ class LLMJudgeDeduplicator:
         embedder: embedding provider (names and descriptions).
         llm: judge model. gpt-4.1-class models measured 9 wrong merges where
             gpt-4o-mini made 51 on the same input; use the strongest you can.
-        remap_edges: ``async (dup_id, survivor_id) -> bool`` — the
-            ``EntityDeduplicator`` edge-remap routine, reused so both phases
-            move RELATES/MENTIONED_IN identically.
+        merge_group: ``async (members: list[dict]) -> (survivor_id,
+            absorbed_ids)`` that performs the merge of one agreed group.
+            ``EntityDeduplicator`` supplies :meth:`_merge_judged_group`, so a
+            judge merge obeys the same rules as every other phase (a table row
+            survives a mention, two keyed rows never merge, properties and
+            provenance are carried, labels are unioned). This class decides
+            identity only and never writes a merge itself.
         vote: run the second shuffled pass (default True). ``False`` halves
             LLM cost and roughly triples wrong merges.
-        merge_group: optional ``async (members: list[dict]) -> (survivor_id,
-            absorbed_ids)`` that performs the merge of one agreed group.
-            ``EntityDeduplicator`` supplies its own so a judge merge obeys the
-            same rules as every other phase (a table row survives a mention,
-            two keyed rows never merge, properties and provenance are carried).
-            Without it :meth:`_merge_group` writes the merge directly.
     """
 
     def __init__(
@@ -368,23 +373,27 @@ class LLMJudgeDeduplicator:
         graph_store: Any,
         embedder: Embedder,
         llm: LLMInterface,
-        remap_edges: Any,
+        merge_group: Callable[[list[dict]], Awaitable[tuple[str, set[str]]]],
         *,
         vote: bool = True,
         max_concurrency: int = 8,
         seed: int = 0,
-        merge_group: Any = None,
     ) -> None:
         self._graph = graph_store
         self._embedder = embedder
         self._llm = llm
-        self._remap = remap_edges
+        self._merge = merge_group
         self._vote = vote
         self._conc = max_concurrency
         self._seed = seed
-        self._merge_hook = merge_group
+        # Stats of the run in progress, so a caller that catches a failure
+        # part-way can still report the merges that were committed.
+        self.last_stats: dict[str, int] = {}
 
     async def _fetch_entities(self, batch_size: int) -> list[dict]:
+        """Every named entity. A node without a name — a fact row keyed on a
+        reading id — cannot be judged to be anything, and manufacturing a name
+        from its id would let ``e-1`` nominate against a prose ``E-1``."""
         out: list[dict] = []
         last = ""
         while True:
@@ -399,11 +408,13 @@ class LLMJudgeDeduplicator:
             rows = r.result_set or []
             for row in rows:
                 eid, name, desc, labels, aliases, emb = row[:6]
+                if not name or not str(name).strip():
+                    continue
                 descs = row[6] if len(row) > 6 else None
                 out.append(
                     {
                         "id": eid,
-                        "name": name or str(eid),
+                        "name": name,
                         "description": desc or "",
                         "descriptions": list(descs) if descs else [],
                         "labels": list(labels or []),
@@ -456,56 +467,35 @@ class LLMJudgeDeduplicator:
             same |= pairs_from_response(item.response.content or "", orders[item.index])
         return same, len(prompts), failed
 
-    async def _merge_group(self, ids: list[str], byid: dict[str, dict]) -> tuple[str, set[str]]:
-        """Merge ``ids`` into the member with the longest description. Survivor
-        gains every member's labels, ``aliases`` gets the merged names,
-        ``descriptions`` becomes the list of every member's descriptions and
-        ``description`` their ' | ' join. Edges are moved to the survivor before
-        each loser is deleted. Returns the survivor id and the ids deleted."""
-        ids = sorted(ids, key=lambda i: (-len(byid[i]["description"]), i))
-        surv, dups = ids[0], ids[1:]
-        s = byid[surv]
-        labels = {lab for i in ids for lab in byid[i]["labels"] if lab}
-        aliases: list[str] = list(s["aliases"])
-        for i in ids:
-            for nm in [byid[i]["name"], *byid[i]["aliases"]]:
-                if nm and nm != s["name"] and nm not in aliases:
-                    aliases.append(nm)
-        deleted: set[str] = set()
-        for d in dups:
-            if not await self._remap(d, surv):
-                logger.warning("judge dedup: edge remap incomplete for %s -> %s, kept", d, surv)
-                continue
-            try:
-                await self._graph.query_raw(
-                    "MATCH (e:__Entity__ {id: $d}) DETACH DELETE e", {"d": d}
-                )
-                deleted.add(d)
-            except Exception as exc:
-                logger.warning("judge dedup: failed to delete %s: %s", d, exc)
-        desc_list = merge_description_list([byid[i] for i in ids])
-        new_desc = merge_description(desc_list)
-        label_clause = "".join(f" SET s:`{lab}`" for lab in sorted(labels) if _safe_label(lab))
-        await self._graph.query_raw(
-            "MATCH (s:__Entity__ {id: $id}) "
-            "SET s.description = $desc, s.descriptions = $descs, s.aliases = $aliases"
-            + label_clause,
-            {"id": surv, "desc": new_desc, "descs": desc_list, "aliases": aliases},
-        )
-        return surv, deleted
-
     async def deduplicate(
-        self, batch_size: int = 500, *, skip_pairs: set[frozenset[str]] | None = None
+        self,
+        batch_size: int = 500,
+        *,
+        skip_pairs: set[frozenset[str]] | None = None,
+        distinct_ids: set[str] | None = None,
     ) -> dict[str, int]:
         """Run the judge over the whole graph and return its stats.
 
         ``skip_pairs`` are id pairs already decided elsewhere — a resolver's
-        ``DISTINCT_FROM`` verdicts, a mention two keyed rows could equally own —
-        which are neither nominated nor linked, so a NO remembered on the graph
-        is not re-litigated by a second model.
+        ``DISTINCT_FROM`` verdicts, a mention two keyed rows could equally own.
+        ``distinct_ids`` are ids that are each a different thing from every
+        other id in the set — rows written from a declared key, two of which
+        are two rows whatever they are called. Neither kind of pair is put to
+        the model, unioned into one group through a third member, or linked,
+        so a NO the graph already holds is not re-litigated by a second model.
         """
+        skip = skip_pairs or set()
+        distinct = distinct_ids or set()
+
+        def protected(a: str, b: str) -> bool:
+            return frozenset((a, b)) in skip or (a in distinct and b in distinct)
+
         ents = await self._fetch_entities(batch_size)
-        stats = {
+
+        def protected_idx(i: int, j: int) -> bool:
+            return protected(ents[i]["id"], ents[j]["id"])
+
+        stats = self.last_stats = {
             "entities": len(ents),
             "candidates": 0,
             "sets": 0,
@@ -528,17 +518,12 @@ class LLMJudgeDeduplicator:
             edges[k] = max(v, edges.get(k, -1.0))
         for k, v in name_in_desc_pairs(ents).items():
             edges.setdefault(k, v)
-        if skip_pairs:
-            edges = {
-                (a, b): v
-                for (a, b), v in edges.items()
-                if frozenset((ents[a]["id"], ents[b]["id"])) not in skip_pairs
-            }
+        edges = {(a, b): v for (a, b), v in edges.items() if not protected_idx(a, b)}
         stats["candidates"] = len(edges)
         if not edges:
             return stats
 
-        sets = make_groups_dense(edges)
+        sets = make_groups_dense(edges, keep_apart=protected_idx if (skip or distinct) else None)
         stats["sets"] = len(sets)
         same1, calls, failed = await self._judge(sets, ents)
         stats["llm_calls"] += calls
@@ -552,56 +537,72 @@ class LLMJudgeDeduplicator:
             agreed, disagreed = same1 & same2, same1 ^ same2
         else:
             agreed, disagreed = same1, set()
-        if skip_pairs:
-            # The model never saw these pairs as candidates, but a partition of
-            # a set can still put them in one group; a decided pair stays decided.
-            decided = {
-                (a, b)
-                for a, b in agreed | disagreed
-                if frozenset((ents[a]["id"], ents[b]["id"])) in skip_pairs
-            }
-            agreed -= decided
-            disagreed -= decided
+        # The model never saw a protected pair as a candidate, but a partition
+        # of a set can still put the two in one group; a decided pair stays
+        # decided.
+        agreed = {(a, b) for a, b in agreed if not protected_idx(a, b)}
+        disagreed = {(a, b) for a, b in disagreed if not protected_idx(a, b)}
         stats["agreed_pairs"], stats["disagreed_pairs"] = len(agreed), len(disagreed)
 
+        # Union agreed pairs into groups — unless doing so would put a
+        # protected pair into one group through a third member (A~B and A~C
+        # agreed, B|C decided): the merge would then fold both into A and the
+        # remembered NO would be gone with the node that held it.
         uf = _UF(list(range(len(ents))))
+        members: dict[int, set[int]] = {i: {i} for i in range(len(ents))}
         for a, b in sorted(agreed):
+            ra, rb = uf.find(a), uf.find(b)
+            if ra == rb:
+                continue
+            if any(protected_idx(x, y) for x in members[ra] for y in members[rb]):
+                logger.info(
+                    "judge dedup: not grouping %s with %s — it would join a pair already "
+                    "decided distinct",
+                    ents[a]["id"],
+                    ents[b]["id"],
+                )
+                continue
+            merged_members = members.pop(ra) | members.pop(rb)
             uf.union(a, b)
+            members[uf.find(a)] = merged_members
         groups: dict[int, list[int]] = defaultdict(list)
         for i in range(len(ents)):
             groups[uf.find(i)].append(i)
         byid = {e["id"]: e for e in ents}
         root_id: dict[int, str] = {}
-        for r, members in groups.items():
-            ids = [ents[i]["id"] for i in members]
+        for r, idxs in groups.items():
+            ids = [ents[i]["id"] for i in idxs]
             if len(ids) < 2:
-                root_id[members[0]] = ids[0]
+                root_id[idxs[0]] = ids[0]
                 continue
-            if self._merge_hook is not None:
-                surv, absorbed = await self._merge_hook([byid[i] for i in ids])
-            else:
-                surv, absorbed = await self._merge_group(ids, byid)
+            surv, absorbed = await self._merge([byid[i] for i in ids])
             stats["merged"] += len(absorbed)
-            for i in members:
+            for i in idxs:
                 # A member the merge rules kept apart (two rows of one table)
                 # is still its own node, so a link must point at it, not at
                 # the survivor it was not folded into.
                 eid = ents[i]["id"]
                 root_id[i] = surv if (eid in absorbed or eid == surv) else eid
 
-        for a, b in sorted(disagreed):
+        # One SAME_AS edge per surviving pair: two disagreed pairs that merged
+        # to the same survivors are one edge, and a pair the merges have made
+        # protected (B~C disagreed, B folded into A, A|C decided) is not linked.
+        links: set[tuple[str, str]] = set()
+        for a, b in disagreed:
             ra, rb = root_id[a], root_id[b]
-            if ra == rb:
+            if ra == rb or protected(ra, rb):
                 continue
-            await self._graph.query_raw(
-                "MATCH (a:__Entity__ {id: $a}), (b:__Entity__ {id: $b}) "
-                "MERGE (a)-[r:SAME_AS]->(b) SET r.source = 'llm_judge', r.agreement = 1",
-                {"a": ra, "b": rb},
-            )
+            links.add((min(ra, rb), max(ra, rb)))
+        for ra, rb in sorted(links):
+            try:
+                await self._graph.query_raw(
+                    "MATCH (a:__Entity__ {id: $a}), (b:__Entity__ {id: $b}) "
+                    "MERGE (a)-[r:SAME_AS]->(b) SET r.source = 'llm_judge', r.agreement = 1",
+                    {"a": ra, "b": rb},
+                )
+            except Exception as exc:
+                logger.warning("judge dedup: failed to link %s ~ %s: %s", ra, rb, exc)
+                continue
             stats["linked"] += 1
         logger.info("LLMJudgeDeduplicator: %s", stats)
         return stats
-
-
-def _safe_label(lab: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_ -]*", lab))

@@ -226,7 +226,7 @@ Post-ingestion entity deduplication across all documents.
 - **Phase 1** (always): Canonical name match — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, then description length; merges the duplicate's description (`" | "`-joined, members kept in `descriptions`), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
 - **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
 - **Phase 3** (optional, `resolver=`): A `ResolutionStrategy` judges the remaining pairs across documents and tables. `finalize()` passes one by default.
-- **Phase 4** (default, `judge=True`): LLM-judged cross-document dedup -- name/description embeddings and name-in-description nominate candidate pairs, dense sets of ≤ 8, the judge partitions each set, a second shuffled pass must agree; agreed pairs merge by the same rules as every other phase (the survivor additionally gains every member's label), disagreements become `SAME_AS` edges, and pairs a resolver remembered as `DISTINCT_FROM` are never asked. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); `judge=False` skips the phase. Stats in `_deduplicator.last_judge_stats`.
+- **Phase 4** (default, `judge=True`): LLM-judged cross-document dedup -- name/description embeddings and name-in-description nominate candidate pairs, dense sets of ≤ 8, the judge partitions each set, a second shuffled pass must agree; agreed pairs merge by the same rules as every other phase (the survivor additionally gains every member's label), disagreements become `SAME_AS` edges, and pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); `judge=False` skips the phase. Stats in `_deduplicator.last_judge_stats`.
 
 Call once after all documents are ingested.
 
@@ -671,8 +671,8 @@ class ResolutionStrategy(ABC):
 ```
 
 **Built-in:**
-- `ExactMatchResolution(resolve_property="id")` — `ingest()` default
-- `LLMVerifiedResolution(llm=None, embedder=None, *, hard_threshold=0.95, soft_threshold=0.80, max_llm_pairs=500, max_llm_concurrency=None, force_summary_threshold=3, max_summary_tokens=500, ann_top_k=50)` — opt-in at `ingest()`; `finalize()`'s default cross-source resolver
+- `ExactMatchResolution(llm=None, resolve_property="name", cross_label_merge=True)` — `ingest()`'s default is `ExactMatchResolution(llm=None, cross_label_merge=False)`
+- `LLMVerifiedResolution(llm=None, embedder=None, *, hard_threshold=0.95, soft_threshold=0.65, max_llm_pairs=500, max_llm_concurrency=None, force_summary_threshold=3, max_summary_tokens=500, ann_top_k=50, batch_verification=True, verification_token_budget=4000, verification_max_pairs_per_call=5, cross_label_merge=True, cross_label_vector_door=0.60, cross_label_rank_floor=0.55, cross_label_max_pairs=200, cross_label_min_descriptions=3, unified_stage=True, unified_threshold=0.65, label_family_gate=True, cross_label_vote=True)` — opt-in at `ingest()`; `finalize()`'s default cross-source resolver
 
 ---
 

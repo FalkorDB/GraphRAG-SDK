@@ -213,7 +213,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member's label; disagreements become **`SAME_AS` edges**
   (`source='llm_judge'`) instead — nothing is lost. Two keyed rows, a mention
   two rows could own, and any pair a resolver remembered as `DISTINCT_FROM`
-  are never merged by the judge. `FinalizeResult` gains `entities_linked`,
+  are never put to the judge, never grouped with each other through a third
+  member, and never linked. `FinalizeResult` gains `entities_linked`,
   `judge_llm_calls`, `judge_stats`. Use a gpt-4.1-class `judge_llm` (defaults
   to the instance's `llm`): on the benchmark corpus it made 9 wrong merges
   where gpt-4o-mini made 51; the two-pass vote (`judge_vote=True`) cut wrong

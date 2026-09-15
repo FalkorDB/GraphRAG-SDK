@@ -19,6 +19,8 @@ import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, LLMResponse
 from graphrag_sdk.ingestion.resolution_strategies.base import (
@@ -32,7 +34,7 @@ from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import
     LLMVerifiedResolution,
 )
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
-from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator, merge_description_list
+from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator
 
 from .conftest import MockLLM
 from .test_llm_verified_resolution import ControlledEmbedder, _angle
@@ -135,14 +137,6 @@ class TestHelpers:
         set_merged_descriptions(s, [_n("b", "Person", "a", "d2")])
         set_merged_descriptions(s, [_n("c", "Person", "a", "d3")])
         assert s.properties["descriptions"] == ["d1", "d2", "d3"]
-
-    def test_merge_description_list_on_graph_rows(self):
-        rows = [
-            {"description": "d1 | d2", "descriptions": ["d1", "d2"]},
-            {"description": "d3", "descriptions": []},
-            {"description": "old | style", "descriptions": None},
-        ]
-        assert merge_description_list(rows) == ["d1", "d2", "d3", "old", "style"]
 
 
 class TestExactMatchAtIngest:
@@ -300,16 +294,25 @@ class TestFinalizeExactPhase:
 
 
 class TestJudgeMergeSite:
-    """The standalone judge's own merge write (no ``merge_group`` hook)."""
+    """The judge decides identity only; the merge is ``EntityDeduplicator``'s
+    ``_absorb`` — one statement carrying the descriptions list, aliases and
+    the loser's labels, after every edge is remapped."""
 
     class _Graph:
         def __init__(self, rows):
             self.rows, self.calls = rows, []
+            # id, name, description, label, aliases, is_stub, degree
+            self.page = [(r[0], r[1], r[2], r[3][0], r[4], None, 0) for r in rows]
 
         async def query_raw(self, cypher, params=None):
             self.calls.append((cypher, params or {}))
+            if "SKIP" in cypher:
+                rows = self.page if params.get("offset", 0) == 0 else []
+                return SimpleNamespace(result_set=list(rows))
             if "RETURN e.id, e.name, e.description" in cypher:
                 return SimpleNamespace(result_set=list(self.rows))
+            if "DETACH DELETE dup RETURN s.id" in cypher:
+                return SimpleNamespace(result_set=[[params["survivor_id"]]])
             return SimpleNamespace(result_set=[])
 
     class _Emb:
@@ -331,25 +334,28 @@ class TestJudgeMergeSite:
             ("b", "Airbus SE", "Toulouse group", ["Company"], [], [1.0, 0.0], None),
         ]
         g = self._Graph(rows)
-        remap_calls: list[tuple[str, str]] = []
-
-        async def remap(dup, surv):
-            remap_calls.append((dup, surv))
-            return True
-
-        judge = LLMJudgeDeduplicator(g, self._Emb(), self._LLM(), remap, vote=False)
-        stats = asyncio.run(judge.deduplicate())
-        assert stats["merged"] == 1
-        upd = next(c for c in g.calls if "s.descriptions = $descs" in c[0])
+        dd = EntityDeduplicator(g, self._Emb())
+        merged = asyncio.run(dd.deduplicate(judge_llm=self._LLM(), judge_vote=False))
+        assert merged == 1 and dd.last_judge_stats["merged"] == 1
+        (upd,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
         # rule 1: list (survivor = longest description "Toulouse group" first) + join
-        assert set(upd[1]["descs"]) == {"Toulouse group", "planemaker"}
+        assert upd[1]["survivor_id"] == "b" and upd[1]["dup_id"] == "a"
+        assert upd[1]["descs"] == ["Toulouse group", "planemaker"]
         assert upd[1]["desc"] == " | ".join(upd[1]["descs"])
-        # rule 2: both labels set on the survivor
-        assert "SET s:`Company`" in upd[0] and "SET s:`Organization`" in upd[0]
+        assert upd[1]["aliases"] == ["Airbus"]
+        # rule 2: the loser's label lands on the survivor in the same statement
+        assert "SET s:`Organization`" in upd[0] and "SET s:`Company`" not in upd[0]
         # rule 3: edges moved before the delete
         i_delete = next(i for i, c in enumerate(g.calls) if "DETACH DELETE" in c[0])
-        assert remap_calls == [("a", "b")]
-        assert next(i for i, c in enumerate(g.calls) if "s.descriptions" in c[0]) > i_delete
+        i_remaps = [
+            i for i, c in enumerate(g.calls) if "MERGE (s)-[" in c[0] or "MERGE (a)-[" in c[0]
+        ]
+        assert i_remaps and max(i_remaps) < i_delete
+        assert all(c[1].get("dup_id") == "a" for c in g.calls if "MERGE (s)-[" in c[0])
+
+    def test_the_judge_needs_a_merge_hook(self):
+        with pytest.raises(TypeError):
+            LLMJudgeDeduplicator(self._Graph([]), self._Emb(), self._LLM())
 
 
 class TestRemapChainsAreFlattened:
