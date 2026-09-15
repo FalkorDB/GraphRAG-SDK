@@ -4521,7 +4521,7 @@ class GraphRAG:
         similarity_threshold: float = 0.95,
         batch_size: int = 500,
         resolver: ResolutionStrategy | None = None,
-        judge: bool = True,
+        judge: bool = False,
         judge_llm: LLMInterface | None = None,
         judge_vote: bool = True,
     ) -> int:
@@ -4544,13 +4544,14 @@ class GraphRAG:
         become one node when they are not spelled the same: the resolver judges
         the pair, and the merge keeps the table's node and its typed values.
 
-        Phase 4 (default on, ``judge``): LLM-judged cross-document dedup.
-        Name and description embeddings nominate candidate pairs (plus
-        "A's name appears in B's description"); candidates form small dense
-        sets; the judge LLM partitions each set; a second pass over shuffled
-        sets must agree. Agreed pairs are merged by the same rules as every
-        other phase (survivor rank, descriptions list, aliases, provenance),
-        and the survivor additionally gains every member's label;
+        Phase 4 (opt-in here, ``judge=True``; on by default in
+        :meth:`finalize`): LLM-judged cross-document dedup. Name and
+        description embeddings nominate candidate pairs (plus "A's name
+        appears in B's description"); candidates form small dense sets; the
+        judge LLM partitions each set; with ``judge_vote`` a second pass over
+        shuffled sets must agree. Agreed pairs are merged by the same rules as
+        every other phase (survivor rank, descriptions list, aliases,
+        provenance), and the survivor additionally gains every member's label;
         disagreements are written as ``SAME_AS`` edges instead of merged.
         Pairs a resolver already judged distinct (``DISTINCT_FROM``), two rows
         written from a declared key, and a mention two such rows could equally
@@ -4558,6 +4559,10 @@ class GraphRAG:
         ends up with a name embedding in ``e.embedding`` (the judge writes the
         missing ones); ``judge=False`` leaves that to
         :meth:`backfill_entity_embeddings`, which :meth:`finalize` runs.
+
+        Without ``resolver`` and with ``judge`` off — the defaults here — this
+        method calls no model, as it always did; :meth:`finalize` is where
+        both LLM phases are on by default.
 
         Call after all documents are ingested.
 
@@ -4568,8 +4573,8 @@ class GraphRAG:
             resolver: Resolution strategy to judge pairs across documents and
                 tables, e.g. ``LLMVerifiedResolution(llm, embedder)``. None here
                 skips the phase; :meth:`finalize` supplies one by default.
-            judge: run the LLM-judged phase (default True). ``False`` = no
-                judge LLM calls.
+            judge: run the LLM-judged phase (default False here; ``True`` in
+                :meth:`finalize`). ``False`` = no judge LLM calls.
             judge_llm: Judge model; defaults to this instance's ``llm``.
                 A gpt-4.1-class model is strongly recommended — on the
                 benchmark corpus it made 9 wrong merges where gpt-4o-mini
@@ -4678,12 +4683,15 @@ class GraphRAG:
 
         Bundles:
         1. Remove NULL-name stub entities (legacy cleanup)
-        2. ``backfill_entity_embeddings()`` — name embeddings on every entity
-           (first, so the judge phase reuses them)
-        3. ``deduplicate_entities()`` — global exact-name dedup, then the
+        2. ``deduplicate_entities()`` — global exact-name dedup, then the
            resolver judges the pairs across documents and tables, then
            (``judge``) the LLM-judged cross-document phase; see
-           :meth:`deduplicate_entities` for what merges and what links
+           :meth:`deduplicate_entities` for what merges and what links. The
+           judge embeds the names it reads and stores them on the nodes.
+        3. ``backfill_entity_embeddings()`` — name embeddings on every entity
+           still missing one. After dedup, so a duplicate the merge removes
+           is not embedded first; ``FinalizeResult.entities_embedded`` counts
+           the vectors written by this step and by the judge.
         4. ``embed_relationships()`` — fact text embeddings on RELATES edges
         5. ``ensure_indices()`` — all indexes
 
@@ -4699,9 +4707,10 @@ class GraphRAG:
                 ``FinalizeResult.probable_duplicates`` and left alone.
             judge: run the LLM-judged dedup phase (default True). It costs
                 roughly two LLM calls per ~3000 prompt tokens of candidate
-                sets; set ``False`` to skip it. Only ``resolve=False,
-                judge=False`` is exact-name dedup alone, with no LLM calls at
-                all.
+                sets; set ``False`` to skip it. ``judge=False`` alone still
+                runs the resolver over this instance's ``llm``; only
+                ``resolve=False, judge=False`` is exact-name dedup alone, with
+                no LLM calls at all.
             judge_llm: judge model, defaults to this instance's ``llm``.
             judge_vote: require second-pass agreement (default True).
 
@@ -4736,11 +4745,7 @@ class GraphRAG:
         if null_cleaned:
             ctx_log(f"finalize: removed {null_cleaned} NULL-name stub entities")
 
-        # Step 2: Entity name embeddings first, so the judge phase reuses them
-        entity_count = await self._vector_store.backfill_entity_embeddings()
-        ctx_log(f"finalize: embedded {entity_count} entities")
-
-        # Step 3: Global dedup (exact, resolver, then LLM-judged)
+        # Step 2: Global dedup (exact, resolver, then LLM-judged)
         if not resolve:
             resolver = None
         elif resolver is None:
@@ -4752,6 +4757,14 @@ class GraphRAG:
         if not judge:
             judge_stats = {}
         ctx_log(f"finalize: deduplicated {dedup_count} entities; judge={judge_stats}")
+
+        # Step 3: Entity name embeddings, after dedup so the duplicates the merge
+        # just removed are not embedded first. The judge phase has already
+        # embedded and stored the names it read; this covers the rest, and the
+        # reported count is every vector written this call to a node still here.
+        entity_count = await self._vector_store.backfill_entity_embeddings()
+        entity_count += int(judge_stats.get("embedded", 0) or 0)
+        ctx_log(f"finalize: embedded {entity_count} entities")
         resolved = list(getattr(self._deduplicator, "resolved_pairs", []) or [])
         rejected = list(getattr(self._deduplicator, "rejected_pairs", []) or [])
         if resolved or rejected:

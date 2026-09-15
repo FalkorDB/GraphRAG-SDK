@@ -226,7 +226,7 @@ Post-ingestion entity deduplication across all documents.
 - **Phase 1** (always): Canonical name match — case, accents, punctuation, inner dots (`A.I.` = `AI`), a leading English article, `Surname, Given` inversion, common abbreviations and one trailing legal form (`Ltd`, `Inc`) are normalised; word order is not. An acronym joins its unique same-label long form. Keeps the survivor ranked by declared key, real-over-placeholder, long form over acronym, degree, then description length; merges the duplicate's description (`" | "`-joined, members kept in `descriptions`), `aliases`, `source_chunk_ids` and any property the survivor lacks into it; remaps RELATES and MENTIONED_IN edges; deletes duplicates.
 - **Phase 2** (optional, `fuzzy=True`): Embedding-based -- embeds entity names, finds near-duplicates by cosine similarity.
 - **Phase 3** (optional, `resolver=`): A `ResolutionStrategy` judges the remaining pairs across documents and tables. `finalize()` passes one by default.
-- **Phase 4** (default, `judge=True`): LLM-judged cross-document dedup -- name/description embeddings and name-in-description nominate candidate pairs, dense sets of ≤ 8, the judge partitions each set, a second shuffled pass must agree; agreed pairs merge by the same rules as every other phase (the survivor additionally gains every member's label), disagreements become `SAME_AS` edges, and pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended); `judge=False` skips the phase. Stats in `_deduplicator.last_judge_stats`.
+- **Phase 4** (opt-in here with `judge=True`; on by default in `finalize()`): LLM-judged cross-document dedup -- name/description embeddings and name-in-description nominate candidate pairs, dense sets of ≤ 8 (more than half of a set's pairs must be nominated, so a chain A–B–C–D cannot form), the judge partitions each set; with `judge_vote=True` (default) a second shuffled pass must agree, and pairs only one pass grouped become `SAME_AS` edges; with `judge_vote=False` the single pass decides and nothing is linked. Agreed pairs merge by the same rules as every other phase (the survivor additionally gains every member's label, recorded in `merged_labels`); pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked. Agreements are unioned within one set only, so two sets sharing a member never chain into one merge. `judge_llm` defaults to the GraphRAG LLM (gpt-4.1-class recommended). Without a `resolver` and with `judge` off — the defaults of this method — no model is called. Stats in `_deduplicator.last_judge_stats`.
 
 Call once after all documents are ingested.
 
@@ -246,8 +246,8 @@ async def finalize(
 ```
 
 Run all post-ingestion steps after all documents and tables are ingested. Bundles:
-1. `backfill_entity_embeddings()` -- name embeddings on every entity (first, so the judge reuses them)
-2. `deduplicate_entities(resolver=..., judge=..., judge_llm=..., judge_vote=...)` -- canonical-name dedup, then the resolver across sources, then the LLM-judged cross-document phase
+1. `deduplicate_entities(resolver=..., judge=..., judge_llm=..., judge_vote=...)` -- canonical-name dedup, then the resolver across sources, then the LLM-judged cross-document phase (which embeds and stores the names it reads)
+2. `backfill_entity_embeddings()` -- name embeddings on every entity still missing one, after dedup so a duplicate about to be removed is not embedded first; `entities_embedded` counts this step's vectors plus the judge's
 3. `embed_relationships()` -- fact text embeddings on RELATES edges
 4. `ensure_indices()` -- all indexes
 5. A consistency report over the whole graph
@@ -256,7 +256,7 @@ Run all post-ingestion steps after all documents and tables are ingested. Bundle
 |-----------|------|---------|-------------|
 | `resolver` | `ResolutionStrategy \| None` | `None` | Judges whether two entities from different sources are one. Defaults to `LLMVerifiedResolution` over the instance's `llm` and `embedder`, asking the model about pairs from cosine 0.6 — the only place a table's "Priya Raman" and a note's "Ms. Raman" meet. Each pair is asked once; a NO is remembered as a `DISTINCT_FROM` edge. |
 | `resolve` | `bool` | `True` | `False` skips the resolver entirely. |
-| `judge` | `bool` | `True` | Run the LLM-judged cross-document phase after the resolver: similarity nominates candidate sets, the judge model partitions them twice, only agreed pairs merge, disagreements become `SAME_AS` edges. `False` skips it; `resolve=False, judge=False` calls no model at all. |
+| `judge` | `bool` | `True` | Run the LLM-judged cross-document phase after the resolver: similarity nominates candidate sets, the judge model partitions them (twice with `judge_vote`), only agreed pairs merge, disagreements become `SAME_AS` edges. `False` skips it but the resolver still runs over the GraphRAG LLM; `resolve=False, judge=False` calls no model at all. |
 | `judge_llm` | `LLMInterface \| None` | `None` | Judge model; defaults to the instance's `llm`. A gpt-4.1-class model is recommended (9 wrong merges vs 51 for gpt-4o-mini on the benchmark corpus). |
 | `judge_vote` | `bool` | `True` | Require the second shuffled pass to agree before merging. `False` halves judge LLM cost at ~3x the wrong-merge rate. |
 

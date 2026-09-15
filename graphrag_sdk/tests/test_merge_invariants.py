@@ -3,7 +3,8 @@
 1. the survivor keeps EVERY member's description as a list (``descriptions``)
    plus the ``" | "``-joined string (``description``) that search reads;
 2. the survivor carries every member's label (``merged_labels`` at ingest →
-   promoted to Cypher labels on write; set directly by the judge);
+   promoted to Cypher labels on write; at finalize ``_absorb`` sets the Cypher
+   labels and records them in ``merged_labels`` in the same statement);
 3. relationship endpoints are re-pointed to the survivor before any loser is
    removed, so no edge is lost.
 
@@ -313,6 +314,8 @@ class TestJudgeMergeSite:
                 return SimpleNamespace(result_set=list(self.rows))
             if "DETACH DELETE dup RETURN s.id" in cypher:
                 return SimpleNamespace(result_set=[[params["survivor_id"]]])
+            if "SAME_AS" in cypher:
+                return SimpleNamespace(result_set=[[params["a"]]])
             return SimpleNamespace(result_set=[])
 
     class _Emb:
@@ -354,8 +357,17 @@ class TestJudgeMergeSite:
         assert all(c[1].get("dup_id") == "a" for c in g.calls if "MERGE (s)-[" in c[0])
 
     def test_the_judge_needs_a_merge_hook(self):
+        """``merge_group`` is a required positional parameter with no default:
+        the judge cannot be built without a merge site, and builds with one."""
+        import inspect
+
+        param = inspect.signature(LLMJudgeDeduplicator).parameters["merge_group"]
+        assert param.default is inspect.Parameter.empty
+        assert param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
         with pytest.raises(TypeError):
-            LLMJudgeDeduplicator(self._Graph([]), self._Emb(), self._LLM())
+            LLMJudgeDeduplicator(self._Graph([]), self._Emb(), self._LLM())  # type: ignore[call-arg]
+        judge = LLMJudgeDeduplicator(self._Graph([]), self._Emb(), self._LLM(), MagicMock())
+        assert isinstance(judge, LLMJudgeDeduplicator)
 
 
 class TestRemapChainsAreFlattened:

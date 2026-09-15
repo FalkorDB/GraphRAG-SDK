@@ -174,17 +174,17 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 **Alternative: LLMVerifiedResolution**
 - Runs the same exact-match pass first, then compares the surviving names by embedding similarity within each label
-- Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.80) go to the LLM for a YES/NO verdict
+- Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.65) go to the LLM for a YES/NO verdict
 - Useful when the same entity is named inconsistently across documents (e.g., "Acme Corp" vs "Acme Corporation")
 
 **At `finalize()`: the LLM-judged cross-document phase**
 - Runs after the exact-name dedup and the resolver pass, over every entity of every document
 - Name and description embeddings plus "A's name appears in B's description" nominate candidate pairs (no LLM); candidates form dense sets of ≤ 8
-- The judge LLM partitions each set into same-referent groups; a second pass over shuffled sets must agree
+- The judge LLM partitions each set into same-referent groups; with `judge_vote=True` (default) a second pass over shuffled sets must agree, with `judge_vote=False` the single pass decides
 - Both passes agree → **merge**, by the same rules as every finalize merge: a table's row survives a mention, every member's description is kept in `descriptions` (joined with `" | "` in `description`), other names kept in `aliases`, edges moved first, then the loser deleted; the survivor also gains every member's label
 - Only one pass agrees → **link**: a `SAME_AS` edge (`source='llm_judge'`), both nodes stay
 - Pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked, grouped or linked
-- `finalize(judge=False)` skips it; `judge_llm=` picks the model (gpt-4.1-class recommended); pass `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per document
+- `finalize(judge=False)` skips it (`finalize(resolve=False, judge=False)` runs no model at all); `deduplicate_entities()` on its own runs it only with `judge=True`; `judge_llm=` picks the model (gpt-4.1-class recommended); pass `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per document
 
 For details on resolution strategies, see [Strategies](/strategies).
 

@@ -313,11 +313,14 @@ class TestGraphRAGDeduplicateEntities:
         count = await g.deduplicate_entities(judge=False)
         assert count == 1  # one duplicate merged
 
-    async def test_deduplicate_entities_runs_the_judge_by_default(
+    async def test_deduplicate_entities_judge_is_opt_in(
         self, mock_conn, embedder, llm, monkeypatch
     ):
-        """Default ``deduplicate_entities()`` = exact phase + the LLM judge over
-        the whole graph, using the facade's LLM unless ``judge_llm`` is given."""
+        """The standalone ``deduplicate_entities()`` makes no LLM call unless
+        asked — a caller running it after every ingest batch must not start
+        paying for two judge passes with no source change. ``judge=True`` uses
+        the facade's LLM unless ``judge_llm`` is given; ``finalize()`` is where
+        the judge is on by default."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         seen: dict = {}
 
@@ -327,16 +330,71 @@ class TestGraphRAGDeduplicateEntities:
 
         monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
         await g.deduplicate_entities()
+        assert seen["judge_llm"] is None and seen["resolver"] is None
+
+        seen.clear()
+        await g.deduplicate_entities(judge=True)
         assert seen["judge_llm"] is g.llm and seen["judge_vote"] is True
 
         other = MagicMock()
         seen.clear()
-        await g.deduplicate_entities(judge_llm=other, judge_vote=False)
+        await g.deduplicate_entities(judge=True, judge_llm=other, judge_vote=False)
         assert seen["judge_llm"] is other and seen["judge_vote"] is False
 
+        # judge_llm alone does not switch the phase on
         seen.clear()
-        await g.deduplicate_entities(judge=False)
+        await g.deduplicate_entities(judge_llm=other)
         assert seen["judge_llm"] is None
+
+    async def test_finalize_runs_the_judge_by_default(self, mock_conn, embedder, llm, monkeypatch):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        seen: dict = {}
+
+        async def fake_dedup(**kw):
+            seen.update(kw)
+            return 0
+
+        monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
+        empty = MagicMock()
+        empty.result_set = [[0]]
+        g._graph_store.query_raw = AsyncMock(return_value=empty)
+        g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
+        g._vector_store.embed_relationships = AsyncMock(return_value=0)
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+        await g.finalize()
+        assert seen["judge_llm"] is g.llm and seen["resolver"] is not None
+        seen.clear()
+        await g.finalize(resolve=False, judge=False)
+        assert seen["judge_llm"] is None and seen["resolver"] is None
+
+    async def test_finalize_embeds_after_dedup_and_counts_the_judge_vectors(
+        self, mock_conn, embedder, llm
+    ):
+        """The backfill runs after the merges, so a duplicate about to be
+        deleted is not embedded first, and ``entities_embedded`` is what this
+        call wrote: the backfill's vectors plus the judge's."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        order: list[str] = []
+
+        async def dedup(**kw):
+            order.append("dedup")
+            g._deduplicator.last_judge_stats = {"embedded": 5, "merged": 1}
+            return 1
+
+        async def backfill():
+            order.append("backfill")
+            return 2
+
+        g.deduplicate_entities = dedup
+        empty = MagicMock()
+        empty.result_set = [[0]]
+        g._graph_store.query_raw = AsyncMock(return_value=empty)
+        g._vector_store.backfill_entity_embeddings = backfill
+        g._vector_store.embed_relationships = AsyncMock(return_value=0)
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+        result = await g.finalize()
+        assert order == ["dedup", "backfill"]
+        assert result.entities_embedded == 7
 
     async def test_deduplicate_entities_no_duplicates(self, mock_conn, embedder, llm):
         """deduplicate_entities with < 2 entities should return 0."""

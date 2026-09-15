@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from graphrag_sdk.core.context import Context
-from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship
+from graphrag_sdk.core.models import RESERVED_NODE_LABELS, GraphData, GraphNode, GraphRelationship
 from graphrag_sdk.core.providers import Embedder, LLMInterface
 from graphrag_sdk.ingestion.extraction_strategies.entity_extractors import DEFAULT_ENTITY_TYPES
 from graphrag_sdk.ingestion.resolution_strategies.base import (
@@ -26,6 +26,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
 )
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
 from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator
+from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 if TYPE_CHECKING:
     from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
@@ -59,9 +60,42 @@ _ACRONYM_STOPWORDS = frozenset({"of", "the", "and", "for", "de", "la", "del", "a
 _MIN_ACRONYM_LEN = 3
 _MAX_ACRONYM_LEN = 6
 
-# A label the judge phase may add to a survivor; anything else is not
-# interpolated into Cypher.
-_SAFE_LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_ -]*")
+# Labels the graph gives its own structure; never stamped onto an entity by a
+# merge, where they would surface in every ``MATCH (:Document)`` query.
+_STRUCTURAL_LABELS = RESERVED_NODE_LABELS | {"__Entity__"}
+
+# Absorbed labels are recorded here as well as set as Cypher labels, in the
+# ``" | "``-joined form ingest-time resolution and ``GraphStore`` use, so a
+# survivor's later merge carries them on and its primary label stays fixed.
+MERGED_LABELS_KEY = "merged_labels"
+
+
+def label_for_merge(label: Any) -> str | None:
+    """The label as it may be set on a survivor, or ``None`` if it may not be.
+
+    The contract is the repository's, not a stricter one of this module's:
+    :func:`sanitize_cypher_label` decides what the write path can quote, so
+    ``Legal Entity``, ``Org-Unit`` and ``Ünïcode`` are as valid here as they are
+    in a mapping. What is refused is a label the sanitiser would have to
+    *change* (a stray backtick — the graph would then hold a name nobody
+    declared) and a structural label.
+    """
+    if not isinstance(label, str):
+        return None
+    try:
+        safe = sanitize_cypher_label(label)
+    except ValueError:
+        return None
+    if safe != label.strip() or safe in _STRUCTURAL_LABELS:
+        return None
+    return safe
+
+
+def split_merged_labels(value: Any) -> list[str]:
+    """The labels recorded in a ``merged_labels`` property, in order."""
+    if not isinstance(value, str):
+        return []
+    return [part.strip() for part in value.split("|") if part.strip()]
 
 
 def normalize_entity_name(name: str) -> str:
@@ -741,26 +775,30 @@ class EntityDeduplicator:
         there, and a survivor that no longer exists (deleted by an earlier merge
         in the same run) is detected rather than silently written past.
 
-        ``add_labels`` are labels the survivor gains in that same statement (the
-        judge phase's label union). Only identifier-shaped labels are
-        interpolated, backticked; anything else is dropped with a warning.
+        The survivor gains, in that same statement, every label the duplicate
+        had absorbed in earlier merges — its Cypher labels beyond its primary,
+        and the ones recorded in its ``merged_labels`` — plus ``add_labels``,
+        the labels the caller wants unioned (the judge phase passes the
+        loser's own label; an adoption into a declared label passes none, so
+        the extractor's guess is dropped). The union is written to the
+        survivor's own ``merged_labels`` too.
+        Cypher labels alone would not survive: the phases read one primary
+        label per node, so a survivor that later loses to another node would
+        be deleted with its extra labels unread; the property travels. Labels
+        are admitted by :func:`label_for_merge`, the repository's contract for
+        what a label may be; anything else is dropped with a warning.
 
         Returns ``True`` only when the duplicate was actually deleted. The
         in-memory ``survivor`` is updated so a group's later duplicates build
         on the merged description and aliases.
         """
-        labels: list[str] = []
-        for lab in add_labels:
-            if isinstance(lab, str) and _SAFE_LABEL.fullmatch(lab):
-                labels.append(lab)
-            else:
-                logger.warning("Not adding label %r to %s: not an identifier", lab, survivor["id"])
-
         if not await self._remap_entity_edges(dup["id"], survivor["id"]):
             logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
             return False
 
-        keep_props, dup_props = await self._read_properties(survivor["id"], dup["id"])
+        keep_props, dup_props, keep_labels, dup_labels = await self._read_properties(
+            survivor["id"], dup["id"]
+        )
         if keep_props is not None and dup_props is not None:
             # The graph is the truth about what each node holds; the fetched row
             # carries only the columns the phases rank on.
@@ -771,6 +809,34 @@ class EntityDeduplicator:
                 "description": dup_props.get("description") or "",
                 "aliases": _string_list(dup_props.get("aliases")),
             }
+
+        # Every label the duplicate holds beyond its own primary — the ones
+        # earlier merges gave it, on the graph or on record — plus what the
+        # caller asks for. The duplicate's primary label itself is the
+        # caller's call: the judge unions it (``add_labels``); an adoption
+        # into a declared label deliberately drops the extractor's guess.
+        dup_primary = str(dup.get("label") or "").strip()
+        wanted: list[str] = [
+            *(lab for lab in dup_labels if lab not in keep_labels and lab != dup_primary),
+            *split_merged_labels((dup_props or {}).get(MERGED_LABELS_KEY)),
+            *add_labels,
+        ]
+        primary = str(survivor.get("label") or "").strip()
+        recorded = split_merged_labels((keep_props or {}).get(MERGED_LABELS_KEY))
+        # ``survivor.get("labels")`` is the full list where the caller fetched
+        # it (the judge's rows); the graph read is the truth where it did not.
+        held = set(keep_labels) | set(recorded) | {primary} | set(survivor.get("labels") or [])
+        labels: list[str] = []
+        for lab in wanted:
+            safe = label_for_merge(lab)
+            if safe is None:
+                logger.warning("Not adding label %r to %s: not a usable label", lab, survivor["id"])
+                continue
+            if safe in held or safe in labels:
+                continue
+            labels.append(safe)
+        merged_labels = [*recorded, *labels]
+        merged_labels = [lab for lab in merged_labels if lab != primary]
 
         sets: list[str] = []
         params: dict[str, Any] = {"survivor_id": survivor["id"], "dup_id": dup["id"]}
@@ -802,11 +868,20 @@ class EntityDeduplicator:
         if keep_props is not None and dup_props is not None:
             carry = properties_to_carry(keep_props, dup_props, never=self._NEVER_CARRY)
             # Handled above, or by the absorb query itself.
-            for handled in ("description", "descriptions", "aliases", "source_chunk_ids"):
+            for handled in (
+                "description",
+                "descriptions",
+                "aliases",
+                "source_chunk_ids",
+                MERGED_LABELS_KEY,
+            ):
                 carry.pop(handled, None)
         if carry:
             sets.append("s += $carry")
             params["carry"] = carry
+        if merged_labels != recorded:
+            sets.append(f"s.{MERGED_LABELS_KEY} = $merged_labels")
+            params["merged_labels"] = " | ".join(merged_labels)
 
         query = _ABSORB_QUERY_HEAD
         if sets:
@@ -834,12 +909,15 @@ class EntityDeduplicator:
         survivor["aliases"] = aliases
         if "is_stub" in carry:
             survivor["is_stub"] = carry["is_stub"]
+        if labels:
+            survivor["labels"] = [*(survivor.get("labels") or []), *labels]
         return True
 
     async def _read_properties(
         self, survivor_id: str, dup_id: str
-    ) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
-        """Both nodes' properties, or ``(None, None)`` if they could not be read.
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str], list[str]]:
+        """Both nodes' properties and entity labels; ``(None, None, [], [])``
+        if they could not be read.
 
         A failed read is not a failed merge: the edges are already remapped and
         the absorb query still joins what the fetched rows know.
@@ -847,16 +925,19 @@ class EntityDeduplicator:
         try:
             res = await self._graph.query_raw(
                 "MATCH (k:__Entity__ {id: $survivor_id}), (d:__Entity__ {id: $dup_id}) "
-                "RETURN properties(k), properties(d)",
+                "RETURN properties(k), properties(d), labels(k), labels(d)",
                 {"survivor_id": survivor_id, "dup_id": dup_id},
             )
         except Exception as exc:
             logger.warning(f"Could not read properties for {dup_id} -> {survivor_id}: {exc}")
-            return None, None
+            return None, None, [], []
         rows = getattr(res, "result_set", None) or []
         if not rows or len(rows[0]) < 2:
-            return None, None
-        return rows[0][0] or {}, rows[0][1] or {}
+            return None, None, [], []
+        row = list(rows[0]) + [None, None]
+        keep_labels = [lab for lab in _string_list(row[2]) if lab != "__Entity__"]
+        dup_labels = [lab for lab in _string_list(row[3]) if lab != "__Entity__"]
+        return row[0] or {}, row[1] or {}, keep_labels, dup_labels
 
     @staticmethod
     def _merged_aliases(survivor: dict[str, Any], dup: dict[str, Any]) -> list[str]:
@@ -1490,7 +1571,17 @@ class EntityDeduplicator:
         )
 
     async def _fetch_all_entities(self, batch_size: int) -> list[dict[str, Any]]:
-        """Fetch all entities in batches, including their primary label."""
+        """Fetch all entities in batches, including their primary label.
+
+        A node that absorbed another type carries several labels, and FalkorDB
+        does not promise the order ``labels(e)`` returns them in; taking the
+        first would let an ``Organization`` that absorbed a ``Company`` report
+        either on a later run, and the label is a grouping key in the exact
+        phase, the cross-type guard in the fuzzy phase and what a resolver is
+        shown. The primary label is the first one *not* recorded in
+        ``merged_labels`` — the ones a merge added — so it stays what the node
+        was written as.
+        """
         offset = 0
         entities: list[dict[str, Any]] = []
         for _ in range(_MAX_PAGINATION_ITERATIONS):
@@ -1498,7 +1589,9 @@ class EntityDeduplicator:
                 "MATCH (e:__Entity__) "
                 "RETURN e.id AS id, e.name AS name, e.description AS desc, "
                 "HEAD([l IN labels(e) WHERE l <> '__Entity__']) AS label, "
-                f"e.aliases AS aliases, e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree "
+                f"e.aliases AS aliases, e.is_stub AS is_stub, {_DEGREE_EXPR} AS degree, "
+                "[l IN labels(e) WHERE l <> '__Entity__'] AS labels, "
+                f"e.{MERGED_LABELS_KEY} AS merged_labels "
                 "SKIP $offset LIMIT $limit",
                 {"offset": offset, "limit": batch_size},
             )
@@ -1506,12 +1599,18 @@ class EntityDeduplicator:
                 break
             for row in result.result_set:
                 aliases = row[4] if len(row) > 4 and isinstance(row[4], list) else []
+                labels = _string_list(row[7]) if len(row) > 7 else []
+                absorbed = split_merged_labels(row[8]) if len(row) > 8 else []
+                label = row[3] if len(row) > 3 and row[3] else ""
+                if labels:
+                    label = next((lab for lab in labels if lab not in absorbed), label or labels[0])
                 entities.append(
                     {
                         "id": row[0],
                         "name": row[1] if len(row) > 1 and row[1] else str(row[0]),
                         "description": row[2] if len(row) > 2 and row[2] else "",
-                        "label": row[3] if len(row) > 3 and row[3] else "",
+                        "label": label,
+                        "labels": labels or ([label] if label else []),
                         "aliases": [a for a in aliases if isinstance(a, str)],
                         # Only a table write sets is_stub (False for a row, True
                         # for a placeholder), so its presence marks a keyed node.

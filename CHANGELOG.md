@@ -219,9 +219,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the instance's `llm`): on the benchmark corpus it made 9 wrong merges
   where gpt-4o-mini made 51; the two-pass vote (`judge_vote=True`) cut wrong
   merges by two thirds at 2× judge cost. `finalize(judge=False)` skips the
-  phase; `finalize(resolve=False, judge=False)` keeps finalize LLM-free.
-  `finalize()` now embeds entity names *before* deduplicating, so the judge
-  reuses them.
+  phase (the resolver pass still runs); `finalize(resolve=False,
+  judge=False)` keeps finalize LLM-free. On the standalone
+  `deduplicate_entities()` the judge is opt-in (`judge=True`), so a caller
+  running it after every batch keeps making no LLM calls. `finalize()` now
+  deduplicates *before* embedding entity names, so a duplicate the merge
+  removes is not embedded first; the judge stores the name vectors it
+  computes, and `FinalizeResult.entities_embedded` counts both. Absorbed
+  labels are recorded in `merged_labels` as well as set as Cypher labels, so
+  a survivor's later merge carries them on and its primary label stays the
+  one it was written as; label validity follows `sanitize_cypher_label`.
+  Agreements are unioned within one set only, a set whose prompt failed in
+  one pass is left unjudged rather than counted as a disagreement, and the
+  entity text in the judge prompt is flattened, quoted and declared
+  untrusted.
 
 - `GraphExtraction`'s verification prompt now tells the model that entity
   descriptions are later used to decide whether two entities from different
