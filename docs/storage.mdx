@@ -1,6 +1,7 @@
 ---
-title: "Storage"
-description: "How GraphStore, VectorStore, and EntityDeduplicator persist data in FalkorDB."
+title: "How GraphRAG SDK Stores Graphs in FalkorDB"
+sidebarTitle: "Storage"
+description: "How GraphRAG SDK's GraphStore and VectorStore persist nodes, embeddings, and indexes in FalkorDB, plus how EntityDeduplicator merges entities after ingestion."
 ---
 
 The storage layer is the bridge between the SDK's Python objects and FalkorDB's graph database. Two classes handle everything: **GraphStore** manages node and relationship writes, and **VectorStore** manages embeddings, indexes, and search. A third class, **EntityDeduplicator**, handles post-ingestion entity merging.
