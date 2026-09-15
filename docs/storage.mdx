@@ -262,8 +262,27 @@ Enabled via `fuzzy=True`. Catches near-duplicates that have slightly different n
 1. **Fetch** all surviving entities with their labels
 2. **Batch-embed** entity names
 3. **Normalize** vectors and compute pairwise cosine similarity in blocks (1000 entities per block to avoid OOM)
-4. **Merge** pairs above the similarity threshold (default: 0.95), but only within the same label (no cross-type merging)
+4. **Merge** pairs above the similarity threshold (default: 0.95 — at 0.90 the pass wrongly merged 2 of 33 hard-negative pairs for no added recall), but only within the same label (no cross-type merging)
 5. **Remap and delete** as in Phase 1
+
+### Phase 3: Resolver Across Sources (Default in `finalize()`)
+
+The resolution strategy `finalize(resolver=...)` names — by default an `LLMVerifiedResolution` over the instance's `llm` and `embedder`, asking the model about pairs from cosine 0.6 — is shown every surviving entity of the graph as one `GraphData`, with the RELATES edges between them, and asked which are one thing. It decides *identity*; the merge follows Phase 1's rules (survivor rank, absorb-and-delete in one statement), so a table's row always survives a mention of it and two keyed rows never fold into each other. A NO is written to the graph as a `DISTINCT_FROM` edge and the pair is never asked again; `finalize(resolve=False)` skips this phase.
+
+### Phase 4: LLM-Judged Cross-Document Dedup (Default in `finalize()`)
+
+Ingest resolves per document, so `Airbus` in one file and `Airbus SE` in another never meet until here. `LLMJudgeDeduplicator` (`storage/judge_dedup.py`) runs once over the whole graph, after Phases 1–3:
+
+1. **Embed** every entity's name (written to `e.embedding` and kept for retrieval; `finalize()` runs `backfill_entity_embeddings()` afterwards for whatever is still missing one) and its description (written to `e.description_embedding` with `e.description_embedding_hash`, the digest of the text it was computed from, the embedder's `model_name` and the vector's dimension — a later run reuses the vector while the hash still matches, and re-embeds what a merge or a re-ingest changed or another model embedded; a cached vector of another dimension than the ones embedded now is re-embedded with a warning, not dropped); an entity with no description is nominated by name only
+2. **Nominate** candidate pairs through three LLM-free doors: top-10 name neighbours at cosine ≥ 0.65, top-10 description neighbours at ≥ 0.55, and "A's name appears inside B's description"
+3. **Group** candidates into dense sets of at most 8: more than half of a set's pairs must be nominated edges, so a chain A–B–C–D where only neighbours are similar (exactly half) cannot form; an edge left between two sets is its own 2-member set. Whole sets are packed into prompts of ≤ 3,000 tokens; the entity text is rendered one line per entity, flattened and quoted, and the prompt tells the model it is untrusted document data
+4. **Judge, pass 1** — the LLM partitions each set into same-referent groups; names, labels and descriptions only, no similarity scores shown
+5. **Judge, pass 2** (`judge_vote=True`, the default) — the same sets, members shuffled and reversed; an answer that changes with the order is a guess. With `judge_vote=False` there is no second pass: the first pass's groups are the agreed pairs and nothing is linked for disagreement (a cross-set pair, step 7, is still linked, with `agreement=1`)
+6. **Both passes agree → merge** (with `judge_vote=False`: the single pass groups them), through the same absorb path as Phase 1: survivor by the Phase 1 rank (a table's row over a mention, then degree, then longest description); every member's description kept in `descriptions` and joined with `" | "` in `description`; other names kept in `aliases`; `source_chunk_ids` and missing properties carried; edges remapped to the survivor first, then the loser deleted. On top of that the survivor gains every member's label, as Cypher labels and on record in `merged_labels`, so a later merge carries them on. Agreements are unioned within one set only: two sets that share a member (a straddling edge) never chain into one merge, the cross-set pair is linked instead. Two keyed rows, a mention two rows could own, and any pair a resolver remembered as `DISTINCT_FROM` are never put to the judge, never grouped with each other through a third member, and never merged or linked. If the `DISTINCT_FROM` pairs cannot be read at all, the phase does not run — an unavailable protection set is not an empty one — and `last_judge_stats` reports `skipped_reason`; the resolver and fuzzy phases follow the same rule
+7. **Only one pass agrees → link**: a `SAME_AS` edge (`source='llm_judge'`, `agreement=1`; for a pair agreed on across two sets, `agreement` is the number of passes that saw it — `2` with the vote, `1` without, so `agreement=2` always means both passes agreed) between the two; both nodes and both descriptions stay. A set whose prompt failed in either pass is left unjudged — its pairs are neither merged nor linked
+8. **Neither → nothing**
+
+Measured on the benchmark corpus: the two-pass vote cut wrong merges by two thirds at 2× judge cost; gpt-4.1 made 9 wrong merges where gpt-4o-mini made 51, so pass a gpt-4.1-class `judge_llm`. Statistics (candidates, sets, calls, agreed/disagreed pairs, merged, linked) are in `EntityDeduplicator.last_judge_stats` and `FinalizeResult.judge_stats`. `finalize(judge=False)` skips this phase (the resolver pass still runs; `finalize(resolve=False, judge=False)` calls no model). The standalone `deduplicate_entities()` runs the judge only when asked (`judge=True`).
 
 ---
 
@@ -308,6 +327,7 @@ The connection layer retries transient query failures up to 3 times using expone
 |------|-----------------|
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | GraphStore — batched MERGE, label hints, statistics, cleanup |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | VectorStore — index management, chunk/entity/relationship embedding, search |
-| [`storage/deduplicator.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — exact + fuzzy dedup, edge remapping |
+| [`storage/deduplicator.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/deduplicator.py) | EntityDeduplicator — exact + fuzzy dedup, edge remapping; runs the judge phase |
+| [`storage/judge_dedup.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/judge_dedup.py) | LLMJudgeDeduplicator — cross-document dedup: nominate, group, judge twice, merge or link |
 | [`utils/cypher.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/utils/cypher.py) | sanitize_cypher_label() and other Cypher utilities |
 | [`core/connection.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/core/connection.py) | FalkorDBConnection — async client, connection pooling, retry |

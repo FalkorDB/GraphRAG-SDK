@@ -3,7 +3,8 @@
 1. the survivor keeps EVERY member's description as a list (``descriptions``)
    plus the ``" | "``-joined string (``description``) that search reads;
 2. the survivor carries every member's label (``merged_labels`` at ingest →
-   promoted to Cypher labels on write; set directly by the judge);
+   promoted to Cypher labels on write; at finalize ``_absorb`` sets the Cypher
+   labels and records them in ``merged_labels`` in the same statement);
 3. relationship endpoints are re-pointed to the survivor before any loser is
    removed, so no edge is lost.
 
@@ -14,7 +15,12 @@ and the judge.
 
 from __future__ import annotations
 
+import asyncio
 import re
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, LLMResponse
@@ -28,6 +34,8 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchR
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
+from graphrag_sdk.storage.deduplicator import EntityDeduplicator
+from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator
 
 from .conftest import MockLLM
 from .test_llm_verified_resolution import ControlledEmbedder, _angle
@@ -243,6 +251,256 @@ class TestLLMVerifiedMergeSites:
         ).resolve(gd, Context())
         assert len(res.nodes) == 1
         assert set(res.nodes[0].properties["descriptions"]) == {"D1", "D2", "D3"}
+
+
+def _props_read(rows, params, stored=None):
+    """Answer ``_read_properties`` from fetched rows ``(id, name, desc, label,
+    aliases, ...)`` the way the graph would: ``[props(k), props(d), labels(k),
+    labels(d)]``; no row when either node is missing. ``stored`` adds
+    properties the page does not carry, per id — the ``descriptions`` list an
+    earlier merge left on a node."""
+    by_id = {r[0]: r for r in rows}
+
+    def props(r):
+        out = {"name": r[1], "description": r[2]}
+        if len(r) > 4 and r[4]:
+            out["aliases"] = list(r[4])
+        out.update((stored or {}).get(r[0], {}))
+        return out
+
+    def labels(r):
+        lab = r[3] if len(r) > 3 else None
+        return list(lab) if isinstance(lab, (list, tuple)) else ([lab] if lab else [])
+
+    k, d = by_id.get(params["survivor_id"]), by_id.get(params["dup_id"])
+    if k is None or d is None:
+        return SimpleNamespace(result_set=[])
+    return SimpleNamespace(result_set=[[props(k), props(d), labels(k), labels(d)]])
+
+
+class TestFinalizeExactPhase:
+    """Rule 1 and 3 through ``EntityDeduplicator._absorb``, the write every
+    finalize phase (exact, resolver, judge) merges through."""
+
+    def _rows(self):
+        # id, name, description, label, aliases, is_stub, degree
+        return [
+            ["e1", "Cape Morrow Light", "a lighthouse", "Location", None, None, 0],
+            ["e2", "cape morrow light", "earlier | first lit 1871", "Location", None, None, 0],
+        ]
+
+    # e2 is a survivor of an earlier merge: it holds the members list as well
+    # as the joined text, the shape every merge writes.
+    _STORED = {"e2": {"descriptions": ["earlier", "first lit 1871"]}}
+
+    @staticmethod
+    async def _run(rows, stored=None):
+        """``deduplicate()`` over ``rows``; returns ``(merged, graph, order)``."""
+        graph = MagicMock()
+        pages = [SimpleNamespace(result_set=list(rows)), SimpleNamespace(result_set=[])]
+        order: list[str] = []
+
+        async def query_raw(q, params=None):
+            order.append(q)
+            if "RETURN e.id AS id" in q:
+                return pages.pop(0) if pages else SimpleNamespace(result_set=[])
+            if "properties(k), properties(d)" in q:
+                return _props_read(rows, params, stored)
+            if "DETACH DELETE dup RETURN s.id" in q:
+                return SimpleNamespace(result_set=[[params["survivor_id"]]])
+            return SimpleNamespace(result_set=[])
+
+        graph.query_raw = AsyncMock(side_effect=query_raw)
+        merged = await EntityDeduplicator(graph, MagicMock()).deduplicate()
+        return merged, graph, order
+
+    @staticmethod
+    def _description_writes(graph):
+        return [
+            c.args[1]
+            for c in graph.query_raw.call_args_list
+            if "s.descriptions = $descs" in c.args[0]
+        ]
+
+    async def test_three_rules(self):
+        merged, graph, order = await self._run(self._rows(), self._STORED)
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        # rule 1: list + joined string; survivor = longest description (e2), whose
+        # own earlier members are kept intact, then the loser's
+        assert write["survivor_id"] == "e2"
+        assert write["descs"] == ["earlier", "first lit 1871", "a lighthouse"]
+        assert write["desc"] == "earlier | first lit 1871 | a lighthouse"
+        # rule 3: every remap query ran before the DETACH DELETE
+        i_delete = next(i for i, q in enumerate(order) if "DETACH DELETE dup" in q)
+        i_remaps = [i for i, q in enumerate(order) if "MERGE (s)-[" in q or "MERGE (a)-[" in q]
+        assert i_remaps and max(i_remaps) < i_delete
+
+    async def test_a_lone_description_is_one_member_even_with_the_separator_in_it(self):
+        """Rule 1 by ``description_list``'s rule: a node holding only
+        ``description`` is ONE member, not split on ``" | "``. Nothing tells a
+        pre-``descriptions`` survivor from a fresh node whose single text
+        contains the separator, and splitting the fresh one invents members
+        that were never written — persisted, and counted toward
+        ``force_summary_threshold``."""
+        rows = [
+            ["e1", "Maya Ellison", "CEO | founder of Acme", "Person", None, None, 0],
+            ["e2", "maya ellison", "born 1970", "Person", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows)
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["survivor_id"] == "e1"
+        assert write["descs"] == ["CEO | founder of Acme", "born 1970"]
+        assert write["desc"] == "CEO | founder of Acme | born 1970"
+
+    async def test_the_same_description_on_both_nodes_still_records_the_member(self):
+        """Rule 1 when the text does not change: two nodes with the same
+        description and no list. The joined string is the survivor's own, so
+        a write gated on the text alone skipped the list — and the deleted
+        node's member was never recorded. The list is written whenever the
+        graph's list is not these members."""
+        rows = [
+            ["e1", "Alice", "an engineer", "Person", None, None, 0],
+            ["e2", "alice", "an engineer", "Person", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows)
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["descs"] == ["an engineer"]
+        assert write["desc"] == "an engineer"
+
+    async def test_a_list_left_short_by_an_earlier_writer_is_brought_up_to_date(self):
+        """The survivor's text already holds the duplicate's member, but the
+        stored list does not: joined text unchanged, list out of step. The
+        write is gated on the list as well, so the member lands in it."""
+        rows = [
+            ["e1", "Cape Morrow Light", "a lighthouse | first lit 1871", "Location", None, None, 0],
+            ["e2", "cape morrow light", "first lit 1871", "Location", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows, {"e1": {"descriptions": ["a lighthouse"]}})
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["survivor_id"] == "e1"
+        assert write["descs"] == ["a lighthouse", "first lit 1871"]
+        assert write["desc"] == "a lighthouse | first lit 1871"
+
+    async def test_an_empty_stored_list_does_not_hide_the_survivors_description(self):
+        """``description_list`` prefers the list wherever it is present; an
+        empty one would make the survivor's own text vanish from the merge.
+        The text is still a member — the duplicate's copy is about to go."""
+        rows = [
+            ["e1", "Alice", "an engineer", "Person", None, None, 0],
+            ["e2", "alice", "born 1970", "Person", None, None, 0],
+        ]
+        merged, graph, _ = await self._run(rows, {"e1": {"descriptions": []}})
+        assert merged == 1
+        (write,) = self._description_writes(graph)
+        assert write["descs"] == ["an engineer", "born 1970"]
+
+    async def test_a_failed_metadata_read_aborts_the_merge_before_any_write(self):
+        """The union is built from what the graph holds. If that read fails,
+        the survivor's recorded ``merged_labels`` would be replaced by the
+        new labels alone and the loser deleted unread — so nothing is
+        remapped, nothing is deleted, and the pair is left as it was."""
+        graph = MagicMock()
+        pages = [SimpleNamespace(result_set=self._rows()), SimpleNamespace(result_set=[])]
+        order: list[str] = []
+
+        async def query_raw(q, params=None):
+            order.append(q)
+            if "RETURN e.id AS id" in q:
+                return pages.pop(0) if pages else SimpleNamespace(result_set=[])
+            if "properties(k), properties(d)" in q:
+                raise RuntimeError("read failed")
+            return SimpleNamespace(result_set=[])
+
+        graph.query_raw = AsyncMock(side_effect=query_raw)
+        merged = await EntityDeduplicator(graph, MagicMock()).deduplicate()
+        assert merged == 0
+        assert not any("MERGE (s)-[" in q or "MERGE (a)-[" in q for q in order)
+        assert not any("DETACH DELETE" in q for q in order)
+
+
+class TestJudgeMergeSite:
+    """The judge decides identity only; the merge is ``EntityDeduplicator``'s
+    ``_absorb`` — one statement carrying the descriptions list, aliases and
+    the loser's labels, after every edge is remapped."""
+
+    class _Graph:
+        def __init__(self, rows):
+            self.rows, self.calls = rows, []
+            # id, name, description, label, aliases, is_stub, degree
+            self.page = [(r[0], r[1], r[2], r[3][0], r[4], None, 0) for r in rows]
+
+        async def query_raw(self, cypher, params=None):
+            self.calls.append((cypher, params or {}))
+            if "SKIP" in cypher:
+                rows = self.page if params.get("offset", 0) == 0 else []
+                return SimpleNamespace(result_set=list(rows))
+            if "RETURN e.id, e.name, e.description" in cypher:
+                return SimpleNamespace(result_set=list(self.rows))
+            if "properties(k), properties(d)" in cypher:
+                return _props_read(self.page, params)
+            if "DETACH DELETE dup RETURN s.id" in cypher:
+                return SimpleNamespace(result_set=[[params["survivor_id"]]])
+            if "SAME_AS" in cypher:
+                return SimpleNamespace(result_set=[[params["a"]]])
+            return SimpleNamespace(result_set=[])
+
+    class _Emb:
+        async def aembed_documents(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    class _LLM:
+        async def abatch_invoke(self, prompts, max_concurrency=8):
+            return [
+                SimpleNamespace(
+                    ok=True, index=i, response=SimpleNamespace(content="SET 1 GROUP: 1, 2")
+                )
+                for i in range(len(prompts))
+            ]
+
+    def test_three_rules(self):
+        rows = [
+            ("a", "Airbus", "planemaker", ["Organization"], [], [1.0, 0.0], ["planemaker"]),
+            ("b", "Airbus SE", "Toulouse group", ["Company"], [], [1.0, 0.0], None),
+        ]
+        g = self._Graph(rows)
+        dd = EntityDeduplicator(g, self._Emb())
+        merged = asyncio.run(dd.deduplicate(judge_llm=self._LLM(), judge_vote=False))
+        assert merged == 1 and dd.last_judge_stats["merged"] == 1
+        (upd,) = [c for c in g.calls if "DETACH DELETE dup RETURN s.id" in c[0]]
+        # rule 1: list (survivor = longest description "Toulouse group" first) + join
+        assert upd[1]["survivor_id"] == "b" and upd[1]["dup_id"] == "a"
+        assert upd[1]["descs"] == ["Toulouse group", "planemaker"]
+        assert upd[1]["desc"] == " | ".join(upd[1]["descs"])
+        assert upd[1]["aliases"] == ["Airbus"]
+        # rule 2: the loser's label lands on the survivor in the same statement
+        assert "SET s:`Organization`" in upd[0] and "SET s:`Company`" not in upd[0]
+        # rule 3: edges moved before the delete
+        i_delete = next(i for i, c in enumerate(g.calls) if "DETACH DELETE" in c[0])
+        i_remaps = [
+            i for i, c in enumerate(g.calls) if "MERGE (s)-[" in c[0] or "MERGE (a)-[" in c[0]
+        ]
+        assert i_remaps and max(i_remaps) < i_delete
+        assert all(c[1].get("dup_id") == "a" for c in g.calls if "MERGE (s)-[" in c[0])
+
+    def test_the_judge_needs_a_merge_hook(self):
+        """``merge_group`` is a required parameter with no default: the judge
+        cannot be built without a merge site, and builds with one. The bad
+        call goes through ``functools.partial`` so the failure path really
+        runs without a literal too-few-arguments call for static analysis to
+        flag."""
+        import functools
+        import inspect
+
+        param = inspect.signature(LLMJudgeDeduplicator).parameters["merge_group"]
+        assert param.default is inspect.Parameter.empty
+        build = functools.partial(LLMJudgeDeduplicator, self._Graph([]), self._Emb(), self._LLM())
+        with pytest.raises(TypeError):
+            build()
+        assert isinstance(build(MagicMock()), LLMJudgeDeduplicator)
 
 
 class TestRemapChainsAreFlattened:

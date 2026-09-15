@@ -166,17 +166,25 @@ For a detailed explanation of the extraction process, see [Extraction](/extracti
 
 **What it does:** Merges entities that refer to the same real-world thing. When the LLM extracts "Alice" from chunk 1 and "Alice" from chunk 5, this step recognizes they're the same entity and merges them.
 
-**Default: ExactMatchResolution**
-- Groups entities by ID
-- Keeps the first occurrence as the survivor
-- Merges properties from duplicates into the survivor
-- Remaps all relationship endpoints to the survivor
-- Deduplicates relationships by `(start_id, type, end_id)`
+**Default at ingest: ExactMatchResolution**
+- Groups by `(normalized name, label)` only — same name but different labels stay separate (e.g., Person "Paris" vs Location "Paris"); the judge decides those at `finalize()`
+- Survivor keeps every member's description joined with `" | "` (no LLM summary); all relationship endpoints are re-pointed to the survivor before the write, so no edge is lost
+- No embeddings, no LLM calls; zero added cost
+- Ingest is per document, so a resolver here can only compare one file's entities with each other — the cross-document duplicates that matter are handled once, at `finalize()`
 
 **Alternative: LLMVerifiedResolution**
 - Runs the same exact-match pass first, then compares the surviving names by embedding similarity within each label
-- Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.80) go to the LLM for a YES/NO verdict
+- Pairs at or above `hard_threshold` (0.95) merge outright; pairs down to `soft_threshold` (0.65) go to the LLM for a YES/NO verdict
 - Useful when the same entity is named inconsistently across documents (e.g., "Acme Corp" vs "Acme Corporation")
+
+**At `finalize()`: the LLM-judged cross-document phase**
+- Runs after the exact-name dedup and the resolver pass, over every entity of every document
+- Name and description embeddings plus "A's name appears in B's description" nominate candidate pairs (no LLM); candidates form dense sets of ≤ 8
+- The judge LLM partitions each set into same-referent groups; with `judge_vote=True` (default) a second pass over shuffled sets must agree, with `judge_vote=False` the single pass decides (a pair that reached across two sets is still linked rather than merged, with `agreement=1`)
+- Both passes agree → **merge**, by the same rules as every finalize merge: a table's row survives a mention, every member's description is kept in `descriptions` (joined with `" | "` in `description`), other names kept in `aliases`, edges moved first, then the loser deleted; the survivor also gains every member's label
+- Only one pass agrees → **link**: a `SAME_AS` edge (`source='llm_judge'`), both nodes stay
+- Pairs a resolver remembered as `DISTINCT_FROM`, two keyed rows of a table, and a mention two such rows could own are never asked, grouped or linked
+- `finalize(judge=False)` skips it (`finalize(resolve=False, judge=False)` runs no model at all); `deduplicate_entities()` on its own runs it only with `judge=True`; `judge_llm=` picks the model (gpt-4.1-class recommended); pass `resolver=LLMVerifiedResolution(...)` to `ingest()` to also resolve per document
 
 For details on resolution strategies, see [Strategies](/strategies).
 
@@ -278,7 +286,7 @@ stats = await rag.finalize()
 | Strategy | When to use |
 |----------|-------------|
 | `ExactMatchResolution` (default) | Fast, deterministic. Good when extraction is consistent |
-| `LLMVerifiedResolution` | Multi-document ingestion where names vary. Costs embedding calls, plus LLM calls for ambiguous pairs |
+| `LLMVerifiedResolution` | Multi-document ingestion where names vary. Costs embedding calls, plus LLM calls for ambiguous pairs. Cross-document dedup is `finalize()`'s resolver and judge phases |
 
 ---
 
@@ -303,5 +311,6 @@ stats = await rag.finalize()
 | [`extraction_strategies/graph_extraction.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/extraction_strategies/graph_extraction.py) | 2-step extraction (NER + LLM verify/rels) |
 | [`resolution_strategies/exact_match.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/exact_match.py) | ExactMatchResolution |
 | [`resolution_strategies/llm_verified_resolution.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/resolution_strategies/llm_verified_resolution.py) | LLMVerifiedResolution |
+| [`storage/judge_dedup.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/judge_dedup.py) | LLMJudgeDeduplicator — cross-document dedup at `finalize()` |
 | [`storage/graph_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/graph_store.py) | Batched node/relationship writes |
 | [`storage/vector_store.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/storage/vector_store.py) | Chunk embedding + indexing |

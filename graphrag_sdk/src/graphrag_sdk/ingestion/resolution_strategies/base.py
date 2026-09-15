@@ -505,7 +505,7 @@ async def exact_match_merge(
             cl_survivor.properties["source_chunk_ids"] = merged_sources
         if absorbed_labels:
             existing = cl_survivor.properties.get("merged_labels")
-            parts = [p.strip() for p in str(existing).split("|")] if existing else []
+            parts = [p.strip() for p in str(existing).split(" | ")] if existing else []
             for lab in absorbed_labels:
                 if lab not in parts:
                     parts.append(lab)

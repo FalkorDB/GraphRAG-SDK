@@ -296,20 +296,114 @@ class TestGraphRAGDeduplicateEntities:
         # survivor's id to confirm the duplicate was actually deleted.
         absorbed_result = MagicMock()
         absorbed_result.result_set = [["e1"]]
+        read_result = MagicMock()
+        read_result.result_set = [[{}, {}, [], []]]  # both nodes exist, nothing to carry
         g._graph_store.query_raw = AsyncMock(
             side_effect=[
                 entity_result,
                 empty_result,  # pagination end
+                read_result,  # property read runs first: abort here means no writes
                 empty_result,  # remap: outgoing RELATES
                 empty_result,  # remap: incoming RELATES
                 empty_result,  # remap: MENTIONED_IN
-                empty_result,  # property read: nothing to carry
                 absorbed_result,  # absorb + DETACH DELETE
             ]
         )
 
-        count = await g.deduplicate_entities()
+        # Exact-name phase only; the judge phase has its own tests in
+        # test_judge_dedup.py and is wired in TestDefaultResolver below.
+        count = await g.deduplicate_entities(judge=False)
         assert count == 1  # one duplicate merged
+
+    async def test_deduplicate_entities_judge_is_opt_in(
+        self, mock_conn, embedder, llm, monkeypatch, caplog
+    ):
+        """The standalone ``deduplicate_entities()`` makes no LLM call unless
+        asked — a caller running it after every ingest batch must not start
+        paying for two judge passes with no source change. ``judge=True`` uses
+        the facade's LLM unless ``judge_llm`` is given; ``finalize()`` is where
+        the judge is on by default."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        seen: dict = {}
+
+        async def fake_dedup(**kw):
+            seen.update(kw)
+            return 0
+
+        monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
+        await g.deduplicate_entities()
+        assert seen["judge_llm"] is None and seen["resolver"] is None
+
+        seen.clear()
+        await g.deduplicate_entities(judge=True)
+        assert seen["judge_llm"] is g.llm and seen["judge_vote"] is True
+
+        other = MagicMock()
+        seen.clear()
+        await g.deduplicate_entities(judge=True, judge_llm=other, judge_vote=False)
+        assert seen["judge_llm"] is other and seen["judge_vote"] is False
+
+        # judge_llm alone does not switch the phase on — but a judge model is
+        # an unambiguous signal the caller wanted the judge, so it says so
+        seen.clear()
+        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
+            await g.deduplicate_entities(judge_llm=other)
+        assert seen["judge_llm"] is None
+        assert "judge_llm was given but judge=False" in caplog.text
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="graphrag_sdk.api.main"):
+            await g.deduplicate_entities(judge=True, judge_llm=other)
+        assert "judge_llm was given" not in caplog.text
+
+    async def test_finalize_runs_the_judge_by_default(self, mock_conn, embedder, llm, monkeypatch):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        seen: dict = {}
+
+        async def fake_dedup(**kw):
+            seen.update(kw)
+            return 0
+
+        monkeypatch.setattr(g._deduplicator, "deduplicate", fake_dedup)
+        empty = MagicMock()
+        empty.result_set = [[0]]
+        g._graph_store.query_raw = AsyncMock(return_value=empty)
+        g._vector_store.backfill_entity_embeddings = AsyncMock(return_value=0)
+        g._vector_store.embed_relationships = AsyncMock(return_value=0)
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+        await g.finalize()
+        assert seen["judge_llm"] is g.llm and seen["resolver"] is not None
+        seen.clear()
+        await g.finalize(resolve=False, judge=False)
+        assert seen["judge_llm"] is None and seen["resolver"] is None
+
+    async def test_finalize_embeds_after_dedup_and_counts_the_judge_vectors(
+        self, mock_conn, embedder, llm
+    ):
+        """The backfill runs after the merges, so a duplicate about to be
+        deleted is not embedded first, and ``entities_embedded`` is what this
+        call wrote: the backfill's vectors plus the judge's."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        order: list[str] = []
+
+        async def dedup(**kw):
+            order.append("dedup")
+            g._deduplicator.last_judge_stats = {"embedded": 5, "merged": 1}
+            return 1
+
+        async def backfill():
+            order.append("backfill")
+            return 2
+
+        g.deduplicate_entities = dedup
+        empty = MagicMock()
+        empty.result_set = [[0]]
+        g._graph_store.query_raw = AsyncMock(return_value=empty)
+        g._vector_store.backfill_entity_embeddings = backfill
+        g._vector_store.embed_relationships = AsyncMock(return_value=0)
+        g._vector_store.ensure_indices = AsyncMock(return_value={})
+        result = await g.finalize()
+        assert order == ["dedup", "backfill"]
+        assert result.entities_embedded == 7
 
     async def test_deduplicate_entities_no_duplicates(self, mock_conn, embedder, llm):
         """deduplicate_entities with < 2 entities should return 0."""
@@ -2450,10 +2544,12 @@ class TestFinalizeReminder:
 
 class TestDefaultResolver:
     """``ingest()`` resolves with ``ExactMatchResolution`` unless told otherwise;
-    cross-document dedup belongs to ``finalize()``, where it sees every document.
+    cross-document dedup belongs to ``finalize()``'s LLM-judged phase, where it
+    sees every document.
 
-    These pin that ingest stays zero-LLM-cost for resolution and that an
-    explicit ``resolver=`` still wins.
+    These pin that ingest stays zero-LLM-cost for resolution, that an explicit
+    ``resolver=`` still wins, and that ``finalize()`` runs the judge with the
+    facade's LLM by default.
     """
 
     @staticmethod
@@ -2541,6 +2637,40 @@ class TestDefaultResolver:
         }
         assert res.relationships[0].start_node_id == survivor.id  # edge re-pointed, not lost
         assert res.relationships[0].end_node_id == "x"
+
+    async def test_finalize_runs_the_judge_with_the_facade_llm(self, graphrag, monkeypatch):
+        seen: dict = {}
+        order: list[str] = []
+
+        async def fake_dedup(**kw):
+            seen.update(kw)
+            order.append("dedup")
+            return 0
+
+        async def fake_backfill(*a, **kw):
+            order.append("backfill")
+            return 0
+
+        monkeypatch.setattr(graphrag._deduplicator, "deduplicate", fake_dedup)
+        graphrag._deduplicator.last_judge_stats = {"merged": 2, "linked": 3, "llm_calls": 4}
+        graphrag._graph_store.query_raw = AsyncMock(return_value=MagicMock(result_set=[[0]]))
+        graphrag._vector_store.backfill_entity_embeddings = AsyncMock(side_effect=fake_backfill)
+        graphrag._vector_store.embed_relationships = AsyncMock(return_value=0)
+        graphrag._vector_store.ensure_indices = AsyncMock(return_value={})
+
+        result = await graphrag.finalize()
+        assert seen["judge_llm"] is graphrag.llm and seen["judge_vote"] is True
+        assert result.entities_linked == 3 and result.judge_llm_calls == 4
+        assert result.judge_stats == {"merged": 2, "linked": 3, "llm_calls": 4}
+        # Dedup (with the judge) runs first, so a duplicate about to be removed
+        # is not embedded; the judge writes the name vectors it needs itself,
+        # and the backfill then covers whatever is still missing one.
+        assert order == ["dedup", "backfill"]
+
+        seen.clear()
+        result = await graphrag.finalize(judge=False)
+        assert seen["judge_llm"] is None
+        assert result.judge_stats == {} and result.entities_linked == 0
 
     async def test_explicit_resolver_is_honoured(self, graphrag, monkeypatch):
         from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
