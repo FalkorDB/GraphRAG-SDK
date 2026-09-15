@@ -21,6 +21,32 @@ def _result(rows):
     return r
 
 
+def _props_read(rows, params):
+    """Answer ``_read_properties`` from the fetched rows, as the graph would:
+    ``[props(survivor), props(dup), labels(survivor), labels(dup)]``."""
+    by_id = {r[0]: r for r in rows}
+
+    def props(r):
+        out = {"name": r[1], "description": r[2]}
+        if len(r) > 4 and r[4]:
+            out["aliases"] = list(r[4])
+        return out
+
+    k, d = by_id.get(params["survivor_id"]), by_id.get(params["dup_id"])
+    if k is None or d is None:
+        return _result([])
+    return _result(
+        [
+            [
+                props(k),
+                props(d),
+                [k[3]] if len(k) > 3 and k[3] else [],
+                [d[3]] if len(d) > 3 and d[3] else [],
+            ]
+        ]
+    )
+
+
 def _incoming_query() -> str:
     # The RELATES MERGE is keyed on rel_type, so match the head of the pattern.
     matches = [q for q in _REMAP_QUERIES if "MERGE (a)-[nr:RELATES" in q and "]->(s)" in q]
@@ -330,6 +356,8 @@ class TestMergePreservesDescriptions:
         async def query_raw(q, params=None):
             if "MATCH (e:__Entity__)" in q and "RETURN" in q and "SKIP" in q:
                 return _result(rows if params["offset"] == 0 else [])
+            if "properties(k), properties(d)" in q:
+                return _props_read(rows, params)
             if "DETACH DELETE" in q:
                 # The absorb query RETURNs the survivor's id iff it matched.
                 return _result([[params["survivor_id"]]] if survivor_exists else [])
@@ -556,6 +584,8 @@ class TestFuzzyMerge:
         async def query_raw(q, params=None):
             if "SKIP" in q:
                 return _result(rows if params["offset"] == 0 else [])
+            if "properties(k), properties(d)" in q:
+                return _props_read(rows, params)
             if "DETACH DELETE" in q:
                 return _result([[params["survivor_id"]]])
             return _result([])

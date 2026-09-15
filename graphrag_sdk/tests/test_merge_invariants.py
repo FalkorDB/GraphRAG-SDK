@@ -20,8 +20,6 @@ import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import GraphData, GraphNode, GraphRelationship, LLMResponse
 from graphrag_sdk.ingestion.resolution_strategies.base import (
@@ -253,6 +251,28 @@ class TestLLMVerifiedMergeSites:
         assert set(res.nodes[0].properties["descriptions"]) == {"D1", "D2", "D3"}
 
 
+def _props_read(rows, params):
+    """Answer ``_read_properties`` from fetched rows ``(id, name, desc, label,
+    aliases, ...)`` the way the graph would: ``[props(k), props(d), labels(k),
+    labels(d)]``; no row when either node is missing."""
+    by_id = {r[0]: r for r in rows}
+
+    def props(r):
+        out = {"name": r[1], "description": r[2]}
+        if len(r) > 4 and r[4]:
+            out["aliases"] = list(r[4])
+        return out
+
+    def labels(r):
+        lab = r[3] if len(r) > 3 else None
+        return list(lab) if isinstance(lab, (list, tuple)) else ([lab] if lab else [])
+
+    k, d = by_id.get(params["survivor_id"]), by_id.get(params["dup_id"])
+    if k is None or d is None:
+        return SimpleNamespace(result_set=[])
+    return SimpleNamespace(result_set=[[props(k), props(d), labels(k), labels(d)]])
+
+
 class TestFinalizeExactPhase:
     """Rule 1 and 3 through ``EntityDeduplicator._absorb``, the write every
     finalize phase (exact, resolver, judge) merges through."""
@@ -273,6 +293,8 @@ class TestFinalizeExactPhase:
             order.append(q)
             if "RETURN e.id AS id" in q:
                 return pages.pop(0) if pages else SimpleNamespace(result_set=[])
+            if "properties(k), properties(d)" in q:
+                return _props_read(self._rows(), params)
             if "DETACH DELETE dup RETURN s.id" in q:
                 return SimpleNamespace(result_set=[[params["survivor_id"]]])
             return SimpleNamespace(result_set=[])
@@ -293,6 +315,29 @@ class TestFinalizeExactPhase:
         i_remaps = [i for i, q in enumerate(order) if "MERGE (s)-[" in q or "MERGE (a)-[" in q]
         assert i_remaps and max(i_remaps) < i_delete
 
+    async def test_a_failed_metadata_read_aborts_the_merge_before_any_write(self):
+        """The union is built from what the graph holds. If that read fails,
+        the survivor's recorded ``merged_labels`` would be replaced by the
+        new labels alone and the loser deleted unread — so nothing is
+        remapped, nothing is deleted, and the pair is left as it was."""
+        graph = MagicMock()
+        pages = [SimpleNamespace(result_set=self._rows()), SimpleNamespace(result_set=[])]
+        order: list[str] = []
+
+        async def query_raw(q, params=None):
+            order.append(q)
+            if "RETURN e.id AS id" in q:
+                return pages.pop(0) if pages else SimpleNamespace(result_set=[])
+            if "properties(k), properties(d)" in q:
+                raise RuntimeError("read failed")
+            return SimpleNamespace(result_set=[])
+
+        graph.query_raw = AsyncMock(side_effect=query_raw)
+        merged = await EntityDeduplicator(graph, MagicMock()).deduplicate()
+        assert merged == 0
+        assert not any("MERGE (s)-[" in q or "MERGE (a)-[" in q for q in order)
+        assert not any("DETACH DELETE" in q for q in order)
+
 
 class TestJudgeMergeSite:
     """The judge decides identity only; the merge is ``EntityDeduplicator``'s
@@ -312,6 +357,8 @@ class TestJudgeMergeSite:
                 return SimpleNamespace(result_set=list(rows))
             if "RETURN e.id, e.name, e.description" in cypher:
                 return SimpleNamespace(result_set=list(self.rows))
+            if "properties(k), properties(d)" in cypher:
+                return _props_read(self.page, params)
             if "DETACH DELETE dup RETURN s.id" in cypher:
                 return SimpleNamespace(result_set=[[params["survivor_id"]]])
             if "SAME_AS" in cypher:

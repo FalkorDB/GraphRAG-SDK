@@ -24,6 +24,7 @@ from graphrag_sdk.storage.judge_dedup import (
     pairs_from_response,
     parse_groups,
     render_set,
+    unanswered_sets,
 )
 
 # ── pure helpers ────────────────────────────────────────────────────────────
@@ -144,6 +145,34 @@ def test_overlapping_groups_are_not_a_partition_and_merge_nothing():
     assert pairs_from_response(text, [[10, 11, 12], [20, 21]]) == {(20, 21)}
 
 
+def test_incomplete_partition_is_not_a_verdict():
+    """A set answered without one of its members was not judged: silence about
+    an entity is not a statement that it differs. The set yields no groups and
+    is reported unanswered; a complete set in the same answer is kept."""
+    text = "SET 1 GROUP: 1, 2\nSET 2 GROUP: 1\nSET 2 GROUP: 2"
+    assert parse_groups(text, [3, 2]) == {1: [[0], [1]]}
+    assert unanswered_sets(text, [[10, 11, 12], [20, 21]]) == {0}
+    # an omitted set is unanswered too; explicit singletons are a full answer
+    assert unanswered_sets(
+        "SET 1 GROUP: 1\nSET 1 GROUP: 2\nSET 1 GROUP: 3", [[1, 2, 3], [4, 5]]
+    ) == {1}
+    assert unanswered_sets("SET 1 GROUP: 1\nSET 1 GROUP: 2\nSET 1 GROUP: 3", [[1, 2, 3]]) == set()
+
+
+def test_a_set_omitted_by_one_pass_is_unjudged_not_disagreed():
+    """Pass 1 groups IBM's two names; pass 2 answers the set with only one
+    member. That is not a split vote: nothing is merged and no SAME_AS edge
+    is written. Both passes omitting the same member is not agreement either."""
+    graph = ScriptedGraph(ROWS)
+    stats, merge = _run(graph, ScriptedLLM([[IBM], "SET 1 GROUP: 1"]))
+    assert stats["merged"] == 0 and merge.groups == []
+    assert stats["linked"] == 0 and stats["disagreed_pairs"] == 0
+    assert not any("SAME_AS" in c[0] for c in graph.calls)
+    graph = ScriptedGraph(ROWS)
+    stats, merge = _run(graph, ScriptedLLM(["SET 1 GROUP: 1, 2", "SET 1 GROUP: 1, 2"]))
+    assert stats["merged"] == 0 and merge.groups == []
+
+
 def test_name_in_desc_pairs_caps_common_words():
     """A one-word name found in more descriptions than the cap is a common
     word, not an identifying mention; it nominates nothing."""
@@ -193,6 +222,28 @@ def test_pack_prompts_keeps_an_oversized_set_within_budget():
 # ── deduplicator behaviour against a scripted graph ─────────────────────────
 
 
+def _props_read(rows, params):
+    """Answer ``_read_properties`` from fetched rows ``(id, name, desc, label,
+    aliases, ...)`` the way the graph would: ``[props(k), props(d), labels(k),
+    labels(d)]``; no row when either node is missing."""
+    by_id = {r[0]: r for r in rows}
+
+    def props(r):
+        out = {"name": r[1], "description": r[2]}
+        if len(r) > 4 and r[4]:
+            out["aliases"] = list(r[4])
+        return out
+
+    def labels(r):
+        lab = r[3] if len(r) > 3 else None
+        return list(lab) if isinstance(lab, (list, tuple)) else ([lab] if lab else [])
+
+    k, d = by_id.get(params["survivor_id"]), by_id.get(params["dup_id"])
+    if k is None or d is None:
+        return SimpleNamespace(result_set=[])
+    return SimpleNamespace(result_set=[[props(k), props(d), labels(k), labels(d)]])
+
+
 class ScriptedGraph:
     """Records every Cypher call; answers the entity fetch with fixed rows."""
 
@@ -220,7 +271,8 @@ class FakeEmbedder:
 class ScriptedLLM:
     """Oracle judge: answers by entity NAME so shuffled second passes stay
     consistent. ``per_pass`` lists, per pass, the name groups that are the
-    same entity; ``None`` for a pass makes every call of that pass fail."""
+    same entity; ``None`` for a pass makes every call of that pass fail; a
+    ``str`` for a pass is returned verbatim as every call's answer."""
 
     def __init__(self, per_pass):
         self.per_pass = list(per_pass)
@@ -235,6 +287,9 @@ class ScriptedLLM:
         for i, p in enumerate(prompts):
             if same is None:
                 out.append(LLMBatchItem(index=i, error=RuntimeError("boom")))
+                continue
+            if isinstance(same, str):
+                out.append(LLMBatchItem(index=i, response=SimpleNamespace(content=same)))
                 continue
             lines = []
             for si, block in enumerate(re.split(r"--- Set \d+ ---\n", p)[1:], start=1):
@@ -534,14 +589,13 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
     class G:
         def __init__(self):
             self.calls = []
+            # id, name, description, label, aliases, is_stub, degree
+            self.rows = [
+                ("a", "Globex Limited", "Maker of widgets.", "Organization", None, None, 0),
+                ("b", "Globex Ltd", "Founded 1990.", "Organization", None, None, 0),
+            ]
             self.pages = [
-                SimpleNamespace(
-                    result_set=[
-                        # id, name, description, label, aliases, is_stub, degree
-                        ("a", "Globex Limited", "Maker of widgets.", "Organization", None, None, 0),
-                        ("b", "Globex Ltd", "Founded 1990.", "Organization", None, None, 0),
-                    ]
-                ),
+                SimpleNamespace(result_set=list(self.rows)),
                 SimpleNamespace(result_set=[]),
             ]
 
@@ -549,6 +603,8 @@ def test_exact_phase_joins_descriptions_and_records_aliases():
             self.calls.append((cypher, params or {}))
             if "RETURN e.id" in cypher and "SKIP" in cypher:
                 return self.pages.pop(0) if self.pages else SimpleNamespace(result_set=[])
+            if "properties(k), properties(d)" in cypher:
+                return _props_read(self.rows, params)
             if "DETACH DELETE dup RETURN s.id" in cypher:
                 return SimpleNamespace(result_set=[[params["survivor_id"]]])
             return SimpleNamespace(result_set=[])
@@ -585,6 +641,8 @@ class _JudgeGraph:
             return SimpleNamespace(result_set=list(self.rows))
         if "DISTINCT_FROM" in cypher and "RETURN a.id, b.id" in cypher:
             return SimpleNamespace(result_set=list(self.distinct))
+        if "properties(k), properties(d)" in cypher:
+            return _props_read(self.page, params)
         if "DETACH DELETE dup RETURN s.id" in cypher:
             return SimpleNamespace(result_set=[[params["survivor_id"]]])
         if "SAME_AS" in cypher:

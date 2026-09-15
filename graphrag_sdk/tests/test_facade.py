@@ -296,14 +296,16 @@ class TestGraphRAGDeduplicateEntities:
         # survivor's id to confirm the duplicate was actually deleted.
         absorbed_result = MagicMock()
         absorbed_result.result_set = [["e1"]]
+        read_result = MagicMock()
+        read_result.result_set = [[{}, {}, [], []]]  # both nodes exist, nothing to carry
         g._graph_store.query_raw = AsyncMock(
             side_effect=[
                 entity_result,
                 empty_result,  # pagination end
+                read_result,  # property read runs first: abort here means no writes
                 empty_result,  # remap: outgoing RELATES
                 empty_result,  # remap: incoming RELATES
                 empty_result,  # remap: MENTIONED_IN
-                empty_result,  # property read: nothing to carry
                 absorbed_result,  # absorb + DETACH DELETE
             ]
         )

@@ -346,9 +346,12 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
     partition on evidence about other entities.
 
     Out-of-range numbers are dropped; an unmentioned set yields no groups (no
-    merge). A set whose groups overlap — ``1, 2`` and ``1, 3`` — is not a
-    partition, and taking it at face value would merge 2 and 3 through 1 though
-    the model never put them together; such a set yields no groups either.
+    merge). A set whose groups do not cover every member exactly once is not
+    a partition and yields no groups; :func:`unanswered_sets` reports such
+    sets so the caller can treat them as unjudged. A set whose groups overlap
+    — ``1, 2`` and ``1, 3`` — is not a partition, and taking it at face value
+    would merge 2 and 3 through 1 though the model never put them together;
+    such a set yields no groups either.
     """
     out: dict[int, list[list[int]]] = {}
     for line in text.splitlines():
@@ -373,12 +376,33 @@ def parse_groups(text: str, sizes: list[int]) -> dict[int, list[list[int]]]:
         if len(listed) != len(set(listed)):
             logger.warning("judge dedup: set %d answered with overlapping groups; ignored", si + 1)
             del out[si]
+        elif len(listed) != sizes[si]:
+            # A partition names every member exactly once. A set answered
+            # without some of its members was not judged: silence about an
+            # entity is not a verdict that it differs from the others, and
+            # treating it as one turns an omission into a SAME_AS link (or,
+            # if both passes omit the same member, into agreement).
+            logger.warning(
+                "judge dedup: set %d answered with %d of %d members; ignored",
+                si + 1,
+                len(listed),
+                sizes[si],
+            )
+            del out[si]
     return out
 
 
 def pairs_from_response(text: str, order: list[list[int]]) -> set[tuple[int, int]]:
     """Entity-index pairs the judge put in one group, for one prompt."""
     return set(pairs_by_set_from_response(text, order))
+
+
+def unanswered_sets(text: str, order: list[list[int]]) -> set[int]:
+    """Positions in ``order`` whose set got no usable partition from ``text``
+    — omitted, incomplete, or overlapping. The caller treats these as
+    unjudged rather than as "nothing is the same"."""
+    answered = set(parse_groups(text, [len(m) for m in order]))
+    return {si for si in range(len(order)) if si not in answered}
 
 
 def pairs_by_set_from_response(text: str, order: list[list[int]]) -> dict[tuple[int, int], int]:
@@ -560,9 +584,10 @@ class LLMJudgeDeduplicator:
                 failed += 1  # a failed call merges nothing — the safe default
                 failed_sets.update(ids)
                 continue
-            for pair, si in pairs_by_set_from_response(
-                item.response.content or "", orders[item.index]
-            ).items():
+            content = item.response.content or ""
+            for si in unanswered_sets(content, orders[item.index]):
+                failed_sets.add(ids[si])
+            for pair, si in pairs_by_set_from_response(content, orders[item.index]).items():
                 same[pair] = ids[si]
         return same, len(prompts), failed, failed_sets
 

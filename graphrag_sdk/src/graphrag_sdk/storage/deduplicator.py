@@ -792,23 +792,33 @@ class EntityDeduplicator:
         in-memory ``survivor`` is updated so a group's later duplicates build
         on the merged description and aliases.
         """
+        # Read both nodes before touching anything. The union below is built
+        # from what the graph holds; if that read fails, the survivor's
+        # recorded ``merged_labels`` would be replaced by the new labels alone
+        # and the duplicate's own labels, aliases and properties would be
+        # deleted unread. Better to leave both nodes as they are.
+        keep_props, dup_props, keep_labels, dup_labels = await self._read_properties(
+            survivor["id"], dup["id"]
+        )
+        if keep_props is None or dup_props is None:
+            logger.warning(
+                f"Skipping merge of {dup['id']} into {survivor['id']} — could not read both nodes"
+            )
+            return False
+
         if not await self._remap_entity_edges(dup["id"], survivor["id"]):
             logger.warning(f"Skipping deletion of {dup['id']} — edge remap incomplete")
             return False
 
-        keep_props, dup_props, keep_labels, dup_labels = await self._read_properties(
-            survivor["id"], dup["id"]
-        )
-        if keep_props is not None and dup_props is not None:
-            # The graph is the truth about what each node holds; the fetched row
-            # carries only the columns the phases rank on.
-            survivor["description"] = keep_props.get("description") or ""
-            survivor["aliases"] = _string_list(keep_props.get("aliases"))
-            dup = {
-                **dup,
-                "description": dup_props.get("description") or "",
-                "aliases": _string_list(dup_props.get("aliases")),
-            }
+        # The graph is the truth about what each node holds; the fetched row
+        # carries only the columns the phases rank on.
+        survivor["description"] = keep_props.get("description") or ""
+        survivor["aliases"] = _string_list(keep_props.get("aliases"))
+        dup = {
+            **dup,
+            "description": dup_props.get("description") or "",
+            "aliases": _string_list(dup_props.get("aliases")),
+        }
 
         # Every label the duplicate holds beyond its own primary — the ones
         # earlier merges gave it, on the graph or on record — plus what the
@@ -818,11 +828,11 @@ class EntityDeduplicator:
         dup_primary = str(dup.get("label") or "").strip()
         wanted: list[str] = [
             *(lab for lab in dup_labels if lab not in keep_labels and lab != dup_primary),
-            *split_merged_labels((dup_props or {}).get(MERGED_LABELS_KEY)),
+            *split_merged_labels(dup_props.get(MERGED_LABELS_KEY)),
             *add_labels,
         ]
         primary = str(survivor.get("label") or "").strip()
-        recorded = split_merged_labels((keep_props or {}).get(MERGED_LABELS_KEY))
+        recorded = split_merged_labels(keep_props.get(MERGED_LABELS_KEY))
         # ``survivor.get("labels")`` is the full list where the caller fetched
         # it (the judge's rows); the graph read is the truth where it did not.
         held = set(keep_labels) | set(recorded) | {primary} | set(survivor.get("labels") or [])
@@ -864,18 +874,16 @@ class EntityDeduplicator:
             sets.append("s.aliases = $aliases")
             params["aliases"] = aliases
 
-        carry: dict[str, Any] = {}
-        if keep_props is not None and dup_props is not None:
-            carry = properties_to_carry(keep_props, dup_props, never=self._NEVER_CARRY)
-            # Handled above, or by the absorb query itself.
-            for handled in (
-                "description",
-                "descriptions",
-                "aliases",
-                "source_chunk_ids",
-                MERGED_LABELS_KEY,
-            ):
-                carry.pop(handled, None)
+        carry = properties_to_carry(keep_props, dup_props, never=self._NEVER_CARRY)
+        # Handled above, or by the absorb query itself.
+        for handled in (
+            "description",
+            "descriptions",
+            "aliases",
+            "source_chunk_ids",
+            MERGED_LABELS_KEY,
+        ):
+            carry.pop(handled, None)
         if carry:
             sets.append("s += $carry")
             params["carry"] = carry
@@ -917,10 +925,12 @@ class EntityDeduplicator:
         self, survivor_id: str, dup_id: str
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str], list[str]]:
         """Both nodes' properties and entity labels; ``(None, None, [], [])``
-        if they could not be read.
+        if they could not be read, or if either node is not there.
 
-        A failed read is not a failed merge: the edges are already remapped and
-        the absorb query still joins what the fetched rows know.
+        :meth:`_absorb` calls this before it touches anything and aborts the
+        merge on ``None``: the union it writes is built from these values, so
+        proceeding blind would replace the survivor's record with a partial
+        one and delete the duplicate unread.
         """
         try:
             res = await self._graph.query_raw(
