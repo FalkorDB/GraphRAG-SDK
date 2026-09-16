@@ -1322,3 +1322,105 @@ def test_a_label_holding_the_separator_is_refused_and_a_recorded_one_reads_back_
     )
     (ent,) = asyncio.run(EntityDeduplicator(g, FakeEmbedder({}))._fetch_all_entities(500))
     assert ent["label"] == "A"  # not filtered out as if A and B had been absorbed
+
+
+# ── per-pair decisions ──────────────────────────────────────────────────────
+
+
+def _run_with_judge(graph, llm, vote=True, **kw):
+    """As ``_run``, but hands back the judge so its per-pair record can be read."""
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(graph, FakeEmbedder(DESC_EMB), llm, merge, vote=vote)
+    return asyncio.run(dd.deduplicate(**kw)), dd, merge
+
+
+def _by_pair(dd):
+    return {frozenset((d["a"], d["b"])): d for d in dd.last_pair_decisions}
+
+
+def test_pair_decisions_are_recorded_for_the_pair_that_merged():
+    graph = ScriptedGraph(ROWS)
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([[IBM], [IBM]]))
+
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    # The evidence is about these two, not about the run: both passes that saw
+    # this pair called it the same thing, and it merged.
+    assert decision["verdict"] == "same"
+    assert (decision["votes"], decision["passes"]) == (2, 2)
+    assert decision["merged"] is True
+    assert decision["a_name"] and decision["b_name"]
+    assert 0.0 < decision["similarity"] <= 1.0
+
+
+def test_a_pair_the_passes_split_on_is_not_reported_as_agreed():
+    graph = ScriptedGraph(ROWS)
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([[IBM], []]))
+
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    # One pass out of two. Reporting this the same way as a unanimous pair is
+    # exactly the conflation the per-pair record exists to prevent.
+    assert decision["verdict"] == "split"
+    assert (decision["votes"], decision["passes"]) == (1, 2)
+    assert decision["merged"] is False
+
+
+def test_a_single_pass_run_never_claims_two_votes():
+    graph = ScriptedGraph(ROWS)
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([[IBM]]), vote=False)
+
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    assert (decision["votes"], decision["passes"]) == (1, 1)
+    assert decision["verdict"] == "same"
+
+
+def test_a_rejected_pair_is_recorded_as_different():
+    graph = ScriptedGraph(ROWS)
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([[], []]))
+
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    # A candidate the model twice said was not a duplicate is a decision worth
+    # reporting, not an absence.
+    assert decision["verdict"] == "different"
+    assert decision["votes"] == 0
+    assert decision["merged"] is False
+
+
+def test_decisions_are_ordered_by_similarity():
+    graph = ScriptedGraph(ROWS)
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([[IBM], [IBM]]))
+
+    scores = [d["similarity"] for d in dd.last_pair_decisions]
+    # The cap drops the tail, so the tail must be the least similar pairs.
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_a_run_with_no_candidates_records_no_decisions():
+    graph = ScriptedGraph([ROWS[0]])
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([[]]))
+
+    assert dd.last_pair_decisions == []
+
+
+def test_decisions_do_not_survive_into_the_next_run():
+    graph = ScriptedGraph(ROWS)
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(graph, FakeEmbedder(DESC_EMB), ScriptedLLM([[IBM], [IBM]]), merge)
+    asyncio.run(dd.deduplicate())
+    assert dd.last_pair_decisions
+
+    # A second run over a graph with nothing to judge must not report the
+    # first run's pairs as though they were decided again.
+    dd._graph = ScriptedGraph([ROWS[0]])
+    dd._llm = ScriptedLLM([[]])
+    asyncio.run(dd.deduplicate())
+    assert dd.last_pair_decisions == []
+
+
+def test_protected_pairs_are_never_offered_as_decisions():
+    graph = ScriptedGraph(ROWS)
+    _, dd, _ = _run_with_judge(
+        graph, ScriptedLLM([[IBM], [IBM]]), skip_pairs={frozenset(("e1", "e2"))}
+    )
+
+    # The model was never asked, so there is no decision to report about them.
+    assert frozenset(("e1", "e2")) not in _by_pair(dd)

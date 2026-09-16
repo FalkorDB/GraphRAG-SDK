@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 NAME_GATE = 0.65
 DESC_GATE = 0.55
 TOP_K = 10
+# Per-pair evidence is returned to the caller and travels into reports; bound
+# it so a graph with thousands of near-misses cannot turn one field into the
+# whole payload. Ordered by similarity, so the cut falls on the least similar.
+_MAX_PAIR_DECISIONS = 200
 GROUP_CAP = 8
 MIN_DENSITY = 0.5
 NAME_IN_DESC_WEIGHT = 0.65
@@ -476,6 +480,8 @@ class LLMJudgeDeduplicator:
         # Stats of the run in progress, so a caller that catches a failure
         # part-way can still report the merges that were committed.
         self.last_stats: dict[str, int] = {}
+        # Per-pair evidence from the most recent run. See ``deduplicate``.
+        self.last_pair_decisions: list[dict[str, Any]] = []
         self._embedded_ids: set[str] = set()
 
     async def _fetch_entities(self, batch_size: int) -> list[dict]:
@@ -727,6 +733,10 @@ class LLMJudgeDeduplicator:
         def protected_idx(i: int, j: int) -> bool:
             return protected(ents[i]["id"], ents[j]["id"])
 
+        # Cleared here, not at the end: every early return below leaves a run
+        # with no decisions, and keeping the previous run's would attribute
+        # them to this one.
+        self.last_pair_decisions = []
         stats = self.last_stats = {
             "entities": len(ents),
             "candidates": 0,
@@ -783,6 +793,7 @@ class LLMJudgeDeduplicator:
                 if p not in agreed and si not in failed_sets
             }
         else:
+            same2 = {}
             agreed, disagreed = dict(same1), {}
         # The model never saw a protected pair as a candidate, but a partition
         # of a set can still put the two in one group; a decided pair stays
@@ -893,5 +904,72 @@ class LLMJudgeDeduplicator:
             # row and writes nothing; that is not a link.
             if getattr(result, "result_set", None):
                 stats["linked"] += 1
+        self.last_pair_decisions = self._pair_decisions(
+            ents, edges, same1, same2, failed_sets, agreed, disagreed, root_id
+        )
         logger.info("LLMJudgeDeduplicator: %s", stats)
         return stats
+
+    def _pair_decisions(
+        self,
+        ents: list[dict],
+        edges: dict[tuple[int, int], float],
+        same1: dict[tuple[int, int], int],
+        same2: dict[tuple[int, int], int],
+        failed_sets: set[int],
+        agreed: dict[tuple[int, int], int],
+        disagreed: dict[tuple[int, int], int],
+        root_id: dict[int, str],
+    ) -> list[dict[str, Any]]:
+        """What was decided about each candidate pair, and on what evidence.
+
+        The run-level counts say how often the two passes agreed across the
+        whole graph. That is a property of the run, not of any pair in it, so
+        it cannot answer the only question a reader actually has in front of a
+        proposed merge: how sure are we about *these two*. Presenting a run
+        figure beside one pair invites reading it as being about that pair.
+
+        So each candidate pair carries its own evidence: how close the two were
+        before any model saw them, how many passes called them the same thing
+        out of how many that saw them, and what became of them. Deriving a
+        single number from those would be inventing a probability the judge
+        never produced; the caller can band them, and knows what the bands mean
+        because the parts are here.
+
+        Only pairs the judge actually considered appear. A pair no gate brought
+        forward was never a question.
+        """
+        passes = 2 if self._vote else 1
+        decisions: list[dict[str, Any]] = []
+        for (a, b), similarity in sorted(edges.items(), key=lambda kv: -kv[1]):
+            set_id = agreed.get((a, b), disagreed.get((a, b), same1.get((a, b), same2.get((a, b)))))
+            # A pair in a set whose prompt failed was judged fewer times than
+            # the run was configured for; saying "1 of 2 passes" about it would
+            # report a disagreement that never happened.
+            unjudged = set_id is not None and set_id in failed_sets
+            votes = int((a, b) in same1) + int((a, b) in same2)
+            if (a, b) in agreed:
+                verdict = "same"
+            elif unjudged:
+                verdict = "unjudged"
+            elif votes:
+                verdict = "split"
+            else:
+                verdict = "different"
+            decisions.append({
+                "a": ents[a]["id"],
+                "b": ents[b]["id"],
+                "a_name": ents[a].get("name") or "",
+                "b_name": ents[b].get("name") or "",
+                # What the gates measured, before the model was asked anything.
+                "similarity": round(float(similarity), 4),
+                "votes": votes,
+                "passes": 1 if unjudged else passes,
+                "verdict": verdict,
+                # Agreement is not the same as merger: a pair can be agreed and
+                # still kept apart by the grouping rules.
+                "merged": root_id.get(a) is not None and root_id.get(a) == root_id.get(b),
+            })
+            if len(decisions) >= _MAX_PAIR_DECISIONS:
+                break
+        return decisions
