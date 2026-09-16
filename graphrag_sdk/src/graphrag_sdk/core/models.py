@@ -1010,6 +1010,25 @@ class FinalizeResult(DataModel):
     entities_linked: int = 0
     judge_llm_calls: int = 0
     judge_stats: dict[str, int | str] = Field(default_factory=dict)
+    judge_pair_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    """What the judge decided about each candidate pair, and on what evidence.
+
+    ``judge_stats`` describes the run: how many pairs the two passes agreed on
+    across the whole graph. Those figures are not about any one pair, so they
+    cannot answer the question asked in front of a single proposed merge --
+    how sure are we about *these two* -- and showing a run figure beside one
+    pair invites exactly that misreading.
+
+    Each entry names the two entities, the similarity the gates measured before
+    the model was asked anything, how many passes called them the same out of
+    how many saw them, the verdict (``same``, ``split``, ``different`` or
+    ``unjudged``), and whether they were ultimately merged. No probability is
+    derived, because the judge does not produce one; a caller that wants bands
+    can form them from these parts and will know what its bands mean.
+
+    Ordered by similarity and capped, so the most similar pairs survive the cut.
+    Empty when the judge did not run.
+    """
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)

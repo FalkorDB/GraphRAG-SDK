@@ -4913,6 +4913,9 @@ class GraphRAG:
             entities_linked=judge_stats.get("linked", 0),
             judge_llm_calls=judge_stats.get("llm_calls", 0),
             judge_stats=judge_stats,
+            judge_pair_decisions=list(
+                getattr(self._deduplicator, "last_judge_pair_decisions", []) or []
+            ),
             unmerged_name_collisions=collisions,
             probable_duplicates=[str(m) for m in near_misses],
             resolved_duplicates=resolved,

@@ -613,6 +613,9 @@ class EntityDeduplicator:
         # Stats of the last LLM-judged phase (see LLMJudgeDeduplicator.deduplicate);
         # {"skipped_reason": ...} when the phase was asked for and did not run.
         self.last_judge_stats: dict[str, int | str] = {}
+        # Per-pair evidence from the judge's most recent run, for callers that
+        # report a proposed merge to someone who has to decide about it.
+        self.last_judge_pair_decisions: list[dict[str, Any]] = []
 
     async def deduplicate(
         self,
@@ -652,6 +655,7 @@ class EntityDeduplicator:
         self.rejected_pairs = []
         self._ambiguous_mentions = []
         self.last_judge_stats = {}
+        self.last_judge_pair_decisions = []
         total = await self._deduplicate_exact(batch_size)
 
         if fuzzy:
@@ -1337,6 +1341,7 @@ class EntityDeduplicator:
         if decided is None:
             self._protection_unavailable("phase 4 (judge)")
             self.last_judge_stats = {"skipped_reason": "distinct_pairs_unavailable"}
+            self.last_judge_pair_decisions = []
             return 0
         entities = await self._fetch_all_entities(batch_size)
         by_id = {entity["id"]: entity for entity in entities}
@@ -1358,7 +1363,9 @@ class EntityDeduplicator:
             logger.warning("LLM judge failed over the graph: %s", exc)
             # Merges committed before the failure are real; report them.
             self.last_judge_stats = dict(judge.last_stats)
+            self.last_judge_pair_decisions = list(judge.last_pair_decisions)
             return int(self.last_judge_stats.get("merged", 0) or 0)
+        self.last_judge_pair_decisions = list(judge.last_pair_decisions)
         merged = int(self.last_judge_stats.get("merged", 0) or 0)
         logger.info(f"EntityDeduplicator phase 4 (judge): merged {merged} duplicates")
         return merged
