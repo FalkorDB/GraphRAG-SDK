@@ -103,10 +103,14 @@ class ScriptedExtractor(ExtractionStrategy):
                 line = line.strip()
                 if line.startswith("R|"):
                     _, src, tgt, rtype, desc = line.split("|", 4)
-                    fact = f"({src}, {rtype}, {tgt}): {desc}" if desc else f"({src}, {rtype}, {tgt})"
+                    fact = (
+                        f"({src}, {rtype}, {tgt}): {desc}" if desc else f"({src}, {rtype}, {tgt})"
+                    )
                     rels.append(
                         GraphRelationship(
-                            start_node_id=compute_entity_id(src, types.get(src.strip().lower(), "")),
+                            start_node_id=compute_entity_id(
+                                src, types.get(src.strip().lower(), "")
+                            ),
                             end_node_id=compute_entity_id(tgt, types.get(tgt.strip().lower(), "")),
                             type="RELATES",
                             properties={
@@ -135,9 +139,7 @@ async def _snapshot(rag) -> dict[str, Any]:
     """
     q = rag._graph_store.query_raw
 
-    r = await q(
-        "MATCH (e:__Entity__) RETURN e.name, e.type, e.description ORDER BY e.name, e.type"
-    )
+    r = await q("MATCH (e:__Entity__) RETURN e.name, e.type, e.description ORDER BY e.name, e.type")
     entities = sorted(tuple(row) for row in (r.result_set or []))
 
     r = await q(
@@ -146,9 +148,7 @@ async def _snapshot(rag) -> dict[str, Any]:
     )
     relationships = sorted(tuple(row) for row in (r.result_set or []))
 
-    r = await q(
-        "MATCH (e:__Entity__)-[:MENTIONED_IN]->(c:Chunk) RETURN e.name, c.text"
-    )
+    r = await q("MATCH (e:__Entity__)-[:MENTIONED_IN]->(c:Chunk) RETURN e.name, c.text")
     mentions = sorted(tuple(row) for row in (r.result_set or []))
 
     r = await q("MATCH (:Document)-[:PART_OF]->(c:Chunk) RETURN c.text ORDER BY c.index")
@@ -245,12 +245,19 @@ class TestChunkCacheEdges:
             rag = make_rag()
             ex = ScriptedExtractor()
             await rag.ingest(
-                text=v1, document_id="doc", chunker=SepChunking(), extractor=ex,
+                text=v1,
+                document_id="doc",
+                chunker=SepChunking(),
+                extractor=ex,
                 resolver=ExactMatchResolution(),
             )
             await rag.update(
-                text=v2, document_id="doc", chunker=SepChunking(), extractor=ex,
-                resolver=ExactMatchResolution(), cache_unchanged_chunks=cached,
+                text=v2,
+                document_id="doc",
+                chunker=SepChunking(),
+                extractor=ex,
+                resolver=ExactMatchResolution(),
+                cache_unchanged_chunks=cached,
             )
             snapshots[cached] = await _snapshot(rag)
             await _assert_no_dangling_provenance(rag)
@@ -273,13 +280,22 @@ class TestChunkCacheEdges:
 
         rag = make_rag()
         ex = ScriptedExtractor()
-        await rag.ingest(text=v1, document_id="doc", chunker=SepChunking(), extractor=ex,
-                         resolver=ExactMatchResolution())
+        await rag.ingest(
+            text=v1,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
 
         before = len(ex.seen_chunk_texts)
         result = await rag.update(
-            text=v2, document_id="doc", chunker=SepChunking(), extractor=ex,
-            resolver=ExactMatchResolution(), cache_unchanged_chunks=True,
+            text=v2,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+            cache_unchanged_chunks=True,
         )
         after = ex.seen_chunk_texts[before:]
 
@@ -315,13 +331,22 @@ class TestChunkCacheEdges:
 
         rag = make_rag()
         ex = ScriptedExtractor()
-        await rag.ingest(text=v1, document_id="doc", chunker=SepChunking(), extractor=ex,
-                         resolver=ExactMatchResolution())
+        await rag.ingest(
+            text=v1,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
         before = len(ex.seen_chunk_texts)
 
         result = await rag.update(
-            text=v2, document_id="doc", chunker=SepChunking(), extractor=ex,
-            resolver=ExactMatchResolution(), cache_unchanged_chunks=True,
+            text=v2,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+            cache_unchanged_chunks=True,
         )
 
         assert result.no_op is False, "reordering changes the doc hash, so this is a real update"
@@ -330,7 +355,12 @@ class TestChunkCacheEdges:
 
         snap = await _snapshot(rag)
         assert {e[0] for e in snap["entities"]} == {
-            "Alice", "Acme", "Carol", "Berlin", "Dave", "Munich",
+            "Alice",
+            "Acme",
+            "Carol",
+            "Berlin",
+            "Dave",
+            "Munich",
         }
         assert len(snap["relationships"]) == 3
         await _assert_no_dangling_provenance(rag)
@@ -346,12 +376,21 @@ class TestChunkCacheEdges:
 
         rag = make_rag()
         ex = ScriptedExtractor()
-        await rag.ingest(text=v1, document_id="doc", chunker=SepChunking(), extractor=ex,
-                         resolver=ExactMatchResolution())
+        await rag.ingest(
+            text=v1,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
 
         result = await rag.update(
-            text=v2, document_id="doc", chunker=SepChunking(), extractor=ex,
-            resolver=ExactMatchResolution(), cache_unchanged_chunks=True,
+            text=v2,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+            cache_unchanged_chunks=True,
         )
         assert result.metadata["cache_stats"] == {"cached_chunks": 2, "extracted_chunks": 1}
 
@@ -373,16 +412,30 @@ class TestChunkCacheEdges:
         chunk ids after a cached update of the first."""
         rag = make_rag()
         ex = ScriptedExtractor()
-        await rag.ingest(text=SEP.join([C_ALICE, C_CAROL]), document_id="docA",
-                         chunker=SepChunking(), extractor=ex, resolver=ExactMatchResolution())
-        await rag.ingest(text=C_EVE, document_id="docB",
-                         chunker=SepChunking(), extractor=ex, resolver=ExactMatchResolution())
+        await rag.ingest(
+            text=SEP.join([C_ALICE, C_CAROL]),
+            document_id="docA",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
+        await rag.ingest(
+            text=C_EVE,
+            document_id="docB",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
 
         b_ids = await _live_chunk_ids(rag, "docB")
 
         await rag.update(
-            text=SEP.join([C_ALICE, C_DAVE]), document_id="docA", chunker=SepChunking(),
-            extractor=ex, resolver=ExactMatchResolution(), cache_unchanged_chunks=True,
+            text=SEP.join([C_ALICE, C_DAVE]),
+            document_id="docA",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+            cache_unchanged_chunks=True,
         )
 
         r = await rag._graph_store.query_raw(
@@ -399,12 +452,21 @@ class TestChunkCacheEdges:
         """Shrinking a document must still orphan-clean, cache or not."""
         rag = make_rag()
         ex = ScriptedExtractor()
-        await rag.ingest(text=SEP.join([C_ALICE, C_CAROL, C_DAVE]), document_id="doc",
-                         chunker=SepChunking(), extractor=ex, resolver=ExactMatchResolution())
+        await rag.ingest(
+            text=SEP.join([C_ALICE, C_CAROL, C_DAVE]),
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
 
         result = await rag.update(
-            text=C_ALICE, document_id="doc", chunker=SepChunking(), extractor=ex,
-            resolver=ExactMatchResolution(), cache_unchanged_chunks=True,
+            text=C_ALICE,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+            cache_unchanged_chunks=True,
         )
         assert result.metadata["cache_stats"] == {"cached_chunks": 1, "extracted_chunks": 0}
 
@@ -422,15 +484,32 @@ class TestChunkCacheEdges:
 
         rag = make_rag()
         ex = ScriptedExtractor()
-        await rag.ingest(text=v1, document_id="doc", chunker=SepChunking(), extractor=ex,
-                         resolver=ExactMatchResolution())
+        await rag.ingest(
+            text=v1,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
 
         snaps = []
         for _ in range(3):
-            await rag.update(text=v2, document_id="doc", chunker=SepChunking(), extractor=ex,
-                             resolver=ExactMatchResolution(), cache_unchanged_chunks=True)
-            await rag.update(text=v1, document_id="doc", chunker=SepChunking(), extractor=ex,
-                             resolver=ExactMatchResolution(), cache_unchanged_chunks=True)
+            await rag.update(
+                text=v2,
+                document_id="doc",
+                chunker=SepChunking(),
+                extractor=ex,
+                resolver=ExactMatchResolution(),
+                cache_unchanged_chunks=True,
+            )
+            await rag.update(
+                text=v1,
+                document_id="doc",
+                chunker=SepChunking(),
+                extractor=ex,
+                resolver=ExactMatchResolution(),
+                cache_unchanged_chunks=True,
+            )
             snaps.append(await _snapshot(rag))
             await _assert_no_dangling_provenance(rag)
 
@@ -442,13 +521,23 @@ class TestChunkCacheEdges:
         v1 = SEP.join([C_ALICE, C_CAROL])
         rag = make_rag()
         ex = ScriptedExtractor()
-        await rag.ingest(text=v1, document_id="doc", chunker=SepChunking(), extractor=ex,
-                         resolver=ExactMatchResolution())
+        await rag.ingest(
+            text=v1,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+        )
         before = len(ex.seen_chunk_texts)
 
-        result = await rag.update(text=v1, document_id="doc", chunker=SepChunking(),
-                                  extractor=ex, resolver=ExactMatchResolution(),
-                                  cache_unchanged_chunks=True)
+        result = await rag.update(
+            text=v1,
+            document_id="doc",
+            chunker=SepChunking(),
+            extractor=ex,
+            resolver=ExactMatchResolution(),
+            cache_unchanged_chunks=True,
+        )
 
         assert result.no_op is True
         assert "cache_stats" not in result.metadata

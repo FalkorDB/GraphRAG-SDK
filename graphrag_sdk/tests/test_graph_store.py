@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -811,9 +812,7 @@ class TestGraphStoreDocumentLifecycle:
         assert "REMOVE p.ready_to_commit, p.content_hash" in rename_cypher
         assert "hash" not in rename_params
 
-    async def test_rollforward_aborts_if_pending_missing(
-        self, graph_store, mock_connection
-    ):
+    async def test_rollforward_aborts_if_pending_missing(self, graph_store, mock_connection):
         """Precondition: if the pending Document is missing, refuse to
         proceed. Without this guard the live document would be deleted
         and the rename would silently no-op, losing the data."""
@@ -910,6 +909,190 @@ class TestGraphStoreDocumentLifecycle:
         assert mock_connection.query.await_count == 3
 
 
+class TestMergedLabelsBecomeRealLabels:
+    """Labels absorbed during resolution must be queryable as Cypher labels.
+
+    Resolution collapses duplicates into one node and records the losers'
+    labels in a ``merged_labels`` property, because ``GraphNode.label`` holds a
+    single string. Measured against a real FalkorDB, a property is not a type:
+    a Person node that absorbed ``Engineer`` was invisible to
+    ``MATCH (n:Engineer)`` (0 rows) while the property lookup found it. These
+    tests pin the promotion of that property to real labels.
+    """
+
+    @staticmethod
+    def _label_queries(mock_connection) -> list[str]:
+        # The upsert query also contains ``SET n:__Entity__``, so the promotion
+        # query is identified by being a MATCH rather than a MERGE.
+        return [
+            c[0][0]
+            for c in mock_connection.query.call_args_list
+            if " SET n:" in c[0][0] and "MERGE" not in c[0][0]
+        ]
+
+    async def test_absorbed_label_is_added_as_a_label(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"name": "Ada", "merged_labels": "Engineer"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1, "expected one label-promotion query"
+        assert "`Engineer`" in queries[0]
+
+    async def test_node_without_merged_labels_issues_no_extra_query(
+        self, graph_store, mock_connection
+    ):
+        """Control: the promotion must not fire for ordinary nodes."""
+        await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={"name": "Ada"})]
+        )
+        assert self._label_queries(mock_connection) == []
+
+    async def test_several_absorbed_labels_are_all_added(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Engineer | Author"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert "`Author`" in queries[0] and "`Engineer`" in queries[0]
+
+    async def test_the_survivors_own_label_is_not_re_added(self, graph_store, mock_connection):
+        """``Person`` is already on the node; re-setting it would be noise."""
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Person | Engineer"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert queries[0].count(":`") == 1, "Person should not be set twice"
+        assert "`Engineer`" in queries[0]
+
+    async def test_backticks_in_a_label_cannot_inject_cypher(self, graph_store, mock_connection):
+        """The label is interpolated, so it must be sanitized like every other.
+
+        Safety here means the payload cannot escape its backtick-quoted
+        identifier, so the check strips every quoted span and asserts nothing
+        executable survives outside them.
+        """
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Eng` DETACH DELETE n //"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        outside_identifiers = re.sub(r"`[^`]*`", "", queries[0])
+        assert "DETACH" not in outside_identifiers
+        assert queries[0].count("`") % 2 == 0, "unbalanced backticks means an escape"
+
+    async def test_structural_labels_are_never_promoted(self, graph_store, mock_connection):
+        """An entity must not become a ``Document`` or ``Chunk``.
+
+        Those labels select structural nodes in listing and cleanup queries;
+        stamping one onto an entity would make it show up there.
+        """
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "Document | Chunk | __Entity__ | Engineer"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert "`Engineer`" in queries[0]
+        for bad in ("`Document`", "`Chunk`", "`__Entity__`"):
+            assert bad not in queries[0]
+
+    async def test_backticked_structural_labels_are_also_rejected(
+        self, graph_store, mock_connection
+    ):
+        """The guard must run on the sanitized label, not the raw one.
+
+        ``sanitize_cypher_label`` strips backticks, so checking membership
+        first lets ```Document``` through and then turns it into
+        ``Document`` — landing a structural label on an entity by the very
+        path the guard exists to close.
+        """
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id="n1",
+                    label="Person",
+                    properties={"merged_labels": "`Document` | `Chunk` | `__Entity__` | Engineer"},
+                )
+            ]
+        )
+        queries = self._label_queries(mock_connection)
+        assert len(queries) == 1
+        assert "`Engineer`" in queries[0]
+        for bad in ("`Document`", "`Chunk`", "`__Entity__`"):
+            assert bad not in queries[0]
+
+    async def test_label_promotion_is_batched(self, graph_store, mock_connection):
+        """Every other write in this class chunks at ``_BATCH_SIZE``; so must this.
+
+        Unbatched, one failure drops the promoted labels for every node that
+        shares the label set at once.
+        """
+        count = graph_store._BATCH_SIZE * 2 + 1
+        await graph_store.upsert_nodes(
+            [
+                GraphNode(
+                    id=f"n{i}",
+                    label="Person",
+                    properties={"merged_labels": "Engineer"},
+                )
+                for i in range(count)
+            ]
+        )
+        queries = [
+            c
+            for c in mock_connection.query.call_args_list
+            if " SET n:" in c[0][0] and "MERGE" not in c[0][0]
+        ]
+        assert len(queries) == 3
+        sizes = [len(c[0][1]["ids"]) for c in queries]
+        assert sizes == [graph_store._BATCH_SIZE, graph_store._BATCH_SIZE, 1]
+        assert sum(sizes) == count
+
+    async def test_promotion_failure_does_not_fail_the_upsert(self, graph_store, mock_connection):
+        """A label is an enrichment; losing it must not lose the node."""
+
+        async def flaky(cypher, params=None):
+            if "UNWIND $ids" in cypher:
+                raise Exception("label add failed")
+            return MagicMock(result_set=[])
+
+        mock_connection.query = AsyncMock(side_effect=flaky)
+        result = await graph_store.upsert_nodes(
+            [GraphNode(id="n1", label="Person", properties={"merged_labels": "Engineer"})]
+        )
+        assert result == 1
+
+
 class TestGraphStoreIdIndex:
     """Bug #9 — range index on ``id`` for every label we MERGE/MATCH by id.
 
@@ -923,71 +1106,55 @@ class TestGraphStoreIdIndex:
 
     @staticmethod
     def index_calls(mock_connection):
-        return [
-            c[0][0] for c in mock_connection.query.call_args_list
-            if "CREATE INDEX" in c[0][0]
-        ]
+        return [c[0][0] for c in mock_connection.query.call_args_list if "CREATE INDEX" in c[0][0]]
 
-    async def test_creates_index_for_node_label_and_entity(
-        self, graph_store, mock_connection
-    ):
-        await graph_store.upsert_nodes(
-            [GraphNode(id="n1", label="Person", properties={})]
-        )
+    async def test_creates_index_for_node_label_and_entity(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes([GraphNode(id="n1", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
         assert "CREATE INDEX FOR (n:`Person`) ON (n.id)" in idx
         # MERGE targets :Person but relationship MATCHes target :__Entity__.
         assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
 
-    async def test_structural_labels_get_index_but_not_entity(
-        self, graph_store, mock_connection
-    ):
-        await graph_store.upsert_nodes(
-            [GraphNode(id="c1", label="Chunk", properties={})]
-        )
+    async def test_structural_labels_get_index_but_not_entity(self, graph_store, mock_connection):
+        await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
         idx = self.index_calls(mock_connection)
         assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
         assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" not in idx
 
     async def test_index_created_once_per_label(self, graph_store, mock_connection):
         for i in range(5):
-            await graph_store.upsert_nodes(
-                [GraphNode(id=f"n{i}", label="Person", properties={})]
-            )
+            await graph_store.upsert_nodes([GraphNode(id=f"n{i}", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
         assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 1
 
-    async def test_relationship_upsert_indexes_both_endpoints(
-        self, graph_store, mock_connection
-    ):
+    async def test_relationship_upsert_indexes_both_endpoints(self, graph_store, mock_connection):
         await graph_store.upsert_relationships(
-            [GraphRelationship(
-                start_node_id="e1", end_node_id="c1",
-                type="MENTIONED_IN", properties={},
-            )]
+            [
+                GraphRelationship(
+                    start_node_id="e1",
+                    end_node_id="c1",
+                    type="MENTIONED_IN",
+                    properties={},
+                )
+            ]
         )
         idx = self.index_calls(mock_connection)
         assert "CREATE INDEX FOR (n:`__Entity__`) ON (n.id)" in idx
         assert "CREATE INDEX FOR (n:`Chunk`) ON (n.id)" in idx
 
-    async def test_index_failure_does_not_break_the_write(
-        self, graph_store, mock_connection
-    ):
+    async def test_index_failure_does_not_break_the_write(self, graph_store, mock_connection):
         """A missing index is slow; a raised exception would be data loss."""
+
         def side_effect(cypher, params=None):
             if "CREATE INDEX" in cypher:
                 raise Exception("index unsupported")
             return MagicMock()
 
         mock_connection.query = AsyncMock(side_effect=side_effect)
-        result = await graph_store.upsert_nodes(
-            [GraphNode(id="n1", label="Person", properties={})]
-        )
+        result = await graph_store.upsert_nodes([GraphNode(id="n1", label="Person", properties={})])
         assert result == 1
 
-    async def test_index_failure_is_retried_on_next_write(
-        self, graph_store, mock_connection
-    ):
+    async def test_index_failure_is_retried_on_next_write(self, graph_store, mock_connection):
         """A transient CREATE INDEX failure must not disable indexing for the
         life of the store — the label is memoised only once the query succeeds."""
         attempts = {"n": 0}
@@ -1000,15 +1167,9 @@ class TestGraphStoreIdIndex:
             return MagicMock()
 
         mock_connection.query = AsyncMock(side_effect=side_effect)
-        await graph_store.upsert_nodes(
-            [GraphNode(id="c1", label="Chunk", properties={})]
-        )
-        await graph_store.upsert_nodes(
-            [GraphNode(id="c2", label="Chunk", properties={})]
-        )
-        await graph_store.upsert_nodes(
-            [GraphNode(id="c3", label="Chunk", properties={})]
-        )
+        await graph_store.upsert_nodes([GraphNode(id="c1", label="Chunk", properties={})])
+        await graph_store.upsert_nodes([GraphNode(id="c2", label="Chunk", properties={})])
+        await graph_store.upsert_nodes([GraphNode(id="c3", label="Chunk", properties={})])
         idx = self.index_calls(mock_connection)
         # First attempt failed, second succeeded, third was served from the memo.
         assert idx.count("CREATE INDEX FOR (n:`Chunk`) ON (n.id)") == 2
@@ -1017,30 +1178,20 @@ class TestGraphStoreIdIndex:
         """GRAPH.DELETE drops the indexes, so a re-ingest on the same store
         must recreate them."""
         mock_connection.delete_graph = AsyncMock()
-        await graph_store.upsert_nodes(
-            [GraphNode(id="n1", label="Person", properties={})]
-        )
+        await graph_store.upsert_nodes([GraphNode(id="n1", label="Person", properties={})])
         await graph_store.delete_all()
-        await graph_store.upsert_nodes(
-            [GraphNode(id="n2", label="Person", properties={})]
-        )
+        await graph_store.upsert_nodes([GraphNode(id="n2", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
         assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
         assert idx.count("CREATE INDEX FOR (n:`__Entity__`) ON (n.id)") == 2
 
-    async def test_delete_all_fallback_also_resets_index_memo(
-        self, graph_store, mock_connection
-    ):
+    async def test_delete_all_fallback_also_resets_index_memo(self, graph_store, mock_connection):
         """Clearing on the DETACH DELETE fallback is harmless (one idempotent
         round trip per label) and keeps the two paths behaving the same."""
         mock_connection.delete_graph = AsyncMock(side_effect=Exception("no GRAPH.DELETE"))
-        await graph_store.upsert_nodes(
-            [GraphNode(id="n1", label="Person", properties={})]
-        )
+        await graph_store.upsert_nodes([GraphNode(id="n1", label="Person", properties={})])
         await graph_store.delete_all()
-        await graph_store.upsert_nodes(
-            [GraphNode(id="n2", label="Person", properties={})]
-        )
+        await graph_store.upsert_nodes([GraphNode(id="n2", label="Person", properties={})])
         idx = self.index_calls(mock_connection)
         assert idx.count("CREATE INDEX FOR (n:`Person`) ON (n.id)") == 2
         assert any("DETACH DELETE" in c[0][0] for c in mock_connection.query.call_args_list)

@@ -404,32 +404,33 @@ class ResolutionStrategy(ABC):
 
 Returns `ResolutionResult` with deduplicated `nodes`, remapped `relationships`, and `merged_count`.
 
-### Built-in: ExactMatchResolution
+### Built-in: ExactMatchResolution (ingest default)
 
-Deduplicates by exact property match (default: `id`). Fast, no LLM calls.
+Deduplicates by `(normalized name, label)` only. Fast, no embeddings, no LLM calls. Same-name entities with different labels (Person "Paris" vs Location "Paris") stay separate; the survivor keeps every member's description as a list (`descriptions`) and joined with `" | "` (`description`), and every relationship endpoint is re-pointed to it.
 
 ```python
 from graphrag_sdk.ingestion.resolution_strategies.exact_match import ExactMatchResolution
 
 resolver = ExactMatchResolution(
-    resolve_property="id",  # property to match on (default: "id")
+    resolve_property="name",  # property to match on (default: "name")
 )
 ```
 
-**When to use:** Default. Fast and deterministic. Works well when extraction produces consistent entity IDs.
+**When to use:** Default. Extraction is consistent, or ingest cost matters more than duplicate recall. Ingest is per document, so cross-document duplicates with different surface forms (`Airbus` / `Airbus SE`) are left for `finalize()`, where the resolver pass and the LLM-judged phase see the whole graph (see [Storage](/storage)).
 
-### Built-in: LLMVerifiedResolution
+### Built-in: LLMVerifiedResolution (opt-in at ingest, default at `finalize()`)
 
-Three-tier resolution that catches near-duplicates exact match misses (e.g. `Acme Corp` vs `Acme Corporation`):
+Three tiers that catch the near-duplicates exact match misses (e.g. `Acme Corp` vs `Acme Corporation`):
 
 1. `(normalized name, label)` exact-match merge -- the same first pass `ExactMatchResolution` performs.
-2. Embed surviving node names and compare pairs within each label group:
+2. Embed the surviving nodes as `"name: description"` and compare pairs in one unified same/cross-label candidate stage:
    - `similarity >= hard_threshold`: merged immediately, no LLM call
-   - `soft_threshold <= similarity < hard_threshold`: sent to the LLM for a YES/NO verdict
+   - `soft_threshold <= similarity < hard_threshold`: sent to the LLM for a YES/NO verdict, several pairs per call
    - `similarity < soft_threshold`: skipped
+   A label-family gate keeps pairs that cannot be one thing (Person vs Place) away from the LLM, and a cross-label merge needs a second, A/B-swapped vote to agree.
 3. Merge the confirmed clusters, then remap and deduplicate relationships.
 
-Descriptions are merged the same way in both resolvers: concatenated below `force_summary_threshold`, LLM-summarized at or above it.
+Merged descriptions are kept as a list and joined with `" | "` (concatenated below `force_summary_threshold`, LLM-summarized at or above it); labels absorbed from cross-label merges are kept in `merged_labels` and promoted to real Cypher labels on write.
 
 ```python
 from graphrag_sdk import LLMVerifiedResolution
@@ -438,17 +439,19 @@ resolver = LLMVerifiedResolution(
     llm=llm,                       # LLMInterface for YES/NO verification and summaries (optional)
     embedder=embedder,             # Embedder for pairwise cosine similarity (optional)
     hard_threshold=0.95,           # Merge without asking the LLM (default: 0.95)
-    soft_threshold=0.80,           # Below this, skip the pair entirely (default: 0.80)
+    soft_threshold=0.65,           # Below this, skip the pair entirely (default: 0.65)
     max_llm_pairs=500,             # Cap on ambiguous pairs per call, highest similarity first (default: 500)
+    batch_verification=True,       # Several pairs per LLM call (default: True)
+    verification_max_pairs_per_call=5,
     force_summary_threshold=3,     # Trigger LLM summary at this many descriptions (default: 3)
     max_summary_tokens=500,        # Max tokens for LLM summary (default: 500)
     ann_top_k=50,                  # Nearest neighbours retrieved per node (default: 50)
 )
 ```
 
-Both arguments are optional: with no `embedder` it degrades to exact match, and with no `llm` the ambiguous zone is skipped so only the `hard_threshold` tier merges.
+Both providers are optional but must be passed explicitly when you construct the strategy yourself; `GraphRAG.ingest()` wires its own LLM and embedder only into the default instance. With no `embedder` it degrades to exact match, and with no `llm` the ambiguous zone is skipped so only the `hard_threshold` tier merges.
 
-**When to use:** Multi-document ingestion where the same entity is named inconsistently across documents. Costs embedding calls on every ingest plus an LLM call when any pair lands in the ambiguous zone.
+**When to use:** Pass it to `ingest(resolver=...)` when one document names the same entity inconsistently; recall on real duplicates is roughly 2.5x that of exact match on the benchmark corpus, at the cost of embedding and LLM calls during ingest. Across documents, `finalize()` already runs it over the whole graph by default (`resolve=False` turns that off).
 
 ---
 

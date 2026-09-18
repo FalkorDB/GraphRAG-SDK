@@ -1,4 +1,5 @@
 """Tests for ingestion/pipeline.py — the sequential orchestrator."""
+
 from __future__ import annotations
 
 import pytest
@@ -45,10 +46,7 @@ class StubChunker(ChunkingStrategy):
         # Split by sentence
         sentences = [s.strip() for s in text.split(".") if s.strip()]
         return TextChunks(
-            chunks=[
-                TextChunk(text=s, index=i, uid=f"chunk-{i}")
-                for i, s in enumerate(sentences)
-            ]
+            chunks=[TextChunk(text=s, index=i, uid=f"chunk-{i}") for i, s in enumerate(sentences)]
         )
 
 
@@ -106,7 +104,9 @@ class TestIngestionPipeline:
         result = await pipeline.run("ignored.txt", ctx, text="Direct text input.")
         assert result.chunks_indexed >= 1
 
-    async def test_run_with_text_preserves_source_as_path(self, ctx, mock_graph_store, mock_vector_store):
+    async def test_run_with_text_preserves_source_as_path(
+        self, ctx, mock_graph_store, mock_vector_store
+    ):
         """When text= is passed without document_info, source is used as the path."""
         pipeline = self._make_pipeline(mock_graph_store, mock_vector_store)
         result = await pipeline.run("my_doc", ctx, text="Direct text input.")
@@ -129,7 +129,8 @@ class TestIngestionPipeline:
     async def test_run_creates_next_chunk_links(self, ctx, mock_graph_store, mock_vector_store):
         """Pipeline creates NEXT_CHUNK between sequential chunks."""
         pipeline = self._make_pipeline(
-            mock_graph_store, mock_vector_store,
+            mock_graph_store,
+            mock_vector_store,
             text="First. Second. Third.",
         )
         await pipeline.run("test.txt", ctx)
@@ -169,12 +170,16 @@ class TestIngestionPipeline:
                     ],
                     relationships=[
                         GraphRelationship(
-                            start_node_id="p1", end_node_id="x1",
-                            type="RELATES", properties={"rel_type": "KNOWS"},
+                            start_node_id="p1",
+                            end_node_id="x1",
+                            type="RELATES",
+                            properties={"rel_type": "KNOWS"},
                         ),
                         GraphRelationship(
-                            start_node_id="p1", end_node_id="a1",
-                            type="RELATES", properties={"rel_type": "WRONG"},
+                            start_node_id="p1",
+                            end_node_id="a1",
+                            type="RELATES",
+                            properties={"rel_type": "WRONG"},
                         ),
                     ],
                 )
@@ -196,6 +201,7 @@ class TestIngestionPipeline:
 
     async def test_pipeline_wraps_exception(self, ctx, mock_graph_store, mock_vector_store, caplog):
         """Non-IngestionError exceptions get wrapped."""
+
         class FailingLoader(LoaderStrategy):
             async def load(self, source, ctx):
                 raise RuntimeError("unexpected!")
@@ -358,9 +364,7 @@ class TestIngestionPipeline:
                 # combined remap is left un-flattened on purpose to
                 # reproduce the production code path.
                 return ResolutionResult(
-                    nodes=[
-                        GraphNode(id="c", label="Person", properties={"name": "Alice"})
-                    ],
+                    nodes=[GraphNode(id="c", label="Person", properties={"name": "Alice"})],
                     relationships=[],
                     merged_count=2,
                     remap={"a": "b", "b": "c"},
@@ -651,9 +655,7 @@ class TestUnchangedReingestShortCircuit:
         extractor.extract.assert_called_once()
         assert "skipped_unchanged" not in result.metadata
 
-    async def test_new_document_takes_the_full_path(
-        self, ctx, mock_graph_store, mock_vector_store
-    ):
+    async def test_new_document_takes_the_full_path(self, ctx, mock_graph_store, mock_vector_store):
         extractor = StubExtractor()
         extractor.extract = AsyncMock(wraps=extractor.extract)
         mock_graph_store.get_document_record = AsyncMock(return_value=None)
@@ -825,12 +827,16 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="p", end_node_id="c",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="p",
+                    end_node_id="c",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 ),
                 GraphRelationship(
-                    start_node_id="c", end_node_id="p",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="c",
+                    end_node_id="p",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 ),
             ],
         )
@@ -859,8 +865,10 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="a", end_node_id="b",
-                    type="RELATES", properties={"rel_type": "KNOWS"},
+                    start_node_id="a",
+                    end_node_id="b",
+                    type="RELATES",
+                    properties={"rel_type": "KNOWS"},
                 ),
             ],
         )
@@ -893,8 +901,10 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="c", end_node_id="p",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="c",
+                    end_node_id="p",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 )
                 for _ in range(3)
             ],
@@ -936,8 +946,10 @@ class TestPruneMethod:
             ],
             relationships=[
                 GraphRelationship(
-                    start_node_id="c", end_node_id="p",
-                    type="RELATES", properties={"rel_type": "WORKS_AT"},
+                    start_node_id="c",
+                    end_node_id="p",
+                    type="RELATES",
+                    properties={"rel_type": "WORKS_AT"},
                 )
                 for _ in range(50)
             ],
@@ -946,8 +958,11 @@ class TestPruneMethod:
             pipeline._prune(data, ontology)
 
         msg = next(
-            (r.getMessage() for r in caplog.records
-             if r.levelno == logging.WARNING and "WORKS_AT" in r.getMessage()),
+            (
+                r.getMessage()
+                for r in caplog.records
+                if r.levelno == logging.WARNING and "WORKS_AT" in r.getMessage()
+            ),
             None,
         )
         assert msg is not None
@@ -989,13 +1004,23 @@ class TestReingestIdempotencyEndToEnd:
         first = self._pipeline(mock_graph_store, mock_vector_store, text)
         await first.run("report.txt", ctx)
         ids_a = self._chunk_ids(mock_graph_store)
-        doc_a = {n.id for c in mock_graph_store.upsert_nodes.call_args_list for n in c[0][0] if n.label == "Document"}
+        doc_a = {
+            n.id
+            for c in mock_graph_store.upsert_nodes.call_args_list
+            for n in c[0][0]
+            if n.label == "Document"
+        }
 
         mock_graph_store.upsert_nodes.reset_mock()
         second = self._pipeline(mock_graph_store, mock_vector_store, text)
         await second.run("report.txt", ctx)
         ids_b = self._chunk_ids(mock_graph_store)
-        doc_b = {n.id for c in mock_graph_store.upsert_nodes.call_args_list for n in c[0][0] if n.label == "Document"}
+        doc_b = {
+            n.id
+            for c in mock_graph_store.upsert_nodes.call_args_list
+            for n in c[0][0]
+            if n.label == "Document"
+        }
 
         assert ids_a and ids_a == ids_b
         assert doc_a == doc_b == {"report.txt"}
@@ -1046,8 +1071,12 @@ class TestDocumentInfoIdentityMerge:
         self, ctx, mock_graph_store, mock_vector_store
     ):
         p = self._pipeline(mock_graph_store, mock_vector_store)
-        first = await p.run("./docs/../report.txt", ctx, document_info=DocumentInfo(path="docs/report.txt"))
-        second = await p.run("./docs/../report.txt", ctx, document_info=DocumentInfo(path="docs/report.txt"))
+        first = await p.run(
+            "./docs/../report.txt", ctx, document_info=DocumentInfo(path="docs/report.txt")
+        )
+        second = await p.run(
+            "./docs/../report.txt", ctx, document_info=DocumentInfo(path="docs/report.txt")
+        )
 
         assert first.document_info.uid == second.document_info.uid == "report.txt"
         assert first.document_info.path == "docs/report.txt"
@@ -1103,7 +1132,9 @@ class TestDocumentInfoIdentityMerge:
     ):
         """``GraphRAG.update()`` passes its pending id explicitly and must get through."""
         p = self._pipeline(mock_graph_store, mock_vector_store)
-        result = await p.run("r.txt", ctx, document_info=DocumentInfo(uid="r.txt__pending__ab12cd34"))
+        result = await p.run(
+            "r.txt", ctx, document_info=DocumentInfo(uid="r.txt__pending__ab12cd34")
+        )
         assert result.document_info.uid == "r.txt__pending__ab12cd34"
 
 
@@ -1179,7 +1210,9 @@ class TestContentHashRequiresCompleteWrites:
     async def test_short_relationship_count_withholds_the_hash(
         self, ctx, mock_graph_store, mock_vector_store
     ):
-        mock_graph_store.upsert_relationships = AsyncMock(side_effect=lambda rels: max(len(rels) - 1, 0))
+        mock_graph_store.upsert_relationships = AsyncMock(
+            side_effect=lambda rels: max(len(rels) - 1, 0)
+        )
         result = await self._pipeline(mock_graph_store, mock_vector_store).run("r.txt", ctx)
 
         assert not self._hash_written(mock_graph_store)
@@ -1287,9 +1320,7 @@ class TestDeterministicChunkUids:
         from graphrag_sdk.ingestion.pipeline import _assign_deterministic_chunk_uids
 
         info = DocumentInfo(uid=doc_uid, path="/tmp/a.txt")
-        chunks = TextChunks(
-            chunks=[TextChunk(text=t, index=i) for i, t in enumerate(texts)]
-        )
+        chunks = TextChunks(chunks=[TextChunk(text=t, index=i) for i, t in enumerate(texts)])
         _assign_deterministic_chunk_uids(info, chunks)
         return [c.uid for c in chunks.chunks]
 
@@ -1336,7 +1367,9 @@ class TestDeterministicChunkUids:
             _assign_deterministic_chunk_uids(DocumentInfo(uid="doc-1"), chunks)
             return chunks.chunks[0].uid
 
-        assert enriched("Context: about a lighthouse.") == enriched("Summary: a lighthouse's history.")
+        assert enriched("Context: about a lighthouse.") == enriched(
+            "Summary: a lighthouse's history."
+        )
         plain = TextChunks(chunks=[TextChunk(text="The lighthouse was built in 1896.", index=0)])
         _assign_deterministic_chunk_uids(DocumentInfo(uid="doc-1"), plain)
         assert plain.chunks[0].uid == enriched("anything")

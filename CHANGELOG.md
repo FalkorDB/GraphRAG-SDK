@@ -193,6 +193,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behaviour. A resolver that fails, because no model is reachable, is logged and
   `finalize()` completes without it.
 
+- **`finalize()` now also runs an LLM-judged cross-document dedup phase**
+  (`storage/judge_dedup.py`, `finalize(judge=True)` — the default) after the
+  exact-name phase and the resolver pass. Ingest keeps `ExactMatchResolution`
+  as its default: a resolver at ingest only ever sees one document, so the
+  cross-document duplicates that matter (`Airbus` in one file, `Airbus SE` in
+  another) are unreachable there by construction. At finalize: every entity's
+  name is embedded first (and stored on the node for retrieval), descriptions
+  are embedded, and three LLM-free doors nominate candidate pairs — top-10
+  name neighbours ≥ 0.65, top-10 description neighbours ≥ 0.55, and "A's name
+  appears in B's description"; candidates are grouped into dense sets of at
+  most 8 and packed into ≤ 3,000-token prompts; the judge LLM partitions each
+  set; a second pass over shuffled sets must agree. Agreed pairs are
+  **merged** through the same absorb path as every other finalize merge —
+  survivor by the same rank (a table's row over a mention), every member's
+  description kept in `descriptions` and joined with `" | "`, other names kept
+  in `aliases`, provenance and missing properties carried, edges remapped
+  before the loser is deleted — and the survivor additionally gains every
+  member's label; disagreements become **`SAME_AS` edges**
+  (`source='llm_judge'`) instead — nothing is lost. Two keyed rows, a mention
+  two rows could own, and any pair a resolver remembered as `DISTINCT_FROM`
+  are never put to the judge, never grouped with each other through a third
+  member, and never linked. `FinalizeResult` gains `entities_linked`,
+  `judge_llm_calls`, `judge_stats`. Use a gpt-4.1-class `judge_llm` (defaults
+  to the instance's `llm`): on the benchmark corpus it made 9 wrong merges
+  where gpt-4o-mini made 51; the two-pass vote (`judge_vote=True`) cut wrong
+  merges by two thirds at 2× judge cost. `finalize(judge=False)` skips the
+  phase (the resolver pass still runs); `finalize(resolve=False,
+  judge=False)` keeps finalize LLM-free. On the standalone
+  `deduplicate_entities()` the judge is opt-in (`judge=True`), so a caller
+  running it after every batch keeps making no LLM calls. `finalize()` now
+  deduplicates *before* embedding entity names, so a duplicate the merge
+  removes is not embedded first; the judge stores the name vectors it
+  computes, and `FinalizeResult.entities_embedded` counts both. Absorbed
+  labels are recorded in `merged_labels` as well as set as Cypher labels, so
+  a survivor's later merge carries them on and its primary label stays the
+  one it was written as; label validity follows `sanitize_cypher_label`.
+  Agreements are unioned within one set only — so a genuine duplicate pair
+  that reached the judge as a straddling 2-member set beside a dense set
+  (a chain A–B–C–D–E arrives as `[A,B,C,D]` and `[D,E]`) is linked, never
+  merged, once its endpoint has merged inside the dense set: a deliberate
+  trade of recall for the chain guarantee. A set whose prompt failed in one
+  pass is left unjudged rather than counted as a disagreement, and the
+  entity text in the judge prompt is flattened, quoted and declared
+  untrusted. `SAME_AS.agreement` is the number of passes that said SAME, so
+  a cross-set link written without the vote carries `1`, never `2`.
+  Description vectors are cached on the node (`description_embedding`,
+  keyed on `description_embedding_hash`, the digest of the text, the
+  embedder's `model_name` and the vector's dimension), so a later run
+  embeds only descriptions that are new, changed, or embedded by another
+  model; a cached vector of another dimension than the ones embedded now is
+  re-embedded with a warning rather than dropped. The judge's `embedded`
+  count leaves out a node its own merges then deleted. If the
+  `DISTINCT_FROM` pairs cannot be read, the fuzzy, resolver and judge
+  phases are skipped with a warning (`last_judge_stats["skipped_reason"]`)
+  instead of running as if none existed. A label holding `|` — the
+  separator of the `merged_labels` record — is refused by a mapping and by
+  a merge, and the record is split on the exact `" | "`.
+  `deduplicate_entities(judge_llm=...)` without `judge=True` warns that the
+  judge did not run. An adoption into a declared label drops the labels the
+  adopted guess had itself absorbed, not only its primary.
+
+- `GraphExtraction`'s verification prompt now tells the model that entity
+  descriptions are later used to decide whether two entities from different
+  documents are the same: use only facts the text states about *this*
+  entity, include the fact that tells similarly named entities apart, and
+  describe only the referent this entity denotes when a name is shared.
+
 - **A `.csv` is no longer read as prose.** `ingest()` sent every file through
   the text loader, so a table became one chunk with its commas intact and no
   column kept its type. A `.csv`, `.tsv`, `.psv` or `.tab` now takes the record

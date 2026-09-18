@@ -94,6 +94,8 @@ class GraphStore:
 
     _BATCH_SIZE = 500
     _STRUCTURAL_LABELS = RESERVED_NODE_LABELS
+    #: Property written by entity resolution holding labels absorbed on merge.
+    _MERGED_LABELS_KEY = "merged_labels"
     _REL_LABEL_HINTS: dict[str, tuple[str, str]] = {
         "PART_OF": ("Document", "Chunk"),
         "NEXT_CHUNK": ("Chunk", "Chunk"),
@@ -181,6 +183,7 @@ class GraphStore:
             by_label.setdefault(node.label, []).append(node)
 
         count = 0
+        promotable: list[tuple[GraphNode, str]] = []
         for label, group in by_label.items():
             await self._ensure_label_id_index(label)
             safe_label = sanitize_cypher_label(label)
@@ -201,6 +204,7 @@ class GraphStore:
             if not cleaned_group:
                 continue
             if is_entity:
+                promotable.extend(cleaned_group)
                 # Relationship writes MATCH endpoints as ``__Entity__ {id}``.
                 await self._ensure_label_id_index("__Entity__")
             # Process in batches
@@ -263,8 +267,80 @@ class GraphStore:
                             )
                             raise DatabaseError(f"Node upsert failed: {inner_exc}") from inner_exc
 
+        await self._promote_merged_labels(promotable)
+
         logger.debug(f"Upserted {count} nodes")
         return count
+
+    async def _promote_merged_labels(self, nodes: list[tuple[GraphNode, str]]) -> None:
+        """Add labels absorbed during resolution as real Cypher labels.
+
+        Entity resolution collapses duplicates into one node and records the
+        losers' labels in a ``merged_labels`` property, because
+        ``GraphNode.label`` holds a single string. A property is not a type:
+        measured against a real FalkorDB, a ``Person`` that absorbed
+        ``Engineer`` was invisible to ``MATCH (n:Engineer)`` (0 rows) while the
+        property lookup found it. Promoting them here keeps the merged node
+        reachable under every type it was extracted as, which is the whole
+        point of preserving the label.
+
+        Failures are logged, not raised -- the labels are an enrichment and
+        must not cost us the nodes themselves.
+        """
+        by_labels: dict[tuple[str, ...], list[str]] = {}
+        for node, cid in nodes:
+            raw = node.properties.get(self._MERGED_LABELS_KEY)
+            if not isinstance(raw, str):
+                continue
+            extra: set[str] = set()
+            # The exact delimiter every writer joins with; a bare "|" would
+            # read a label such as "A|B" back as two.
+            for part in raw.split(" | "):
+                part = part.strip()
+                # The survivor already carries its own label.
+                if not part or part == node.label:
+                    continue
+                # Sanitize *before* the structural check, not after. The guard
+                # compares strings, and sanitizing strips backticks, so a raw
+                # "`Document`" would pass the check and then become Document —
+                # landing a structural label on an entity, which is the exact
+                # case this guard exists to prevent.
+                try:
+                    safe = sanitize_cypher_label(part)
+                except ValueError:
+                    logger.warning("Skipping unusable merged label %r", part)
+                    continue
+                # Never stamp a structural or marker label onto an entity: it
+                # would surface in every MATCH (:Document) / (:Chunk) query.
+                if safe in self._STRUCTURAL_LABELS or safe == "__Entity__":
+                    logger.warning("Skipping structural merged label %r", part)
+                    continue
+                if safe == node.label:
+                    continue
+                extra.add(safe)
+            if extra:
+                by_labels.setdefault(tuple(sorted(extra)), []).append(cid)
+
+        for labels, ids in by_labels.items():
+            clause = "".join(f":`{lab}`" for lab in labels)
+            # Batched like every other write in this class. Unbatched, a
+            # cross-label-heavy ingest puts every matching id in one parameter
+            # list, and the except below would then drop the promoted labels
+            # for all of them at once.
+            for start in range(0, len(ids), self._BATCH_SIZE):
+                chunk = ids[start : start + self._BATCH_SIZE]
+                try:
+                    await self._conn.query(
+                        f"UNWIND $ids AS nid MATCH (n:__Entity__ {{id: nid}}) SET n{clause}",
+                        {"ids": chunk},
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to add merged labels %s to %d node(s): %s",
+                        ", ".join(labels),
+                        len(chunk),
+                        exc,
+                    )
 
     async def set_document_path(self, document_id: str, path: str) -> None:
         """Point a Document at the file it is now read from.
@@ -456,7 +532,9 @@ class GraphStore:
 
     # The row about to be written sets ``is_stub`` itself; a placeholder's
     # ``True`` must not land on the node first and then have to be undone.
-    _NEVER_CARRY_ON_RECONCILE = frozenset({"id", "embedding", "is_stub"})
+    _NEVER_CARRY_ON_RECONCILE = frozenset(
+        {"id", "embedding", "is_stub", "description_embedding", "description_embedding_hash"}
+    )
 
     async def _carry_then_delete(self, old_id: str, new_id: str) -> None:
         """Copy what only the old node knew onto the new one, then delete the old.
