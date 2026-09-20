@@ -1920,6 +1920,8 @@ class GraphRAG:
             WARNING. A list may not contain a table: each table is written on
             its own, so ``ValueError`` is raised before anything is ingested.
         """
+        ctx = ctx or Context()
+
         # ── Structured mode ──
         # The source itself says which path it takes: a .csv is records, not
         # prose. Its mapping is looked up in the ontology, where the user declared
@@ -2009,7 +2011,7 @@ class GraphRAG:
         # ── Config validation (cached, runs at most once per session) ──
         # Catches dim/model mismatches up-front instead of mid-ingest, where
         # FalkorDB would reject vectors with a less-actionable error.
-        await self._validate_graph_config()
+        await self._validate_graph_config(ctx=ctx)
 
         # ── Dispatch ──
         if isinstance(source, list):
@@ -2402,7 +2404,7 @@ class GraphRAG:
         # classified it as a leftover pending write, and deleted the user's
         # document and its chunks — reporting nothing.
         self._check_no_pending_marker(resolved_id)
-        await self._validate_graph_config()
+        await self._validate_graph_config(ctx=ctx)
         # Before deciding whether this is a first write or a re-sync: a delete
         # that crashed past its commit marker still shows a Document, and a
         # cutover that crashed mid-way shows none. Read after recovery, the
@@ -3298,6 +3300,8 @@ class GraphRAG:
                 refers to text-mode without an explicit ``document_id``.
             DocumentNotFoundError: Id unknown and ``if_missing="error"``.
         """
+        ctx = ctx or Context()
+
         # ── Argument shape (mirror ingest() so callers get a familiar error surface) ──
         if source is None and text is None:
             raise ValueError("Either 'source' (file path) or 'text' must be provided")
@@ -3346,10 +3350,7 @@ class GraphRAG:
                 "source (.csv, .tsv, .psv, .tab)."
             )
 
-        await self._validate_graph_config()
-
-        if ctx is None:
-            ctx = Context()
+        await self._validate_graph_config(ctx=ctx)
 
         if mapping is not None and document_id is None:
             # Same default ingest() gives a table, so update("hr.csv") and

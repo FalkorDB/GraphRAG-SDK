@@ -1448,9 +1448,7 @@ class TestGraphRAGConcurrentLazyInitialization:
         assert probe.call_count == 1
         assert g._config_validated is True
 
-    def test_graph_config_validation_lock_rebinds_after_delete_all(
-        self, mock_conn, embedder, llm
-    ):
+    def test_graph_config_validation_lock_rebinds_after_delete_all(self, mock_conn, embedder, llm):
         """Config validation can contend again after sync wrappers create a new loop."""
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         g._graph_store.delete_all = AsyncMock()
@@ -1738,6 +1736,34 @@ class TestGraphRAGIngestValidation:
 
         with pytest.raises(ConfigError, match="Embedding model mismatch"):
             await g.ingest(text="hello", document_id="d1")
+
+    async def test_ingest_passes_context_budget_to_config_validation(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="graph config query"):
+            await g.ingest(
+                text="hello",
+                document_id="d1",
+                ctx=Context(latency_budget_ms=0.0),
+            )
+
+        g._graph_store.query_raw.assert_not_awaited()
+
+    async def test_update_passes_context_budget_to_config_validation(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="graph config query"):
+            await g.update(
+                text="hello",
+                document_id="d1",
+                ctx=Context(latency_budget_ms=0.0),
+            )
+
+        g._graph_store.query_raw.assert_not_awaited()
 
     async def test_ingest_input_validation_runs_before_config_probe(self, mock_conn, embedder):
         """Bad input must raise ``ValueError`` immediately, without first
