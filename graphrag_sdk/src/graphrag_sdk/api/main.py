@@ -332,7 +332,9 @@ class GraphRAG:
         self.ontology = ontology or Ontology()
         self._embedding_dimension = embedding_dimension
         self._config_validated = False
-        self._config_validation_lock = asyncio.Lock()
+        self._config_validation_lock: asyncio.Lock | None = None
+        self._config_validation_loop: asyncio.AbstractEventLoop | None = None
+        self._config_validation_task: asyncio.Task[None] | None = None
 
         # Storage layer
         self._graph_store = GraphStore(self._conn)
@@ -4409,88 +4411,112 @@ class GraphRAG:
         """
         if self._config_validated:
             return
-        async with self._config_validation_lock:
+        async with self._config_lock():
             if self._config_validated:
                 return
 
-            try:
-                if ctx is not None:
-                    ctx.ensure_budget("graph config query")
-                result = await self._graph_store.query_raw(
-                    "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
-                    "RETURN c.embedding_model, c.embedding_dimension"
-                )
-                if result.result_set:
-                    stored_model = result.result_set[0][0]
-                    stored_dim = result.result_set[0][1]
-                    current_model = self.embedder.model_name
+            loop = asyncio.get_running_loop()
+            task = self._config_validation_task
+            if task is None or task.done() or task.get_loop() is not loop:
+                task = loop.create_task(self._validate_graph_config_once(ctx=ctx))
+                self._config_validation_task = task
 
-                    if stored_model and not _same_embedding_model(stored_model, current_model):
-                        raise ConfigError(
-                            f"Embedding model mismatch: graph was built with "
-                            f"'{stored_model}' but current embedder is "
-                            f"'{current_model}'. Use the same embedding model "
-                            f"to query this graph."
-                        )
-                    if stored_dim and stored_dim != self._embedding_dimension:
-                        raise ConfigError(
-                            f"Embedding dimension mismatch: graph was built with "
-                            f"dimension {stored_dim} but current config is "
-                            f"{self._embedding_dimension}."
-                        )
-            except ConfigError:
-                raise
-            except LatencyBudgetExceededError:
-                raise
-            except Exception:
-                # Don't mark as validated on transient failures — retry next call.
-                logger.debug("Failed to validate graph config", exc_info=True)
-                return
+        await task
 
-            # Probe the embedder once: confirm it produces vectors of the
-            # configured dimension. Catches user error like
-            # ``embedding_dimension=256`` paired with a 1536-dim model.
+    async def _validate_graph_config_once(self, *, ctx: Context | None = None) -> None:
+        """Run one configuration validation attempt for concurrent callers."""
+        try:
             if ctx is not None:
-                ctx.ensure_budget("graph config embedder probe")
-            try:
-                probe = await self.embedder.aembed_query(
-                    "dim_check",
-                    timeout=(
-                        ctx.provider_timeout_seconds("graph config embedder probe")
-                        if ctx is not None
-                        else None
-                    ),
-                )
-            except LatencyBudgetExceededError:
-                raise
-            except Exception:
-                # Probe failure is non-fatal — but don't cache a "validated"
-                # state, otherwise a transient outage permanently disables
-                # the dim check for this instance. Return so the next call
-                # retries the probe once the underlying issue clears.
-                logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
-                return
-            else:
-                if not probe:
-                    # Empty list / None means the embedder produced nothing for
-                    # a real input. That's a misbehaving embedder — fail fast
-                    # rather than silently flipping ``_config_validated`` and
-                    # writing an unusable graph downstream.
-                    raise ConfigError(
-                        f"Embedder probe returned an empty vector for "
-                        f"'{self.embedder.model_name}'. The embedder is not "
-                        f"producing usable output."
-                    )
-                if len(probe) != self._embedding_dimension:
-                    raise ConfigError(
-                        f"embedding_dimension={self._embedding_dimension} was "
-                        f"configured, but the embedder ('{self.embedder.model_name}') "
-                        f"produces {len(probe)}-dim vectors. Either pass "
-                        f"embedding_dimension={len(probe)} or configure the "
-                        f"embedder to produce {self._embedding_dimension} dims."
-                    )
+                ctx.ensure_budget("graph config query")
+            result = await self._graph_store.query_raw(
+                "MATCH (c:__GraphRAGConfig__ {id: 'default'}) "
+                "RETURN c.embedding_model, c.embedding_dimension"
+            )
+            if result.result_set:
+                stored_model = result.result_set[0][0]
+                stored_dim = result.result_set[0][1]
+                current_model = self.embedder.model_name
 
-            self._config_validated = True
+                if stored_model and not _same_embedding_model(stored_model, current_model):
+                    raise ConfigError(
+                        f"Embedding model mismatch: graph was built with "
+                        f"'{stored_model}' but current embedder is "
+                        f"'{current_model}'. Use the same embedding model "
+                        f"to query this graph."
+                    )
+                if stored_dim and stored_dim != self._embedding_dimension:
+                    raise ConfigError(
+                        f"Embedding dimension mismatch: graph was built with "
+                        f"dimension {stored_dim} but current config is "
+                        f"{self._embedding_dimension}."
+                    )
+        except ConfigError:
+            raise
+        except LatencyBudgetExceededError:
+            raise
+        except Exception:
+            # Don't mark as validated on transient failures — retry next call.
+            logger.debug("Failed to validate graph config", exc_info=True)
+            return
+
+        # Probe the embedder once: confirm it produces vectors of the
+        # configured dimension. Catches user error like
+        # ``embedding_dimension=256`` paired with a 1536-dim model.
+        if ctx is not None:
+            ctx.ensure_budget("graph config embedder probe")
+        try:
+            probe = await self.embedder.aembed_query(
+                "dim_check",
+                timeout=(
+                    ctx.provider_timeout_seconds("graph config embedder probe")
+                    if ctx is not None
+                    else None
+                ),
+            )
+        except LatencyBudgetExceededError:
+            raise
+        except Exception:
+            # Probe failure is non-fatal — but don't cache a "validated"
+            # state, otherwise a transient outage permanently disables
+            # the dim check for this instance. Return so the next call
+            # retries the probe once the underlying issue clears.
+            logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
+            return
+        else:
+            if not probe:
+                # Empty list / None means the embedder produced nothing for
+                # a real input. That's a misbehaving embedder — fail fast
+                # rather than silently flipping ``_config_validated`` and
+                # writing an unusable graph downstream.
+                raise ConfigError(
+                    f"Embedder probe returned an empty vector for "
+                    f"'{self.embedder.model_name}'. The embedder is not "
+                    f"producing usable output."
+                )
+            if len(probe) != self._embedding_dimension:
+                raise ConfigError(
+                    f"embedding_dimension={self._embedding_dimension} was "
+                    f"configured, but the embedder ('{self.embedder.model_name}') "
+                    f"produces {len(probe)}-dim vectors. Either pass "
+                    f"embedding_dimension={len(probe)} or configure the "
+                    f"embedder to produce {self._embedding_dimension} dims."
+                )
+
+        self._config_validated = True
+
+    def _config_lock(self) -> asyncio.Lock:
+        """Return the configuration lock for the currently running loop.
+
+        The ``*_sync`` wrappers run each call under a fresh ``asyncio.run()``,
+        and a lock that once waited on one loop raises when acquired from
+        another. Recreate it when the active loop changes, matching the
+        loop-aware ontology lock above.
+        """
+        loop = asyncio.get_running_loop()
+        if self._config_validation_lock is None or self._config_validation_loop is not loop:
+            self._config_validation_lock = asyncio.Lock()
+            self._config_validation_loop = loop
+        return self._config_validation_lock
 
     # ── Answer Post-processing ─────────────────────────────────
 

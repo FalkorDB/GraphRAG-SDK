@@ -1446,6 +1446,75 @@ class TestGraphRAGConcurrentLazyInitialization:
         await asyncio.gather(*tasks)
         assert g._config_validated is True
 
+    def test_graph_config_validation_lock_rebinds_after_delete_all(
+        self, mock_conn, embedder, llm
+    ):
+        """Config validation can contend again after sync wrappers create a new loop."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.delete_all = AsyncMock()
+        g._ontology_store.clear = AsyncMock()
+
+        async def validate_concurrently():
+            query_started = asyncio.Event()
+            release_query = asyncio.Event()
+
+            async def query_config(*args, **kwargs):
+                query_started.set()
+                await release_query.wait()
+                return MagicMock(result_set=[])
+
+            g._graph_store.query_raw = AsyncMock(side_effect=query_config)
+            g.embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+
+            first = asyncio.create_task(g._validate_graph_config())
+            await query_started.wait()
+            second = asyncio.create_task(g._validate_graph_config())
+            await asyncio.sleep(0)
+            release_query.set()
+            await asyncio.gather(first, second)
+
+        asyncio.run(validate_concurrently())
+        asyncio.run(g.delete_all())
+        asyncio.run(validate_concurrently())
+
+        assert g._config_validated is True
+
+    @pytest.mark.parametrize("failure_stage", ["query", "probe"])
+    async def test_graph_config_validation_failure_is_single_flight(
+        self, mock_conn, embedder, llm, failure_stage
+    ):
+        """Concurrent transient failures do not serialize duplicate attempts."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        failure_started = asyncio.Event()
+        release_failure = asyncio.Event()
+
+        async def query_config(*args, **kwargs):
+            if failure_stage == "query":
+                failure_started.set()
+                await release_failure.wait()
+                raise RuntimeError("transient query failure")
+            return MagicMock(result_set=[])
+
+        async def probe_embedder(*args, **kwargs):
+            failure_started.set()
+            await release_failure.wait()
+            raise RuntimeError("transient probe failure")
+
+        query = AsyncMock(side_effect=query_config)
+        probe = AsyncMock(side_effect=probe_embedder)
+        g._graph_store.query_raw = query
+        g.embedder.aembed_query = probe
+
+        tasks = [asyncio.create_task(g._validate_graph_config()) for _ in range(20)]
+        await failure_started.wait()
+        await asyncio.sleep(0)
+        release_failure.set()
+        await asyncio.gather(*tasks)
+
+        assert query.call_count == 1
+        assert probe.call_count == (0 if failure_stage == "query" else 1)
+        assert g._config_validated is False
+
     async def test_set_ontology_does_not_skip_newer_assignment(self, mock_conn, embedder, llm):
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         first = Ontology(entities=[Entity(label="First")])
