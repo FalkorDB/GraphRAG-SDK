@@ -1444,6 +1444,8 @@ class TestGraphRAGConcurrentLazyInitialization:
 
         release_probe.set()
         await asyncio.gather(*tasks)
+        assert query.call_count == 1
+        assert probe.call_count == 1
         assert g._config_validated is True
 
     def test_graph_config_validation_lock_rebinds_after_delete_all(
