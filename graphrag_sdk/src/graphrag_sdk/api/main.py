@@ -2507,7 +2507,7 @@ class GraphRAG:
         contradicts the existing ontology fails before touching the graph.
         """
         ctx = ctx or Context()
-        await self._validate_graph_config()
+        await self._validate_graph_config(ctx=ctx)
         await self._ensure_ontology_initialized()
 
         # Declare before writing, so a mapping that contradicts the existing
