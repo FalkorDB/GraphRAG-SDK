@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each table is written on its own, so one bad row cannot fail the batch.
   `ingest_sync()` mirrors the call.
 
-- **`TableMapping`, `Column` and `Link` are the whole declaration surface.** A
+- **`TableMapping`, `Column` and `Link` remain the entity-anchored declaration
+  surface.** A
   table describes one entity per record: `key=` identifies the row, `name=` is
   its display name, `properties={"age": Column("age", "INTEGER")}` types the
   columns (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `DATE`, `LIST`) and
@@ -39,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inf`; `LIST` is parsed as a CSV row. Also exported: `CsvRecordLoader` (sniffs
   comma, semicolon, tab and pipe), `RecordLoaderStrategy` and `RecordBatch` for
   other formats, and `TextLoader`.
+
+- **`Ontology(relationship_tables=[RelationshipMapping(...)])` supports
+  edge-only files.** `EndpointMapping` resolves each side by an exact existing
+  entity label and declared key property, while a fixed `type=` or an
+  allow-listed `type_column=` controls the relationship type. Typed edge
+  properties, direction, and fail-or-skip policies for missing and ambiguous
+  endpoints are persisted with the ontology and round-trip through JSON. The
+  pipeline creates no entity, event, Document, or Chunk nodes; it validates the
+  full source before writing, resolves and writes in bounded batches, reports
+  structured endpoint failures, rejects order-dependent duplicate rows, and
+  performs idempotent source-scoped snapshot updates.
 
 - **A row and a prose mention of the same thing are one node from the first
   write.** An entity's id is derived from its name for a table row exactly as

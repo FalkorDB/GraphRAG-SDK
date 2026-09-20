@@ -34,6 +34,7 @@ from graphrag_sdk.core.models import (
     Ontology,
     Relation,
 )
+from graphrag_sdk.core.tables import Column, EndpointMapping, RelationshipMapping
 from graphrag_sdk.storage.ontology_store import (
     OntologyContradictionError,
     OntologyModificationNotAllowedError,
@@ -122,6 +123,71 @@ class TestOntologyStoreGraphName:
     def test_suffix(self, store_factory):
         store = store_factory("my_kg")
         assert store.graph_name == "my_kg__ontology"
+
+
+class TestRelationshipMappingStorage:
+    def test_relationship_mapping_rows_round_trip(self):
+        mappings = OntologyStore._load_relationship_tables_sync(
+            [
+                [
+                    "consumed_batch.csv",
+                    "Unit",
+                    "units__unit_id",
+                    "source",
+                    "Batch",
+                    "batches__batch_id",
+                    "target",
+                    "CONSUMED_BATCH",
+                    None,
+                    [],
+                    "OUTGOING",
+                    "error",
+                    "skip",
+                    "Consumption",
+                ]
+            ],
+            [
+                [
+                    "consumed_batch.csv",
+                    "consumed_on",
+                    "consumed_on",
+                    "DATE",
+                    "Consumption date",
+                ]
+            ],
+        )
+        assert mappings == [
+            RelationshipMapping(
+                source="consumed_batch.csv",
+                start=EndpointMapping("Unit", "units__unit_id", "source"),
+                end=EndpointMapping("Batch", "batches__batch_id", "target"),
+                type="CONSUMED_BATCH",
+                properties={
+                    "consumed_on": Column("consumed_on", "DATE", "Consumption date")
+                },
+                ambiguous_endpoint="skip",
+                description="Consumption",
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_register_persists_relationship_mapping(self, store_factory, fake_graph):
+        store = store_factory()
+        mapping = RelationshipMapping(
+            source="consumed_batch.csv",
+            start=EndpointMapping("Unit", "units__unit_id", "source"),
+            end=EndpointMapping("Batch", "batches__batch_id", "target"),
+            type="CONSUMED_BATCH",
+            properties={"consumed_on": Column("consumed_on", "DATE")},
+        )
+        await store.register(Ontology(relationship_tables=[mapping]))
+        calls = [
+            params
+            for query, params in fake_graph.calls
+            if "MERGE (t:RelationshipMapping" in query
+        ]
+        assert calls[0]["start_key"] == "units__unit_id"
+        assert calls[0]["end_key"] == "batches__batch_id"
 
 
 # ── register — entity shape ──────────────────────────────────────

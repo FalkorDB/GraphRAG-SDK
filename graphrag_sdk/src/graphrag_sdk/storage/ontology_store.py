@@ -65,7 +65,13 @@ from graphrag_sdk.core.models import (
     Relation,
     reject_reserved_labels,
 )
-from graphrag_sdk.core.tables import Column, Link, TableMapping
+from graphrag_sdk.core.tables import (
+    Column,
+    EndpointMapping,
+    Link,
+    RelationshipMapping,
+    TableMapping,
+)
 
 OwnerKind = Literal["entity", "relation"]
 DescriptionKind = Literal["entity", "relation", "entity_property", "relation_property"]
@@ -181,6 +187,8 @@ class OntologyStore:
         # load() instead of the warning below -- taking the entities and relations
         # this separate handler exists to protect down with it.
         link_column_rows: list[Any] = []
+        relationship_table_rows: list[Any] = []
+        relationship_column_rows: list[Any] = []
         try:
             table_result = await self._query(
                 "MATCH (t:TableMapping) RETURN t.source AS source, t.label AS label, "
@@ -203,10 +211,31 @@ class OntologyStore:
                 "c.property AS property, c.column AS column, c.type AS type, "
                 "c.description AS description, c.link_to AS link_to"
             )
+            relationship_table_result = await self._query(
+                "MATCH (t:RelationshipMapping) "
+                "RETURN t.source AS source, t.start_entity AS start_entity, "
+                "t.start_key AS start_key, t.start_column AS start_column, "
+                "t.end_entity AS end_entity, t.end_key AS end_key, "
+                "t.end_column AS end_column, t.type AS type, "
+                "t.type_column AS type_column, t.allowed_types AS allowed_types, "
+                "t.direction AS direction, t.missing_endpoint AS missing_endpoint, "
+                "t.ambiguous_endpoint AS ambiguous_endpoint, t.description AS description"
+            )
+            relationship_column_result = await self._query(
+                "MATCH (t:RelationshipMapping)-[:MAPS_COLUMN]->(c:MappedRelationshipColumn) "
+                "RETURN t.source AS source, c.property AS property, c.column AS column, "
+                "c.type AS type, c.description AS description"
+            )
             table_rows = list(getattr(table_result, "result_set", None) or [])
             column_rows = list(getattr(column_result, "result_set", None) or [])
             link_rows = list(getattr(link_result, "result_set", None) or [])
             link_column_rows = list(getattr(link_column_result, "result_set", None) or [])
+            relationship_table_rows = list(
+                getattr(relationship_table_result, "result_set", None) or []
+            )
+            relationship_column_rows = list(
+                getattr(relationship_column_result, "result_set", None) or []
+            )
         except Exception as exc:
             logger.warning(
                 "Table mappings could not be loaded (entities and relations are unaffected): %s",
@@ -291,6 +320,9 @@ class OntologyStore:
             entities=entities,
             relations=relations,
             tables=self._load_tables_sync(table_rows, column_rows, link_rows, link_column_rows),
+            relationship_tables=self._load_relationship_tables_sync(
+                relationship_table_rows, relationship_column_rows
+            ),
         )
 
     # ── Register ─────────────────────────────────────────────────
@@ -344,7 +376,12 @@ class OntologyStore:
             raise TypeError("register() missing required argument: 'ontology'")
         # ``tables`` counts: an ontology carrying only mappings is not empty, and
         # returning early here would silently discard every one of them.
-        if not ontology.entities and not ontology.relations and not ontology.tables:
+        if (
+            not ontology.entities
+            and not ontology.relations
+            and not ontology.tables
+            and not ontology.relationship_tables
+        ):
             return await self.load()
 
         # Refuse ``Document``/``Chunk`` before anything is persisted: a stored
@@ -363,6 +400,8 @@ class OntologyStore:
             await self._upsert_relation_type(rt)
         for mapping in ontology.tables:
             await self._upsert_table_mapping(mapping)
+        for relationship_mapping in ontology.relationship_tables:
+            await self._upsert_relationship_mapping(relationship_mapping)
 
         return await self.load()
 
@@ -383,17 +422,41 @@ class OntologyStore:
         before the first write, the graph stays loadable and the caller gets an
         error naming both paths.
         """
+        existing_table_sources = {mapping.source for mapping in existing.tables}
+        existing_relationship_sources = {mapping.source for mapping in existing.relationship_tables}
+        crossed = [
+            mapping.source
+            for mapping in incoming.tables
+            if mapping.source in existing_relationship_sources
+        ]
+        crossed.extend(
+            mapping.source
+            for mapping in incoming.relationship_tables
+            if mapping.source in existing_table_sources
+        )
+        if crossed:
+            raise OntologyContradictionError(
+                f"{crossed[0]!r} is already registered under the other structured "
+                "mapping kind; one source cannot be both entity-anchored and "
+                "relationship-only"
+            )
+
         owner: dict[str, str] = {m.signature: m.source for m in existing.tables}
-        for mapping in incoming.tables:
-            prior = owner.get(mapping.signature)
-            if prior is not None and prior != mapping.source:
+        owner.update({m.signature: m.source for m in existing.relationship_tables})
+        incoming_signatures = [(mapping.signature, mapping.source) for mapping in incoming.tables]
+        incoming_signatures.extend(
+            (mapping.signature, mapping.source) for mapping in incoming.relationship_tables
+        )
+        for signature, source in incoming_signatures:
+            prior = owner.get(signature)
+            if prior is not None and prior != source:
                 raise OntologyContradictionError(
-                    f"{mapping.source!r} and the already-registered {prior!r} both reduce "
-                    f"to the property signature {mapping.signature!r}. Every property a "
+                    f"{source!r} and the already-registered {prior!r} both reduce "
+                    f"to the property signature {signature!r}. Every property a "
                     f"source writes is stored as '<signature>__<property>', so these would "
                     f"share one namespace and overwrite each other. The signature is the "
                     f"file's basename, so give one of them a distinct filename "
-                    f"(for example {mapping.signature}_2026_02.csv)."
+                    f"(for example {signature}_2026_02.csv)."
                 )
 
     @staticmethod
@@ -665,6 +728,112 @@ class OntologyStore:
                 )
         return [mappings[source] for source in sorted(mappings)]
 
+    @staticmethod
+    def _load_relationship_tables_sync(
+        table_rows: list[Any], column_rows: list[Any]
+    ) -> list[RelationshipMapping]:
+        columns_by_source: dict[str, dict[str, Column]] = {}
+        for row in column_rows:
+            if not (isinstance(row, list) and len(row) >= 4 and row[0] and row[1] and row[2]):
+                continue
+            columns_by_source.setdefault(row[0], {})[row[1]] = Column(
+                name=row[2],
+                type=row[3] or "STRING",
+                description=row[4] if len(row) > 4 else None,
+            )
+
+        mappings: dict[str, RelationshipMapping] = {}
+        for row in table_rows:
+            if not (
+                isinstance(row, list)
+                and len(row) >= 13
+                and all(row[index] for index in (0, 1, 2, 3, 4, 5, 6))
+            ):
+                continue
+            source = row[0]
+            if source in mappings:
+                logger.warning(
+                    "The ontology graph holds more than one relationship mapping for %r; "
+                    "the first was read and the rest ignored.",
+                    source,
+                )
+                continue
+            try:
+                mappings[source] = RelationshipMapping(
+                    source=source,
+                    start=EndpointMapping(entity=row[1], key=row[2], column=row[3]),
+                    end=EndpointMapping(entity=row[4], key=row[5], column=row[6]),
+                    type=row[7] or None,
+                    type_column=row[8] or None,
+                    allowed_types=list(row[9] or []),
+                    properties=dict(columns_by_source.get(source, {})),
+                    direction=row[10] or "OUTGOING",
+                    missing_endpoint=row[11] or "error",
+                    ambiguous_endpoint=row[12] or "error",
+                    description=row[13] if len(row) > 13 else None,
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "The stored relationship mapping for %r could not be read and was "
+                    "left out of the ontology: %s",
+                    source,
+                    exc,
+                )
+        return [mappings[source] for source in sorted(mappings)]
+
+    async def _upsert_relationship_mapping(self, mapping: RelationshipMapping) -> None:
+        await self._query(
+            "MERGE (t:RelationshipMapping {source: $source}) "
+            "SET t.start_entity = $start_entity, t.start_key = $start_key, "
+            "t.start_column = $start_column, t.end_entity = $end_entity, "
+            "t.end_key = $end_key, t.end_column = $end_column, t.type = $type, "
+            "t.type_column = $type_column, t.allowed_types = $allowed_types, "
+            "t.direction = $direction, t.missing_endpoint = $missing_endpoint, "
+            "t.ambiguous_endpoint = $ambiguous_endpoint, t.description = $description",
+            {
+                "source": mapping.source,
+                "start_entity": mapping.start.entity,
+                "start_key": mapping.start.key,
+                "start_column": mapping.start.column,
+                "end_entity": mapping.end.entity,
+                "end_key": mapping.end.key,
+                "end_column": mapping.end.column,
+                "type": mapping.type,
+                "type_column": mapping.type_column,
+                "allowed_types": list(mapping.allowed_types),
+                "direction": mapping.direction,
+                "missing_endpoint": mapping.missing_endpoint,
+                "ambiguous_endpoint": mapping.ambiguous_endpoint,
+                "description": mapping.description,
+            },
+        )
+        await self._query(
+            "MATCH (t:RelationshipMapping {source: $source}) "
+            "WITH t ORDER BY ID(t) WITH collect(t) AS all WHERE size(all) > 1 "
+            "UNWIND all[1..] AS dup "
+            "OPTIONAL MATCH (dup)-[:MAPS_COLUMN]->(c:MappedRelationshipColumn) "
+            "DETACH DELETE c, dup",
+            {"source": mapping.source},
+        )
+        await self._query(
+            "MATCH (t:RelationshipMapping {source: $source})"
+            "-[:MAPS_COLUMN]->(c:MappedRelationshipColumn) DETACH DELETE c",
+            {"source": mapping.source},
+        )
+        for prop_name, column in mapping.typed_properties.items():
+            await self._query(
+                "MATCH (t:RelationshipMapping {source: $source}) "
+                "MERGE (t)-[:MAPS_COLUMN]->(c:MappedRelationshipColumn {property: $prop}) "
+                "SET c.column = $column, c.type = $type, c.description = $description",
+                {
+                    "source": mapping.source,
+                    "prop": prop_name,
+                    "column": column.name,
+                    "type": column.type,
+                    "description": column.description,
+                },
+            )
+
     async def _upsert_table_mapping(self, mapping: TableMapping) -> None:
         """Upsert a ``:TableMapping`` node and replace its children.
 
@@ -781,6 +950,15 @@ class OntologyStore:
         await self._query(
             "MATCH (t:TableMapping {source: $source}) "
             "OPTIONAL MATCH (t)-[:MAPS_COLUMN|MAPS_LINK|MAPS_LINK_COLUMN]->(c) "
+            "DETACH DELETE c, t",
+            {"source": source},
+        )
+
+    async def drop_relationship_mapping(self, source: str) -> None:
+        """Remove a stored relationship-only mapping and its property children."""
+        await self._query(
+            "MATCH (t:RelationshipMapping {source: $source}) "
+            "OPTIONAL MATCH (t)-[:MAPS_COLUMN]->(c:MappedRelationshipColumn) "
             "DETACH DELETE c, t",
             {"source": source},
         )
@@ -1012,6 +1190,14 @@ class OntologyStore:
         await self._query(
             "MATCH (:TableMapping)-[:MAPS_LINK_COLUMN]->(c:MappedLinkColumn {link_to: $old}) "
             "SET c.link_to = $new",
+            {"old": old, "new": new},
+        )
+        await self._query(
+            "MATCH (t:RelationshipMapping {start_entity: $old}) SET t.start_entity = $new",
+            {"old": old, "new": new},
+        )
+        await self._query(
+            "MATCH (t:RelationshipMapping {end_entity: $old}) SET t.end_entity = $new",
             {"old": old, "new": new},
         )
 

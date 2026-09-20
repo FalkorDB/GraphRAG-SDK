@@ -16,8 +16,10 @@ from graphrag_sdk.core.tables import (
     COLUMN_TYPES,
     RESERVED_PROPERTY_NAMES,
     Column,
+    EndpointMapping,
     Link,
     MappingError,
+    RelationshipMapping,
     TableMapping,
     _as_columns,
     _check_identifier,
@@ -34,10 +36,12 @@ __all__ = [
     "RESERVED_PROPERTY_NAMES",
     "Column",
     "EdgeMapping",
+    "EndpointMapping",
     "Link",
     "MappingError",
     "NodeMapping",
     "RecordMapping",
+    "RelationshipMapping",
     "TableMapping",
     "safe_property_name",
     "signature_for",
@@ -609,6 +613,40 @@ def ontology_for(mapping: TableMapping) -> Ontology:
     """
     contribution = record_mapping_for(mapping).to_ontology()
     return contribution.model_copy(update={"tables": [mapping]})
+
+
+def ontology_for_relationship(mapping: RelationshipMapping) -> Ontology:
+    """The ontology contribution of an edge-only table."""
+    relations = [
+        Relation(
+            label=relationship_type,
+            description=mapping.description
+            or f"{mapping.start.entity} to {mapping.end.entity} from {mapping.source}",
+            patterns=[
+                (
+                    mapping.start.entity if mapping.direction == "OUTGOING" else mapping.end.entity,
+                    mapping.end.entity if mapping.direction == "OUTGOING" else mapping.start.entity,
+                )
+            ],
+            properties=[
+                Attribute(
+                    name=mapping.signed_name(prop),
+                    type=column.type,
+                    description=column.description
+                    or f"{column.name}, from relationship table {mapping.source}",
+                    structured=True,
+                )
+                for prop, column in mapping.typed_properties.items()
+            ],
+        )
+        for relationship_type in mapping.relationship_types
+    ]
+    labels = list(dict.fromkeys([mapping.start.entity, mapping.end.entity]))
+    return Ontology(
+        entities=[Entity(label=label) for label in labels],
+        relations=relations,
+        relationship_tables=[mapping],
+    )
 
 
 def record_mapping_for(mapping: TableMapping) -> RecordMapping:

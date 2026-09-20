@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from graphrag_sdk.core.tables import TableMapping
+from graphrag_sdk.core.tables import RelationshipMapping, TableMapping
 
 logger = logging.getLogger(__name__)
 
@@ -423,18 +423,22 @@ class Ontology(DataModel):
     object. Each mapping signs the properties it writes with its source, so two
     tables describing one entity cannot overwrite each other.
     """
+    relationship_tables: list[RelationshipMapping] = Field(default_factory=list)
+    """Tabular sources whose rows describe only relationships between existing entities."""
 
     @model_validator(mode="after")
     def _refuse_duplicate_sources(self) -> Ontology:
         """One source, one mapping. Two would race on the same properties."""
         seen: set[str] = set()
-        for mapping in self.tables:
-            if mapping.source in seen:
+        sources = [mapping.source for mapping in self.tables]
+        sources.extend(mapping.source for mapping in self.relationship_tables)
+        for source in sources:
+            if source in seen:
                 raise ValueError(
-                    f"Table mapping for {mapping.source!r} is declared twice. "
+                    f"Structured mapping for {source!r} is declared twice. "
                     f"One source has one mapping; merge them."
                 )
-            seen.add(mapping.source)
+            seen.add(source)
         return self
 
     @model_validator(mode="after")
@@ -488,6 +492,10 @@ class Ontology(DataModel):
         by_signature: dict[str, list[str]] = {}
         for mapping in self.tables:
             by_signature.setdefault(mapping.signature, []).append(mapping.source)
+        for relationship_mapping in self.relationship_tables:
+            by_signature.setdefault(relationship_mapping.signature, []).append(
+                relationship_mapping.source
+            )
         collisions = {sig: srcs for sig, srcs in by_signature.items() if len(srcs) > 1}
         if collisions:
             detail = "; ".join(
@@ -756,11 +764,17 @@ class Ontology(DataModel):
         merged_tables = {mapping.source: mapping for mapping in self.tables}
         for mapping in other.tables:
             merged_tables.setdefault(mapping.source, mapping)
+        merged_relationship_tables = {
+            mapping.source: mapping for mapping in self.relationship_tables
+        }
+        for mapping in other.relationship_tables:
+            merged_relationship_tables.setdefault(mapping.source, mapping)
         return self.model_copy(
             update={
                 "entities": list(ent_by_label.values()),
                 "relations": list(rel_by_label.values()),
                 "tables": list(merged_tables.values()),
+                "relationship_tables": list(merged_relationship_tables.values()),
             }
         )
 
