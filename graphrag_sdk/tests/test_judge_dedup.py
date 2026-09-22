@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from graphrag_sdk.core.providers.base import LLMBatchItem
+from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import labels_compatible
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.judge_dedup import (
     MAX_DESC_CHARS,
@@ -20,11 +21,13 @@ from graphrag_sdk.storage.judge_dedup import (
     PROMPT_TOKEN_BUDGET,
     LLMJudgeDeduplicator,
     knn_pairs,
+    label_lists_compatible,
     make_groups_dense,
     name_in_desc_pairs,
     pack_prompts,
     pairs_from_response,
     parse_groups,
+    parse_type_verdicts,
     render_set,
     unanswered_sets,
 )
@@ -185,6 +188,46 @@ def test_incomplete_partition_is_not_a_verdict():
     assert unanswered_sets("SET 1 GROUP: 1\nSET 1 GROUP: 2\nSET 1 GROUP: 3", [[1, 2, 3]]) == set()
 
 
+def test_cross_family_pairs_never_reach_the_model():
+    """Thomas Watson [Person] is nominated next to IBM [Organization] through
+    "Led IBM." in his description. A person is not a company: the pair is
+    dropped before grouping, so the set the model sees holds only the two
+    IBM names, and a model that says yes to everything cannot merge him."""
+    graph = ScriptedGraph(ROWS)
+    llm = ScriptedLLM(["SET 1 GROUP: 1, 2, 3", "SET 1 GROUP: 1, 2, 3"])
+    stats, merge = _run(graph, llm)
+    assert stats["type_gated"] >= 1 and stats["type_gate_calls"] == 1
+    assert all("Thomas Watson" not in p for p in llm.prompts)
+    assert merge.groups == [["e1", "e2"]]
+    # the gate asked about types once, not about Watson
+    gate_prompt = llm.gate_prompts[0]
+    assert "Organization / Person" in gate_prompt or "Person / Organization" in gate_prompt
+    assert parse_type_verdicts("1. YES\n2) no\nnonsense\n9. YES", 3) == {0: True, 1: False}
+    # the model's verdict is the only gate: a model YES on Person/Organization
+    # lets Watson reach the judge (which then merges him, as scripted)
+    graph = ScriptedGraph(ROWS)
+    llm = ScriptedLLM(["SET 1 GROUP: 1, 2, 3", "SET 1 GROUP: 1, 2, 3"])
+    llm.gate_verdicts = {
+        frozenset(("Organization", "Person")): True,
+        frozenset(("Company", "Person")): True,
+    }
+    stats, merge = _run(graph, llm)
+    assert stats["type_gated"] == 0 and merge.groups == [["e1", "e2", "e3"]]
+    # and a model NO blocks the pair (Company/Organization) whatever the names say
+    graph = ScriptedGraph(ROWS)
+    llm = ScriptedLLM([[IBM], [IBM]])
+    llm.gate_verdicts = {frozenset(("Company", "Organization")): False}
+    stats, merge = _run(graph, llm)
+    assert merge.groups == []
+
+    def no_person_date(a, b):
+        return a.lower() == b.lower() or {a, b} != {"Person", "Date"}
+
+    assert label_lists_compatible(["Person"], ["Date"], no_person_date) is False
+    assert label_lists_compatible(["Person", "Date"], ["Person"], no_person_date) is True
+    assert label_lists_compatible([], ["Date"], no_person_date) is True
+
+
 def test_a_set_omitted_by_one_pass_is_unjudged_not_disagreed():
     """Pass 1 groups IBM's two names; pass 2 answers the set with only one
     member. That is not a split vote: nothing is merged and no SAME_AS edge
@@ -195,7 +238,7 @@ def test_a_set_omitted_by_one_pass_is_unjudged_not_disagreed():
     assert stats["linked"] == 0 and stats["disagreed_pairs"] == 0
     assert not any("SAME_AS" in c[0] for c in graph.calls)
     graph = ScriptedGraph(ROWS)
-    stats, merge = _run(graph, ScriptedLLM(["SET 1 GROUP: 1, 2", "SET 1 GROUP: 1, 2"]))
+    stats, merge = _run(graph, ScriptedLLM(["SET 1 GROUP: 1", "SET 1 GROUP: 1"]))
     assert stats["merged"] == 0 and merge.groups == []
 
 
@@ -305,7 +348,28 @@ class ScriptedLLM:
         self.prompts: list[str] = []
         self.pass_no = 0
 
+    # Type gate answers. ``None`` (default) plays a sensible model using the
+    # resolver's label families as a stand-in (Person/Date -> NO, Company/
+    # Organization -> YES); a dict overrides per ``frozenset`` label pair.
+    gate_verdicts: dict | None = None
+
     async def abatch_invoke(self, prompts, **kw):
+        if prompts and prompts[0].startswith("You decide, for pairs of entity TYPE labels"):
+            self.gate_prompts = getattr(self, "gate_prompts", []) + list(prompts)
+            out = []
+            for i, p in enumerate(prompts):
+                lines = []
+                listing = p.split("PAIRS\n")[1].split("\n\n")[0]
+                for m in re.finditer(r"^(\d+)\. (.+?) / (.+)$", listing, flags=re.M):
+                    a, b = m.group(2), m.group(3)
+                    if self.gate_verdicts is not None and frozenset((a, b)) in self.gate_verdicts:
+                        ok = self.gate_verdicts[frozenset((a, b))]
+                    else:
+                        ok = labels_compatible(a, b)
+                    lines.append(f"{m.group(1)}. {'YES' if ok else 'NO'}")
+                content = "\n".join(lines)
+                out.append(LLMBatchItem(index=i, response=SimpleNamespace(content=content)))
+            return out
         self.prompts.extend(prompts)
         same = self.per_pass[self.pass_no] if self.pass_no < len(self.per_pass) else []
         self.pass_no += 1
