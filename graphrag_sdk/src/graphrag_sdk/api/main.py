@@ -113,6 +113,9 @@ from graphrag_sdk.storage.vector_store import VectorStore
 logger = logging.getLogger(__name__)
 
 
+_CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS = 0.1
+
+
 _RAG_SYSTEM_PROMPT = (
     "You are a helpful assistant. Answer questions using ONLY the "
     "context provided in the user message.\n\n"
@@ -334,7 +337,9 @@ class GraphRAG:
         self._config_validated = False
         self._config_validation_lock: asyncio.Lock | None = None
         self._config_validation_loop: asyncio.AbstractEventLoop | None = None
-        self._config_validation_task: asyncio.Task[None] | None = None
+        self._config_validation_task: asyncio.Task[bool] | None = None
+        self._config_validation_retry_at = 0.0
+        self._config_validation_generation = 0
 
         # Storage layer
         self._graph_store = GraphStore(self._conn)
@@ -1772,6 +1777,9 @@ class GraphRAG:
         self._vector_store._id_indices_ensured = False
         # The __GraphRAGConfig__ node is gone too; re-validate next time.
         self._config_validated = False
+        self._config_validation_generation += 1
+        self._config_validation_task = None
+        self._config_validation_retry_at = 0.0
         # Force re-registration of self.ontology next call.
         self._ontology_initialized = False
 
@@ -4412,19 +4420,66 @@ class GraphRAG:
         """
         if self._config_validated:
             return
+        loop = asyncio.get_running_loop()
+        created_task = False
         async with self._config_lock():
             if self._config_validated:
                 return
 
-            loop = asyncio.get_running_loop()
             task = self._config_validation_task
-            if task is None or task.done() or task.get_loop() is not loop:
-                task = loop.create_task(self._validate_graph_config_once(ctx=ctx))
+            if task is None or task.cancelled() or task.get_loop() is not loop:
+                task = loop.create_task(
+                    self._validate_graph_config_once(
+                        ctx=ctx,
+                        generation=self._config_validation_generation,
+                    )
+                )
                 self._config_validation_task = task
+                created_task = True
+            elif task.done():
+                try:
+                    result = task.result()
+                except Exception:
+                    # Configuration and latency errors are request-specific;
+                    # retry them for a later caller instead of replaying a
+                    # completed exception forever.
+                    task = loop.create_task(
+                        self._validate_graph_config_once(
+                            ctx=ctx,
+                            generation=self._config_validation_generation,
+                        )
+                    )
+                    self._config_validation_task = task
+                    created_task = True
+                else:
+                    if result or loop.time() >= self._config_validation_retry_at:
+                        task = loop.create_task(
+                            self._validate_graph_config_once(
+                                ctx=ctx,
+                                generation=self._config_validation_generation,
+                            )
+                        )
+                        self._config_validation_task = task
+                        created_task = True
 
-        await task
+        if ctx is not None and not created_task:
+            timeout = ctx.provider_timeout_seconds("graph config validation")
+            if timeout is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+                except asyncio.TimeoutError as exc:
+                    raise LatencyBudgetExceededError(
+                        "Latency budget exceeded waiting for graph config validation"
+                    ) from exc
+                return
+        await asyncio.shield(task)
 
-    async def _validate_graph_config_once(self, *, ctx: Context | None = None) -> None:
+    async def _validate_graph_config_once(
+        self,
+        *,
+        ctx: Context | None = None,
+        generation: int,
+    ) -> bool:
         """Run one configuration validation attempt for concurrent callers."""
         try:
             if ctx is not None:
@@ -4456,9 +4511,12 @@ class GraphRAG:
         except LatencyBudgetExceededError:
             raise
         except Exception:
-            # Don't mark as validated on transient failures — retry next call.
+            self._schedule_config_validation_retry(generation)
             logger.debug("Failed to validate graph config", exc_info=True)
-            return
+            return False
+
+        if generation != self._config_validation_generation:
+            return False
 
         # Probe the embedder once: confirm it produces vectors of the
         # configured dimension. Catches user error like
@@ -4477,12 +4535,9 @@ class GraphRAG:
         except LatencyBudgetExceededError:
             raise
         except Exception:
-            # Probe failure is non-fatal — but don't cache a "validated"
-            # state, otherwise a transient outage permanently disables
-            # the dim check for this instance. Return so the next call
-            # retries the probe once the underlying issue clears.
+            self._schedule_config_validation_retry(generation)
             logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
-            return
+            return False
         else:
             if not probe:
                 # Empty list / None means the embedder produced nothing for
@@ -4503,7 +4558,18 @@ class GraphRAG:
                     f"embedder to produce {self._embedding_dimension} dims."
                 )
 
+        if generation != self._config_validation_generation:
+            return False
         self._config_validated = True
+        self._config_validation_retry_at = 0.0
+        return True
+
+    def _schedule_config_validation_retry(self, generation: int) -> None:
+        """Coalesce transient failures without disabling future retries."""
+        if generation == self._config_validation_generation:
+            self._config_validation_retry_at = (
+                asyncio.get_running_loop().time() + _CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS
+            )
 
     def _config_lock(self) -> asyncio.Lock:
         """Return the configuration lock for the currently running loop.

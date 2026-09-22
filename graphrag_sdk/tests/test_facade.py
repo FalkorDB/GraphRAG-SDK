@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import graphrag_sdk.api.main as main_module
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
@@ -1515,6 +1516,26 @@ class TestGraphRAGConcurrentLazyInitialization:
         assert probe.call_count == (0 if failure_stage == "query" else 1)
         assert g._config_validated is False
 
+    async def test_graph_config_validation_backoff_avoids_failure_convoy(
+        self, mock_conn, embedder, llm
+    ):
+        """A burst during an outage shares one failed validation attempt."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        query = AsyncMock(side_effect=RuntimeError("transient query failure"))
+        g._graph_store.query_raw = query
+
+        await asyncio.gather(*(g._validate_graph_config() for _ in range(20)))
+        assert query.call_count == 1
+
+        # Transient failures remain retryable, but not while the short
+        # coalescing window is active.
+        await g._validate_graph_config()
+        assert query.call_count == 1
+
+        await asyncio.sleep(main_module._CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS + 0.02)
+        await g._validate_graph_config()
+        assert query.call_count == 2
+
     async def test_set_ontology_does_not_skip_newer_assignment(self, mock_conn, embedder, llm):
         g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
         first = Ontology(entities=[Entity(label="First")])
@@ -1712,9 +1733,10 @@ class TestGraphRAGEmbedderProbe:
         assert g._config_validated is False
 
         # Second call: probe recovers and produces a correctly-sized
-        # vector. The previous failure didn't poison the cache, so the
-        # dim check runs and succeeds, flipping the flag.
+        # vector. The previous failure didn't poison the cache; after the
+        # short retry backoff, the dim check runs and succeeds.
         g.embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+        await asyncio.sleep(main_module._CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS + 0.02)
         await g.retrieve("test?")
         assert g._config_validated is True
 
