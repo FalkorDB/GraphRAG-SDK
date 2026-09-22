@@ -228,8 +228,6 @@ def test_type_gate_quotes_labels_as_named_fields():
     assert lines[1].endswith("TYPE B: `Person`") and "`y`" not in lines[1]
     assert "[" not in lines[1] and "\n" not in lines[1]
 
-
-
     """Thomas Watson [Person] is nominated next to IBM [Organization] through
     "Led IBM." in his description. A person is not a company: the pair is
     dropped before grouping, so the set the model sees holds only the two

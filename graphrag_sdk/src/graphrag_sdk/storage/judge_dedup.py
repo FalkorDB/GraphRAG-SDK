@@ -258,6 +258,7 @@ def render_type_pairs(pairs: list[tuple[str, str]]) -> str:
         for i, (a, b) in enumerate(pairs)
     )
 
+
 _VERDICT_RE = re.compile(r"^\s*(\d+)\s*[.):-]\s*(YES|NO)\b", re.I | re.M)
 
 
