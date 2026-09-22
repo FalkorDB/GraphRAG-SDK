@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ import pytest
 from graphrag_sdk.core.providers.base import LLMBatchItem
 from graphrag_sdk.storage.deduplicator import EntityDeduplicator
 from graphrag_sdk.storage.judge_dedup import (
+    _MAX_PAIR_DECISIONS,
     MAX_DESC_CHARS,
     MAX_NAME_CHARS,
     NAME_IN_DESC_CAP,
@@ -1406,7 +1408,7 @@ def test_a_rejected_pair_is_recorded_as_different():
     assert decision["merged"] is False
 
 
-def test_the_cap_keeps_the_pairs_that_changed_the_graph():
+def test_decisions_are_ordered_by_consequence_not_similarity():
     graph = ScriptedGraph(ROWS)
     _, dd, _ = _run_with_judge(graph, ScriptedLLM([[IBM], [IBM]]))
 
@@ -1414,6 +1416,7 @@ def test_the_cap_keeps_the_pairs_that_changed_the_graph():
     # needs: a merge changed the graph and is never what falls off the end,
     # and only then does similarity decide. Sorting on similarity alone would
     # let a merged pair be cut while a rejected one at the same score stays.
+    # Three pairs is under the cap; that the order survives it is next.
     keys = [(not d["merged"], d["verdict"] != "same") for d in dd.last_pair_decisions]
     assert keys == sorted(keys)
     merged_at = [i for i, d in enumerate(dd.last_pair_decisions) if d["merged"]]
@@ -1426,11 +1429,93 @@ def test_the_cap_keeps_the_pairs_that_changed_the_graph():
     assert measured == sorted(measured, reverse=True)
 
 
+def _crowded_graph():
+    """More candidate pairs than the cap admits, with the one merge among them
+    the *least* similar of the lot.
+
+    Sixty entities a degree apart on a circle: every pair the gate keeps scores
+    above 0.99, and the top-k band nominates far more than 200 of them. Two
+    more sit off that plane at 0.56 to each other — over the gate, under
+    everything else — and the judge calls those two the same thing."""
+    rows: list[tuple] = []
+    table: dict[str, list[float]] = {}
+    for i in range(60):
+        desc = f"Branch number {i}."
+        ang = math.radians(i)
+        table[desc] = [math.cos(ang), math.sin(ang), 0.0]
+        # A zero name vector is never nominated, so the name gate cannot add
+        # pairs and the count stays the description gate's alone.
+        rows.append((f"n{i}", f"Office {i}", desc, ["Organization"], None, [0.0, 0.0, 0.0]))
+    table["A faint match."] = [0.0, 0.0, 1.0]
+    table["The other faint match."] = [-0.8285, 0.0, 0.56]
+    rows.append(("x", "Faint One", "A faint match.", ["Organization"], None, [0.0, 0.0, 0.0]))
+    rows.append(
+        ("y", "Faint Two", "The other faint match.", ["Organization"], None, [0.0, 0.0, 0.0])
+    )
+    faint = [{"Faint One", "Faint Two"}]
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(
+        ScriptedGraph(rows), FakeEmbedder(table), ScriptedLLM([faint, faint]), merge
+    )
+    return asyncio.run(dd.deduplicate()), dd
+
+
+def test_the_cap_drops_the_tail_and_keeps_the_merge():
+    stats, dd = _crowded_graph()
+    decisions = dd.last_pair_decisions
+
+    # The cap is the payload-safety guarantee: the record stays bounded however
+    # many pairs the gates nominate.
+    assert stats["candidates"] == 316
+    assert len(decisions) == _MAX_PAIR_DECISIONS == 200
+
+    # And it is the graph-changing pair that survives it. This one scores 0.56
+    # against a field where everything kept scores above 0.99, so a cap taking
+    # the 200 most similar would drop the single merge in the run and leave a
+    # reviewer 200 rejections with nothing to review.
+    merged = [d for d in decisions if d["merged"]]
+    assert [(d["a"], d["b"]) for d in merged] == [("x", "y")]
+    assert stats["merged"] == 1
+    assert decisions[0] is merged[0]
+    assert merged[0]["similarity"] < min(d["similarity"] for d in decisions[1:])
+
+
 def test_a_run_with_no_candidates_records_no_decisions():
     graph = ScriptedGraph([ROWS[0]])
     _, dd, _ = _run_with_judge(graph, ScriptedLLM([[]]))
 
     assert dd.last_pair_decisions == []
+
+
+def test_a_reused_judge_does_not_carry_decisions_into_a_failed_run():
+    class FetchFails(ScriptedGraph):
+        """The entity fetch is the first await in a run; a graph that drops
+        between runs fails there."""
+
+        def __init__(self, rows):
+            super().__init__(rows)
+            self.fail = False
+
+        async def query_raw(self, cypher, params=None):
+            if self.fail and "RETURN e.id, e.name, e.description" in cypher:
+                raise RuntimeError("graph unreachable")
+            return await super().query_raw(cypher, params)
+
+    graph = FetchFails(ROWS)
+    dd = LLMJudgeDeduplicator(
+        graph, FakeEmbedder(DESC_EMB), ScriptedLLM([[IBM], [IBM]]), RecordingMerge()
+    )
+    asyncio.run(dd.deduplicate())
+    assert dd.last_pair_decisions
+
+    graph.fail = True
+    with pytest.raises(RuntimeError):
+        asyncio.run(dd.deduplicate())
+    # The failed run judged nothing. Clearing only after the fetch would leave
+    # the first run's merges on the instance, for a caller that catches the
+    # failure to read back as this run's.
+    assert dd.last_pair_decisions == []
+    assert dd.last_stats == {}
 
 
 def test_decisions_do_not_survive_into_the_next_run():

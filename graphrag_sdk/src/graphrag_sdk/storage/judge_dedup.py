@@ -729,15 +729,18 @@ class LLMJudgeDeduplicator:
         def protected(a: str, b: str) -> bool:
             return frozenset((a, b)) in skip or (a in distinct and b in distinct)
 
+        # Cleared before the first await, not at the end: every early return
+        # below leaves a run with no decisions, and a fetch that raises leaves
+        # none either — on a reused judge, keeping the previous run's would
+        # attribute its pairs to this one.
+        self.last_pair_decisions = []
+        self.last_stats = {}
+
         ents = await self._fetch_entities(batch_size)
 
         def protected_idx(i: int, j: int) -> bool:
             return protected(ents[i]["id"], ents[j]["id"])
 
-        # Cleared here, not at the end: every early return below leaves a run
-        # with no decisions, and keeping the previous run's would attribute
-        # them to this one.
-        self.last_pair_decisions = []
         stats = self.last_stats = {
             "entities": len(ents),
             "candidates": 0,
