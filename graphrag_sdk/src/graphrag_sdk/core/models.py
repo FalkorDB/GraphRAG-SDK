@@ -1019,14 +1019,27 @@ class FinalizeResult(DataModel):
     how sure are we about *these two* -- and showing a run figure beside one
     pair invites exactly that misreading.
 
-    Each entry names the two entities, the similarity the gates measured before
-    the model was asked anything, how many passes called them the same out of
-    how many saw them, the verdict (``same``, ``split``, ``different`` or
+    Each entry names the two entities, how many passes called them the same out
+    of how many saw them, the verdict (``same``, ``split``, ``different`` or
     ``unjudged``), and whether they were ultimately merged. No probability is
     derived, because the judge does not produce one; a caller that wants bands
     can form them from these parts and will know what its bands mean.
 
-    Ordered by similarity and capped, so the most similar pairs survive the cut.
+    ``similarity`` is what the gates measured before the model was asked
+    anything, and is ``None`` where nothing measured it -- a pair nominated
+    because one name appears in the other's description carries a flat
+    constant, and a pair reached only through its set carries nothing at all.
+    ``nominated_by`` says which it was: ``embedding``, ``name_in_desc`` or
+    ``set_expansion``.
+
+    Every pair the model was asked about appears, which is not the same as
+    every pair a gate nominated: a set is admitted on density, so it can hold a
+    pair no gate brought forward, and the partition answers for it like any
+    other. ``passes`` counts the passes that actually answered, so a prompt
+    that failed reads as ``unjudged`` rather than as a rejection.
+
+    Capped, with merged pairs kept first and similarity deciding only after
+    that, so a pair that changed the graph is never what falls off the end.
     Empty when the judge did not run.
     """
     entities_embedded: int = 0

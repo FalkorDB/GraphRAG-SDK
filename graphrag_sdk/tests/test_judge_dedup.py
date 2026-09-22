@@ -686,6 +686,27 @@ def test_entity_deduplicator_judge_toggle(judge):
     assert bool(dd.last_judge_stats) is judge
 
 
+@pytest.mark.parametrize("judge", [False, True])
+def test_the_per_pair_record_reaches_the_facade(judge):
+    """The decisions are read off ``EntityDeduplicator``, not off the judge, so
+    the copy across that boundary is what a caller actually receives. A test
+    that only inspects ``LLMJudgeDeduplicator.last_pair_decisions`` stays green
+    while the hand-off is broken."""
+    g = _JudgeGraph()
+    llm = ScriptedLLM([[IBM], [IBM]])
+    dd = EntityDeduplicator(g, FakeEmbedder(DESC_EMB))
+    asyncio.run(dd.deduplicate(judge_llm=llm if judge else None))
+
+    if not judge:
+        # No judge ran, so there is nothing it decided.
+        assert dd.last_judge_pair_decisions == []
+        return
+    decisions = {frozenset((d["a"], d["b"])): d for d in dd.last_judge_pair_decisions}
+    decision = decisions[frozenset(("e1", "e2"))]
+    assert decision["verdict"] == "same" and decision["merged"] is True
+    assert set(decision) >= {"a_name", "b_name", "similarity", "nominated_by", "votes", "passes"}
+
+
 def test_judge_merges_through_absorb_and_unions_labels():
     """Inside EntityDeduplicator the judge decides identity and ``_absorb``
     performs the merge: one atomic absorb-and-delete write carrying the
@@ -1385,13 +1406,24 @@ def test_a_rejected_pair_is_recorded_as_different():
     assert decision["merged"] is False
 
 
-def test_decisions_are_ordered_by_similarity():
+def test_the_cap_keeps_the_pairs_that_changed_the_graph():
     graph = ScriptedGraph(ROWS)
     _, dd, _ = _run_with_judge(graph, ScriptedLLM([[IBM], [IBM]]))
 
-    scores = [d["similarity"] for d in dd.last_pair_decisions]
-    # The cap drops the tail, so the tail must be the least similar pairs.
-    assert scores == sorted(scores, reverse=True)
+    # The cap drops the tail, so the tail must be the pairs a reviewer least
+    # needs: a merge changed the graph and is never what falls off the end,
+    # and only then does similarity decide. Sorting on similarity alone would
+    # let a merged pair be cut while a rejected one at the same score stays.
+    keys = [(not d["merged"], d["verdict"] != "same") for d in dd.last_pair_decisions]
+    assert keys == sorted(keys)
+    merged_at = [i for i, d in enumerate(dd.last_pair_decisions) if d["merged"]]
+    assert merged_at == list(range(len(merged_at)))
+    measured = [
+        d["similarity"]
+        for d in dd.last_pair_decisions
+        if not d["merged"] and d["verdict"] != "same" and d["similarity"] is not None
+    ]
+    assert measured == sorted(measured, reverse=True)
 
 
 def test_a_run_with_no_candidates_records_no_decisions():
@@ -1424,3 +1456,137 @@ def test_protected_pairs_are_never_offered_as_decisions():
 
     # The model was never asked, so there is no decision to report about them.
     assert frozenset(("e1", "e2")) not in _by_pair(dd)
+
+
+def test_a_pair_the_judge_never_saw_is_not_reported_as_rejected():
+    graph = ScriptedGraph(ROWS)
+    # Every call fails in both passes: the model was asked nothing at all.
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([None, None]))
+
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    # Set membership, not the answer, says the pair was put forward — so a
+    # failed prompt reads as "not judged", never as two passes saying no.
+    assert decision["verdict"] == "unjudged"
+    assert (decision["votes"], decision["passes"]) == (0, 0)
+    assert decision["merged"] is False
+
+
+def test_a_pair_only_one_pass_saw_does_not_claim_two_passes():
+    graph = ScriptedGraph(ROWS)
+    # Pass one answers and says nothing is the same; pass two fails outright.
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM([[], None]))
+
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    assert decision["verdict"] == "unjudged"
+    assert (decision["votes"], decision["passes"]) == (0, 1)
+
+
+def test_an_unanswered_set_is_unjudged_rather_than_different():
+    graph = ScriptedGraph(ROWS)
+    # A well-formed reply that partitions nothing: the call succeeded, but the
+    # set came back unanswered, so no pair in it was decided.
+    _, dd, _ = _run_with_judge(graph, ScriptedLLM(["NO GROUPS", "NO GROUPS"]))
+
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    assert decision["verdict"] == "unjudged"
+    assert decision["votes"] == 0
+
+
+# A dense set admits a pair no gate nominated: description cosines put A-B at
+# 0.70 and B-C at 0.71, while A-C is 0. Two of three pairs is above the density
+# floor, so all three go to the model in one set — and the model is asked about
+# A and C like any other pair.
+SPARSE_ROWS = [
+    ("s1", "Alpha", "First subject.", ["Thing"], None, [1.0, 0.0, 0.0]),
+    ("s2", "Bravo", "Second subject.", ["Thing"], None, [0.0, 1.0, 0.0]),
+    ("s3", "Charlie", "Third subject.", ["Thing"], None, [0.0, 0.0, 1.0]),
+]
+SPARSE_DESC = {
+    "First subject.": [1.0, 0.0, 0.0],
+    "Second subject.": [0.70, 0.71, 0.0768],
+    "Third subject.": [0.0, 1.0, 0.0],
+}
+TRIO = {"Alpha", "Bravo", "Charlie"}
+
+
+def _run_sparse(llm, vote=True, **kw):
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(
+        ScriptedGraph(SPARSE_ROWS), FakeEmbedder(SPARSE_DESC), llm, merge, vote=vote
+    )
+    return asyncio.run(dd.deduplicate(**kw)), dd, merge
+
+
+def test_a_pair_judged_only_through_its_set_is_still_recorded():
+    stats, dd, merge = _run_sparse(ScriptedLLM([[TRIO], [TRIO]]))
+
+    # Two pairs were nominated; three were judged, and all three merged.
+    assert stats["candidates"] == 2
+    assert merge.groups == [["s1", "s2", "s3"]]
+    decision = _by_pair(dd)[frozenset(("s1", "s3"))]
+    # Asked twice, answered twice, merged — and a caller enumerating proposed
+    # merges must not be left unable to see the one that happened.
+    assert decision["verdict"] == "same"
+    assert (decision["votes"], decision["passes"]) == (2, 2)
+    assert decision["merged"] is True
+    # No gate measured these two, so no number is published as though one had.
+    assert decision["similarity"] is None
+    assert decision["nominated_by"] == "set_expansion"
+
+
+# "Delta" appears verbatim in the other description, and nothing else links
+# them: the only nomination is name-in-description, which carries a flat
+# constant rather than anything measured.
+NAME_IN_DESC_ROWS = [
+    ("n1", "Delta", "Quite unrelated.", ["Thing"], None, [1.0, 0.0, 0.0]),
+    ("n2", "Epsilon", "Mentions Delta once.", ["Thing"], None, [0.0, 1.0, 0.0]),
+]
+NAME_IN_DESC_DESC = {
+    "Quite unrelated.": [1.0, 0.0, 0.0],
+    "Mentions Delta once.": [0.0, 1.0, 0.0],
+}
+
+
+def test_a_flat_nomination_weight_is_not_published_as_a_similarity():
+    merge = RecordingMerge()
+    dd = LLMJudgeDeduplicator(
+        ScriptedGraph(NAME_IN_DESC_ROWS),
+        FakeEmbedder(NAME_IN_DESC_DESC),
+        ScriptedLLM([[], []]),
+        merge,
+    )
+    asyncio.run(dd.deduplicate())
+
+    decision = _by_pair(dd)[frozenset(("n1", "n2"))]
+    # NAME_IN_DESC_WEIGHT is the same number for every pair the gate nominates.
+    # Reporting it under "what the gates measured" would put a measurement on
+    # the record that was never taken — and it would drive the sort besides.
+    assert decision["similarity"] is None
+    assert decision["nominated_by"] == "name_in_desc"
+
+
+def test_merges_committed_before_a_failure_are_still_described():
+    class FailingMerge:
+        def __init__(self):
+            self.calls = 0
+
+        async def __call__(self, members):
+            self.calls += 1
+            raise RuntimeError("merge exploded")
+
+    merge = FailingMerge()
+    dd = LLMJudgeDeduplicator(
+        ScriptedGraph(ROWS), FakeEmbedder(DESC_EMB), ScriptedLLM([[IBM], [IBM]]), merge
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(dd.deduplicate())
+
+    assert merge.calls == 1
+    # The judge decided before any merge was attempted. Handing the caller an
+    # empty record beside stats that report real merges would describe a run
+    # that never happened.
+    decision = _by_pair(dd)[frozenset(("e1", "e2"))]
+    assert decision["verdict"] == "same"
+    assert (decision["votes"], decision["passes"]) == (2, 2)
+    # Nothing was committed for this pair, and the record says exactly that.
+    assert decision["merged"] is False
