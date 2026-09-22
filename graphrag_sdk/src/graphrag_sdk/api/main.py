@@ -113,6 +113,9 @@ from graphrag_sdk.storage.vector_store import VectorStore
 logger = logging.getLogger(__name__)
 
 
+_CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS = 0.1
+
+
 _RAG_SYSTEM_PROMPT = (
     "You are a helpful assistant. Answer questions using ONLY the "
     "context provided in the user message.\n\n"
@@ -332,6 +335,11 @@ class GraphRAG:
         self.ontology = ontology or Ontology()
         self._embedding_dimension = embedding_dimension
         self._config_validated = False
+        self._config_validation_lock: asyncio.Lock | None = None
+        self._config_validation_loop: asyncio.AbstractEventLoop | None = None
+        self._config_validation_task: asyncio.Task[bool] | None = None
+        self._config_validation_retry_at = 0.0
+        self._config_validation_generation = 0
 
         # Storage layer
         self._graph_store = GraphStore(self._conn)
@@ -613,10 +621,11 @@ class GraphRAG:
         callers would have to reach into ``_ontology_initialized`` to force
         re-registration on an existing instance.
         """
-        self.ontology = ontology
-        self._ontology_initialized = False
-        await self._ensure_ontology_initialized()
-        return self._global_ontology
+        async with self._ontology_lock():
+            self.ontology = ontology
+            self._ontology_initialized = False
+            await self._initialize_ontology()
+            return self._global_ontology
 
     async def _warn_about_a_parallel_label(self, incoming: Ontology, existing: Ontology) -> None:
         """Say something when a mapping introduces a label beside one in use.
@@ -1768,6 +1777,9 @@ class GraphRAG:
         self._vector_store._id_indices_ensured = False
         # The __GraphRAGConfig__ node is gone too; re-validate next time.
         self._config_validated = False
+        self._config_validation_generation += 1
+        self._config_validation_task = None
+        self._config_validation_retry_at = 0.0
         # Force re-registration of self.ontology next call.
         self._ontology_initialized = False
 
@@ -1916,6 +1928,8 @@ class GraphRAG:
             WARNING. A list may not contain a table: each table is written on
             its own, so ``ValueError`` is raised before anything is ingested.
         """
+        ctx = ctx or Context()
+
         # ── Structured mode ──
         # The source itself says which path it takes: a .csv is records, not
         # prose. Its mapping is looked up in the ontology, where the user declared
@@ -2005,7 +2019,7 @@ class GraphRAG:
         # ── Config validation (cached, runs at most once per session) ──
         # Catches dim/model mismatches up-front instead of mid-ingest, where
         # FalkorDB would reject vectors with a less-actionable error.
-        await self._validate_graph_config()
+        await self._validate_graph_config(ctx=ctx)
 
         # ── Dispatch ──
         if isinstance(source, list):
@@ -2398,7 +2412,7 @@ class GraphRAG:
         # classified it as a leftover pending write, and deleted the user's
         # document and its chunks — reporting nothing.
         self._check_no_pending_marker(resolved_id)
-        await self._validate_graph_config()
+        await self._validate_graph_config(ctx=ctx)
         # Before deciding whether this is a first write or a re-sync: a delete
         # that crashed past its commit marker still shows a Document, and a
         # cutover that crashed mid-way shows none. Read after recovery, the
@@ -2501,7 +2515,7 @@ class GraphRAG:
         contradicts the existing ontology fails before touching the graph.
         """
         ctx = ctx or Context()
-        await self._validate_graph_config()
+        await self._validate_graph_config(ctx=ctx)
         await self._ensure_ontology_initialized()
 
         # Declare before writing, so a mapping that contradicts the existing
@@ -3294,6 +3308,8 @@ class GraphRAG:
                 refers to text-mode without an explicit ``document_id``.
             DocumentNotFoundError: Id unknown and ``if_missing="error"``.
         """
+        ctx = ctx or Context()
+
         # ── Argument shape (mirror ingest() so callers get a familiar error surface) ──
         if source is None and text is None:
             raise ValueError("Either 'source' (file path) or 'text' must be provided")
@@ -3342,10 +3358,7 @@ class GraphRAG:
                 "source (.csv, .tsv, .psv, .tab)."
             )
 
-        await self._validate_graph_config()
-
-        if ctx is None:
-            ctx = Context()
+        await self._validate_graph_config(ctx=ctx)
 
         if mapping is not None and document_id is None:
             # Same default ingest() gives a table, so update("hr.csv") and
@@ -4407,7 +4420,67 @@ class GraphRAG:
         """
         if self._config_validated:
             return
+        loop = asyncio.get_running_loop()
+        created_task = False
+        async with self._config_lock():
+            if self._config_validated:
+                return
 
+            task = self._config_validation_task
+            if task is None or task.cancelled() or task.get_loop() is not loop:
+                task = loop.create_task(
+                    self._validate_graph_config_once(
+                        ctx=ctx,
+                        generation=self._config_validation_generation,
+                    )
+                )
+                self._config_validation_task = task
+                created_task = True
+            elif task.done():
+                try:
+                    result = task.result()
+                except Exception:
+                    # Configuration and latency errors are request-specific;
+                    # retry them for a later caller instead of replaying a
+                    # completed exception forever.
+                    task = loop.create_task(
+                        self._validate_graph_config_once(
+                            ctx=ctx,
+                            generation=self._config_validation_generation,
+                        )
+                    )
+                    self._config_validation_task = task
+                    created_task = True
+                else:
+                    if result or loop.time() >= self._config_validation_retry_at:
+                        task = loop.create_task(
+                            self._validate_graph_config_once(
+                                ctx=ctx,
+                                generation=self._config_validation_generation,
+                            )
+                        )
+                        self._config_validation_task = task
+                        created_task = True
+
+        if ctx is not None and not created_task:
+            timeout = ctx.provider_timeout_seconds("graph config validation")
+            if timeout is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+                except asyncio.TimeoutError as exc:
+                    raise LatencyBudgetExceededError(
+                        "Latency budget exceeded waiting for graph config validation"
+                    ) from exc
+                return
+        await asyncio.shield(task)
+
+    async def _validate_graph_config_once(
+        self,
+        *,
+        ctx: Context | None = None,
+        generation: int,
+    ) -> bool:
+        """Run one configuration validation attempt for concurrent callers."""
         try:
             if ctx is not None:
                 ctx.ensure_budget("graph config query")
@@ -4438,9 +4511,12 @@ class GraphRAG:
         except LatencyBudgetExceededError:
             raise
         except Exception:
-            # Don't mark as validated on transient failures — retry next call.
+            self._schedule_config_validation_retry(generation)
             logger.debug("Failed to validate graph config", exc_info=True)
-            return
+            return False
+
+        if generation != self._config_validation_generation:
+            return False
 
         # Probe the embedder once: confirm it produces vectors of the
         # configured dimension. Catches user error like
@@ -4459,12 +4535,9 @@ class GraphRAG:
         except LatencyBudgetExceededError:
             raise
         except Exception:
-            # Probe failure is non-fatal — but don't cache a "validated"
-            # state, otherwise a transient outage permanently disables
-            # the dim check for this instance. Return so the next call
-            # retries the probe once the underlying issue clears.
+            self._schedule_config_validation_retry(generation)
             logger.debug("Embedder probe failed; skipping dim check", exc_info=True)
-            return
+            return False
         else:
             if not probe:
                 # Empty list / None means the embedder produced nothing for
@@ -4485,7 +4558,32 @@ class GraphRAG:
                     f"embedder to produce {self._embedding_dimension} dims."
                 )
 
+        if generation != self._config_validation_generation:
+            return False
         self._config_validated = True
+        self._config_validation_retry_at = 0.0
+        return True
+
+    def _schedule_config_validation_retry(self, generation: int) -> None:
+        """Coalesce transient failures without disabling future retries."""
+        if generation == self._config_validation_generation:
+            self._config_validation_retry_at = (
+                asyncio.get_running_loop().time() + _CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS
+            )
+
+    def _config_lock(self) -> asyncio.Lock:
+        """Return the configuration lock for the currently running loop.
+
+        The ``*_sync`` wrappers run each call under a fresh ``asyncio.run()``,
+        and a lock that once waited on one loop raises when acquired from
+        another. Recreate it when the active loop changes, matching the
+        loop-aware ontology lock above.
+        """
+        loop = asyncio.get_running_loop()
+        if self._config_validation_lock is None or self._config_validation_loop is not loop:
+            self._config_validation_lock = asyncio.Lock()
+            self._config_validation_loop = loop
+        return self._config_validation_lock
 
     # ── Answer Post-processing ─────────────────────────────────
 
