@@ -188,6 +188,32 @@ def test_incomplete_partition_is_not_a_verdict():
     assert unanswered_sets("SET 1 GROUP: 1\nSET 1 GROUP: 2\nSET 1 GROUP: 3", [[1, 2, 3]]) == set()
 
 
+def test_gated_pair_cannot_rejoin_through_a_compatible_bridge():
+    """Dropping the Person-Date edge is not enough: a bare-labelled bridge
+    node nominated next to both would put them in one dense set (2 of 3
+    edges), and the entity judge would see the person and the date together.
+    Grouping honours the gate, so the set splits and the two never meet."""
+    rows = [
+        ("p", "Ada Lovelace", "Born 10 December 1815.", ["Person"], None, [1.0, 0.0, 0.0]),
+        ("b", "Ada", "Ada Lovelace, 10 December 1815.", [], None, [0.9, 0.3, 0.0]),
+        ("d", "10 December 1815", "Ada Lovelace's birth date.", ["Date"], None, [0.0, 1.0, 0.0]),
+    ]
+    graph = ScriptedGraph(rows)
+    llm = ScriptedLLM(["SET 1 GROUP: 1, 2, 3", "SET 1 GROUP: 1, 2, 3"])
+    llm.gate_verdicts = {frozenset(("Person", "Date")): False}
+    stats, merge = _run(graph, llm)
+    assert stats["type_gated"] == 1
+    # the person and the date were never listed in the same set
+    for prompt in llm.prompts:
+        for block in prompt.split("SET ")[1:]:
+            assert not ("[Person]" in block and "[Date]" in block), block
+    assert all(not ({"p", "d"} <= set(g)) for g in merge.groups)
+    # and the stats shape is stable when nothing needed asking
+    graph = ScriptedGraph(ROWS[:2])
+    stats, _ = _run(graph, ScriptedLLM([[IBM], [IBM]]))
+    assert stats["type_gate_calls"] == 1 and stats["type_gated"] == 0
+
+
 def test_cross_family_pairs_never_reach_the_model():
     """Thomas Watson [Person] is nominated next to IBM [Organization] through
     "Led IBM." in his description. A person is not a company: the pair is

@@ -843,6 +843,7 @@ class LLMJudgeDeduplicator:
             "agreed_pairs": 0,
             "disagreed_pairs": 0,
             "type_gated": 0,
+            "type_gate_calls": 0,
             "merged": 0,
             "linked": 0,
             "embedded": 0,
@@ -877,7 +878,15 @@ class LLMJudgeDeduplicator:
         if not edges:
             return stats
 
-        sets = make_groups_dense(edges, keep_apart=protected_idx if (skip or distinct) else None)
+        # Grouping must honour the gate too: with the Person-Date edge gone, a
+        # Person and a Date could still land in one set through a third node
+        # both are compatible with, and the entity judge would see them.
+        def keep_apart(a: int, b: int) -> bool:
+            return protected_idx(a, b) or not label_lists_compatible(
+                ents[a].get("labels"), ents[b].get("labels"), allowed
+            )
+
+        sets = make_groups_dense(edges, keep_apart=keep_apart)
         stats["sets"] = len(sets)
         set_ids = list(range(len(sets)))
         same1, calls, failed, failed_sets = await self._judge(sets, ents, set_ids)
