@@ -1464,8 +1464,10 @@ class TestGraphRAGConcurrentLazyInitialization:
                 await release_query.wait()
                 return MagicMock(result_set=[])
 
-            g._graph_store.query_raw = AsyncMock(side_effect=query_config)
-            g.embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+            query = AsyncMock(side_effect=query_config)
+            probe = AsyncMock(return_value=[0.1] * 8)
+            g._graph_store.query_raw = query
+            g.embedder.aembed_query = probe
 
             first = asyncio.create_task(g._validate_graph_config())
             await query_started.wait()
@@ -1473,11 +1475,14 @@ class TestGraphRAGConcurrentLazyInitialization:
             await asyncio.sleep(0)
             release_query.set()
             await asyncio.gather(first, second)
+            return query.call_count, probe.call_count
 
-        asyncio.run(validate_concurrently())
+        first_counts = asyncio.run(validate_concurrently())
         asyncio.run(g.delete_all())
-        asyncio.run(validate_concurrently())
+        second_counts = asyncio.run(validate_concurrently())
 
+        assert first_counts == (1, 1)
+        assert second_counts == (1, 1)
         assert g._config_validated is True
 
     @pytest.mark.parametrize("failure_stage", ["query", "probe"])
