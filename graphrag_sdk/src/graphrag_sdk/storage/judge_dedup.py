@@ -39,6 +39,7 @@ import random
 import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from itertools import combinations
 from typing import Any
 
 import numpy as np
@@ -50,6 +51,10 @@ logger = logging.getLogger(__name__)
 NAME_GATE = 0.65
 DESC_GATE = 0.55
 TOP_K = 10
+# Per-pair evidence is returned to the caller and travels into reports; bound
+# it so a graph with thousands of near-misses cannot turn one field into the
+# whole payload. Ordered by similarity, so the cut falls on the least similar.
+_MAX_PAIR_DECISIONS = 200
 GROUP_CAP = 8
 MIN_DENSITY = 0.5
 NAME_IN_DESC_WEIGHT = 0.65
@@ -476,6 +481,8 @@ class LLMJudgeDeduplicator:
         # Stats of the run in progress, so a caller that catches a failure
         # part-way can still report the merges that were committed.
         self.last_stats: dict[str, int] = {}
+        # Per-pair evidence from the most recent run. See ``deduplicate``.
+        self.last_pair_decisions: list[dict[str, Any]] = []
         self._embedded_ids: set[str] = set()
 
     async def _fetch_entities(self, batch_size: int) -> list[dict]:
@@ -722,6 +729,13 @@ class LLMJudgeDeduplicator:
         def protected(a: str, b: str) -> bool:
             return frozenset((a, b)) in skip or (a in distinct and b in distinct)
 
+        # Cleared before the first await, not at the end: every early return
+        # below leaves a run with no decisions, and a fetch that raises leaves
+        # none either — on a reused judge, keeping the previous run's would
+        # attribute its pairs to this one.
+        self.last_pair_decisions = []
+        self.last_stats = {}
+
         ents = await self._fetch_entities(batch_size)
 
         def protected_idx(i: int, j: int) -> bool:
@@ -750,9 +764,16 @@ class LLMJudgeDeduplicator:
         edges = knn_pairs(dv, TOP_K, DESC_GATE)
         for k, v in knn_pairs(nv, TOP_K, NAME_GATE).items():
             edges[k] = max(v, edges.get(k, -1.0))
+        # Everything nominated so far carries a cosine someone measured. What
+        # ``name_in_desc_pairs`` adds carries NAME_IN_DESC_WEIGHT, the same
+        # constant for every pair it brings forward — a nomination, not a
+        # measurement. Remembering which is which keeps the flat weight from
+        # being published as though it were a similarity.
+        measured = set(edges)
         for k, v in name_in_desc_pairs(ents).items():
             edges.setdefault(k, v)
         edges = {(a, b): v for (a, b), v in edges.items() if not protected_idx(a, b)}
+        measured &= set(edges)
         stats["candidates"] = len(edges)
         if not edges:
             return stats
@@ -760,9 +781,18 @@ class LLMJudgeDeduplicator:
         sets = make_groups_dense(edges, keep_apart=protected_idx if (skip or distinct) else None)
         stats["sets"] = len(sets)
         set_ids = list(range(len(sets)))
-        same1, calls, failed, failed_sets = await self._judge(sets, ents, set_ids)
+        # Which set each pair belonged to, known from membership rather than
+        # from what the model answered. A set whose prompt failed returns no
+        # pairs at all, so without this a pair the judge was never able to
+        # consider cannot be told from one it considered and rejected.
+        set_of_pair: dict[tuple[int, int], int] = {}
+        for si, s in zip(set_ids, sets):
+            for a, b in combinations(sorted(s), 2):
+                set_of_pair.setdefault((a, b), si)
+        same1, calls, failed, failed1 = await self._judge(sets, ents, set_ids)
         stats["llm_calls"] += calls
         stats["llm_failed"] += failed
+        failed2: set[int] = set()
         if self._vote:
             rng = random.Random(self._seed)
             shuffled = [rng.sample(s, len(s)) for s in reversed(sets)]
@@ -771,7 +801,7 @@ class LLMJudgeDeduplicator:
             )
             stats["llm_calls"] += calls
             stats["llm_failed"] += failed
-            failed_sets |= failed2
+            failed_sets = failed1 | failed2
             agreed = {p: same1[p] for p in same1.keys() & same2.keys()}
             # A set whose prompt failed in either pass was judged once, not
             # twice: its pairs are neither agreed nor disagreed, just unjudged.
@@ -783,6 +813,8 @@ class LLMJudgeDeduplicator:
                 if p not in agreed and si not in failed_sets
             }
         else:
+            same2 = {}
+            failed_sets = failed1
             agreed, disagreed = dict(same1), {}
         # The model never saw a protected pair as a candidate, but a partition
         # of a set can still put the two in one group; a decided pair stays
@@ -840,58 +872,185 @@ class LLMJudgeDeduplicator:
             groups[uf.find(i)].append(i)
         byid = {e["id"]: e for e in ents}
         root_id: dict[int, str] = {}
-        for r, idxs in groups.items():
-            ids = [ents[i]["id"] for i in idxs]
-            if len(ids) < 2:
-                root_id[idxs[0]] = ids[0]
-                continue
-            surv, absorbed = await self._merge([byid[i] for i in ids])
-            stats["merged"] += len(absorbed)
-            # A name vector written this run to a node the merge then deleted
-            # is not a vector the graph holds; the count is of those it does.
-            stats["embedded"] -= len(self._embedded_ids & set(absorbed))
-            self._embedded_ids -= set(absorbed)
-            for i in idxs:
-                # A member the merge rules kept apart (two rows of one table)
-                # is still its own node, so a link must point at it, not at
-                # the survivor it was not folded into.
-                eid = ents[i]["id"]
-                root_id[i] = surv if (eid in absorbed or eid == surv) else eid
+        # Recorded in a ``finally`` and read from ``root_id`` as it stands:
+        # a merge that raises part-way leaves earlier merges committed, and
+        # ``last_stats`` reports them. A decision record assembled only on the
+        # way out would be empty beside a count of real merges, so the caller
+        # would be handed stats claiming merges the record says nothing about.
+        try:
+            for r, idxs in groups.items():
+                ids = [ents[i]["id"] for i in idxs]
+                if len(ids) < 2:
+                    root_id[idxs[0]] = ids[0]
+                    continue
+                surv, absorbed = await self._merge([byid[i] for i in ids])
+                stats["merged"] += len(absorbed)
+                # A name vector written this run to a node the merge then
+                # deleted is not a vector the graph holds; the count is of
+                # those it does.
+                stats["embedded"] -= len(self._embedded_ids & set(absorbed))
+                self._embedded_ids -= set(absorbed)
+                for i in idxs:
+                    # A member the merge rules kept apart (two rows of one
+                    # table) is still its own node, so a link must point at
+                    # it, not at the survivor it was not folded into.
+                    eid = ents[i]["id"]
+                    root_id[i] = surv if (eid in absorbed or eid == surv) else eid
 
-        # One SAME_AS edge per surviving pair: two disagreed pairs that merged
-        # to the same survivors are one edge, and a pair the merges have made
-        # protected (B~C disagreed, B folded into A, A|C decided) is not linked.
-        # ``agreement`` records how many passes said SAME: 1 for a pair the
-        # passes split on; for one that reached across two sets and so is
-        # linked rather than merged, the number of passes that saw it — 2 with
-        # the vote, 1 without. A single pass never writes ``agreement = 2``.
-        passes = 2 if self._vote else 1
-        links: dict[tuple[str, str], int] = {}
-        for (a, b), votes in [*((p, 1) for p in disagreed), *((p, passes) for p in cross_set)]:
-            ra, rb = root_id[a], root_id[b]
-            if ra == rb or protected(ra, rb):
-                continue
-            # ...nor one whose survivor absorbed a node decided distinct from
-            # the other end (B|C decided, B folded into A, A~C disagreed).
-            ga, gb = uf.find(a), uf.find(b)
-            if ga != gb and any(protected_idx(x, y) for x in members[ga] for y in members[gb]):
-                continue
-            key = (min(ra, rb), max(ra, rb))
-            links[key] = max(votes, links.get(key, 0))
-        for (ra, rb), votes in sorted(links.items()):
-            try:
-                result = await self._graph.query_raw(
-                    "MATCH (a:__Entity__ {id: $a}), (b:__Entity__ {id: $b}) "
-                    "MERGE (a)-[r:SAME_AS]->(b) SET r.source = 'llm_judge', r.agreement = $votes "
-                    "RETURN a.id",
-                    {"a": ra, "b": rb, "votes": votes},
-                )
-            except Exception as exc:
-                logger.warning("judge dedup: failed to link %s ~ %s: %s", ra, rb, exc)
-                continue
-            # A MATCH on a node a concurrent delete removed succeeds with no
-            # row and writes nothing; that is not a link.
-            if getattr(result, "result_set", None):
-                stats["linked"] += 1
+            # One SAME_AS edge per surviving pair: two disagreed pairs that
+            # merged to the same survivors are one edge, and a pair the merges
+            # have made protected (B~C disagreed, B folded into A, A|C decided)
+            # is not linked. ``agreement`` records how many passes said SAME: 1
+            # for a pair the passes split on; for one that reached across two
+            # sets and so is linked rather than merged, the number of passes
+            # that saw it — 2 with the vote, 1 without. A single pass never
+            # writes ``agreement = 2``.
+            passes = 2 if self._vote else 1
+            links: dict[tuple[str, str], int] = {}
+            for (a, b), votes in [*((p, 1) for p in disagreed), *((p, passes) for p in cross_set)]:
+                ra, rb = root_id[a], root_id[b]
+                if ra == rb or protected(ra, rb):
+                    continue
+                # ...nor one whose survivor absorbed a node decided distinct
+                # from the other end (B|C decided, B folded into A, A~C
+                # disagreed).
+                ga, gb = uf.find(a), uf.find(b)
+                if ga != gb and any(protected_idx(x, y) for x in members[ga] for y in members[gb]):
+                    continue
+                key = (min(ra, rb), max(ra, rb))
+                links[key] = max(votes, links.get(key, 0))
+            for (ra, rb), votes in sorted(links.items()):
+                try:
+                    result = await self._graph.query_raw(
+                        "MATCH (a:__Entity__ {id: $a}), (b:__Entity__ {id: $b}) "
+                        "MERGE (a)-[r:SAME_AS]->(b) "
+                        "SET r.source = 'llm_judge', r.agreement = $votes "
+                        "RETURN a.id",
+                        {"a": ra, "b": rb, "votes": votes},
+                    )
+                except Exception as exc:
+                    logger.warning("judge dedup: failed to link %s ~ %s: %s", ra, rb, exc)
+                    continue
+                # A MATCH on a node a concurrent delete removed succeeds with
+                # no row and writes nothing; that is not a link.
+                if getattr(result, "result_set", None):
+                    stats["linked"] += 1
+        finally:
+            self.last_pair_decisions = self._pair_decisions(
+                ents,
+                edges,
+                measured,
+                set_of_pair,
+                same1,
+                same2,
+                failed1,
+                failed2,
+                agreed,
+                root_id,
+            )
         logger.info("LLMJudgeDeduplicator: %s", stats)
         return stats
+
+    def _pair_decisions(
+        self,
+        ents: list[dict],
+        edges: dict[tuple[int, int], float],
+        measured: set[tuple[int, int]],
+        set_of_pair: dict[tuple[int, int], int],
+        same1: dict[tuple[int, int], int],
+        same2: dict[tuple[int, int], int],
+        failed1: set[int],
+        failed2: set[int],
+        agreed: dict[tuple[int, int], int],
+        root_id: dict[int, str],
+    ) -> list[dict[str, Any]]:
+        """What was decided about each candidate pair, and on what evidence.
+
+        The run-level counts say how often the two passes agreed across the
+        whole graph. That is a property of the run, not of any pair in it, so
+        it cannot answer the only question a reader actually has in front of a
+        proposed merge: how sure are we about *these two*. Presenting a run
+        figure beside one pair invites reading it as being about that pair.
+
+        So each pair carries its own evidence: how close the two were before
+        any model saw them, how many passes called them the same thing out of
+        how many that saw them, and what became of them. Deriving a single
+        number from those would be inventing a probability the judge never
+        produced; the caller can band them, and knows what the bands mean
+        because the parts are here.
+
+        Every pair the model was asked about appears, which is not the same as
+        every pair a gate nominated. A set is admitted on density, so it can
+        hold a pair no gate brought forward, and the partition answers for that
+        pair like any other — it was a question, and it gets a record.
+
+        ``similarity`` is present only where something measured it.
+        ``name_in_desc`` nominates on a flat constant, and publishing that
+        constant as a similarity would put a measurement on the record that
+        was never taken; ``nominated_by`` says which it was.
+        """
+        configured = 2 if self._vote else 1
+        decisions: list[dict[str, Any]] = []
+        for a, b in set(edges) | set(set_of_pair):
+            set_id = set_of_pair.get(
+                (a, b), agreed.get((a, b), same1.get((a, b), same2.get((a, b))))
+            )
+            # How many passes actually answered for the set this pair sat in.
+            # A set whose prompt failed returned nothing, so counting it as a
+            # pass that saw the pair reports a judgement never made: "0 of 2
+            # passes called them the same" reads as two rejections.
+            seen = configured
+            if set_id is not None:
+                seen = int(set_id not in failed1) + (
+                    int(set_id not in failed2) if self._vote else 0
+                )
+            votes = int((a, b) in same1) + int((a, b) in same2)
+            if (a, b) in agreed:
+                verdict = "same"
+            elif seen < configured:
+                verdict = "unjudged"
+            elif votes:
+                verdict = "split"
+            else:
+                verdict = "different"
+            similarity = edges.get((a, b))
+            decisions.append(
+                {
+                    "a": ents[a]["id"],
+                    "b": ents[b]["id"],
+                    "a_name": ents[a].get("name") or "",
+                    "b_name": ents[b].get("name") or "",
+                    # What the gates measured, before the model was asked anything
+                    # — absent rather than invented where nothing measured it.
+                    "similarity": (round(float(similarity), 4) if (a, b) in measured else None),
+                    "nominated_by": (
+                        "embedding"
+                        if (a, b) in measured
+                        else "name_in_desc"
+                        if (a, b) in edges
+                        else "set_expansion"
+                    ),
+                    "votes": votes,
+                    "passes": seen,
+                    "verdict": verdict,
+                    # Agreement is not the same as merger: a pair can be agreed and
+                    # still kept apart by the grouping rules.
+                    "merged": root_id.get(a) is not None and root_id.get(a) == root_id.get(b),
+                }
+            )
+        # The cap has to fall on the least consequential pair, not the least
+        # similar one. A merge changed the graph and is the thing a reviewer is
+        # there to see, so it is never what gets dropped; only then does
+        # similarity decide, and an unmeasured pair sorts last rather than
+        # ahead of a measured 0.99 on a missing value. ``a``/``b`` break ties
+        # so the order does not depend on set iteration.
+        decisions.sort(
+            key=lambda d: (
+                not d["merged"],
+                d["verdict"] != "same",
+                -(d["similarity"] if d["similarity"] is not None else -1.0),
+                d["a"],
+                d["b"],
+            )
+        )
+        return decisions[:_MAX_PAIR_DECISIONS]
