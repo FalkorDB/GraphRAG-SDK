@@ -238,12 +238,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entity text in the judge prompt is flattened, quoted and declared
   untrusted. `SAME_AS.agreement` is the number of passes that said SAME, so
   a cross-set link written without the vote carries `1`, never `2`.
-  Description vectors are cached on the node (`description_embedding`,
-  keyed on `description_embedding_hash`, the digest of the text, the
-  embedder's `model_name` and the vector's dimension), so a later run
-  embeds only descriptions that are new, changed, or embedded by another
-  model; a cached vector of another dimension than the ones embedded now is
-  re-embedded with a warning rather than dropped. The judge's `embedded`
+  Description vectors are computed each run and never written to the
+  graph; a graph an earlier build left `description_embedding` /
+  `description_embedding_hash` on has both removed by the next judge run. The judge's `embedded`
   count leaves out a node its own merges then deleted. If the
   `DISTINCT_FROM` pairs cannot be read, the fuzzy, resolver and judge
   phases are skipped with a warning (`last_judge_stats["skipped_reason"]`)

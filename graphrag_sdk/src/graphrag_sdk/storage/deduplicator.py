@@ -26,11 +26,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     description_list,
 )
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
-from graphrag_sdk.storage.judge_dedup import (
-    DESC_EMBEDDING_HASH_KEY,
-    DESC_EMBEDDING_KEY,
-    LLMJudgeDeduplicator,
-)
+from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 if TYPE_CHECKING:
@@ -1742,11 +1738,8 @@ class EntityDeduplicator:
             )
         return entities
 
-    # Written by the system, never carried across from a duplicate. The judge's
-    # cached description vector is keyed on the description it was computed
-    # from; the survivor's is the joined one, so the duplicate's would only be
-    # a miss it had to store.
-    _NEVER_CARRY = frozenset({"id", "embedding", DESC_EMBEDDING_KEY, DESC_EMBEDDING_HASH_KEY})
+    # Written by the system, never carried across from a duplicate.
+    _NEVER_CARRY = frozenset({"id", "embedding"})
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
         """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.
