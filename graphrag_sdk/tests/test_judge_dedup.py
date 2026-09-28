@@ -1051,7 +1051,7 @@ def test_embedded_counts_only_vectors_on_nodes_still_here():
 
 def test_description_vectors_are_not_written_to_the_graph():
     """Description vectors are computed per run; nothing puts one on a node,
-    and any an earlier build cached there is removed."""
+    and any vector an earlier build cached there is removed."""
     graph = ScriptedGraph(ROWS)
     stats, _ = _run(graph, ScriptedLLM([[IBM], [IBM]]))
     assert stats["merged"] == 1
