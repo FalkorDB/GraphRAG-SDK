@@ -62,9 +62,9 @@ PROMPT_TOKEN_BUDGET = 3000
 # capped too, so no single field can push a set past it.
 MAX_DESC_CHARS = 600
 MAX_NAME_CHARS = 120
-# Description vectors an earlier build cached on the entity nodes. The judge
-# no longer stores them anywhere; each run removes any a graph still carries,
-# and no merge copies them onto a survivor in the meantime.
+# Properties an earlier build used to cache description vectors on entity
+# nodes. The judge no longer stores them anywhere: each run removes them from
+# every node that still has them, and no merge copies them in the meantime.
 LEGACY_DESC_KEYS = ("description_embedding", "description_embedding_hash")
 _STOP = frozenset(
     "the a an of and in on at to for de la le el les du des von van der al ibn bin y et".split()
