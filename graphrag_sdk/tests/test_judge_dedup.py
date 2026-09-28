@@ -1060,6 +1060,18 @@ def test_description_vectors_are_not_written_to_the_graph():
     assert "e.description_embedding_hash" in remove[0]
 
 
+def test_no_merge_carries_a_legacy_description_vector_onto_a_survivor():
+    """Merges and ingest reconciliation run before the judge's cleanup (or
+    without it, with ``judge=False``); a duplicate's old vector must not
+    land on a survivor that had none."""
+    from graphrag_sdk.storage.deduplicator import properties_to_carry
+    from graphrag_sdk.storage.graph_store import GraphStore
+
+    dup = {"id": "d", "description_embedding": [0.1], "description_embedding_hash": "h", "x": 1}
+    for never in (EntityDeduplicator._NEVER_CARRY, GraphStore._NEVER_CARRY_ON_RECONCILE):
+        assert properties_to_carry({"id": "k"}, dup, never=never) == {"x": 1}
+
+
 def test_a_failed_legacy_vector_removal_does_not_abort_the_phase():
     class Graph(ScriptedGraph):
         async def query_raw(self, cypher, params=None):

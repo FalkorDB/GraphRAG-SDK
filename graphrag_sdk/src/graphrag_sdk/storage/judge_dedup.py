@@ -63,8 +63,9 @@ PROMPT_TOKEN_BUDGET = 3000
 MAX_DESC_CHARS = 600
 MAX_NAME_CHARS = 120
 # Description vectors an earlier build cached on the entity nodes. The judge
-# no longer stores them anywhere; each run removes any a graph still carries.
-_LEGACY_DESC_KEYS = ("description_embedding", "description_embedding_hash")
+# no longer stores them anywhere; each run removes any a graph still carries,
+# and no merge copies them onto a survivor in the meantime.
+LEGACY_DESC_KEYS = ("description_embedding", "description_embedding_hash")
 _STOP = frozenset(
     "the a an of and in on at to for de la le el les du des von van der al ibn bin y et".split()
 )
@@ -578,8 +579,8 @@ class LLMJudgeDeduplicator:
     async def _remove_legacy_desc_vectors(self) -> None:
         """Strip the description vectors an earlier build cached on entity
         nodes. Best effort: what a failure leaves, the next run removes."""
-        where = " OR ".join(f"e.{k} IS NOT NULL" for k in _LEGACY_DESC_KEYS)
-        remove = ", ".join(f"e.{k}" for k in _LEGACY_DESC_KEYS)
+        where = " OR ".join(f"e.{k} IS NOT NULL" for k in LEGACY_DESC_KEYS)
+        remove = ", ".join(f"e.{k}" for k in LEGACY_DESC_KEYS)
         try:
             while True:
                 r = await self._graph.query_raw(

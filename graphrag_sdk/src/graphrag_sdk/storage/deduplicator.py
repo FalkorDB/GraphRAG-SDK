@@ -26,7 +26,7 @@ from graphrag_sdk.ingestion.resolution_strategies.base import (
     description_list,
 )
 from graphrag_sdk.storage.identity import NearMiss, canonical_key, find_near_misses
-from graphrag_sdk.storage.judge_dedup import LLMJudgeDeduplicator
+from graphrag_sdk.storage.judge_dedup import LEGACY_DESC_KEYS, LLMJudgeDeduplicator
 from graphrag_sdk.utils.cypher import sanitize_cypher_label
 
 if TYPE_CHECKING:
@@ -1739,7 +1739,7 @@ class EntityDeduplicator:
         return entities
 
     # Written by the system, never carried across from a duplicate.
-    _NEVER_CARRY = frozenset({"id", "embedding"})
+    _NEVER_CARRY = frozenset({"id", "embedding", *LEGACY_DESC_KEYS})
 
     async def _remap_entity_edges(self, dup_id: str, survivor_id: str) -> bool:
         """Remap all RELATES and MENTIONED_IN edges from duplicate to survivor.

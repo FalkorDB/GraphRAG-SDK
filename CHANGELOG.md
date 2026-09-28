@@ -239,8 +239,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untrusted. `SAME_AS.agreement` is the number of passes that said SAME, so
   a cross-set link written without the vote carries `1`, never `2`.
   Description vectors are computed each run and never written to the
-  graph; a graph an earlier build left `description_embedding` /
-  `description_embedding_hash` on has both removed by the next judge run. The judge's `embedded`
+  graph. Where an earlier build left `description_embedding` and
+  `description_embedding_hash` on entity nodes, the next judge run removes
+  both, and no merge copies them onto another node in the meantime. The judge's `embedded`
   count leaves out a node its own merges then deleted. If the
   `DISTINCT_FROM` pairs cannot be read, the fuzzy, resolver and judge
   phases are skipped with a warning (`last_judge_stats["skipped_reason"]`)
