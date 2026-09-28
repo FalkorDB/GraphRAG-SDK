@@ -1049,171 +1049,38 @@ def test_embedded_counts_only_vectors_on_nodes_still_here():
     assert stats["embedded"] == 2  # ...but e2 is gone
 
 
-def _hash(text, dim=3, embedder=None):
-    """The cache key the judge writes: text, embedder identity and dimension."""
-    dd = LLMJudgeDeduplicator(None, embedder or FakeEmbedder({}), None, RecordingMerge())
-    return dd._desc_hash(text, dim)
-
-
-def test_description_vectors_are_cached_on_the_node_and_keyed_on_the_text():
-    """A description vector whose recorded hash is the digest of the node's
-    current description is reused; a stale hash (the description changed
-    since) or no vector at all is embedded and written back with its hash."""
-    rows = [
-        # id, name, description, labels, aliases, embedding, descriptions, desc vec, desc hash
-        (*ROWS[0], None, [1.0, 0.0, 0.0], _hash(ROWS[0][2])),  # fresh: reused
-        (*ROWS[1], None, [0.0, 1.0, 0.0], _hash("an older description")),  # stale: redone
-        (*ROWS[2], None, None, None),  # never embedded
-    ]
-    graph = ScriptedGraph(rows)
-    embedder = FakeEmbedder(DESC_EMB)
-    seen: list[list[str]] = []
-    inner = embedder.aembed_documents
-
-    async def spy(texts, **kw):
-        seen.append(list(texts))
-        return await inner(texts, **kw)
-
-    embedder.aembed_documents = spy
-    dd = LLMJudgeDeduplicator(graph, embedder, ScriptedLLM([[IBM], [IBM]]), RecordingMerge())
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["merged"] == 1  # the cached vector took part in the nomination
-    assert seen == [[ROWS[1][2], ROWS[2][2]]]  # e1's description was not re-embedded
-    (write,) = [c for c in graph.calls if "SET e.description_embedding = vecf32" in c[0]]
-    assert [(it["id"], it["h"]) for it in write[1]["items"]] == [
-        ("e2", _hash(ROWS[1][2])),
-        ("e3", _hash(ROWS[2][2])),
-    ]
-    assert write[1]["items"][0]["v"] == DESC_EMB[ROWS[1][2]]
-
-    # a run over a graph where every description is cached embeds nothing
-    rows = [(*r, None, DESC_EMB[r[2]], _hash(r[2])) for r in ROWS]
-    graph = ScriptedGraph(rows)
-    seen.clear()
-    dd = LLMJudgeDeduplicator(graph, embedder, ScriptedLLM([[IBM], [IBM]]), RecordingMerge())
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["merged"] == 1 and seen == []
+def test_description_vectors_are_not_written_to_the_graph():
+    """Description vectors are computed per run; nothing puts one on a node,
+    and any vector an earlier build cached there is removed."""
+    graph = ScriptedGraph(ROWS)
+    stats, _ = _run(graph, ScriptedLLM([[IBM], [IBM]]))
+    assert stats["merged"] == 1
     assert not any("SET e.description_embedding" in c[0] for c in graph.calls)
+    (remove,) = [c for c in graph.calls if "REMOVE e.description_embedding" in c[0]]
+    assert "e.description_embedding_hash" in remove[0]
 
 
-def test_a_failed_description_cache_write_does_not_abort_the_phase():
+def test_no_merge_carries_a_legacy_description_vector_onto_a_survivor():
+    """Merges and ingest reconciliation run before the judge's cleanup (or
+    without it, with ``judge=False``); a duplicate's old vector must not
+    land on a survivor that had none."""
+    from graphrag_sdk.storage.deduplicator import properties_to_carry
+    from graphrag_sdk.storage.graph_store import GraphStore
+
+    dup = {"id": "d", "description_embedding": [0.1], "description_embedding_hash": "h", "x": 1}
+    for never in (EntityDeduplicator._NEVER_CARRY, GraphStore._NEVER_CARRY_ON_RECONCILE):
+        assert properties_to_carry({"id": "k"}, dup, never=never) == {"x": 1}
+
+
+def test_a_failed_legacy_vector_removal_does_not_abort_the_phase():
     class Graph(ScriptedGraph):
         async def query_raw(self, cypher, params=None):
-            if "SET e.description_embedding" in cypher:
-                self.calls.append((cypher, params or {}))
+            if "REMOVE e.description_embedding" in cypher:
                 raise RuntimeError("write failed")
             return await super().query_raw(cypher, params)
 
-    graph = Graph(ROWS)
-    stats, merge = _run(graph, ScriptedLLM([[IBM], [IBM]]))
+    stats, merge = _run(Graph(ROWS), ScriptedLLM([[IBM], [IBM]]))
     assert stats["merged"] == 1 and merge.groups == [["e1", "e2"]]
-    assert any("SET e.description_embedding" in c[0] for c in graph.calls)
-
-
-# Two entities whose names are deliberately far apart, so only the description
-# door can nominate the pair; their descriptions embed identically.
-FAR_ROWS = [
-    ("f1", "Zephyr Holdings", "Anvil maker in Ohio.", ["Organization"], None, [1.0, 0.0, 0.0]),
-    ("f2", "Quantum Bakery", "Ohio anvil manufacturer.", ["Company"], None, [0.0, 1.0, 0.0]),
-]
-FAR_DESC = {
-    "Anvil maker in Ohio.": [0.6, 0.8, 0.0],
-    "Ohio anvil manufacturer.": [0.6, 0.8, 0.0],
-}
-FAR_SAME = {"Zephyr Holdings", "Quantum Bakery"}
-
-
-class _SpyEmbedder(FakeEmbedder):
-    def __init__(self, table, model_name=None):
-        super().__init__(table)
-        self.seen: list[list[str]] = []
-        if model_name is not None:
-            self.model_name = model_name
-
-    async def aembed_documents(self, texts, **kw):
-        self.seen.append(list(texts))
-        return await super().aembed_documents(texts, **kw)
-
-
-def test_a_cached_description_vector_of_another_dimension_is_re_embedded(caplog):
-    """One node holds a 4-dim description vector under a hash that matches its
-    text at that dimension; the other needs a fresh 3-dim one. Zeroing the odd
-    row (the old rule) silently lost the pair for good: the fresh row was
-    written back beside it and no later run saw a miss. The stale row must be
-    re-embedded in this run, the pair nominated, and a second run over the
-    healed graph embed nothing."""
-    embedder = _SpyEmbedder(FAR_DESC)
-    stale_vec = [0.0, 0.0, 0.0, 1.0]
-    rows = [
-        (*FAR_ROWS[0], None, stale_vec, _hash(FAR_ROWS[0][2], dim=4, embedder=embedder)),
-        (*FAR_ROWS[1], None, None, None),
-    ]
-    graph = ScriptedGraph(rows)
-    dd = LLMJudgeDeduplicator(
-        graph, embedder, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge()
-    )
-    with caplog.at_level(logging.WARNING, logger="graphrag_sdk.storage.judge_dedup"):
-        stats = asyncio.run(dd.deduplicate())
-    assert stats["candidates"] == 1 and stats["merged"] == 1
-    assert embedder.seen == [[FAR_ROWS[1][2]], [FAR_ROWS[0][2]]]  # fresh first, then the stale row
-    assert any("re-embedding" in r.message for r in caplog.records)
-    (write,) = [c for c in graph.calls if "SET e.description_embedding = vecf32" in c[0]]
-    assert {(it["id"], it["h"]) for it in write[1]["items"]} == {
-        ("f2", _hash(FAR_ROWS[1][2], embedder=embedder)),
-        ("f1", _hash(FAR_ROWS[0][2], embedder=embedder)),
-    }
-
-    # the healed graph: every row cached at the current dimension, no embed call
-    rows = [(*r, None, FAR_DESC[r[2]], _hash(r[2], embedder=embedder)) for r in FAR_ROWS]
-    graph = ScriptedGraph(rows)
-    embedder.seen.clear()
-    dd = LLMJudgeDeduplicator(
-        graph, embedder, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge()
-    )
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["candidates"] == 1 and stats["merged"] == 1 and embedder.seen == []
-    assert not any("SET e.description_embedding" in c[0] for c in graph.calls)
-
-
-def test_a_description_vector_from_another_embedder_is_a_cache_miss():
-    """Two 3-dim models are two keys: a vector written under ``model-a`` is
-    not reused by ``model-b`` even though text and dimension agree."""
-    old = _SpyEmbedder(FAR_DESC, model_name="model-a")
-    rows = [(*r, None, FAR_DESC[r[2]], _hash(r[2], embedder=old)) for r in FAR_ROWS]
-    assert _hash(FAR_ROWS[0][2], embedder=old) != _hash(FAR_ROWS[0][2])
-
-    new = _SpyEmbedder(FAR_DESC, model_name="model-b")
-    graph = ScriptedGraph(rows)
-    dd = LLMJudgeDeduplicator(graph, new, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge())
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["merged"] == 1
-    assert new.seen == [[r[2] for r in FAR_ROWS]]  # both re-embedded...
-    (write,) = [c for c in graph.calls if "SET e.description_embedding = vecf32" in c[0]]
-    assert [it["h"] for it in write[1]["items"]] == [_hash(r[2], embedder=new) for r in FAR_ROWS]
-
-    # ...and the same model reuses them
-    graph = ScriptedGraph(rows)
-    old.seen.clear()
-    dd = LLMJudgeDeduplicator(graph, old, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge())
-    assert asyncio.run(dd.deduplicate())["merged"] == 1 and old.seen == []
-
-
-def test_an_all_cached_graph_of_mixed_dimensions_heals_itself():
-    """Nothing new to embed and the cached rows disagree on dimension: one is
-    embedded to learn the current dimension, and the rows that do not match
-    it are re-embedded, so the pair is nominated instead of one row zeroed."""
-    embedder = _SpyEmbedder(FAR_DESC)
-    rows = [
-        (*FAR_ROWS[0], None, [0.0, 0.0, 0.0, 1.0], _hash(FAR_ROWS[0][2], dim=4, embedder=embedder)),
-        (*FAR_ROWS[1], None, FAR_DESC[FAR_ROWS[1][2]], _hash(FAR_ROWS[1][2], embedder=embedder)),
-    ]
-    graph = ScriptedGraph(rows)
-    dd = LLMJudgeDeduplicator(
-        graph, embedder, ScriptedLLM([[FAR_SAME], [FAR_SAME]]), RecordingMerge()
-    )
-    stats = asyncio.run(dd.deduplicate())
-    assert stats["candidates"] == 1 and stats["merged"] == 1
-    assert embedder.seen == [[FAR_ROWS[0][2]]]  # the probe was the stale row itself; nothing else
 
 
 def test_judge_phase_is_skipped_when_the_distinct_pairs_cannot_be_read(caplog):

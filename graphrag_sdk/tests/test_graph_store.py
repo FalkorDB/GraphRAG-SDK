@@ -339,6 +339,33 @@ class TestReconcileKeyedIdentity:
             "CREATE INDEX FOR (n:`Organization`) ON (n.entity_key)",
         ]
 
+    async def test_a_legacy_description_vector_is_not_carried_to_the_new_node(
+        self, graph_store, mock_connection
+    ):
+        """An earlier build cached description vectors on entity nodes; folding
+        such a node into another during ingest must not copy them across."""
+        keep = {"id": "new"}
+        dup = {
+            "id": "old",
+            "description_embedding": [0.1, 0.2],
+            "description_embedding_hash": "h",
+            "role": "engineer",
+        }
+        mock_connection.query = AsyncMock(
+            side_effect=lambda cypher, *a, **k: MagicMock(
+                result_set=[[keep, dup]] if "RETURN properties(k)" in cypher else []
+            )
+        )
+
+        await graph_store._carry_then_delete("old", "new")
+
+        (carry,) = [
+            call[0][1]["carry"]
+            for call in mock_connection.query.call_args_list
+            if "SET k += $carry" in call[0][0]
+        ]
+        assert carry == {"role": "engineer"}
+
     async def test_nothing_to_reconcile_touches_nothing(self, graph_store, mock_connection):
         assert await graph_store.reconcile_keyed_identity("Person", "hr__employee_id", []) == {}
         mock_connection.query.assert_not_called()
