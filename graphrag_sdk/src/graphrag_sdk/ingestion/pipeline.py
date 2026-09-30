@@ -220,18 +220,23 @@ class IngestionPipeline(LexicalGraphWriter):
         ctx: Context | None = None,
         *,
         text: str | None = None,
+        loaded_document: DocumentOutput | None = None,
         document_info: DocumentInfo | None = None,
     ) -> IngestionResult:
         """Execute the full ingestion pipeline.
 
-        Either ``source`` or ``text`` must be provided:
+        Either the loader, ``text``, or ``loaded_document`` supplies the content:
         - If ``source`` is given, the loader reads from it.
         - If ``text`` is given directly, the loader step is skipped.
+        - If ``loaded_document`` is given, both loading and parsing are skipped
+          while structural elements produced by the original loader are retained.
 
         Args:
             source: Path/URL to load (passed to loader).
             ctx: Execution context (created automatically if None).
             text: Optional raw text (skips loader if provided).
+            loaded_document: Optional pre-loaded document, including structural
+                elements. Mutually exclusive with ``text``.
             document_info: Optional pre-built document metadata.
 
         Returns:
@@ -239,6 +244,9 @@ class IngestionPipeline(LexicalGraphWriter):
         """
         if ctx is None:
             ctx = Context()
+
+        if text is not None and loaded_document is not None:
+            raise ValueError("'text' and 'loaded_document' are mutually exclusive")
 
         # Identity the pipeline will use when the caller does not pin one
         # (no ``document_info``, or one without an explicit ``uid``). Text
@@ -261,7 +269,10 @@ class IngestionPipeline(LexicalGraphWriter):
 
         try:
             # Step 1: Load
-            if text is not None:
+            if loaded_document is not None:
+                document = loaded_document
+                ctx.log("Using pre-loaded document (loader skipped)")
+            elif text is not None:
                 document = DocumentOutput(text=text, document_info=DocumentInfo(path=source))
                 ctx.log("Using provided text (loader skipped)")
             else:

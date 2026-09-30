@@ -31,6 +31,7 @@ from graphrag_sdk.core.models import (
     ChatMessage,
     DeleteDocumentResult,
     DocumentInfo,
+    DocumentOutput,
     Entity,
     FinalizeResult,
     GraphNode,
@@ -3367,6 +3368,7 @@ class GraphRAG:
         # supplied, so we have to carry the metadata in ourselves.
         loaded_metadata: dict[str, Any] = {}
         loaded_text = ""
+        loaded_document: DocumentOutput | None = None
         if mapping is not None:
             assert source is not None  # guaranteed by validation above
             # Read the records and check the mapping fits before anything is
@@ -3391,6 +3393,7 @@ class GraphRAG:
             assert source is not None  # guaranteed by validation above
             active_loader = loader or self._default_loader_for(source)
             loaded = await active_loader.load(source, ctx)
+            loaded_document = loaded
             loaded_text = loaded.text
             doc_path = source
             loaded_metadata = dict(loaded.document_info.metadata or {})
@@ -3421,8 +3424,9 @@ class GraphRAG:
                     )
                 ingest_result = await self._ingest_single(
                     source if source is not None else resolved_id,
-                    text=loaded_text,
+                    text=loaded_text if text is not None else None,
                     document_id=resolved_id,
+                    loader=loader,
                     chunker=chunker,
                     extractor=extractor,
                     resolver=resolver,
@@ -3580,7 +3584,8 @@ class GraphRAG:
             pipeline_result = await pipeline.run(
                 doc_path,
                 ctx,
-                text=loaded_text,
+                text=loaded_text if text is not None else None,
+                loaded_document=loaded_document,
                 document_info=pending_doc_info,
             )
         except Exception:
