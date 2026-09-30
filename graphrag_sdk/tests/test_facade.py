@@ -1789,6 +1789,80 @@ class TestGraphRAGUpdate:
         graphrag._graph_store.rollforward_cutover.assert_awaited_once()
         graphrag._graph_store.delete_orphan_entities.assert_awaited_once_with(["entity-1"])
 
+    async def test_force_update_preserves_loader_structural_elements(self, graphrag, tmp_path):
+        """A file update must retain the loader's parsed structure so a
+        document-aware chunker does not silently fall back to plain text."""
+        import hashlib
+
+        from graphrag_sdk.core.models import (
+            DocumentElement,
+            DocumentInfo,
+            DocumentOutput,
+            DocumentRecord,
+            TextChunk,
+            TextChunks,
+        )
+        from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
+        from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+        from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
+
+        text = "# Heading\n\nParagraph."
+        path = tmp_path / "doc.md"
+        path.write_text(text)
+        elements = [
+            DocumentElement(type="header", content="# Heading", level=1),
+            DocumentElement(type="paragraph", content="Paragraph.", breadcrumbs=["Heading"]),
+        ]
+
+        class _StructuredLoader(LoaderStrategy):
+            async def load(self, source, ctx):
+                return DocumentOutput(
+                    text=text,
+                    document_info=DocumentInfo(path=source, metadata={"loader": "test"}),
+                    elements=elements,
+                )
+
+        class _CapturingChunker(ChunkingStrategy):
+            seen_elements = None
+
+            async def chunk(self, text, ctx):
+                return TextChunks(chunks=[TextChunk(text=text, index=0)])
+
+            async def chunk_document(self, document, ctx):
+                self.seen_elements = document.elements
+                return await self.chunk(document.text, ctx)
+
+        class _CleanExtractor(ExtractionStrategy):
+            async def extract(self, chunks, ontology, ctx):
+                return GraphData(chunks_attempted=len(chunks.chunks))
+
+        _stub_graph_store_for_update(
+            graphrag,
+            existing_record={
+                "path": str(path),
+                "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            },
+        )
+        live = DocumentRecord(
+            path=str(path),
+            content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+        graphrag._graph_store.get_document_record = AsyncMock(
+            side_effect=lambda doc_id: live if "__pending__" not in doc_id else None
+        )
+        chunker = _CapturingChunker()
+
+        result = await graphrag.update(
+            source=str(path),
+            loader=_StructuredLoader(),
+            chunker=chunker,
+            extractor=_CleanExtractor(),
+            force=True,
+        )
+
+        assert result.no_op is False
+        assert chunker.seen_elements == elements
+
     def test_update_sync_forwards_force(self, graphrag):
         """Keep ``update_sync`` in step with ``update``."""
         import inspect
