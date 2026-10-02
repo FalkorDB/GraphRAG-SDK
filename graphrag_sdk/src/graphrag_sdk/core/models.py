@@ -1010,6 +1010,38 @@ class FinalizeResult(DataModel):
     entities_linked: int = 0
     judge_llm_calls: int = 0
     judge_stats: dict[str, int | str] = Field(default_factory=dict)
+    judge_pair_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    """What the judge decided about each candidate pair, and on what evidence.
+
+    ``judge_stats`` describes the run: how many pairs the two passes agreed on
+    across the whole graph. Those figures are not about any one pair, so they
+    cannot answer the question asked in front of a single proposed merge --
+    how sure are we about *these two* -- and showing a run figure beside one
+    pair invites exactly that misreading.
+
+    Each entry names the two entities, how many passes called them the same out
+    of how many saw them, the verdict (``same``, ``split``, ``different`` or
+    ``unjudged``), and whether they were ultimately merged. No probability is
+    derived, because the judge does not produce one; a caller that wants bands
+    can form them from these parts and will know what its bands mean.
+
+    ``similarity`` is what the gates measured before the model was asked
+    anything, and is ``None`` where nothing measured it -- a pair nominated
+    because one name appears in the other's description carries a flat
+    constant, and a pair reached only through its set carries nothing at all.
+    ``nominated_by`` says which it was: ``embedding``, ``name_in_desc`` or
+    ``set_expansion``.
+
+    Every pair the model was asked about appears, which is not the same as
+    every pair a gate nominated: a set is admitted on density, so it can hold a
+    pair no gate brought forward, and the partition answers for it like any
+    other. ``passes`` counts the passes that actually answered, so a prompt
+    that failed reads as ``unjudged`` rather than as a rejection.
+
+    Capped, with merged pairs kept first and similarity deciding only after
+    that, so a pair that changed the graph is never what falls off the end.
+    Empty when the judge did not run.
+    """
     entities_embedded: int = 0
     relationships_embedded: int = 0
     indexes: dict[str, bool] = Field(default_factory=dict)
