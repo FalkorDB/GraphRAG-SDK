@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import graphrag_sdk.api.main as main_module
 from graphrag_sdk.api.main import GraphRAG
 from graphrag_sdk.core.connection import ConnectionConfig, FalkorDBConnection
 from graphrag_sdk.core.context import Context
@@ -20,8 +22,10 @@ from graphrag_sdk.core.models import (
     ApplyChangesResult,
     ChatMessage,
     DeleteDocumentResult,
+    Entity,
     GraphData,
     IngestionResult,
+    Ontology,
     RagResult,
     RawSearchResult,
     RetrieverResult,
@@ -1380,6 +1384,196 @@ class TestSameEmbeddingModel:
         assert _same_embedding_model(stored, current) is False
 
 
+class TestGraphRAGConcurrentLazyInitialization:
+    async def test_ontology_initialization_is_single_flight(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        load_started = asyncio.Event()
+        release_load = asyncio.Event()
+
+        async def load_ontology():
+            load_started.set()
+            await release_load.wait()
+            return Ontology()
+
+        load = AsyncMock(side_effect=load_ontology)
+        register = AsyncMock(return_value=g.ontology)
+        g._ontology_store.load = load
+        g._ontology_store.register = register
+
+        tasks = [asyncio.create_task(g._ensure_ontology_initialized()) for _ in range(20)]
+        await load_started.wait()
+        await asyncio.sleep(0)
+        assert load.call_count == 1
+
+        release_load.set()
+        await asyncio.gather(*tasks)
+        assert register.call_count == 1
+        assert g._ontology_initialized is True
+
+    async def test_graph_config_validation_is_single_flight(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        query_started = asyncio.Event()
+        release_query = asyncio.Event()
+        probe_started = asyncio.Event()
+        release_probe = asyncio.Event()
+
+        async def query_config(*args, **kwargs):
+            query_started.set()
+            await release_query.wait()
+            return MagicMock(result_set=[])
+
+        async def probe_embedder(*args, **kwargs):
+            probe_started.set()
+            await release_probe.wait()
+            return [0.1] * 8
+
+        query = AsyncMock(side_effect=query_config)
+        probe = AsyncMock(side_effect=probe_embedder)
+        g._graph_store.query_raw = query
+        g.embedder.aembed_query = probe
+
+        tasks = [asyncio.create_task(g._validate_graph_config()) for _ in range(20)]
+        await query_started.wait()
+        await asyncio.sleep(0)
+        assert query.call_count == 1
+
+        release_query.set()
+        await probe_started.wait()
+        await asyncio.sleep(0)
+        assert query.call_count == 1
+        assert probe.call_count == 1
+
+        release_probe.set()
+        await asyncio.gather(*tasks)
+        assert query.call_count == 1
+        assert probe.call_count == 1
+        assert g._config_validated is True
+
+    def test_graph_config_validation_lock_rebinds_after_delete_all(self, mock_conn, embedder, llm):
+        """Config validation can contend again after sync wrappers create a new loop."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.delete_all = AsyncMock()
+        g._ontology_store.clear = AsyncMock()
+
+        async def validate_concurrently():
+            query_started = asyncio.Event()
+            release_query = asyncio.Event()
+
+            async def query_config(*args, **kwargs):
+                query_started.set()
+                await release_query.wait()
+                return MagicMock(result_set=[])
+
+            query = AsyncMock(side_effect=query_config)
+            probe = AsyncMock(return_value=[0.1] * 8)
+            g._graph_store.query_raw = query
+            g.embedder.aembed_query = probe
+
+            first = asyncio.create_task(g._validate_graph_config())
+            await query_started.wait()
+            second = asyncio.create_task(g._validate_graph_config())
+            await asyncio.sleep(0)
+            release_query.set()
+            await asyncio.gather(first, second)
+            return query.call_count, probe.call_count
+
+        first_counts = asyncio.run(validate_concurrently())
+        asyncio.run(g.delete_all())
+        second_counts = asyncio.run(validate_concurrently())
+
+        assert first_counts == (1, 1)
+        assert second_counts == (1, 1)
+        assert g._config_validated is True
+
+    @pytest.mark.parametrize("failure_stage", ["query", "probe"])
+    async def test_graph_config_validation_failure_is_single_flight(
+        self, mock_conn, embedder, llm, failure_stage
+    ):
+        """Concurrent transient failures do not serialize duplicate attempts."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        failure_started = asyncio.Event()
+        release_failure = asyncio.Event()
+
+        async def query_config(*args, **kwargs):
+            if failure_stage == "query":
+                failure_started.set()
+                await release_failure.wait()
+                raise RuntimeError("transient query failure")
+            return MagicMock(result_set=[])
+
+        async def probe_embedder(*args, **kwargs):
+            failure_started.set()
+            await release_failure.wait()
+            raise RuntimeError("transient probe failure")
+
+        query = AsyncMock(side_effect=query_config)
+        probe = AsyncMock(side_effect=probe_embedder)
+        g._graph_store.query_raw = query
+        g.embedder.aembed_query = probe
+
+        tasks = [asyncio.create_task(g._validate_graph_config()) for _ in range(20)]
+        await failure_started.wait()
+        await asyncio.sleep(0)
+        release_failure.set()
+        await asyncio.gather(*tasks)
+
+        assert query.call_count == 1
+        assert probe.call_count == (0 if failure_stage == "query" else 1)
+        assert g._config_validated is False
+
+    async def test_graph_config_validation_backoff_avoids_failure_convoy(
+        self, mock_conn, embedder, llm
+    ):
+        """A burst during an outage shares one failed validation attempt."""
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        query = AsyncMock(side_effect=RuntimeError("transient query failure"))
+        g._graph_store.query_raw = query
+
+        await asyncio.gather(*(g._validate_graph_config() for _ in range(20)))
+        assert query.call_count == 1
+
+        # Transient failures remain retryable, but not while the short
+        # coalescing window is active.
+        await g._validate_graph_config()
+        assert query.call_count == 1
+
+        await asyncio.sleep(main_module._CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS + 0.02)
+        await g._validate_graph_config()
+        assert query.call_count == 2
+
+    async def test_set_ontology_does_not_skip_newer_assignment(self, mock_conn, embedder, llm):
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        first = Ontology(entities=[Entity(label="First")])
+        second = Ontology(entities=[Entity(label="Second")])
+        register_started = asyncio.Event()
+        release_first_register = asyncio.Event()
+        registrations = []
+
+        g._ontology_store.load = AsyncMock(return_value=Ontology())
+
+        async def register_ontology(ontology):
+            registrations.append(ontology)
+            if len(registrations) == 1:
+                register_started.set()
+                await release_first_register.wait()
+            return ontology
+
+        g._ontology_store.register = AsyncMock(side_effect=register_ontology)
+
+        first_task = asyncio.create_task(g.set_ontology(first))
+        await register_started.wait()
+        second_task = asyncio.create_task(g.set_ontology(second))
+        await asyncio.sleep(0)
+        release_first_register.set()
+        await asyncio.gather(first_task, second_task)
+
+        assert registrations[0] == first
+        assert registrations[1] == second
+        assert g.ontology is second
+        assert g._global_ontology == second
+        assert g._ontology_initialized is True
+
+
 class TestConfigProviderPrefix:
     """The stored model name may carry a routing prefix that the live
     embedder doesn't (or vice versa) when a graph is moved between
@@ -1544,9 +1738,10 @@ class TestGraphRAGEmbedderProbe:
         assert g._config_validated is False
 
         # Second call: probe recovers and produces a correctly-sized
-        # vector. The previous failure didn't poison the cache, so the
-        # dim check runs and succeeds, flipping the flag.
+        # vector. The previous failure didn't poison the cache; after the
+        # short retry backoff, the dim check runs and succeeds.
         g.embedder.aembed_query = AsyncMock(return_value=[0.1] * 8)
+        await asyncio.sleep(main_module._CONFIG_VALIDATION_FAILURE_BACKOFF_SECONDS + 0.02)
         await g.retrieve("test?")
         assert g._config_validated is True
 
@@ -1568,6 +1763,34 @@ class TestGraphRAGIngestValidation:
 
         with pytest.raises(ConfigError, match="Embedding model mismatch"):
             await g.ingest(text="hello", document_id="d1")
+
+    async def test_ingest_passes_context_budget_to_config_validation(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="graph config query"):
+            await g.ingest(
+                text="hello",
+                document_id="d1",
+                ctx=Context(latency_budget_ms=0.0),
+            )
+
+        g._graph_store.query_raw.assert_not_awaited()
+
+    async def test_update_passes_context_budget_to_config_validation(self, mock_conn, embedder):
+        llm = MockLLM(responses=["unused"])
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        g._graph_store.query_raw = AsyncMock()
+
+        with pytest.raises(LatencyBudgetExceededError, match="graph config query"):
+            await g.update(
+                text="hello",
+                document_id="d1",
+                ctx=Context(latency_budget_ms=0.0),
+            )
+
+        g._graph_store.query_raw.assert_not_awaited()
 
     async def test_ingest_input_validation_runs_before_config_probe(self, mock_conn, embedder):
         """Bad input must raise ``ValueError`` immediately, without first
