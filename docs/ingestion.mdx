@@ -259,8 +259,9 @@ sources = ["docs/one.pdf", "docs/two.pdf", "docs/three.pdf"]
 # Runs up to three document pipelines at once (the default).
 results = await rag.ingest(sources, max_concurrency=3)
 
-# Inspect per-source failures: a batch returns an IngestionResult or Exception
-# for every source, in input order.
+# This collects source calls that raise. Partial extraction failures are
+# recorded in IngestionResult.metadata["extraction"].
+# A batch returns an IngestionResult or Exception for every source, in input order.
 failures = [result for result in results if isinstance(result, Exception)]
 ```
 
