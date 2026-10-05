@@ -264,36 +264,46 @@ results = await rag.ingest(sources, max_concurrency=3)
 failures = [result for result in results if isinstance(result, Exception)]
 ```
 
-Increase `max_concurrency` gradually when the document loader, LLM provider,
-and FalkorDB deployment have capacity. A higher value increases simultaneous
-document pipelines and their memory use; it does not make one document's
-pipeline run in parallel.
+Increase `max_concurrency` gradually when document loading, the local extractor,
+the LLM provider, and FalkorDB deployment have capacity. A higher value
+increases simultaneous document pipelines and their memory use; it does not
+make one document's pipeline run in parallel.
 
-This is separate from extraction concurrency. `GraphExtraction` limits the
-parallel LLM calls made for chunks *within* each document. When set,
-`GraphExtraction.max_concurrency` overrides the provider's `max_concurrency`
-for extraction calls; if it is `None`, the provider's configured
-`max_concurrency` applies (12 by default).
-These limits are per document pipeline, so peak concurrent extraction calls
-can reach `ingest(max_concurrency) × extraction limit`, where the extraction
-limit is `GraphExtraction.max_concurrency` when set and otherwise the
-provider's configured limit.
+This is separate from document-level concurrency. `ingest(max_concurrency)`
+controls how many document pipelines run at once. Within each document,
+`GraphExtraction.max_concurrency` is the cap for chunk-level extraction work:
+when set, it limits concurrent calls to the local GLiNER/custom extractor and
+overrides the provider's limit for LLM batches. The two paths use separate
+fallbacks when it is `None`:
+
+- The default local `GLiNERExtractor` (and other local/custom extractors)
+  processes up to 12 chunks at a time; it does not use the LLM provider's
+  `max_concurrency`.
+- LLM batches (NER when `LLMExtractor` is used, and verification/relationship
+  extraction) use the provider's configured `max_concurrency` (12 by default).
+
+Each document pipeline makes its own LLM calls, so peak concurrent LLM calls can
+reach `ingest(max_concurrency) × effective LLM limit`. For example, with 3
+parallel documents and `GraphExtraction.max_concurrency=6`, up to 18 LLM calls
+can be in flight at once. Keep that product within your provider's rate limit.
+This count describes LLM calls; local GLiNER processing follows its own
+per-document chunk limit described above.
 
 ```python
 from graphrag_sdk import GraphExtraction
+from graphrag_sdk.core.providers import LiteLLM
 
+# Use this same provider when creating `rag`.
+llm = LiteLLM(model="gpt-4.1", api_key="...")
 extractor = GraphExtraction(llm=llm, max_concurrency=6)
 results = await rag.ingest(sources, extractor=extractor, max_concurrency=3)
 ```
 
-In this example, up to 18 extraction LLM calls can be in flight at once
-(3 document pipelines × 6 calls per document). Keep that product within your
-provider's rate limit.
-
-For incremental refreshes, `apply_changes()` has the same
-`max_concurrency` control for newly added documents. `update_concurrency`
-guidance is: **Default 1, and you almost certainly should not raise it.** The
-orphan-cleanup invariant only holds while updates serialize. See
+For incremental refreshes, `apply_changes()` has the same `max_concurrency`
+control for newly added documents. For `update_concurrency`, the guidance is:
+**Default 1, and you almost certainly should not raise it.** Raising it above 1
+is only safe if you can independently guarantee that no two parallel updates can
+share an entity in their candidate snapshots. See
 [Concurrency and the `update_concurrency` trap](/incremental-updates#concurrency-and-the-update_concurrency-trap).
 
 ---
@@ -314,7 +324,7 @@ orphan-cleanup invariant only holds while updates serialize. See
 | `entity_extractor` | `GLiNERExtractor()` | Local NER model (fast, no API calls) |
 | `coref_resolver` | `None` | Optional coreference resolution (resolves pronouns) |
 | `entity_types` | 11 defaults | Custom ontology for your domain |
-| `max_concurrency` | LLM default (12) | Parallel LLM calls during extraction |
+| `GraphExtraction.max_concurrency` | `None` | Caps per-document chunk extraction; if set, overrides the provider limit for LLM batches. If unset, GLiNER/custom extraction defaults to 12 and LLM batches use the provider limit (12 by default). |
 
 ### Resolution
 
@@ -329,7 +339,9 @@ orphan-cleanup invariant only holds while updates serialize. See
 
 - **Slowest step:** Extraction (Step 4) — involves LLM calls for every chunk. Expect ~2-5 seconds per chunk.
 - **Fastest step:** Quality filter, prune, and resolve — all in-memory, sub-second.
-- **Parallelism:** Steps 8-9 run in parallel. Step 1 NER uses a semaphore (default 12 concurrent calls).
+- **Parallelism:** Steps 8-9 run in parallel. GLiNER/custom chunk extraction
+  defaults to 12 concurrent calls per document; LLM batches use the provider
+  limit (12 by default), unless `GraphExtraction.max_concurrency` is set.
 - **Batch size:** The benchmark uses 1500-character chunks. 20 documents (~4.7 MB total) take ~47 minutes to ingest.
 
 ---
