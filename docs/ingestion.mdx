@@ -270,22 +270,31 @@ document pipelines and their memory use; it does not make one document's
 pipeline run in parallel.
 
 This is separate from extraction concurrency. `GraphExtraction` limits the
-parallel LLM calls made for chunks *within* each document; the configured LLM
-provider also has its own `max_concurrency` limit. Tune document-level and
-LLM-level concurrency together, and lower either value if the provider starts
-returning rate-limit errors.
+parallel LLM calls made for chunks *within* each document. When set,
+`GraphExtraction.max_concurrency` overrides the provider's `max_concurrency`
+for extraction calls; if it is `None`, the provider's configured
+`max_concurrency` applies (12 by default).
+These limits are per document pipeline, so peak concurrent extraction calls
+can reach `ingest(max_concurrency) × extraction limit`, where the extraction
+limit is `GraphExtraction.max_concurrency` when set and otherwise the
+provider's configured limit.
 
 ```python
-from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
+from graphrag_sdk import GraphExtraction
 
 extractor = GraphExtraction(llm=llm, max_concurrency=6)
 results = await rag.ingest(sources, extractor=extractor, max_concurrency=3)
 ```
 
+In this example, up to 18 extraction LLM calls can be in flight at once
+(3 document pipelines × 6 calls per document). Keep that product within your
+provider's rate limit.
+
 For incremental refreshes, `apply_changes()` has the same
-`max_concurrency` control for newly added documents. Keep
-`update_concurrency` at its default of `1` unless you have verified that
-concurrent updates are safe for your workload.
+`max_concurrency` control for newly added documents. `update_concurrency`
+guidance is: **Default 1, and you almost certainly should not raise it.** The
+orphan-cleanup invariant only holds while updates serialize. See
+[Concurrency and the `update_concurrency` trap](/incremental-updates#concurrency-and-the-update_concurrency-trap).
 
 ---
 
