@@ -70,3 +70,4 @@ build/
 # Docs tooling (npm deps for scripts/check_mdx.mjs)
 node_modules/
 package-lock.json
+.envrc
