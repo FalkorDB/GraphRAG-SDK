@@ -269,9 +269,10 @@ the LLM provider, and FalkorDB deployment have capacity. A higher value
 increases simultaneous document pipelines and their memory use; it does not
 make one document's pipeline run in parallel.
 
-This is separate from document-level concurrency. `ingest(max_concurrency)`
-controls how many document pipelines run at once. Within each document,
-`GraphExtraction.max_concurrency` is the cap for chunk-level extraction work:
+This document-level limit is separate from extraction concurrency.
+`ingest(max_concurrency)` controls how many document pipelines run at once.
+Within each document, `GraphExtraction.max_concurrency` is the cap for chunk-level
+extraction work:
 when set, it limits concurrent calls to the local GLiNER/custom extractor and
 overrides the provider's limit for LLM batches. The two paths use separate
 fallbacks when it is `None`:
