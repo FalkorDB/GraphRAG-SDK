@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -76,18 +77,25 @@ DEFAULT_RESOLVER = "exact"
 # strategy id. Each entry is (kind, lo, hi, default); values are coerced and
 # clamped to [lo, hi] before use, so the model can never produce an unsafe
 # config. A param the model omits is simply left to the constructor default.
+# The fourth value is the constructor's own default; the cross-field guards in
+# clamp_params() compare a lone key against it, so it must match the class.
+#
+# GLiNER's threshold is deliberately absent: GLiNER thresholds are
+# model-specific (see GLiNERExtractor — 0.75 suits gliner_medium-v2.1 but a
+# bi-encoder returns almost nothing at it), and the planner does not know
+# which model is loaded, so it must not pick one.
 PARAM_SPECS: dict[str, dict[str, dict[str, tuple[str, float, float, float]]]] = {
     "chunker": {
         "sentence": {
-            "max_tokens": ("int", 64, 2048, 512),
+            "max_tokens": ("int", 64, 2048, 384),
             "overlap_sentences": ("int", 0, 10, 2),
         },
         "structural": {
-            "max_tokens": ("int", 64, 2048, 512),
+            "max_tokens": ("int", 64, 2048, 384),
             "overlap_sentences": ("int", 0, 10, 2),
         },
         "contextual": {
-            "max_tokens": ("int", 64, 2048, 512),
+            "max_tokens": ("int", 64, 2048, 384),
             "overlap_sentences": ("int", 0, 10, 2),
         },
         "fixed": {
@@ -96,14 +104,14 @@ PARAM_SPECS: dict[str, dict[str, dict[str, tuple[str, float, float, float]]]] = 
         },
     },
     "extractor": {
-        "gliner": {"threshold": ("float", 0.1, 0.95, 0.75)},
+        "gliner": {},
         "llm": {"threshold": ("float", 0.1, 0.95, 0.75)},
     },
     "resolver": {
         "exact": {},
         "llm_verified": {
             "hard_threshold": ("float", 0.5, 0.999, 0.95),
-            "soft_threshold": ("float", 0.3, 0.98, 0.80),
+            "soft_threshold": ("float", 0.3, 0.98, 0.65),
             "ann_top_k": ("int", 5, 200, 50),
             "max_llm_pairs": ("int", 10, 5000, 500),
         },
@@ -119,7 +127,9 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
     dropped (the constructor default then applies). Cross-field constraints are
     enforced so the resulting kwargs can never make a constructor raise:
 
-    - fixed chunker: ``chunk_overlap`` is forced below ``chunk_size``.
+    - fixed chunker: ``chunk_overlap`` is forced below ``chunk_size``; a lone
+      small ``chunk_size`` also gets an overlap that fits (the constructor's
+      default overlap of 100 would otherwise make it raise).
     - llm_verified resolver: ``hard_threshold`` must stay above
       ``soft_threshold``; if the pair inverts (a lone key is checked against
       the other's default), both are dropped to defaults.
@@ -131,22 +141,29 @@ def clamp_params(component: str, strategy: str, raw: dict[str, Any] | None) -> d
     for key, (kind, lo, hi, _default) in spec.items():
         if key not in raw:
             continue
+        value = raw[key]
+        if isinstance(value, bool):
+            continue
         try:
-            val: float = int(raw[key]) if kind == "int" else float(raw[key])
+            num = float(value)
         except (TypeError, ValueError):
             continue
-        out[key] = max(lo, min(hi, val))
-        if kind == "int":
-            out[key] = int(out[key])
+        if not math.isfinite(num):  # inf / nan: unusable, keep the default
+            continue
+        num = max(lo, min(hi, num))
+        out[key] = int(num) if kind == "int" else num
 
     # Cross-field guards.
-    if strategy == "fixed" and "chunk_overlap" in out:
-        size = out.get("chunk_size", 1000)
-        if out["chunk_overlap"] >= size:
-            out["chunk_overlap"] = max(0, int(size) - 1)
+    if strategy == "fixed" and ("chunk_overlap" in out or "chunk_size" in out):
+        size = int(out.get("chunk_size", spec["chunk_size"][3]))
+        if "chunk_overlap" in out:
+            if out["chunk_overlap"] >= size:
+                out["chunk_overlap"] = max(0, size - 1)
+        elif spec["chunk_overlap"][3] >= size:
+            out["chunk_overlap"] = size // 10
     if strategy == "llm_verified" and ("hard_threshold" in out or "soft_threshold" in out):
         # A lone key is compared against the other's constructor default, so a
-        # planner-picked hard_threshold=0.6 (vs default soft 0.80) can't make
+        # planner-picked hard_threshold=0.6 (vs default soft 0.65) can't make
         # the constructor raise and discard the whole plan.
         hard = out.get("hard_threshold", spec["hard_threshold"][3])
         soft = out.get("soft_threshold", spec["soft_threshold"][3])
@@ -174,14 +191,14 @@ _GUIDE = (
     "\n"
     "You MAY also tune parameters inside each chosen strategy (omit to keep the\n"
     "safe default; out-of-range values are clamped):\n"
-    "  - sentence/structural/contextual: max_tokens (64-2048, def 512),\n"
+    "  - sentence/structural/contextual: max_tokens (64-2048, def 384),\n"
     "    overlap_sentences (0-10, def 2). Smaller chunks for dense facts;\n"
     "    larger for narrative.\n"
     "  - fixed: chunk_size (100-8000, def 1000), chunk_overlap (0-2000, def 100).\n"
-    "  - gliner/llm extractor: threshold (0.1-0.95, def 0.75). Lower = more\n"
+    "  - llm extractor: threshold (0.1-0.95, def 0.75). Lower = more\n"
     "    recall/noise; higher = more precision.\n"
     "  - llm_verified: hard_threshold (0.5-0.999, def 0.95),\n"
-    "    soft_threshold (0.3-0.98, def 0.80, must stay below hard),\n"
+    "    soft_threshold (0.3-0.98, def 0.65, must stay below hard),\n"
     "    ann_top_k (5-200, def 50), max_llm_pairs (10-5000, def 500).\n"
 )
 
@@ -266,7 +283,7 @@ def parse_plan(text: str) -> IngestionPlan | None:
     # Fall back to / augment with key:value scraping.
     if not {"chunker", "extractor", "resolver"} & fields.keys():
         for key in ("chunker", "extractor", "resolver"):
-            m = re.search(rf"\b{key}\b\s*[:=]\s*([a-z_]+)", raw, re.IGNORECASE)
+            m = re.search(rf"\b{key}\b[\"']?\s*[:=]\s*[\"']?([a-z_]+)", raw, re.IGNORECASE)
             if m:
                 fields[key] = m.group(1).strip().lower()
 

@@ -364,7 +364,7 @@ class TestPlanIngestionStrategiesMerge:
         assert out["overlap_sentences"] == 0
 
     def test_clamp_drops_unknown_and_unparseable(self):
-        out = clamp_params("extractor", "gliner", {"threshold": "high", "bogus": 1})
+        out = clamp_params("extractor", "llm", {"threshold": "high", "bogus": 1})
         assert out == {}
 
     def test_clamp_unknown_strategy(self):
@@ -381,7 +381,7 @@ class TestPlanIngestionStrategiesMerge:
         assert "hard_threshold" not in out and "soft_threshold" not in out
 
     def test_llm_verified_lone_hard_below_default_soft_dropped(self):
-        # hard=0.6 vs constructor default soft=0.80 would make the resolver raise.
+        # hard=0.6 vs constructor default soft=0.65 would make the resolver raise.
         out = clamp_params("resolver", "llm_verified", {"hard_threshold": 0.6})
         assert "hard_threshold" not in out
 
@@ -412,7 +412,7 @@ class TestPlanIngestionStrategiesMerge:
         assert c.overlap_sentences == 1
 
     def test_build_extractor_applies_threshold(self):
-        ext = build_extractor("gliner", llm=MockLLM(), params={"threshold": 0.4})
+        ext = build_extractor("llm", llm=MockLLM(), params={"threshold": 0.4})
         assert ext.entity_extractor._threshold == 0.4
 
     def test_build_resolver_applies_params(self):
@@ -426,3 +426,74 @@ class TestPlanIngestionStrategiesMerge:
         assert r.hard_threshold == 0.9
         assert r.ann_top_k == 25
         assert r.max_llm_pairs == 100
+
+
+# -- clamp_params / parse_plan edge cases --
+
+
+class TestClampEdgeCases:
+    def test_lone_small_chunk_size_gets_a_fitting_overlap(self):
+        # The constructor's default overlap (100) would make chunk_size=100 raise,
+        # which used to discard the whole plan.
+        out = clamp_params("chunker", "fixed", {"chunk_size": 100})
+        assert out == {"chunk_size": 100, "chunk_overlap": 10}
+        c = build_chunker("fixed", params={"chunk_size": 50})
+        assert (c.chunk_size, c.chunk_overlap) == (100, 10)
+
+    def test_lone_large_chunk_size_keeps_default_overlap(self):
+        assert clamp_params("chunker", "fixed", {"chunk_size": 1500}) == {"chunk_size": 1500}
+
+    def test_lone_overlap_checked_against_default_size(self):
+        out = clamp_params("chunker", "fixed", {"chunk_overlap": 1500})
+        assert out == {"chunk_overlap": 999}
+
+    @pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), "Infinity", "nan"])
+    def test_non_finite_values_dropped(self, bad):
+        assert clamp_params("chunker", "sentence", {"max_tokens": bad}) == {}
+        assert clamp_params("resolver", "llm_verified", {"hard_threshold": bad}) == {}
+
+    def test_bool_values_dropped(self):
+        assert clamp_params("chunker", "sentence", {"overlap_sentences": True}) == {}
+
+    def test_int_accepts_float_strings(self):
+        assert clamp_params("chunker", "sentence", {"max_tokens": "256.7"}) == {"max_tokens": 256}
+
+    def test_gliner_threshold_not_tunable(self):
+        # GLiNER thresholds are model-specific; the planner cannot know the model.
+        assert clamp_params("extractor", "gliner", {"threshold": 0.4}) == {}
+
+    def test_spec_defaults_match_constructors(self):
+        from graphrag_sdk.ingestion.ingestion_planner import PARAM_SPECS
+
+        s = SentenceTokenCapChunking()
+        assert PARAM_SPECS["chunker"]["sentence"]["max_tokens"][3] == s.max_tokens
+        assert (
+            PARAM_SPECS["chunker"]["structural"]["max_tokens"][3] == StructuralChunking().max_tokens
+        )
+        f = FixedSizeChunking()
+        assert PARAM_SPECS["chunker"]["fixed"]["chunk_size"][3] == f.chunk_size
+        assert PARAM_SPECS["chunker"]["fixed"]["chunk_overlap"][3] == f.chunk_overlap
+        r = LLMVerifiedResolution(llm=MockLLM(), embedder=MockEmbedder())
+        spec = PARAM_SPECS["resolver"]["llm_verified"]
+        assert spec["hard_threshold"][3] == r.hard_threshold
+        assert spec["soft_threshold"][3] == r.soft_threshold
+        assert spec["ann_top_k"][3] == r.ann_top_k
+        assert spec["max_llm_pairs"][3] == r.max_llm_pairs
+
+    def test_lone_hard_threshold_uses_real_soft_default(self):
+        # 0.7 is above the resolver's real soft default (0.65), so it is valid.
+        assert clamp_params("resolver", "llm_verified", {"hard_threshold": 0.7}) == {
+            "hard_threshold": 0.7
+        }
+
+
+class TestParseQuotedKeyValue:
+    def test_quoted_values(self):
+        plan = parse_plan("chunker: 'fixed'\nextractor: \"llm\"\nresolver = 'exact'")
+        assert plan is not None
+        assert (plan.chunker, plan.extractor, plan.resolver) == ("fixed", "llm", "exact")
+
+    def test_quoted_keys_from_broken_json(self):
+        plan = parse_plan('{"chunker": "fixed", "extractor": "llm",')  # truncated JSON
+        assert plan is not None
+        assert (plan.chunker, plan.extractor) == ("fixed", "llm")
