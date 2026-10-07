@@ -153,7 +153,7 @@ class GraphRAGMCPServer:
         from starlette.applications import Starlette  # type: ignore
         from starlette.routing import Mount, Route  # type: ignore
 
-        sse = SseServerTransport("/messages/")
+        sse = SseServerTransport("/messages/", **sse_security_kwargs(host, port))
 
         async def handle_sse(request: Any) -> None:
             async with sse.connect_sse(request.scope, request.receive, request._send) as (
@@ -189,3 +189,32 @@ def check_sse_binding(host: str, auth_token: str | None) -> None:
             f"Refusing to serve MCP over SSE on {host!r} without an auth token. "
             "Set GRAPHRAG_MCP_TOKEN (or pass --token / auth_token=), or bind 127.0.0.1."
         )
+
+
+def sse_security_kwargs(host: str, port: int) -> dict[str, Any]:
+    """DNS-rebinding protection for a loopback SSE server, when ``mcp`` supports it.
+
+    A server bound to 127.0.0.1 / localhost accepts only requests whose
+    ``Host`` (and ``Origin``, when sent) name it, so a web page cannot reach
+    it through a rebound domain. A server on any other interface requires a
+    bearer token instead (see :func:`check_sse_binding`), and clients reach it
+    by whatever name or address they use, so no Host list is imposed.
+    ``mcp`` releases without transport security get no settings.
+    """
+    if host not in _LOOPBACK_HOSTS:
+        return {}
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+    except ImportError:  # pragma: no cover - older mcp
+        logger.warning("This mcp version has no DNS-rebinding protection; upgrade mcp")
+        return {}
+    names = {host, "127.0.0.1", "localhost"}
+    # IPv6 literals appear bracketed in a Host header.
+    hosts = sorted(f"[{n}]:{port}" if ":" in n else f"{n}:{port}" for n in names)
+    return {
+        "security_settings": TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=hosts,
+            allowed_origins=[f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts],
+        )
+    }

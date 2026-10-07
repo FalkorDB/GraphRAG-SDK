@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -12,7 +13,7 @@ from enum import Enum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from graphrag_sdk.core.tables import TableMapping
 
@@ -1074,6 +1075,48 @@ class LLMResponse(DataModel):
     content: str
     tool_calls: list[ToolCall] | None = None
     finish_reason: str | None = None
+
+    @field_validator("tool_calls", mode="before")
+    @classmethod
+    def _accept_openai_shape(cls, value: Any) -> Any:
+        """Accept OpenAI-style tool-call dicts (``{"id", "function": {...}}``).
+
+        Providers written before :class:`ToolCall` existed fill this field
+        with the raw OpenAI shape; convert those instead of rejecting them.
+        """
+        if not isinstance(value, list):
+            return value
+        return [_tool_call_from_openai(v) if isinstance(v, dict) else v for v in value]
+
+
+def _tool_call_from_openai(raw: dict[str, Any]) -> Any:
+    function = raw.get("function")
+    if not isinstance(function, dict):
+        return raw  # already ToolCall-shaped (or invalid: let validation say so)
+    args = function.get("arguments")
+    arguments: dict[str, Any] = {}
+    parse_error: str | None = None
+    if isinstance(args, dict):
+        arguments, text = args, json.dumps(args)
+    else:
+        text = args if isinstance(args, str) else ""
+        if text.strip():
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError as exc:
+                parse_error = f"arguments are not valid JSON: {exc.msg}"
+            else:
+                if isinstance(decoded, dict):
+                    arguments = decoded
+                else:
+                    parse_error = "arguments must be a JSON object"
+    return {
+        "id": raw.get("id") or "call_0",
+        "name": function.get("name", ""),
+        "arguments": arguments,
+        "raw_arguments": text,
+        "parse_error": parse_error,
+    }
 
 
 # ── RAG Types ────────────────────────────────────────────────────

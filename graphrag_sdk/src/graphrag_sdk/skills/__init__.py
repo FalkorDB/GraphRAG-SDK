@@ -15,6 +15,9 @@ from graphrag_sdk.skills.impact_analysis import ImpactAnalysisSkill
 from graphrag_sdk.skills.timeline_reconstruction import TimelineReconstructionSkill
 
 _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+#: Names of the agent's built-in tools; a skill registered under one would
+#: collide with it in every agent's tool registry.
+_RESERVED_NAMES = frozenset({"search", "query_graph", "traverse", "lookup_entity"})
 
 #: Registry of skill classes, keyed by stable name. Add your own with
 #: :func:`register_skill`; the agent, MCP and ``GraphRAG.run_skill`` all
@@ -55,6 +58,8 @@ def register_skill(skill_cls: type[Skill], *, replace: bool = False) -> type[Ski
     params = getattr(skill_cls, "parameters", None)
     if not isinstance(params, dict) or params.get("type") != "object":
         raise ValueError(f"Skill {name!r}: `parameters` must be a JSON Schema object")
+    if name in _RESERVED_NAMES:
+        raise ValueError(f"Skill name {name!r} is reserved for a built-in agent tool")
     if name in SKILL_REGISTRY and SKILL_REGISTRY[name] is not skill_cls and not replace:
         raise ValueError(f"A skill named {name!r} is already registered (pass replace=True)")
     SKILL_REGISTRY[name] = skill_cls

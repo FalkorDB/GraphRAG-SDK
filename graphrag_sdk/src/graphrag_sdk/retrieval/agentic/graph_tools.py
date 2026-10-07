@@ -16,6 +16,7 @@ from typing import Any
 from graphrag_sdk.core.exceptions import LatencyBudgetExceededError
 from graphrag_sdk.core.models import Ontology, RetrieverResultItem
 from graphrag_sdk.retrieval.agentic.cypher_guard import (
+    INTERNAL_NODE_DENYLIST,
     STRUCTURAL_RELATIONSHIPS,
     GraphSchema,
     enforce_row_cap,
@@ -38,7 +39,17 @@ logger = logging.getLogger(__name__)
 
 OntologyGetter = Callable[[], "Ontology | None"]
 
+#: ``asyncio.wait_for`` raises ``asyncio.TimeoutError``, which is only the
+#: builtin ``TimeoutError`` from Python 3.11 on; catch both.
+_TIMEOUTS = (TimeoutError, asyncio.TimeoutError)
+
 # ── Defaults (the hard ceilings live in the clamps below) ────────
+
+#: Keys of the SDK's ``__GraphRAGConfig__`` node (never shown to the model).
+_CONFIG_KEYS = frozenset({"sdk_version", "embedding_dimension"})
+
+#: A list of at least this many numbers in a result is treated as a vector.
+VECTOR_MIN_LENGTH = 64
 
 QUERY_MAX_ROWS = 25
 QUERY_MAX_CELL_CHARS = 200
@@ -97,7 +108,7 @@ async def _bounded_query(
     """Run a read-only query with a database timeout and a client-side one."""
     return await asyncio.wait_for(
         graph_store.query_raw(cypher, params or {}, read_only=True, timeout=timeout_ms),
-        timeout=timeout_ms / 1000 + 0.5,
+        timeout=timeout_ms / 1000 + 0.1,
     )
 
 
@@ -110,13 +121,27 @@ def format_value(value: Any) -> Any:
     props = getattr(value, "properties", None)
     if isinstance(props, dict):
         labels = getattr(value, "labels", None) or getattr(value, "relation", None)
+        if isinstance(labels, list | tuple) and any(
+            lbl in INTERNAL_NODE_DENYLIST for lbl in labels
+        ):
+            return "[internal node omitted]"
         readable = {k: v for k, v in props.items() if "embedding" not in k.lower()}
         if labels:
             return {"labels": labels, **readable}
         return readable
     if isinstance(value, dict):
+        # The SDK's config node, reached as a property map (properties(n),
+        # n {.*}) rather than as a node, is recognised by its keys.
+        if _CONFIG_KEYS <= set(value):
+            return "[internal node omitted]"
         return {k: format_value(v) for k, v in value.items() if "embedding" not in str(k).lower()}
     if isinstance(value, list | tuple):
+        # A long run of numbers is an embedding vector however it was reached;
+        # it is never useful to the model and is not shown.
+        if len(value) >= VECTOR_MIN_LENGTH and all(
+            isinstance(v, int | float) and not isinstance(v, bool) for v in value
+        ):
+            return f"[vector of {len(value)} numbers omitted]"
         return [format_value(v) for v in value]
     return value
 
@@ -316,7 +341,7 @@ def make_query_graph_tool(
                 result = await _bounded_query(graph_store, cypher, None, timeout_ms)
             except LatencyBudgetExceededError:
                 raise
-            except TimeoutError:
+            except _TIMEOUTS:
                 last_error = f"the query took longer than {timeout_ms} ms"
                 continue
             except Exception as exc:
@@ -468,16 +493,27 @@ def make_lookup_entity_tool(graph_store: Any) -> Tool:
 # ── traverse (bounded walk) ──────────────────────────────────────
 
 
-async def _resolve_start(graph_store: Any, start: str, timeout_ms: int) -> tuple[str, str]:
-    """Return ``(id, name)`` of the one entity ``start`` names, or refuse."""
+async def _resolve_start(graph_store: Any, start: str, deadline: float) -> tuple[str, str]:
+    """Return ``(id, name)`` of the one entity ``start`` names, or refuse.
+
+    Every lookup draws on the walk's own time budget (``deadline``), so
+    resolving the name cannot make the walk run past it.
+    """
+
+    def left_ms() -> int:
+        remaining = int((deadline - time.monotonic()) * 1000)
+        if remaining <= 0:
+            raise ToolRefusal("resolving the start entity used up the time budget")
+        return remaining
+
     for cypher in (
         "MATCH (e:__Entity__) WHERE e.id = $k OR e.name = $k RETURN e.id, e.name LIMIT 6",
         "MATCH (e:__Entity__) WHERE toLower(toString(e.name)) = toLower($k) "
         "RETURN e.id, e.name LIMIT 6",
     ):
         try:
-            result = await _bounded_query(graph_store, cypher, {"k": start}, timeout_ms)
-        except TimeoutError as exc:
+            result = await _bounded_query(graph_store, cypher, {"k": start}, left_ms())
+        except _TIMEOUTS as exc:
             raise ToolRefusal("resolving the start entity timed out") from exc
         rows = [r for r in (getattr(result, "result_set", None) or []) if r and r[0] is not None]
         if len(rows) == 1:
@@ -487,7 +523,9 @@ async def _resolve_start(graph_store: Any, start: str, timeout_ms: int) -> tuple
             raise ToolRefusal(
                 f"{start!r} matches {len(rows)} entities ({listed}). Retry with one of these ids."
             )
-    candidates = await find_entities(graph_store, start)
+    candidates = await find_entities(
+        graph_store, start, timeout_ms=min(LOOKUP_TIMEOUT_MS, left_ms())
+    )
     if candidates:
         raise ToolRefusal(
             f"no entity is called {start!r}. Did you mean: {_render_candidates(candidates)}? "
@@ -532,7 +570,7 @@ def make_traverse_tool(
             raise ToolRefusal(f"'via' may name at most {TRAVERSE_MAX_VIA} relations")
 
         start_id, start_name = await _resolve_start(
-            graph_store, str(tool_input["start"]).strip(), budget_ms
+            graph_store, str(tool_input["start"]).strip(), deadline
         )
 
         def remaining_ms() -> int:
@@ -624,7 +662,7 @@ async def _expand(
         }
         try:
             result = await _bounded_query(graph_store, cypher, params, left_ms)
-        except TimeoutError:
+        except _TIMEOUTS:
             stopped = "time_budget"
             break
         depth += 1
@@ -678,7 +716,7 @@ async def _typed_path(
     params: dict[str, Any] = {"start": start_id, **{f"t{i}": t for i, t in enumerate(via)}}
     try:
         result = await _bounded_query(graph_store, cypher, params, timeout_ms)
-    except TimeoutError:
+    except _TIMEOUTS:
         return "", [], "time_budget"
     rows = [r for r in (getattr(result, "result_set", None) or []) if r and r[0] is not None]
     truncated = len(rows) > TRAVERSE_PATH_LIMIT

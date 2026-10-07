@@ -100,6 +100,19 @@ def parse_react_step(text: str) -> dict[str, Any]:
     }
 
 
+def _echoable(call: ToolCall) -> ToolCall:
+    """The call as it is sent back to the provider in the conversation.
+
+    Arguments that were not valid JSON are echoed as ``{}``: some provider
+    adapters re-parse earlier calls' arguments and would fail the next turn.
+    The refusal sent as this call's result still tells the model what was
+    wrong.
+    """
+    if call.parse_error:
+        return call.model_copy(update={"raw_arguments": "{}", "arguments": {}})
+    return call
+
+
 def history_as_messages(
     history: Sequence[ChatMessage | dict[str, Any]] | None,
     *,
@@ -414,7 +427,11 @@ class AgenticRetrieval(RetrievalStrategy):
                     ctx.log(f"Agentic loop answered after {turn} tool turn(s)")
                     return
                 messages.append(
-                    ChatMessage(role="assistant", content=response.content or "", tool_calls=calls)
+                    ChatMessage(
+                        role="assistant",
+                        content=response.content or "",
+                        tool_calls=[_echoable(c) for c in calls],
+                    )
                 )
                 thought = (response.content or "").strip()
                 for position, call in enumerate(calls):

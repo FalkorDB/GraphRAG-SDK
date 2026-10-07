@@ -16,10 +16,6 @@ from graphrag_sdk.core.models import RESERVED_NODE_LABELS, Ontology
 
 logger = logging.getLogger(__name__)
 
-# String literals and backtick identifiers, stripped before keyword scans so
-# data values such as 'call center' or `delete_log` cannot trip a guard.
-_QUOTED_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`[^`]*`")
-_STRING_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 _WRITE_RE = re.compile(
     r"\b(create|merge|delete|detach|set|remove|drop|foreach|call|load\s+csv)\b",
     re.IGNORECASE,
@@ -30,7 +26,7 @@ _EMBEDDING_RE = re.compile(r"\b\w*embedding\w*\b", re.IGNORECASE)
 _INTERNAL_LABEL_RE = re.compile(r"__[A-Za-z0-9]+__")
 # ``:Name`` plus any ``|Other`` alternatives (``[r:A|B]``). An alternative
 # followed by ``.`` is a variable in a list comprehension, not a type.
-_LABEL_RE = re.compile(r":\s*`?([A-Za-z_]\w*)`?((?:\s*\|\s*:?\s*`?[A-Za-z_]\w*`?(?!\s*\.))*)")
+_LABEL_RE = re.compile(r":\s*`?([A-Za-z_]\w*)`?((?:\s*\|\s*:?\s*`?[A-Za-z_]\w*\b`?(?!\s*\.))*)")
 _ALT_NAME_RE = re.compile(r"\|\s*:?\s*`?([A-Za-z_]\w*)`?")
 _SHORTEST_PATH_RE = re.compile(r"\b(allShortestPaths|shortestPath)\s*\(", re.IGNORECASE)
 
@@ -101,6 +97,75 @@ async def introspect_schema(graph_store: Any, ontology: Ontology | None = None) 
     )
 
 
+@dataclass
+class _Scanned:
+    """A query split into what runs and what is data.
+
+    ``code`` is the query with comments removed (strings intact): what is
+    actually executed. ``blank`` has the same length as ``code`` with the
+    contents of string literals replaced by spaces and backtick identifiers
+    reduced to word characters, so keyword / label / property scans see
+    only real syntax, and offsets in ``blank`` are offsets in ``code``.
+    """
+
+    code: str
+    blank: str
+    error: str = ""
+
+
+def _scan(cypher: str) -> _Scanned:
+    code: list[str] = []
+    blank: list[str] = []
+    i, n = 0, len(cypher)
+    while i < n:
+        ch = cypher[i]
+        nxt = cypher[i + 1] if i + 1 < n else ""
+        if ch == "/" and nxt == "/":
+            end = cypher.find("\n", i)
+            i = n if end == -1 else end
+            code.append(" ")
+            blank.append(" ")
+            continue
+        if ch == "/" and nxt == "*":
+            end = cypher.find("*/", i + 2)
+            if end == -1:
+                return _Scanned(
+                    "".join(code), "".join(blank), "the query has an unterminated comment"
+                )
+            i = end + 2
+            code.append(" ")
+            blank.append(" ")
+            continue
+        if ch in ("'", '"'):
+            j = i + 1
+            while j < n and cypher[j] != ch:
+                j += 2 if cypher[j] == "\\" else 1
+            if j >= n:
+                return _Scanned(
+                    "".join(code), "".join(blank), "the query has an unterminated string"
+                )
+            literal = cypher[i : j + 1]
+            code.append(literal)
+            blank.append(ch + " " * (len(literal) - 2) + ch)
+            i = j + 1
+            continue
+        if ch == "`":
+            j = cypher.find("`", i + 1)
+            if j == -1:
+                return _Scanned(
+                    "".join(code), "".join(blank), "the query has an unterminated identifier"
+                )
+            literal = cypher[i : j + 1]
+            code.append(literal)
+            blank.append("`" + re.sub(r"\W", "_", literal[1:-1]) + "`")
+            i = j + 1
+            continue
+        code.append(ch)
+        blank.append(ch)
+        i += 1
+    return _Scanned("".join(code), "".join(blank))
+
+
 def _strip_maps(text: str) -> str:
     """Remove map literals (``{key: value}``), innermost first, so map keys
     are not mistaken for ``:Label`` tokens."""
@@ -110,40 +175,78 @@ def _strip_maps(text: str) -> str:
             return text
 
 
+#: Words after which ``[`` opens a list literal or comprehension, not a subscript.
+_LIST_CONTEXT_WORDS = frozenset(
+    {
+        "IN", "RETURN", "WITH", "UNWIND", "WHERE", "AND", "OR", "XOR", "NOT", "AS",
+        "CASE", "WHEN", "THEN", "ELSE", "BY", "DISTINCT", "CONTAINS", "IS", "NULL",
+        "STARTS", "ENDS", "LIMIT", "SKIP", "ORDER", "YIELD",
+    }
+)  # fmt: skip
+_SUBSCRIPT_RE = re.compile(r"(`[^`]*`|[A-Za-z_]\w*|[)\]])\s*\[")
+_LITERAL_INDEX_RE = re.compile(r"\s*-?\d*\s*(?:\]|\.\.)")
+
+
+def _dynamic_subscripts(blank: str) -> list[str]:
+    """Subscripts whose index is not an integer literal (``n['embedding']``,
+    ``n[k]``, ``properties(n)[$p]``): they read properties by computed name,
+    which no static check can follow."""
+    found = []
+    for match in _SUBSCRIPT_RE.finditer(blank):
+        target = match.group(1)
+        # A keyword opens a list; a backticked name is always an identifier.
+        if not target.startswith("`") and target.upper() in _LIST_CONTEXT_WORDS:
+            continue
+        if not _LITERAL_INDEX_RE.match(blank, match.end()):
+            found.append(target)
+    return found
+
+
 def validate_read_query(cypher: str, schema: GraphSchema | None = None) -> list[str]:
     """Return the reasons ``cypher`` may not run; an empty list means it may.
 
-    Checks, in order: one statement that starts with a read clause, no write
-    keyword or procedure call outside string literals, a RETURN clause, no
-    embedding properties, no SDK-internal labels, and (with a ``schema``)
-    that every label, relationship type and property exists and every
-    ``RELATES`` edge constrains its ``rel_type`` to a declared relation.
+    The query is tokenized first (strings, backtick identifiers, ``//`` and
+    ``/* */`` comments), so nothing can hide behind a comment or a quote.
+    Checks: one statement that starts with a read clause; no write keyword
+    or procedure call; a RETURN clause; no embedding properties and no
+    property read by computed name (``n['x']``, ``n[k]``); no SDK-internal
+    labels anywhere in the text; and (with a ``schema``) that every label,
+    relationship type and property exists and every ``RELATES`` edge
+    constrains its ``rel_type`` to a declared relation.
     """
     errors: list[str] = []
-    stripped = cypher.strip().rstrip(";").strip()
-    if not stripped:
+    scanned = _scan(cypher.strip())
+    if scanned.error:
+        return [scanned.error]
+    code = scanned.code.strip().rstrip(";").strip()
+    blank = scanned.blank.strip().rstrip(";").strip()
+    if not blank:
         return ["the query is empty"]
-    no_quotes = _QUOTED_RE.sub(" ", stripped)
-    no_strings = _STRING_RE.sub("''", stripped)
-    upper = no_quotes.upper().lstrip()
-    if not upper.startswith(_READ_START):
+    if not blank.upper().startswith(_READ_START):
         errors.append("the query must start with MATCH, OPTIONAL MATCH, UNWIND, WITH or RETURN")
-    if ";" in no_quotes:
+    if ";" in blank:
         errors.append("only one statement is allowed")
-    write = _WRITE_RE.search(no_quotes)
+    write = _WRITE_RE.search(blank)
     if write:
         errors.append(f"'{write.group(1).upper()}' is not allowed (read-only, no procedures)")
-    if not re.search(r"\bRETURN\b", no_quotes, re.IGNORECASE):
+    if not re.search(r"\bRETURN\b", blank, re.IGNORECASE):
         errors.append("the query must have a RETURN clause")
-    if _EMBEDDING_RE.search(_STRING_RE.sub(" ", stripped)):
+    if _EMBEDDING_RE.search(blank):
         errors.append("embedding properties may not be read")
+    dynamic = _dynamic_subscripts(_strip_maps(blank))
+    if dynamic:
+        errors.append(
+            "properties may not be read by computed name (e.g. n['x'] or n[k]); use n.property"
+        )
     for internal in INTERNAL_NODE_DENYLIST:
-        if internal in no_strings:
+        # Checked on the raw text: a label named inside a string
+        # (``'__GraphRAGConfig__' IN labels(n)``) selects the node just the same.
+        if internal in cypher:
             errors.append(f"'{internal}' is internal and may not be queried")
     if schema is None:
-        return errors
+        return list(dict.fromkeys(errors))
 
-    scan = _strip_maps(_STRING_RE.sub("''", stripped))
+    scan = _strip_maps(blank)
     allowed = schema.allowed_names()
     if schema.labels or schema.relationship_types:
         # With strings and map literals gone, every remaining ``:Name`` is a
@@ -167,7 +270,7 @@ def validate_read_query(cypher: str, schema: GraphSchema | None = None) -> list[
                 continue
             values = re.findall(
                 rf"\b{re.escape(variable)}\s*\.\s*rel_type\s*(?:=|IN)\s*(\[[^\]]*\]|'[^']*'|\"[^\"]*\")",
-                stripped,
+                code,
                 re.IGNORECASE,
             )
             if not values:
@@ -189,18 +292,33 @@ def validate_read_query(cypher: str, schema: GraphSchema | None = None) -> list[
 
 
 def enforce_row_cap(cypher: str, cap: int) -> str:
-    """Bound every ``LIMIT`` to ``cap`` and add one when the query has none.
+    """Return the query without comments, every ``LIMIT`` bounded to ``cap``.
 
-    Every ``LIMIT n`` is rewritten to ``min(n, cap)``, not just the last, so
-    an inner ``WITH ... LIMIT 100000`` cannot build a huge intermediate set.
-    ``shortestPath`` wrappers are removed (FalkorDB does not support them in
-    this form).
+    Every real ``LIMIT n`` clause is rewritten to ``min(n, cap)``, not just
+    the last, so an inner ``WITH ... LIMIT 100000`` cannot build a huge
+    intermediate set; ``LIMIT`` inside a string or a comment is not a
+    clause and is left alone (comments are dropped). A query without a
+    ``LIMIT`` gets one. ``shortestPath`` wrappers are removed (FalkorDB does
+    not support them in this form).
     """
     if cap < 1:
         raise ValueError("cap must be >= 1")
-    cypher = _SHORTEST_PATH_RE.sub("(", cypher.strip().rstrip(";"))
-    capped, n = _LIMIT_RE.subn(lambda m: f"LIMIT {min(int(m.group(1)), cap)}", cypher)
-    if n == 0:
+    scanned = _scan(cypher.strip())
+    if scanned.error:
+        raise ValueError(scanned.error)
+    code, blank = scanned.code, scanned.blank
+    pieces: list[str] = []
+    last = 0
+    found = 0
+    for match in _LIMIT_RE.finditer(blank):
+        found += 1
+        pieces.append(code[last : match.start()])
+        pieces.append(f"LIMIT {min(int(match.group(1)), cap)}")
+        last = match.end()
+    pieces.append(code[last:])
+    capped = "".join(pieces).strip().rstrip(";").rstrip()
+    capped = _SHORTEST_PATH_RE.sub("(", capped)
+    if found == 0:
         return f"{capped}\nLIMIT {cap}"
     return capped
 

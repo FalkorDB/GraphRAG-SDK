@@ -4151,8 +4151,14 @@ class GraphRAG:
         await self._validate_graph_config(ctx=ctx)
 
         retrieval = strategy or self._retrieval_strategy
-        if strategy is not None and strategy is not self._retrieval_strategy:
-            # A per-call strategy never saw the facade's ontology updates.
+        if (
+            strategy is not None
+            and strategy is not self._retrieval_strategy
+            and getattr(strategy, "_ontology", None) is None
+        ):
+            # A per-call strategy without an ontology of its own never saw the
+            # facade's; give it the current one (an ontology the caller set is
+            # left alone).
             strategy.set_ontology(self._global_ontology)
         ctx.ensure_budget("retrieval strategy search")
         if history and getattr(retrieval, "accepts_history", False) is True:
@@ -4287,7 +4293,10 @@ class GraphRAG:
             prompt_template: Template that wraps the current turn's
                 ``{context}`` and ``{question}``.  Applied in both
                 single-turn and multi-turn modes.  If omitted, a built-in
-                default template is used.
+                default template is used.  Not used with an agentic
+                strategy (``AgenticRetrieval``), which returns its own,
+                citation-checked answer; neither is a system message in
+                ``history`` (set ``system_prompt=`` on the strategy instead).
             rewrite_question_with_history: If True and history is
                 provided, rewrite the current question into a standalone
                 form (collapsing pronouns/references) using a cheap LLM
@@ -4339,6 +4348,13 @@ class GraphRAG:
         # An agentic strategy already answered (with citations checked):
         # return that answer rather than generating a second one from it.
         if retriever_result.metadata.get("answer_is_final") is True:
+            if prompt_template is not None or (
+                validated_history and validated_history[0].role == "system"
+            ):
+                logger.warning(
+                    "completion(): prompt_template and a system message in history are not "
+                    "used with an agentic strategy; set system_prompt= on AgenticRetrieval"
+                )
             md = retriever_result.metadata
             final = RagResult(
                 answer=str(md.get("answer", "")),

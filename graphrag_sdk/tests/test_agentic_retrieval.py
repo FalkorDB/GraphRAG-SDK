@@ -372,7 +372,9 @@ class TestReactLoop:
     async def test_one_malformed_reply_gets_a_reminder(self, ctx: Context):
         llm = ScriptedLLM(["Thought: hmm.", "Final Answer: 42"])
         result = await AgenticRetrieval(llm, strategy=FakeStrategy()).search("q", ctx)
-        assert result.metadata["answer"] == "42"
+        assert result.metadata["raw_answer"] == "42"
+        # An uncited figure given without any tool call is not conversation.
+        assert result.metadata["grounded"] is False
         assert "did not follow the format" in llm.prompts[1]
 
     async def test_stops_after_two_malformed_replies(self, ctx: Context):

@@ -4,7 +4,7 @@ sidebarTitle: "Agentic Retrieval"
 description: "Let an LLM search, query and walk the knowledge graph with tools, then answer with citations it is held to — plus reasoning skills and an MCP server."
 ---
 
-`AgenticRetrieval` lets the model decide **how** to retrieve. Instead of one fixed retrieval pass, it calls tools — semantic search, a read-only graph query, a bounded graph walk, reasoning skills — until it can answer, and every claim in the answer cites the tool result it came from.
+`AgenticRetrieval` lets the model decide **how** to retrieve. Instead of one fixed retrieval pass, it calls tools — semantic search, a read-only graph query, a bounded graph walk, reasoning skills — until it can answer. The model is told to cite the tool result behind each claim as `[N]`, and an answer that cites nothing real is caught (see [Citations and grounding](#citations-and-grounding)).
 
 Use it when questions need more than one lookup: counts and rankings, "which X are connected to Y", multi-hop questions, or comparisons. For a plain question about the content, the default [multi-path retrieval](/retrieval) is faster and cheaper.
 
@@ -20,7 +20,7 @@ for c in result.metadata["citations"]:
     print(c["n"], c["tool"], c["content"][:80])
 ```
 
-`completion()` returns the agent's own answer — it does not generate a second one from the retrieved context. Pass `history=[...]` to `completion()` (or `search()`) and the agent sees the conversation so far.
+`completion()` returns the agent's own answer — it does not generate a second one from the retrieved context, so `prompt_template` does not apply (use `system_prompt=` on the agent). Pass `history=[...]` to `completion()` (or `search()`) and the agent sees the conversation so far.
 
 ## How the loop runs
 
@@ -33,7 +33,7 @@ question ─► model ──tool calls──► tools ──numbered results [N]
 - **Native tool calling** when the LLM supports it (`LiteLLM`, `OpenRouterLLM`): the model requests tools as structured calls via `llm.ainvoke_with_tools()`.
 - **ReAct fallback** for any other provider: the tools are described in the prompt and the reply (`Action:` / `Action Input:` / `Final Answer:`) is parsed. Pick explicitly with `mode="native"` or `mode="react"`.
 - A call the tool cannot run — unknown tool, bad arguments, a name that matches nothing — comes back to the model as `Refused: <tool> did not run: <why>`, so it can fix the call instead of the run failing.
-- When the step or tool-call limit is reached, the model is asked once more to answer **without** tools, so a run always ends with an answer.
+- When the step or tool-call limit is reached, the model is asked once more to answer **without** tools, so the run still ends with an answer. (If the latency budget runs out first, the run stops with what it has; the answer may be empty and is then reported as ungrounded.)
 
 ## Tools
 
@@ -45,7 +45,7 @@ question ─► model ──tool calls──► tools ──numbered results [N]
 | `lookup_entity` | Resolve part of a name to exact names and ids. |
 | skills | `entity_comparison`, `impact_analysis`, `contradiction_detection`, `gap_analysis`, `timeline_reconstruction` (see below). |
 
-Every query `query_graph` tried is in `metadata["generated_cypher"]`.
+Every query `query_graph` tried is in `metadata["generated_cypher"]`. Model-written queries run with `GRAPH.RO_QUERY` on a fail-fast path: a query FalkorDB rejects fails once and never counts against the connection's circuit breaker.
 
 Add your own tool:
 
@@ -68,7 +68,7 @@ agent = rag.agentic_retrieval(registry=registry)
 Tool results are numbered `[N]` across the whole run. After the run, the answer's markers are checked against that evidence:
 
 - markers that point at nothing are removed (`metadata["invalid_citations"]`);
-- an answer that cites no real result after calling tools is **ungrounded**.
+- an answer that cites no real result is **ungrounded** (with the conversation exception below).
 
 | `grounding=` | An ungrounded answer is… |
 |---|---|
@@ -76,7 +76,7 @@ Tool results are numbered `[N]` across the whole run. After the run, the answer'
 | `"annotate"` | kept, with `metadata["grounded"] = False` |
 | `"off"` | not checked |
 
-Short conversational replies that needed no tools ("Hello!") pass. The model's original text is always in `metadata["raw_answer"]`.
+The gate checks that the answer rests on real evidence — one valid citation is enough — not that every sentence carries one. Short conversational replies that called no tools and state no figures ("Hello!", "You're welcome") pass without a citation; an empty answer never does. Bracketed numbers that are not citations, such as `[2024]` or `items[0]`, are left alone. The model's original text is always in `metadata["raw_answer"]`.
 
 ## Limits
 
@@ -108,7 +108,7 @@ The run's `Context` latency budget still applies; if it runs out mid-run, the pa
 | Key | Meaning |
 |---|---|
 | `answer`, `raw_answer` | the answer after / before the grounding check |
-| `grounded`, `grounding_reason` | the verdict and why (`cited`, `conversation`, `no_citations`, `invalid_citations`) |
+| `grounded`, `grounding_reason` | the verdict and why (`cited`, `conversation`, `no_citations`, `invalid_citations`, `empty`) |
 | `citations`, `evidence` | cited results / all results, each `{n, tool, kind, content, source}` |
 | `agent_trace` | every call: tool, arguments, result, status (`ok` / `refused` / `error`) |
 | `stop_reason` | `final_answer`, `max_steps`, `max_tool_calls`, `budget_exceeded`, `no_action` |
@@ -149,6 +149,6 @@ graphrag-mcp --transport stdio                                   # local MCP cli
 GRAPHRAG_MCP_TOKEN=... graphrag-mcp --transport sse --host 0.0.0.0  # network, bearer token required
 ```
 
-Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL` and `GRAPHRAG_EMBED_DIM`. Serving SSE on a non-loopback host without a token is refused.
+Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL` and `GRAPHRAG_EMBED_DIM`. Serving SSE on a non-loopback host without a token is refused. A loopback SSE server only accepts requests whose `Host` / `Origin` name it (DNS-rebinding protection, with `mcp` versions that support it).
 
 Tools: `ingest`, `retrieve`, `answer`, `ask_agent` (agentic answer with citations), `cypher_query` (read-only, guarded, row-capped), `graph_walk`, `run_skill`, `get_statistics`, `get_ontology`.
