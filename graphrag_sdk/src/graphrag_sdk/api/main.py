@@ -76,6 +76,13 @@ from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
     GraphExtraction,
     _coerce_attribute_value,
 )
+from graphrag_sdk.ingestion.ingestion_planner import (
+    IngestionPlanner,
+    LLMIngestionPlanner,
+    build_chunker,
+    build_extractor,
+    build_resolver,
+)
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.loaders.markdown_loader import MarkdownLoader
 from graphrag_sdk.ingestion.loaders.pdf_loader import PdfLoader
@@ -1787,6 +1794,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         max_concurrency: int = 3,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -1802,6 +1811,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> list[IngestionResult | Exception]: ...
@@ -1818,6 +1829,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> IngestionResult | list[IngestionResult | Exception] | StructuredIngestionResult:
@@ -1876,6 +1889,17 @@ class GraphRAG:
           dedup phase. Pass ``resolver=LLMVerifiedResolution(...)`` to also
           resolve per document at ingest.
 
+        Agentic strategy selection (``auto=True``):
+            When ``auto=True``, an ingestion planner inspects a sample of the
+            document and picks the chunker, entity-extraction backend, and
+            resolver per document (mirroring retrieval-side routing). It only
+            fills in strategies you did *not* pass explicitly — an explicit
+            ``chunker``/``extractor``/``resolver`` always wins. By default the
+            planner is LLM-backed (one small call); pass a custom ``planner``
+            (e.g. ``HeuristicIngestionPlanner()``) for a zero-cost heuristic.
+            On an empty/invalid plan or planner error it falls back to the
+            defaults above, so behavior is never silently lost.
+
         Args:
             source: File path (or list of paths) — file mode only.
             text: Raw text — text mode only.
@@ -1906,6 +1930,11 @@ class GraphRAG:
             extractor: Custom extraction strategy. Rejected for a table: no model
                 extracts from records.
             resolver: Custom resolution strategy.
+            auto: Enable agentic per-document strategy selection for any
+                strategy left unspecified.
+            planner: Optional planner instance (``LLMIngestionPlanner`` /
+                ``HeuristicIngestionPlanner``). Defaults to an LLM planner when
+                ``auto=True``. Ignored when ``auto=False``.
             max_concurrency: Max parallel ingestions (list source only).
             ctx: Execution context.
 
@@ -2018,6 +2047,8 @@ class GraphRAG:
                 chunker=chunker,
                 extractor=extractor,
                 resolver=resolver,
+                auto=auto,
+                planner=planner,
                 max_concurrency=max_concurrency,
                 ctx=ctx,
             )
@@ -2035,6 +2066,8 @@ class GraphRAG:
             chunker=chunker,
             extractor=extractor,
             resolver=resolver,
+            auto=auto,
+            planner=planner,
             ctx=ctx,
         )
 
@@ -2659,6 +2692,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         ctx: Context | None = None,
         _skip_post: bool = False,
     ) -> IngestionResult:
@@ -2724,6 +2759,31 @@ class GraphRAG:
         # extraction work is done.
         await self._ensure_ontology_initialized()
 
+        # Agentic strategy selection: when auto=True, ask a planner to pick the
+        # strategies the caller did not pass explicitly. Explicit overrides
+        # always win; planner errors fall back to the per-strategy defaults
+        # below (build via `or ...`), so behavior is never silently lost.
+        preloaded_document: DocumentOutput | None = None
+        plan_report: dict[str, Any] | None = None
+        if auto and (chunker is None or extractor is None or resolver is None):
+            plan_report = {}
+            (
+                chunker,
+                extractor,
+                resolver,
+                preloaded_document,
+            ) = await self._plan_ingestion_strategies(
+                text=text,
+                source=source,
+                loader=loader,
+                chunker=chunker,
+                extractor=extractor,
+                resolver=resolver,
+                planner=planner,
+                ctx=ctx,
+                report=plan_report,
+            )
+
         pipeline = IngestionPipeline(
             loader=loader or TextLoader(),
             chunker=chunker or SentenceTokenCapChunking(),
@@ -2734,7 +2794,24 @@ class GraphRAG:
             ontology=self._global_ontology,
         )
 
-        result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
+        # Reuse the planner's file-mode content sample instead of loading the
+        # source a second time (the planner already loaded it in full to
+        # build that sample) — matters most for expensive loaders (PDFs).
+        if preloaded_document is not None and text is None:
+            result = await pipeline.run(
+                source, ctx, document_info=doc_info, loaded_document=preloaded_document
+            )
+        else:
+            result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
+        if plan_report is not None:
+            result.metadata["plan"] = plan_report
+        elif auto:
+            result.metadata["plan"] = {
+                "planner": None,
+                "plan": None,
+                "slots": {"chunker": "caller", "extractor": "caller", "resolver": "caller"},
+                "notes": ["all three strategies were passed, so the planner did not run"],
+            }
 
         # Cross-document duplicates can only be resolved by finalize(); see
         # _warn_if_dedup_pending.
@@ -2760,6 +2837,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> list[IngestionResult | Exception]:
@@ -2789,6 +2868,8 @@ class GraphRAG:
                         chunker=chunker,
                         extractor=extractor,
                         resolver=resolver,
+                        auto=auto,
+                        planner=planner,
                         ctx=parent_ctx.child(),
                         _skip_post=True,
                     )
@@ -2904,6 +2985,142 @@ class GraphRAG:
             llm=self.llm,
             entity_types=entity_types,
         )
+
+    async def _plan_ingestion_strategies(
+        self,
+        *,
+        text: str | None,
+        source: str | None,
+        loader: LoaderStrategy | None = None,
+        chunker: ChunkingStrategy | None,
+        extractor: ExtractionStrategy | None,
+        resolver: ResolutionStrategy | None,
+        planner: IngestionPlanner | None,
+        ctx: Context | None,
+        report: dict[str, Any] | None = None,
+    ) -> tuple[
+        ChunkingStrategy | None,
+        ExtractionStrategy | None,
+        ResolutionStrategy | None,
+        DocumentOutput | None,
+    ]:
+        """Run the ingestion planner and fill in unspecified strategies.
+
+        Returns the ``(chunker, extractor, resolver, preloaded_document)``
+        tuple to use. Any strategy slot the caller passed explicitly is
+        returned unchanged. A missing/invalid plan or any planner/build
+        failure degrades to leaving the slot as ``None`` (the pipeline then
+        applies its own defaults), so this never raises on a bad/slow planner.
+
+        ``report``, when given, is filled with what was decided — the shape
+        stored as ``IngestionResult.metadata["plan"]``: the planner, the plan
+        (strategies, params, reason), where each slot came from
+        (``"caller"`` / ``"planner"`` / ``"default"``) and any fallback or
+        adjustment notes.
+
+        ``preloaded_document`` is the full ``DocumentOutput`` this method
+        loaded (file mode only) to build the planner's content sample, if
+        any. The caller should pass it on to ``IngestionPipeline.run()`` as
+        ``loaded_document=`` so the file is not loaded a second time.
+        """
+        # In file mode the raw text isn't loaded yet, so give the planner a real
+        # content sample (best-effort) rather than only the file path — many
+        # documents' extensions carry no structural signal. A load failure just
+        # falls through to path-only planning. The loaded document is returned
+        # to the caller so `_ingest_single` can reuse it instead of loading
+        # the source a second time via the pipeline.
+        sample_text = text
+        preloaded_document: DocumentOutput | None = None
+        if sample_text is None and source is not None and loader is not None:
+            try:
+                loaded = await loader.load(source, ctx or Context())
+                sample_text = loaded.text
+                preloaded_document = loaded
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Planner content-sample load failed (%s); planning from path", exc)
+
+        active = planner or LLMIngestionPlanner(self.llm)
+        info: dict[str, Any] = report if report is not None else {}
+        given = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
+        info.update(
+            planner=type(active).__name__,
+            plan=None,
+            slots={k: "caller" if v is not None else "default" for k, v in given.items()},
+            notes=[],
+        )
+        try:
+            plan = await active.plan(sample_text, source=source, ctx=ctx)
+            if plan is None:
+                raise ValueError("planner returned no plan")
+        except LatencyBudgetExceededError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Ingestion planner failed (%s); using the default strategies", exc)
+            info["notes"].append(f"planner failed: {exc}")
+            return chunker, extractor, resolver, preloaded_document
+
+        # "structural" groups a loaded document's elements; without them
+        # (text mode, or a loader that produced none) it only delegates to the
+        # sentence chunker, so say so instead of reporting a structural plan.
+        if plan.chunker == "structural" and chunker is None:
+            no_elements = text is not None or (
+                preloaded_document is not None and not preloaded_document.elements
+            )
+            if no_elements:
+                plan = dataclasses.replace(plan, chunker="sentence")
+                info["notes"].append(
+                    "structural -> sentence: the document has no structural elements"
+                )
+        info["plan"] = {
+            "chunker": plan.chunker,
+            "extractor": plan.extractor,
+            "resolver": plan.resolver,
+            "chunker_params": dict(plan.chunker_params),
+            "extractor_params": dict(plan.extractor_params),
+            "resolver_params": dict(plan.resolver_params),
+            "reason": plan.reason,
+        }
+
+        # Build only the slots the caller left unset, each on its own: one slot
+        # that cannot be built (e.g. GLiNER not installed) falls back to its
+        # default without discarding the rest of the plan.
+        entity_types = [e.label for e in self.ontology.entities] if self.ontology.entities else None
+        builders = {
+            "chunker": lambda: build_chunker(
+                plan.chunker, llm=self.llm, params=plan.chunker_params
+            ),
+            "extractor": lambda: build_extractor(
+                plan.extractor,
+                llm=self.llm,
+                entity_types=entity_types,
+                params=plan.extractor_params,
+            ),
+            "resolver": lambda: build_resolver(
+                plan.resolver, llm=self.llm, embedder=self.embedder, params=plan.resolver_params
+            ),
+        }
+        slots: dict[str, Any] = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
+        for slot, build in builders.items():
+            if slots[slot] is not None:
+                continue
+            try:
+                slots[slot] = build()
+                info["slots"][slot] = "planner"
+            except LatencyBudgetExceededError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                info["notes"].append(f"could not build {slot} {getattr(plan, slot)!r}: {exc}")
+                logger.warning(
+                    "Ingestion planner: could not build %s %r (%s); using the default %s",
+                    slot,
+                    getattr(plan, slot),
+                    exc,
+                    slot,
+                )
+
+        return slots["chunker"], slots["extractor"], slots["resolver"], preloaded_document
 
     def _default_ingest_resolver(self) -> ResolutionStrategy:
         """Return the default ingest-time resolver: ``ExactMatchResolution``.
@@ -5117,6 +5334,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         max_concurrency: int = 3,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -5132,6 +5351,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         max_concurrency: int = 3,
         ctx: Context | None = None,
     ) -> list[IngestionResult | Exception]: ...
@@ -5146,6 +5367,8 @@ class GraphRAG:
         chunker: ChunkingStrategy | None = None,
         extractor: ExtractionStrategy | None = None,
         resolver: ResolutionStrategy | None = None,
+        auto: bool = False,
+        planner: IngestionPlanner | None = None,
         max_concurrency: int = 3,
         record_loader: RecordLoaderStrategy | None = None,
         strict_mapping: bool = False,
@@ -5164,6 +5387,8 @@ class GraphRAG:
                 chunker=chunker,
                 extractor=extractor,
                 resolver=resolver,
+                auto=auto,
+                planner=planner,
                 max_concurrency=max_concurrency,
                 record_loader=record_loader,
                 strict_mapping=strict_mapping,
