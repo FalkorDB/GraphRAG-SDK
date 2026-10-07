@@ -15,6 +15,13 @@ logger = logging.getLogger(__name__)
 
 MCPHandler = Callable[[dict[str, Any]], Awaitable[str]]
 
+#: Bounds on what an MCP client may ask for.
+CYPHER_DEFAULT_ROWS, CYPHER_MAX_ROWS = 25, 100
+CYPHER_TIMEOUT_MS = 5000
+WALK_MAX_BEAM_WIDTH, WALK_MAX_DEPTH = 20, 5
+AGENT_MAX_STEPS = 12
+_CITATION_CHARS = 500
+
 
 @dataclass
 class MCPTool:
@@ -41,9 +48,28 @@ def _obj(props: dict[str, Any], required: list[str] | None = None) -> dict[str, 
     }
 
 
+def _clamp(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
+def _graph_store(rag: Any) -> Any:
+    """The facade's graph store.
+
+    The facade keeps storage off its public surface, so this reads the
+    private attribute; a ``graph_store`` attribute (e.g. on a test double or
+    a wrapper) takes precedence.
+    """
+    store = getattr(rag, "graph_store", None)
+    return store if store is not None else rag._graph_store
+
+
 @dataclass
 class GraphRAGToolset:
-    """Builds the standard 8-tool MCP surface over a GraphRAG instance."""
+    """Builds the standard MCP tool surface over a GraphRAG instance."""
 
     rag: Any
     tools: list[MCPTool] = field(default_factory=list)
@@ -81,20 +107,66 @@ class GraphRAGToolset:
             result = await rag.completion(args["question"])
             return _dump({"answer": result.answer, "metadata": result.metadata})
 
-        async def cypher_query(args: dict[str, Any]) -> str:
-            from graphrag_sdk.retrieval.agentic.tools import is_read_only_cypher
+        async def ask_agent(args: dict[str, Any]) -> str:
+            options: dict[str, Any] = {}
+            if "max_steps" in args:
+                options["max_steps"] = _clamp(args["max_steps"], 6, 1, AGENT_MAX_STEPS)
+            agent = rag.agentic_retrieval(**options)
+            result = await rag.completion(
+                args["question"], strategy=agent, history=args.get("history") or None
+            )
+            md = result.metadata or {}
+            citations = [
+                {
+                    "n": c.get("n"),
+                    "tool": c.get("tool"),
+                    "source": c.get("source"),
+                    "content": str(c.get("content", ""))[:_CITATION_CHARS],
+                }
+                for c in md.get("citations", []) or []
+            ]
+            agent_md = md.get("agent", {}) or {}
+            return _dump(
+                {
+                    "answer": result.answer,
+                    "grounded": md.get("grounded"),
+                    "citations": citations,
+                    "stop_reason": agent_md.get("stop_reason"),
+                    "num_steps": agent_md.get("num_steps"),
+                    "generated_cypher": agent_md.get("generated_cypher", []),
+                }
+            )
 
-            cypher = args["cypher"]
-            if not is_read_only_cypher(cypher):
-                return "Error: only read-only Cypher is permitted via MCP."
-            result = await rag._graph_store.query_raw(cypher)
-            rows = list(getattr(result, "result_set", []) or [])
-            return _dump({"rows": [[_jsonable(c) for c in row] for row in rows]})
+        async def cypher_query(args: dict[str, Any]) -> str:
+            from graphrag_sdk.retrieval.agentic.cypher_guard import (
+                enforce_row_cap,
+                validate_read_query,
+            )
+            from graphrag_sdk.retrieval.agentic.graph_tools import format_value
+
+            cypher = str(args["cypher"])
+            problems = validate_read_query(cypher)
+            if problems:
+                return "Error: only read-only Cypher is permitted via MCP: " + "; ".join(problems)
+            max_rows = _clamp(
+                args.get("max_rows", CYPHER_DEFAULT_ROWS), CYPHER_DEFAULT_ROWS, 1, CYPHER_MAX_ROWS
+            )
+            bounded = enforce_row_cap(cypher, max_rows)
+            result = await _graph_store(rag).query_raw(
+                bounded, read_only=True, timeout=CYPHER_TIMEOUT_MS
+            )
+            rows = list(getattr(result, "result_set", []) or [])[:max_rows]
+            return _dump(
+                {
+                    "rows": [[_jsonable(format_value(c)) for c in row] for row in rows],
+                    "row_cap": max_rows,
+                }
+            )
 
         async def graph_walk(args: dict[str, Any]) -> str:
             from graphrag_sdk.retrieval.graph_walk import DynamicGraphWalk
 
-            store = rag._graph_store
+            store = _graph_store(rag)
             try:
                 weights = await store.pagerank()
             except Exception:
@@ -106,8 +178,8 @@ class GraphRAGToolset:
             walk = DynamicGraphWalk(
                 neighbor_fn,
                 node_weights=weights,
-                beam_width=int(args.get("beam_width", 5)),
-                max_depth=int(args.get("max_depth", 3)),
+                beam_width=_clamp(args.get("beam_width", 5), 5, 1, WALK_MAX_BEAM_WIDTH),
+                max_depth=_clamp(args.get("max_depth", 3), 3, 1, WALK_MAX_DEPTH),
             )
             goal = args.get("goal")
             if goal:
@@ -117,11 +189,21 @@ class GraphRAGToolset:
             return _dump({"paths": [p.model_dump() for p in paths]})
 
         async def run_skill(args: dict[str, Any]) -> str:
+            from graphrag_sdk.retrieval.agentic.tools import check_arguments
             from graphrag_sdk.skills import build_skill
 
-            skill = build_skill(args["skill"], rag._graph_store, rag.llm)
+            try:
+                skill = build_skill(args["skill"], _graph_store(rag), rag.llm)
+            except KeyError as exc:
+                return f"Error: {exc.args[0]}"
             params = args.get("params", {}) or {}
-            result = await skill.run(None, **params)
+            problems = check_arguments(skill.parameters, params)
+            if problems:
+                return f"Error: invalid arguments for skill '{skill.name}': {'; '.join(problems)}"
+            try:
+                result = await skill.run(None, **params)
+            except ValueError as exc:
+                return f"Error: {exc}"
             return _dump(result.model_dump())
 
         async def get_statistics(_args: dict[str, Any]) -> str:
@@ -130,6 +212,12 @@ class GraphRAGToolset:
         async def get_ontology(_args: dict[str, Any]) -> str:
             ontology = await rag.get_ontology()
             return _dump(ontology.model_dump() if hasattr(ontology, "model_dump") else {})
+
+        from graphrag_sdk.skills import SKILL_REGISTRY
+
+        skill_lines = "; ".join(
+            f"{name}: {cls.description}" for name, cls in sorted(SKILL_REGISTRY.items())
+        )
 
         return [
             MCPTool(
@@ -157,20 +245,63 @@ class GraphRAGToolset:
                 answer,
             ),
             MCPTool(
+                "ask_agent",
+                "Answer a question with the agentic retriever: it searches, queries and "
+                "walks the graph with tools, then answers with [N] citations to the "
+                "evidence it found. Returns the answer, whether it is grounded, and the "
+                "cited evidence.",
+                _obj(
+                    {
+                        "question": {"type": "string"},
+                        "history": {
+                            "type": "array",
+                            "description": "Earlier turns as {role, content} objects.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string", "enum": ["user", "assistant"]},
+                                    "content": {"type": "string"},
+                                },
+                                "required": ["role", "content"],
+                            },
+                        },
+                        "max_steps": {
+                            "type": "integer",
+                            "description": f"Tool-calling turns, 1-{AGENT_MAX_STEPS}.",
+                        },
+                    },
+                    ["question"],
+                ),
+                ask_agent,
+            ),
+            MCPTool(
                 "cypher_query",
-                "Run a read-only Cypher query against the graph.",
-                _obj({"cypher": {"type": "string"}}, ["cypher"]),
+                "Run a read-only Cypher query against the graph (no writes, no procedure "
+                f"calls; at most {CYPHER_MAX_ROWS} rows, {CYPHER_TIMEOUT_MS} ms).",
+                _obj(
+                    {
+                        "cypher": {"type": "string"},
+                        "max_rows": {
+                            "type": "integer",
+                            "description": f"Rows to return, 1-{CYPHER_MAX_ROWS}.",
+                        },
+                    },
+                    ["cypher"],
+                ),
                 cypher_query,
             ),
             MCPTool(
                 "graph_walk",
-                "PageRank-weighted graph walk from a start entity.",
+                "PageRank-weighted graph walk from a start entity id.",
                 _obj(
                     {
                         "start": {"type": "string"},
                         "goal": {"type": "string"},
-                        "beam_width": {"type": "integer"},
-                        "max_depth": {"type": "integer"},
+                        "beam_width": {
+                            "type": "integer",
+                            "description": f"1-{WALK_MAX_BEAM_WIDTH}",
+                        },
+                        "max_depth": {"type": "integer", "description": f"1-{WALK_MAX_DEPTH}"},
                     },
                     ["start"],
                 ),
@@ -178,12 +309,14 @@ class GraphRAGToolset:
             ),
             MCPTool(
                 "run_skill",
-                "Run a high-level skill (entity_comparison, impact_analysis, "
-                "contradiction_detection, gap_analysis, timeline_reconstruction).",
+                f"Run a high-level reasoning skill. Available: {skill_lines}.",
                 _obj(
                     {
-                        "skill": {"type": "string"},
-                        "params": {"type": "object"},
+                        "skill": {"type": "string", "enum": sorted(SKILL_REGISTRY)},
+                        "params": {
+                            "type": "object",
+                            "description": "Skill arguments (see each skill's parameters).",
+                        },
                     },
                     ["skill"],
                 ),

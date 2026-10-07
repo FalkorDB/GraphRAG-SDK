@@ -1,4 +1,5 @@
 """Tests for retrieval/graph_walk.py — DynamicGraphWalk (Phase 3.3)."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -141,3 +142,22 @@ class TestGraphWalkRetrieval:
         strat = GraphWalkRetrieval(store, seed_fn)
         result = await strat.search("q", ctx)
         assert result.items == []
+
+
+class TestWeightedNeighborsQuery:
+    async def test_query_is_deterministic_and_skips_bookkeeping_edges(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.storage.graph_store import GraphStore
+
+        conn = MagicMock()
+        conn.query = AsyncMock(
+            return_value=SimpleNamespace(result_set=[["acme", "WORKS_AT", 2.0], [None, "X", 1.0]])
+        )
+        out = await GraphStore(conn).weighted_neighbors("alice", limit=7)
+        cypher = conn.query.await_args.args[0]
+        assert "NOT type(r) IN ['SAME_AS', 'DISTINCT_FROM']" in cypher
+        assert "ORDER BY weight DESC, id LIMIT 7" in cypher
+        assert "max(w) AS weight" in cypher
+        assert out == [("acme", 2.0, "WORKS_AT")]

@@ -1,0 +1,154 @@
+---
+title: "GraphRAG SDK Agentic Retrieval"
+sidebarTitle: "Agentic Retrieval"
+description: "Let an LLM search, query and walk the knowledge graph with tools, then answer with citations it is held to — plus reasoning skills and an MCP server."
+---
+
+`AgenticRetrieval` lets the model decide **how** to retrieve. Instead of one fixed retrieval pass, it calls tools — semantic search, a read-only graph query, a bounded graph walk, reasoning skills — until it can answer. The model is told to cite the tool result behind each claim as `[N]`, and an answer that cites nothing real is caught (see [Citations and grounding](#citations-and-grounding)).
+
+Use it when questions need more than one lookup: counts and rankings, "which X are connected to Y", multi-hop questions, or comparisons. For a plain question about the content, the default [multi-path retrieval](/retrieval) is faster and cheaper.
+
+## Quick start
+
+```python
+agent = rag.agentic_retrieval()            # wired to this instance's LLM, graph and ontology
+result = await rag.completion("Which suppliers ship to plants in Berlin?", strategy=agent)
+
+print(result.answer)                        # "Acme and Globex ship to the Berlin plant [2][5]."
+print(result.metadata["grounded"])          # True
+for c in result.metadata["citations"]:
+    print(c["n"], c["tool"], c["content"][:80])
+```
+
+`completion()` returns the agent's own answer — it does not generate a second one from the retrieved context, so `prompt_template` does not apply (use `system_prompt=` on the agent). Pass `history=[...]` to `completion()` (or `search()`) and the agent sees the conversation so far.
+
+## How the loop runs
+
+```
+question ─► model ──tool calls──► tools ──numbered results [N]──► model ─► … ─► answer
+                                                                            │
+                                         grounding gate: do the [N] exist? ◄┘
+```
+
+- **Native tool calling** when the LLM supports it (`LiteLLM`, `OpenRouterLLM`): the model requests tools as structured calls via `llm.ainvoke_with_tools()`.
+- **ReAct fallback** for any other provider: the tools are described in the prompt and the reply (`Action:` / `Action Input:` / `Final Answer:`) is parsed. Pick explicitly with `mode="native"` or `mode="react"`.
+- A call the tool cannot run — unknown tool, bad arguments, a name that matches nothing — comes back to the model as `Refused: <tool> did not run: <why>`, so it can fix the call instead of the run failing.
+- When the step or tool-call limit is reached, the model is asked once more to answer **without** tools, so the run still ends with an answer. (If the latency budget runs out first, the run stops with what it has; the answer may be empty and is then reported as ungrounded.)
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `search` | Multi-path semantic search. Each entity, fact and passage comes back as its own numbered result. |
+| `query_graph` | A question in plain language is turned into Cypher, checked by a schema-aware read-only guard, capped at 25 rows and run read-only (`GRAPH.RO_QUERY`) with a timeout. Rejected queries are retried with the reason. For counts, rankings and connection questions. |
+| `traverse` | Bounded walk from one entity (name or id): breadth-first, or along named relations with `via`. Reports which budget stopped it. An unknown name is refused with exact-name suggestions. |
+| `lookup_entity` | Resolve part of a name to exact names and ids. |
+| skills | `entity_comparison`, `impact_analysis`, `contradiction_detection`, `gap_analysis`, `timeline_reconstruction` (see below). |
+
+Every query `query_graph` tried is in `metadata["generated_cypher"]`. Model-written queries run with `GRAPH.RO_QUERY` on a fail-fast path: a query FalkorDB rejects fails once and never counts against the connection's circuit breaker.
+
+Add your own tool:
+
+```python
+from graphrag_sdk.retrieval.agentic import Tool, build_default_registry, object_schema
+
+async def stock_level(args, tctx):
+    return f"{args['sku']}: 42 units"        # plain text gets one citation number
+
+registry = build_default_registry(strategy=..., graph_store=..., llm=...)
+registry.register(Tool(
+    "stock_level", "Current stock for a SKU.", stock_level,
+    parameters=object_schema({"sku": {"type": "string"}}, ["sku"]),
+))
+agent = rag.agentic_retrieval(registry=registry)
+```
+
+## Citations and grounding
+
+Tool results are numbered `[N]` across the whole run. After the run, the answer's markers are checked against that evidence:
+
+- markers that point at nothing are removed (`metadata["invalid_citations"]`);
+- an answer that cites no real result is **ungrounded** (with the conversation exception below).
+
+| `grounding=` | An ungrounded answer is… |
+|---|---|
+| `"strict"` (default) | replaced with `ungrounded_answer` ("I couldn't find information about that in the knowledge graph.") |
+| `"annotate"` | kept, with `metadata["grounded"] = False` |
+| `"off"` | not checked |
+
+The gate checks that the answer rests on real evidence — one valid citation is enough — not that every sentence carries one. Short conversational replies that called no tools and state no figures ("Hello!", "You're welcome") pass without a citation; an empty answer never does. Bracketed numbers that are not citations, such as `[2024]` or `items[0]`, are left alone. The model's original text is always in `metadata["raw_answer"]`.
+
+## Limits
+
+Every bound lives in one `AgentLimits`; model-supplied arguments are clamped to it, never trusted.
+
+```python
+from graphrag_sdk import AgentLimits
+
+agent = rag.agentic_retrieval(limits=AgentLimits(max_steps=8, max_tool_calls=16, query_max_rows=50))
+```
+
+| Field | Default | Bounds |
+|---|---|---|
+| `max_steps` | 6 | model turns that may call tools |
+| `max_tool_calls` | 12 | tool calls in the whole run |
+| `max_calls_per_turn` | 4 | calls run from one model response |
+| `max_observation_chars` | 8000 | text of one tool result sent to the model |
+| `max_history_turns` | 5 | earlier exchanges kept |
+| `search_max_items` / `search_max_limit` | 40 / 50 | search results / retrieval-limit arguments |
+| `query_max_rows` / `query_timeout_ms` / `query_attempts` | 25 / 5000 / 3 | `query_graph` |
+| `traverse_max_depth` / `traverse_max_expansions` / `traverse_max_timeout_ms` | 5 / 200 / 5000 | `traverse` |
+
+The run's `Context` latency budget still applies; if it runs out mid-run, the partial trace is kept.
+
+## What a run returns
+
+`retrieve(..., strategy=agent)` returns the numbered evidence as items (`"[N] …"`) and the run in `metadata`:
+
+| Key | Meaning |
+|---|---|
+| `answer`, `raw_answer` | the answer after / before the grounding check |
+| `grounded`, `grounding_reason` | the verdict and why (`cited`, `conversation`, `no_citations`, `invalid_citations`, `empty`) |
+| `citations`, `evidence` | cited results / all results, each `{n, tool, kind, content, source}` |
+| `agent_trace` | every call: tool, arguments, result, status (`ok` / `refused` / `error`) |
+| `stop_reason` | `final_answer`, `max_steps`, `max_tool_calls`, `budget_exceeded`, `no_action` |
+| `generated_cypher`, `tool_calls`, `limits` | queries tried, calls made, the limits used |
+
+## Skills
+
+Skills are higher-level analyses. Call them directly, let the agent use them as tools, or run them over MCP.
+
+```python
+result = await rag.run_skill("entity_comparison", entity_a="Acme", entity_b="Globex")
+print(result.summary, result.data["shared_neighbors"])
+```
+
+Entities can be given by name or id. Arguments are checked against each skill's `parameters` schema and numeric arguments are capped.
+
+Register your own:
+
+```python
+from graphrag_sdk.skills import ENTITY_PARAM, Skill, register_skill, skill_parameters
+
+@register_skill
+class OwnersSkill(Skill):
+    name = "owners"
+    description = "List who owns an entity."
+    parameters = skill_parameters({"entity": ENTITY_PARAM}, ["entity"])
+
+    async def run(self, ctx=None, **params):
+        entity = await self._resolve_entity(params["entity"])
+        ...
+```
+
+## MCP server
+
+```bash
+pip install "graphrag-sdk[mcp]"
+graphrag-mcp --transport stdio                                   # local MCP clients
+GRAPHRAG_MCP_TOKEN=... graphrag-mcp --transport sse --host 0.0.0.0  # network, bearer token required
+```
+
+Configuration comes from `FALKOR_HOST`, `FALKOR_PORT`, `FALKOR_USERNAME`, `FALKOR_PASSWORD`, `GRAPHRAG_GRAPH`, `GRAPHRAG_MODEL`, `GRAPHRAG_EMBED_MODEL` and `GRAPHRAG_EMBED_DIM`. Serving SSE on a non-loopback host without a token is refused. A loopback SSE server only accepts requests whose `Host` / `Origin` name it (DNS-rebinding protection, with `mcp` versions that support it).
+
+Tools: `ingest`, `retrieve`, `answer`, `ask_agent` (agentic answer with citations), `cypher_query` (read-only, guarded, row-capped), `graph_walk`, `run_skill`, `get_statistics`, `get_ontology`.

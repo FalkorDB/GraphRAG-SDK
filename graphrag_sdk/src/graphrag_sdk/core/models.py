@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -12,7 +13,7 @@ from enum import Enum
 from typing import Any, Generic, Literal, TypeVar
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from graphrag_sdk.core.tables import TableMapping
 
@@ -934,24 +935,128 @@ class RawSearchResult(DataModel):
 # ── LLM Types ────────────────────────────────────────────────────
 
 
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class ToolSpec(DataModel):
+    """A tool the LLM may call, described for native function calling.
+
+    ``parameters`` is a JSON Schema object describing the tool's arguments.
+    Names follow the strictest common provider rule (letters, digits, ``_``
+    and ``-``, at most 64 characters) so one spec works everywhere.
+
+    Example::
+
+        ToolSpec(
+            name="search",
+            description="Search the knowledge graph.",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        )
+    """
+
+    name: str
+    description: str = ""
+    parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
+
+    @model_validator(mode="after")
+    def _validate(self) -> ToolSpec:
+        if not _TOOL_NAME_RE.match(self.name):
+            raise ValueError(
+                f"Invalid tool name {self.name!r}: use 1-64 letters, digits, '_' or '-'"
+            )
+        if self.parameters.get("type") != "object":
+            raise ValueError(f"Tool {self.name!r}: parameters must be a JSON Schema object")
+        return self
+
+    def to_openai(self) -> dict[str, Any]:
+        """Return the OpenAI-compatible ``{"type": "function", ...}`` tool entry."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+class ToolCall(DataModel):
+    """One tool call requested by the LLM.
+
+    ``arguments`` holds the decoded JSON arguments. When the model returns
+    arguments that are not a JSON object, ``arguments`` is empty,
+    ``raw_arguments`` keeps the original text and ``parse_error`` says why,
+    so the caller can report the problem back to the model instead of
+    crashing.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    raw_arguments: str = ""
+    parse_error: str | None = None
+
+    def to_openai(self) -> dict[str, Any]:
+        """Return the OpenAI-compatible tool-call entry for an assistant message."""
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": self.raw_arguments or "{}"},
+        }
+
+
 class ChatMessage(DataModel):
     """A validated message for multi-turn LLM conversations.
 
-    Used by ``completion(history=...)`` and ``LLMInterface.ainvoke_messages()``.
+    Used by ``completion(history=...)``, ``LLMInterface.ainvoke_messages()``
+    and ``LLMInterface.ainvoke_with_tools()``.
+
+    Tool-calling turns use two extra shapes: an ``assistant`` message that
+    carries ``tool_calls``, and a ``tool`` message that returns one result,
+    linked to its call by ``tool_call_id``.
 
     Example::
 
         ChatMessage(role="system", content="You are a helpful assistant.")
         ChatMessage(role="user", content="What is GraphRAG?")
         ChatMessage(role="assistant", content="GraphRAG is...")
+        ChatMessage(role="tool", content="3 results", tool_call_id="call_1")
     """
 
-    role: Literal["system", "user", "assistant"]
+    role: Literal["system", "user", "assistant", "tool"]
     content: str
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        """Convert to the ``{"role": ..., "content": ...}`` dict format used by LLM APIs."""
-        return {"role": self.role, "content": self.content}
+    @model_validator(mode="after")
+    def _validate_tool_fields(self) -> ChatMessage:
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("Only assistant messages can carry tool_calls")
+        if self.role == "tool" and not self.tool_call_id:
+            raise ValueError("A tool message needs the tool_call_id it answers")
+        if self.tool_call_id and self.role != "tool":
+            raise ValueError("Only tool messages can carry tool_call_id")
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to the ``{"role": ..., "content": ...}`` dict format used by LLM APIs.
+
+        Plain messages keep the exact two-key shape. Tool-calling messages add
+        the OpenAI-compatible ``tool_calls`` / ``tool_call_id`` fields.
+        """
+        out: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            out["tool_calls"] = [tc.to_openai() for tc in self.tool_calls]
+            # Some providers reject an empty text block next to tool calls.
+            if not self.content:
+                out["content"] = None
+        if self.tool_call_id:
+            out["tool_call_id"] = self.tool_call_id
+        return out
 
 
 # Backward-compatible alias
@@ -959,10 +1064,59 @@ LLMMessage = ChatMessage
 
 
 class LLMResponse(DataModel):
-    """Response from an LLM provider."""
+    """Response from an LLM provider.
+
+    ``tool_calls`` is set when the model asked to call tools (native tool
+    calling, see ``LLMInterface.ainvoke_with_tools``). ``finish_reason`` is
+    the provider's stop reason when it reports one (e.g. ``"stop"``,
+    ``"tool_calls"``, ``"length"``).
+    """
 
     content: str
-    tool_calls: list[dict[str, Any]] | None = None
+    tool_calls: list[ToolCall] | None = None
+    finish_reason: str | None = None
+
+    @field_validator("tool_calls", mode="before")
+    @classmethod
+    def _accept_openai_shape(cls, value: Any) -> Any:
+        """Accept OpenAI-style tool-call dicts (``{"id", "function": {...}}``).
+
+        Providers written before :class:`ToolCall` existed fill this field
+        with the raw OpenAI shape; convert those instead of rejecting them.
+        """
+        if not isinstance(value, list):
+            return value
+        return [_tool_call_from_openai(v) if isinstance(v, dict) else v for v in value]
+
+
+def _tool_call_from_openai(raw: dict[str, Any]) -> Any:
+    function = raw.get("function")
+    if not isinstance(function, dict):
+        return raw  # already ToolCall-shaped (or invalid: let validation say so)
+    args = function.get("arguments")
+    arguments: dict[str, Any] = {}
+    parse_error: str | None = None
+    if isinstance(args, dict):
+        arguments, text = args, json.dumps(args)
+    else:
+        text = args if isinstance(args, str) else ""
+        if text.strip():
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError as exc:
+                parse_error = f"arguments are not valid JSON: {exc.msg}"
+            else:
+                if isinstance(decoded, dict):
+                    arguments = decoded
+                else:
+                    parse_error = "arguments must be a JSON object"
+    return {
+        "id": raw.get("id") or "call_0",
+        "name": function.get("name", ""),
+        "arguments": arguments,
+        "raw_arguments": text,
+        "parse_error": parse_error,
+    }
 
 
 # ── RAG Types ────────────────────────────────────────────────────
@@ -1244,21 +1398,34 @@ class SearchType(str, Enum):
 
 
 class AgentStep(DataModel):
-    """A single Thought→Action→Observation step in the agentic loop."""
+    """One tool call in the agentic loop (Thought → Action → Observation).
+
+    ``status`` is ``"ok"`` when the tool ran, ``"refused"`` when it declined
+    the call (bad arguments, nothing to act on) and ``"error"`` when it
+    failed. ``call_id`` is the provider's tool-call id in native mode.
+    """
 
     index: int
     thought: str = ""
     action: str = ""
     action_input: dict[str, Any] = Field(default_factory=dict)
     observation: str = ""
+    status: str = "ok"
+    call_id: str = ""
 
 
 class AgentTrace(DataModel):
-    """Full record of an agentic retrieval run."""
+    """Full record of an agentic retrieval run.
+
+    ``mode`` is ``"native"`` (structured tool calls) or ``"react"`` (text
+    Thought/Action turns). ``stop_reason`` is one of ``"final_answer"``,
+    ``"max_steps"``, ``"budget_exceeded"`` or ``"no_action"``.
+    """
 
     steps: list[AgentStep] = Field(default_factory=list)
     stop_reason: str = ""
     answer: str = ""
+    mode: str = ""
 
     @property
     def num_steps(self) -> int:

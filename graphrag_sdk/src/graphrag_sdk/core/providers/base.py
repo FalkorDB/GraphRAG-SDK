@@ -7,16 +7,21 @@ import asyncio
 import logging
 import random
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
 
-from graphrag_sdk.core.exceptions import EmbeddingTimeoutError, LLMTimeoutError
-from graphrag_sdk.core.models import ChatMessage, LLMResponse
+from graphrag_sdk.core.exceptions import (
+    EmbeddingTimeoutError,
+    LLMTimeoutError,
+    ToolCallingNotSupportedError,
+)
+from graphrag_sdk.core.models import ChatMessage, LLMResponse, ToolSpec
 from graphrag_sdk.core.providers._retry import summarize_exception
 from graphrag_sdk.core.providers._timeout import validate_timeout, wait_for_provider_call
+from graphrag_sdk.core.providers._tools import ToolChoice
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +219,52 @@ class LLMInterface(ABC):
             max_retries=max_retries,
             timeout=timeout,
             **kwargs,
+        )
+
+    @property
+    def supports_tool_calling(self) -> bool:
+        """Whether :meth:`ainvoke_with_tools` uses the provider's native tool calling.
+
+        ``False`` for the base class. Providers that implement
+        :meth:`ainvoke_with_tools` override this to return ``True``; callers
+        (e.g. the agentic retriever) check it to pick a code path.
+        """
+        return False
+
+    async def ainvoke_with_tools(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSpec],
+        *,
+        tool_choice: ToolChoice = "auto",
+        max_retries: int = 3,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Invoke the LLM with native tool calling.
+
+        The model either answers in ``LLMResponse.content`` or asks for tools
+        in ``LLMResponse.tool_calls``. To continue the conversation, append an
+        assistant ``ChatMessage`` carrying those ``tool_calls``, then one
+        ``ChatMessage(role="tool", tool_call_id=...)`` per result, and call
+        again.
+
+        Args:
+            messages: Conversation so far, including earlier tool turns.
+            tools: Tools the model may call (unique names).
+            tool_choice: ``"auto"`` (default), ``"none"``, ``"required"`` or
+                ``{"name": "<tool>"}`` to force one tool.
+            max_retries: Retry count for transient provider errors.
+            timeout: Per-attempt timeout in seconds.
+            **kwargs: Extra arguments forwarded to the provider call.
+
+        Raises:
+            ToolCallingNotSupportedError: The provider has no native tool
+                calling (the base implementation always raises this).
+        """
+        raise ToolCallingNotSupportedError(
+            f"{type(self).__name__} does not support native tool calling; "
+            "check supports_tool_calling before calling ainvoke_with_tools"
         )
 
     async def astream(

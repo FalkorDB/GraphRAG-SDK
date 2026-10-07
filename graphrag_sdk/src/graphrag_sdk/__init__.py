@@ -23,6 +23,7 @@ from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
     GraphRAGError,
     LatencyBudgetExceededError,
+    ToolCallingNotSupportedError,
 )
 from graphrag_sdk.core.models import (
     AgentStep,
@@ -53,6 +54,8 @@ from graphrag_sdk.core.models import (
     SkillResult,
     TextChunk,
     TextChunks,
+    ToolCall,
+    ToolSpec,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import (
@@ -133,7 +136,7 @@ from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
 from graphrag_sdk.ingestion.resolution_strategies.llm_verified_resolution import (
     LLMVerifiedResolution,
 )
-from graphrag_sdk.retrieval.agentic import AgenticRetrieval, ToolRegistry
+from graphrag_sdk.retrieval.agentic import AgenticRetrieval, AgentLimits, ToolRegistry
 from graphrag_sdk.retrieval.graph_walk import (
     DynamicGraphWalk,
     GraphWalkRetrieval,
@@ -204,6 +207,9 @@ __all__ = [
     "Ontology",
     "IngestionResult",
     "LatencyBudgetExceededError",
+    "ToolCall",
+    "ToolCallingNotSupportedError",
+    "ToolSpec",
     "LLMBatchItem",
     "LLMInterface",
     "LiteLLM",
@@ -268,6 +274,7 @@ __all__ = [
     "RerankingStrategy",
     "RetrievalStrategy",
     "ToolRegistry",
+    "AgentLimits",
     "score_path",
     # Skills
     "Skill",

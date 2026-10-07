@@ -6,7 +6,21 @@ from typing import Any
 
 from graphrag_sdk.core.context import Context
 from graphrag_sdk.core.models import SkillResult
-from graphrag_sdk.skills.base import Skill
+from graphrag_sdk.skills.base import ENTITY_PARAM, Skill, skill_parameters
+
+#: Properties that say nothing about what an entity is: SDK bookkeeping and
+#: vectors. Comparing them only adds noise (and embeddings are huge).
+_IGNORED_PROPERTY_MARKERS = ("embedding",)
+_IGNORED_PROPERTIES = frozenset({"id", "source_chunk_ids", "chunk_ids", "mentions"})
+
+
+def _comparable(props: dict[str, Any]) -> dict[str, Any]:
+    return {
+        k: v
+        for k, v in props.items()
+        if k not in _IGNORED_PROPERTIES
+        and not any(marker in k.lower() for marker in _IGNORED_PROPERTY_MARKERS)
+    }
 
 
 class EntityComparisonSkill(Skill):
@@ -16,15 +30,18 @@ class EntityComparisonSkill(Skill):
     description = (
         "Compare two entities: their attributes, shared neighbors, and what makes each distinct."
     )
+    parameters = skill_parameters(
+        {"entity_a": ENTITY_PARAM, "entity_b": ENTITY_PARAM}, ["entity_a", "entity_b"]
+    )
 
     async def run(self, ctx: Context | None = None, **params: Any) -> SkillResult:
-        entity_a = params.get("entity_a")
-        entity_b = params.get("entity_b")
-        if not entity_a or not entity_b:
+        if not params.get("entity_a") or not params.get("entity_b"):
             raise ValueError("entity_comparison requires 'entity_a' and 'entity_b'")
+        entity_a = await self._resolve_entity(params["entity_a"], "entity_a")
+        entity_b = await self._resolve_entity(params["entity_b"], "entity_b")
 
-        props_a = await self._properties(entity_a)
-        props_b = await self._properties(entity_b)
+        props_a = _comparable(await self._properties(entity_a))
+        props_b = _comparable(await self._properties(entity_b))
         nbrs_a = await self._neighbor_ids(entity_a)
         nbrs_b = await self._neighbor_ids(entity_b)
 
@@ -49,8 +66,8 @@ class EntityComparisonSkill(Skill):
         summary = await self._summarize(
             ctx,
             f"Compare entity '{entity_a}' and '{entity_b}'. "
-            f"Shared connections: {shared}. Unique to {entity_a}: {only_a}. "
-            f"Unique to {entity_b}: {only_b}. Differing attributes: {differing}. "
+            f"Shared connections: {shared[:30]}. Unique to {entity_a}: {only_a[:30]}. "
+            f"Unique to {entity_b}: {only_b[:30]}. Differing attributes: {differing}. "
             "Write a concise comparison.",
         )
         return SkillResult(
@@ -70,12 +87,5 @@ class EntityComparisonSkill(Skill):
         return {}
 
     async def _neighbor_ids(self, entity_id: str) -> set[str]:
-        try:
-            neighbors = await self._graph.weighted_neighbors(entity_id)
-            return {n[0] for n in neighbors}
-        except Exception:
-            rows = await self._rows(
-                "MATCH (e:__Entity__ {id: $id})-[]-(m:__Entity__) RETURN DISTINCT m.id",
-                {"id": entity_id},
-            )
-            return {r[0] for r in rows if r and r[0] is not None}
+        neighbors = await self._graph.weighted_neighbors(entity_id)
+        return {n[0] for n in neighbors}
