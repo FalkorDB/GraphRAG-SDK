@@ -430,10 +430,35 @@ def _sample(text: str | None, source: str | None, limit: int = 1500) -> str:
     are still available.
     """
     if text:
-        head = text[:limit]
-        suffix = " …[truncated]" if len(text) > limit else ""
-        return f"(source: {source or 'text'})\n{head}{suffix}"
+        if len(text) <= limit:
+            body = text
+        else:
+            # Start, middle and end: a long document's opening (a title page,
+            # an abstract) often looks nothing like its body.
+            head_n = limit * 3 // 5
+            part_n = (limit - head_n) // 2
+            mid = len(text) // 2 - part_n // 2
+            body = (
+                f"{text[:head_n]}\n…[skipped]…\n{text[mid : mid + part_n]}"
+                f"\n…[skipped]…\n{text[-part_n:]}"
+            )
+        return f"(source: {source or 'text'}, {len(text)} chars)\n{body}"
     return f"(file: {source or 'unknown'} — content not yet loaded)"
+
+
+_HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
+_BULLET = re.compile(r"(?m)^\s*(?:[-*+]|\d+[.)])\s+\S")
+
+
+def _looks_structured(text: str) -> bool:
+    """Markdown-like structure: several headings, or a heading with a list.
+
+    A single dash-led line ("- see above") or a lone list is not enough.
+    """
+    headings = len(_HEADING.findall(text))
+    if headings >= 2:
+        return True
+    return headings >= 1 and len(_BULLET.findall(text)) >= 3
 
 
 @runtime_checkable
@@ -474,9 +499,7 @@ class HeuristicIngestionPlanner:
         src = (source or "").lower()
         looks_structured = src.endswith((".md", ".markdown", ".html", ".htm"))
         if not looks_structured and text:
-            # Markdown-ish headings or list bullets in the body.
-            if re.search(r"(?m)^\s{0,3}#{1,6}\s|\n\s*[-*]\s+\S", text):
-                looks_structured = True
+            looks_structured = _looks_structured(text)
         if looks_structured:
             chunker = "structural"
         return IngestionPlan(

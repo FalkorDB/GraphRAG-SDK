@@ -121,9 +121,24 @@ class TestHeuristicPlanner:
 
     async def test_markdown_body_picks_structural(self):
         plan = await HeuristicIngestionPlanner().plan(
-            "# Heading\n\n- bullet one\n- bullet two", source="x.txt"
+            "# Heading\n\n- bullet one\n- bullet two\n- bullet three", source="x.txt"
         )
         assert plan.chunker == "structural"
+        plan = await HeuristicIngestionPlanner().plan("# One\n\ntext\n\n## Two\n\nmore")
+        assert plan.chunker == "structural"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Prices rose.\n- see the appendix\nThen they fell.",  # one dash line
+            "Shopping:\n- eggs\n- milk\n- bread",  # a list, no headings
+            "# Only a title\n\nThen plain prose.",  # one heading, no list
+            "Use the #hashtag and C# here.",  # not headings
+        ],
+    )
+    async def test_weak_cues_stay_sentence(self, text):
+        plan = await HeuristicIngestionPlanner().plan(text, source="x.txt")
+        assert plan.chunker == "sentence"
 
     async def test_plain_prose_picks_sentence(self):
         plan = await HeuristicIngestionPlanner().plan(
@@ -663,3 +678,22 @@ class TestPlannerFallbackReported:
             plan = await LLMIngestionPlanner(BoomLLM()).plan("t")
         assert plan.reason == "default: the planner call failed (ConnectionError)"
         assert "IngestionPlanner LLM call failed" in caplog.text
+
+
+class TestSample:
+    def test_short_text_whole(self):
+        from graphrag_sdk.ingestion.ingestion_planner import _sample
+
+        out = _sample("hello world", "a.txt")
+        assert out.endswith("hello world") and "skipped" not in out
+
+    def test_long_text_samples_start_middle_end(self):
+        from graphrag_sdk.ingestion.ingestion_planner import _sample
+
+        text = "A" * 5000 + "M" * 5000 + "Z" * 5000
+        out = _sample(text, "big.txt", limit=1500)
+        assert "AAAA" in out and "MMMM" in out and "ZZZZ" in out
+        assert out.count("…[skipped]…") == 2
+        assert "15000 chars" in out
+        body = out.split("\n", 1)[1].replace("\n…[skipped]…\n", "")
+        assert len(body) == 1500
