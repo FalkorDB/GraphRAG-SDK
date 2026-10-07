@@ -2764,7 +2764,9 @@ class GraphRAG:
         # always win; planner errors fall back to the per-strategy defaults
         # below (build via `or ...`), so behavior is never silently lost.
         preloaded_document: DocumentOutput | None = None
+        plan_report: dict[str, Any] | None = None
         if auto and (chunker is None or extractor is None or resolver is None):
+            plan_report = {}
             (
                 chunker,
                 extractor,
@@ -2779,6 +2781,7 @@ class GraphRAG:
                 resolver=resolver,
                 planner=planner,
                 ctx=ctx,
+                report=plan_report,
             )
 
         pipeline = IngestionPipeline(
@@ -2800,6 +2803,15 @@ class GraphRAG:
             )
         else:
             result = await pipeline.run(source, ctx, text=text, document_info=doc_info)
+        if plan_report is not None:
+            result.metadata["plan"] = plan_report
+        elif auto:
+            result.metadata["plan"] = {
+                "planner": None,
+                "plan": None,
+                "slots": {"chunker": "caller", "extractor": "caller", "resolver": "caller"},
+                "notes": ["all three strategies were passed, so the planner did not run"],
+            }
 
         # Cross-document duplicates can only be resolved by finalize(); see
         # _warn_if_dedup_pending.
@@ -2985,6 +2997,7 @@ class GraphRAG:
         resolver: ResolutionStrategy | None,
         planner: IngestionPlanner | None,
         ctx: Context | None,
+        report: dict[str, Any] | None = None,
     ) -> tuple[
         ChunkingStrategy | None,
         ExtractionStrategy | None,
@@ -2998,6 +3011,12 @@ class GraphRAG:
         returned unchanged. A missing/invalid plan or any planner/build
         failure degrades to leaving the slot as ``None`` (the pipeline then
         applies its own defaults), so this never raises on a bad/slow planner.
+
+        ``report``, when given, is filled with what was decided — the shape
+        stored as ``IngestionResult.metadata["plan"]``: the planner, the plan
+        (strategies, params, reason), where each slot came from
+        (``"caller"`` / ``"planner"`` / ``"default"``) and any fallback or
+        adjustment notes.
 
         ``preloaded_document`` is the full ``DocumentOutput`` this method
         loaded (file mode only) to build the planner's content sample, if
@@ -3023,6 +3042,14 @@ class GraphRAG:
                 logger.debug("Planner content-sample load failed (%s); planning from path", exc)
 
         active = planner or LLMIngestionPlanner(self.llm)
+        info: dict[str, Any] = report if report is not None else {}
+        given = {"chunker": chunker, "extractor": extractor, "resolver": resolver}
+        info.update(
+            planner=type(active).__name__,
+            plan=None,
+            slots={k: "caller" if v is not None else "default" for k, v in given.items()},
+            notes=[],
+        )
         try:
             plan = await active.plan(sample_text, source=source, ctx=ctx)
             if plan is None:
@@ -3030,7 +3057,8 @@ class GraphRAG:
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Ingestion planner failed (%s); using defaults", exc)
+            logger.warning("Ingestion planner failed (%s); using the default strategies", exc)
+            info["notes"].append(f"planner failed: {exc}")
             return chunker, extractor, resolver, preloaded_document
 
         # "structural" groups a loaded document's elements; without them
@@ -3042,6 +3070,18 @@ class GraphRAG:
             )
             if no_elements:
                 plan = dataclasses.replace(plan, chunker="sentence")
+                info["notes"].append(
+                    "structural -> sentence: the document has no structural elements"
+                )
+        info["plan"] = {
+            "chunker": plan.chunker,
+            "extractor": plan.extractor,
+            "resolver": plan.resolver,
+            "chunker_params": dict(plan.chunker_params),
+            "extractor_params": dict(plan.extractor_params),
+            "resolver_params": dict(plan.resolver_params),
+            "reason": plan.reason,
+        }
 
         # Build only the slots the caller left unset, each on its own: one slot
         # that cannot be built (e.g. GLiNER not installed) falls back to its
@@ -3067,9 +3107,11 @@ class GraphRAG:
                 continue
             try:
                 slots[slot] = build()
+                info["slots"][slot] = "planner"
             except LatencyBudgetExceededError:
                 raise
             except Exception as exc:  # noqa: BLE001
+                info["notes"].append(f"could not build {slot} {getattr(plan, slot)!r}: {exc}")
                 logger.warning(
                     "Ingestion planner: could not build %s %r (%s); using the default %s",
                     slot,

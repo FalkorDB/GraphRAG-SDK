@@ -318,6 +318,124 @@ class TestGraphRAGIngest:
 
         assert isinstance(result, IngestionResult)
         assert load_calls["count"] == 1
+        assert result.metadata["plan"]["plan"]["chunker"] == "structural"
+
+    async def test_ingest_auto_records_plan_in_metadata(self, mock_conn, embedder, llm):
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                return IngestionPlan(
+                    chunker="fixed",
+                    extractor="llm",
+                    resolver="exact",
+                    reason="dense tables",
+                    chunker_params={"chunk_size": 1500},
+                )
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = await g.ingest(text="Alice works at Acme.", document_id="d1", auto=True, planner=P())
+        report = result.metadata["plan"]
+        assert report["planner"] == "P"
+        assert report["plan"]["chunker"] == "fixed"
+        assert report["plan"]["chunker_params"] == {"chunk_size": 1500}
+        assert report["plan"]["reason"] == "dense tables"
+        assert report["slots"] == {
+            "chunker": "planner",
+            "extractor": "planner",
+            "resolver": "planner",
+        }
+        assert report["notes"] == []
+
+    async def test_ingest_auto_records_caller_slots_and_failures(
+        self, mock_conn, embedder, llm, caplog
+    ):
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        class Boom:
+            async def plan(self, *a, **k):
+                raise RuntimeError("planner down")
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        with caplog.at_level("WARNING"):
+            result = await g.ingest(
+                text="Alice works at Acme.",
+                document_id="d2",
+                auto=True,
+                planner=Boom(),
+                resolver=ExactMatchResolution(),
+            )
+        report = result.metadata["plan"]
+        assert report["plan"] is None
+        assert report["slots"] == {"chunker": "default", "extractor": "default", "resolver": "caller"}
+        assert "planner down" in report["notes"][0]
+        assert "Ingestion planner failed" in caplog.text
+
+    async def test_ingest_auto_with_all_strategies_skips_planner(self, mock_conn, embedder, llm):
+        from graphrag_sdk.ingestion.chunking_strategies.fixed_size import FixedSizeChunking
+        from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import (
+            GraphExtraction,
+        )
+        from graphrag_sdk.ingestion.resolution_strategies.exact_match import (
+            ExactMatchResolution,
+        )
+
+        class MustNotRun:
+            async def plan(self, *a, **k):
+                raise AssertionError("planner ran although every slot was given")
+
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        result = await g.ingest(
+            text="Alice works at Acme.",
+            document_id="d3",
+            auto=True,
+            planner=MustNotRun(),
+            chunker=FixedSizeChunking(),
+            extractor=GraphExtraction(llm=llm),
+            resolver=ExactMatchResolution(),
+        )
+        assert result.metadata["plan"]["planner"] is None
+        assert "did not run" in result.metadata["plan"]["notes"][0]
+
+    async def test_ingest_batch_auto_plans_each_file(self, mock_conn, embedder, llm, tmp_path):
+        from graphrag_sdk.ingestion.ingestion_planner import IngestionPlan
+
+        seen: list[str] = []
+
+        class P:
+            async def plan(self, text, *, source=None, ctx=None):
+                seen.append(source)
+                chunker = "fixed" if "a.txt" in source else "sentence"
+                return IngestionPlan(chunker=chunker)
+
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("Alice works at Acme.")
+        b.write_text("Bob lives in Berlin.")
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        results = await g.ingest([str(a), str(b)], auto=True, planner=P())
+        assert len(seen) == 2
+        assert all(isinstance(r, IngestionResult) for r in results), results
+        chunkers = sorted(r.metadata["plan"]["plan"]["chunker"] for r in results)
+        assert chunkers == ["fixed", "sentence"]
+
+    async def test_ingest_auto_does_not_plan_a_table(
+        self, mock_conn, embedder, llm, tmp_path, monkeypatch
+    ):
+        class MustNotRun:
+            async def plan(self, *a, **k):
+                raise AssertionError("planner ran for a table")
+
+        csv = tmp_path / "people.csv"
+        csv.write_text("name,city\nAlice,Berlin\n")
+        g = GraphRAG(connection=mock_conn, llm=llm, embedder=embedder, embedding_dimension=8)
+        sentinel = IngestionResult(nodes_created=0, relationships_created=0, chunks_indexed=0)
+        monkeypatch.setattr(g, "_mapping_for", AsyncMock(return_value=object()))
+        monkeypatch.setattr(g, "_ingest_structured", AsyncMock(return_value=sentinel))
+        result = await g.ingest(str(csv), auto=True, planner=MustNotRun())
+        assert result is sentinel
 
 
 class TestGraphRAGDeduplicateEntities:

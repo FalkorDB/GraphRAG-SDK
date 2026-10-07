@@ -319,6 +319,21 @@ Two planners ship in the SDK:
 | `LLMIngestionPlanner` (default when `auto=True`) | One small LLM call per document | Guided prompt over a document sample |
 | `HeuristicIngestionPlanner` | Zero (no LLM call) | Cheap document features (structure cues, length) |
 
+**What was chosen.** With `auto=True`, each `IngestionResult` records the decision in `metadata["plan"]`:
+
+```python
+result = await rag.ingest(source="handbook.md", auto=True)
+result.metadata["plan"]
+# {"planner": "LLMIngestionPlanner",
+#  "plan": {"chunker": "structural", "extractor": "gliner", "resolver": "exact",
+#           "chunker_params": {}, "extractor_params": {}, "resolver_params": {},
+#           "reason": "Markdown with headings"},
+#  "slots": {"chunker": "planner", "extractor": "planner", "resolver": "planner"},
+#  "notes": []}
+```
+
+`slots` says where each strategy came from: `"caller"` (you passed it), `"planner"` or `"default"` (the planner failed, or that strategy could not be built — the other slots still follow the plan). `notes` explains any fallback or adjustment, e.g. `structural` becoming `sentence` when the document has no structural elements (text mode). Planner failures are also logged at WARNING. Structured sources (`.csv`, `.tsv`, …) never run the planner: no chunker, extractor or resolver applies to them.
+
 **Code:** [`ingestion_planner.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/ingestion/ingestion_planner.py) · wired into `GraphRAG.ingest()` in [`api/main.py`](https://github.com/FalkorDB/GraphRAG-SDK/blob/main/graphrag_sdk/src/graphrag_sdk/api/main.py).
 
 ---

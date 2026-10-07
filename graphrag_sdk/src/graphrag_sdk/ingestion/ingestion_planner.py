@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
@@ -270,7 +271,9 @@ class IngestionPlan:
     chunker: str = DEFAULT_CHUNKER
     extractor: str = DEFAULT_EXTRACTOR
     resolver: str = DEFAULT_RESOLVER
-    reason: str = ""
+    # Free text for observability only: two plans that build the same
+    # strategies are equal whatever their reasons say.
+    reason: str = field(default="", compare=False)
     chunker_params: dict[str, Any] = field(default_factory=dict)
     extractor_params: dict[str, Any] = field(default_factory=dict)
     resolver_params: dict[str, Any] = field(default_factory=dict)
@@ -569,12 +572,16 @@ class LLMIngestionPlanner:
                     f"extractor={plan.extractor} resolver={plan.resolver}"
                 )
                 return plan
-            logger.debug("IngestionPlanner: empty/unparseable plan, using defaults")
+            logger.warning("IngestionPlanner: reply was not a plan; using the default strategies")
+            reason = "default: the planner's reply was not a plan"
         except LatencyBudgetExceededError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.debug("IngestionPlanner LLM call failed (%s); using defaults", exc)
-        return self._restrict(default_plan())
+            logger.warning(
+                "IngestionPlanner LLM call failed (%s); using the default strategies", exc
+            )
+            reason = f"default: the planner call failed ({type(exc).__name__})"
+        return self._restrict(dataclasses.replace(default_plan(), reason=reason))
 
 
 def build_chunker(

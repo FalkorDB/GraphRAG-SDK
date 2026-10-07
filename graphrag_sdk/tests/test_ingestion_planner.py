@@ -644,3 +644,22 @@ class TestPerSlotBuild:
         )
         assert doc is not None and doc.elements
         assert isinstance(chunker, StructuralChunking)
+
+
+class TestPlannerFallbackReported:
+    async def test_unparseable_reply_reason_and_warning(self, caplog):
+        with caplog.at_level("WARNING"):
+            plan = await LLMIngestionPlanner(MockLLM(responses=["no idea"])).plan("t")
+        assert (plan.chunker, plan.extractor, plan.resolver) == ("sentence", "gliner", "exact")
+        assert plan.reason.startswith("default:")
+        assert "not a plan" in caplog.text
+
+    async def test_failed_call_reason_and_warning(self, caplog):
+        class BoomLLM:
+            async def ainvoke(self, *a, **k):
+                raise ConnectionError("down")
+
+        with caplog.at_level("WARNING"):
+            plan = await LLMIngestionPlanner(BoomLLM()).plan("t")
+        assert plan.reason == "default: the planner call failed (ConnectionError)"
+        assert "IngestionPlanner LLM call failed" in caplog.text
