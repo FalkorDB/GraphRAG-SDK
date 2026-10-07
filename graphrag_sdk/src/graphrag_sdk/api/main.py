@@ -4172,6 +4172,14 @@ class GraphRAG:
         validated: list[ChatMessage] = []
         for i, msg in enumerate(history):
             if isinstance(msg, ChatMessage):
+                # Tool-calling turns belong to ainvoke_with_tools conversations;
+                # completion() history is plain system/user/assistant text.
+                if msg.role == "tool" or msg.tool_calls:
+                    raise ValueError(
+                        f"history[{i}]: tool-calling messages are not supported in "
+                        f"completion() history; pass only 'system', 'user' and "
+                        f"'assistant' text messages"
+                    )
                 validated.append(msg)
             elif isinstance(msg, dict):
                 if "role" not in msg or "content" not in msg:

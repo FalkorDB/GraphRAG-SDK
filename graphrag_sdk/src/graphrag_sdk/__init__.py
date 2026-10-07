@@ -23,6 +23,7 @@ from graphrag_sdk.core.exceptions import (
     DocumentNotFoundError,
     GraphRAGError,
     LatencyBudgetExceededError,
+    ToolCallingNotSupportedError,
 )
 from graphrag_sdk.core.models import (
     AgentStep,
@@ -53,6 +54,8 @@ from graphrag_sdk.core.models import (
     SkillResult,
     TextChunk,
     TextChunks,
+    ToolCall,
+    ToolSpec,
     UpdateResult,
 )
 from graphrag_sdk.core.providers import (
@@ -197,6 +200,9 @@ __all__ = [
     "Ontology",
     "IngestionResult",
     "LatencyBudgetExceededError",
+    "ToolCall",
+    "ToolCallingNotSupportedError",
+    "ToolSpec",
     "LLMBatchItem",
     "LLMInterface",
     "LiteLLM",

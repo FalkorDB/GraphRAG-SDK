@@ -934,24 +934,128 @@ class RawSearchResult(DataModel):
 # ── LLM Types ────────────────────────────────────────────────────
 
 
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class ToolSpec(DataModel):
+    """A tool the LLM may call, described for native function calling.
+
+    ``parameters`` is a JSON Schema object describing the tool's arguments.
+    Names follow the strictest common provider rule (letters, digits, ``_``
+    and ``-``, at most 64 characters) so one spec works everywhere.
+
+    Example::
+
+        ToolSpec(
+            name="search",
+            description="Search the knowledge graph.",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        )
+    """
+
+    name: str
+    description: str = ""
+    parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
+
+    @model_validator(mode="after")
+    def _validate(self) -> ToolSpec:
+        if not _TOOL_NAME_RE.match(self.name):
+            raise ValueError(
+                f"Invalid tool name {self.name!r}: use 1-64 letters, digits, '_' or '-'"
+            )
+        if self.parameters.get("type") != "object":
+            raise ValueError(f"Tool {self.name!r}: parameters must be a JSON Schema object")
+        return self
+
+    def to_openai(self) -> dict[str, Any]:
+        """Return the OpenAI-compatible ``{"type": "function", ...}`` tool entry."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+class ToolCall(DataModel):
+    """One tool call requested by the LLM.
+
+    ``arguments`` holds the decoded JSON arguments. When the model returns
+    arguments that are not a JSON object, ``arguments`` is empty,
+    ``raw_arguments`` keeps the original text and ``parse_error`` says why,
+    so the caller can report the problem back to the model instead of
+    crashing.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    raw_arguments: str = ""
+    parse_error: str | None = None
+
+    def to_openai(self) -> dict[str, Any]:
+        """Return the OpenAI-compatible tool-call entry for an assistant message."""
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": self.raw_arguments or "{}"},
+        }
+
+
 class ChatMessage(DataModel):
     """A validated message for multi-turn LLM conversations.
 
-    Used by ``completion(history=...)`` and ``LLMInterface.ainvoke_messages()``.
+    Used by ``completion(history=...)``, ``LLMInterface.ainvoke_messages()``
+    and ``LLMInterface.ainvoke_with_tools()``.
+
+    Tool-calling turns use two extra shapes: an ``assistant`` message that
+    carries ``tool_calls``, and a ``tool`` message that returns one result,
+    linked to its call by ``tool_call_id``.
 
     Example::
 
         ChatMessage(role="system", content="You are a helpful assistant.")
         ChatMessage(role="user", content="What is GraphRAG?")
         ChatMessage(role="assistant", content="GraphRAG is...")
+        ChatMessage(role="tool", content="3 results", tool_call_id="call_1")
     """
 
-    role: Literal["system", "user", "assistant"]
+    role: Literal["system", "user", "assistant", "tool"]
     content: str
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        """Convert to the ``{"role": ..., "content": ...}`` dict format used by LLM APIs."""
-        return {"role": self.role, "content": self.content}
+    @model_validator(mode="after")
+    def _validate_tool_fields(self) -> ChatMessage:
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("Only assistant messages can carry tool_calls")
+        if self.role == "tool" and not self.tool_call_id:
+            raise ValueError("A tool message needs the tool_call_id it answers")
+        if self.tool_call_id and self.role != "tool":
+            raise ValueError("Only tool messages can carry tool_call_id")
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to the ``{"role": ..., "content": ...}`` dict format used by LLM APIs.
+
+        Plain messages keep the exact two-key shape. Tool-calling messages add
+        the OpenAI-compatible ``tool_calls`` / ``tool_call_id`` fields.
+        """
+        out: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            out["tool_calls"] = [tc.to_openai() for tc in self.tool_calls]
+            # Some providers reject an empty text block next to tool calls.
+            if not self.content:
+                out["content"] = None
+        if self.tool_call_id:
+            out["tool_call_id"] = self.tool_call_id
+        return out
 
 
 # Backward-compatible alias
@@ -959,10 +1063,17 @@ LLMMessage = ChatMessage
 
 
 class LLMResponse(DataModel):
-    """Response from an LLM provider."""
+    """Response from an LLM provider.
+
+    ``tool_calls`` is set when the model asked to call tools (native tool
+    calling, see ``LLMInterface.ainvoke_with_tools``). ``finish_reason`` is
+    the provider's stop reason when it reports one (e.g. ``"stop"``,
+    ``"tool_calls"``, ``"length"``).
+    """
 
     content: str
-    tool_calls: list[dict[str, Any]] | None = None
+    tool_calls: list[ToolCall] | None = None
+    finish_reason: str | None = None
 
 
 # ── RAG Types ────────────────────────────────────────────────────
