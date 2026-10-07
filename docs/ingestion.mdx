@@ -287,14 +287,30 @@ await rag.ingest(source="handbook.md", auto=True, resolver=ExactMatchResolution(
 | Extractor backend | `gliner` (default), `llm` |
 | Resolver | `exact` (default), `llm_verified` |
 
-The planner may also tune parameters inside the chosen strategy (e.g. `max_tokens`, `threshold`); all values are coerced and clamped to safe ranges, so the model can never produce an unsafe config.
+The planner may also tune parameters inside the chosen strategy (e.g. `max_tokens`, the `llm` extractor's `threshold`; GLiNER's threshold is model-specific and is not tuned); all values are coerced and clamped to safe ranges, so the model can never produce an unsafe config.
 
 **Safety guarantees:**
 
 - **Explicit wins** — any `chunker` / `extractor` / `resolver` you pass is kept as-is; the planner only fills the ones left unset.
 - **Never silently broken** — an empty/invalid plan or any planner error falls back to the default strategies (`sentence` / `gliner` / `exact`), reproducing today's behavior.
 - **Opt-in** — `auto=False` is the default; nothing changes unless you enable it.
-- **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still just one of the known-safe strategy ids with clamped parameters (see `PARAM_SPECS`) — it can never select an arbitrary/unsafe strategy or an out-of-range parameter value.
+- **Bounded blast radius on malicious content** — the `LLMIngestionPlanner` prompt includes a sample of the document itself, so adversarial document content could in principle try to steer the planner's choice. The worst case is still one of the options you allow (below) with clamped parameters (see `PARAM_SPECS`) — never an arbitrary strategy or an out-of-range value.
+
+**Cost ceiling.** By default the LLM planner may pick any option above, and the `llm_verified` pair budget it sets is capped at 500 (the resolver's default). To make sure document text can never add LLM cost, allow only the cheap options:
+
+```python
+from graphrag_sdk import LLMIngestionPlanner
+
+cheap = LLMIngestionPlanner(
+    rag.llm,
+    chunkers=("sentence", "fixed", "structural"),
+    extractors=("gliner",),
+    resolvers=("exact",),
+)
+await rag.ingest(source="upload.pdf", auto=True, planner=cheap)
+```
+
+A choice outside the allowed options falls back to the default (or the first allowed option) and is never built; the prompt only lists the allowed options. `max_llm_pairs=` lowers the pair cap further.
 
 Two planners ship in the SDK:
 
