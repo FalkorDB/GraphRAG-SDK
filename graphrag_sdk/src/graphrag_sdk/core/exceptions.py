@@ -94,6 +94,22 @@ class DatabaseError(GraphRAGError):
     pass
 
 
+class DatabaseUnavailableError(DatabaseError):
+    """Raised when FalkorDB cannot be reached at all.
+
+    Distinct from a plain :class:`DatabaseError`, which means the server
+    answered and *rejected* the query. Callers that fall back to a slower
+    path on cache/read failures need that distinction: a rejected query
+    leaves the rest of the pipeline perfectly usable, while an unreachable
+    server will fail the write phase no matter how much work is done first.
+
+    Subclasses ``DatabaseError``, so existing ``except DatabaseError``
+    handlers keep working unchanged.
+    """
+
+    pass
+
+
 class IndexError_(GraphRAGError):
     """Raised when index creation/management fails.
 

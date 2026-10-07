@@ -3,12 +3,16 @@
 
 from graphrag_sdk.ingestion.chunking_strategies.base import ChunkingStrategy
 from graphrag_sdk.ingestion.extraction_strategies.base import ExtractionStrategy
+from graphrag_sdk.ingestion.extraction_strategies.cached_chunk_extraction import (
+    CachedChunkExtraction,
+)
 from graphrag_sdk.ingestion.extraction_strategies.graph_extraction import GraphExtraction
 from graphrag_sdk.ingestion.loaders.base import LoaderStrategy
 from graphrag_sdk.ingestion.pipeline import IngestionPipeline
 from graphrag_sdk.ingestion.resolution_strategies.base import ResolutionStrategy
 
 __all__ = [
+    "CachedChunkExtraction",
     "ChunkingStrategy",
     "ExtractionStrategy",
     "GraphExtraction",

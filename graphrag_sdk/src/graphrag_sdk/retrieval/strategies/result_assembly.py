@@ -159,6 +159,7 @@ def assemble_raw_result(
     source_passages: list[str],
     q_type_hint: str = "",
     cypher_results: list[str] | None = None,
+    cypher_question: str = "",
     *,
     max_cypher: int = 20,
     max_entities: int = 25,
@@ -170,6 +171,11 @@ def assemble_raw_result(
 
     ``cypher_results`` are placed in their own section and are NOT
     subject to cosine reranking — they go directly to the final LLM.
+
+    ``cypher_question`` names the question the query was generated from. An
+    aggregate row carries no scope of its own, so a bare ``average_age: 39.5``
+    is unattributable and gets reported as missing context; saying which
+    question the rows answer is what makes it usable.
 
     The ``max_*`` caps bound how much of each section reaches the LLM;
     callers (e.g. the agentic flow) may raise them per query.
@@ -196,10 +202,16 @@ def assemble_raw_result(
     # Cypher Query Results (direct to LLM — not reranked)
     capped_cypher = (cypher_results or [])[:max_cypher]
     if capped_cypher:
+        heading = "## Graph Query Results"
+        if cypher_question:
+            heading += (
+                f"\nRows a graph query returned for the question: {cypher_question!r}. "
+                "Any aggregate below is already scoped to that question."
+            )
         records.append(
             {
                 "section": "cypher_results",
-                "content": "## Graph Query Results\n" + "\n".join(f"- {r}" for r in capped_cypher),
+                "content": heading + "\n" + "\n".join(f"- {r}" for r in capped_cypher),
             }
         )
 

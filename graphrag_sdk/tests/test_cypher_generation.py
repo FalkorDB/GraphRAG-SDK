@@ -1,4 +1,5 @@
 """Tests for cypher_generation module."""
+
 from __future__ import annotations
 
 import pytest
@@ -53,8 +54,9 @@ class TestValidateCypher:
         for keyword in ["CREATE", "DELETE", "SET", "MERGE", "REMOVE"]:
             cypher = f"MATCH (n) {keyword} (m) RETURN n"
             errors = validate_cypher(cypher)
-            assert any("Write" in e or "read-only" in e.lower() for e in errors), \
+            assert any("Write" in e or "read-only" in e.lower() for e in errors), (
                 f"{keyword} should be rejected"
+            )
 
     def test_rejects_missing_return(self):
         errors = validate_cypher("MATCH (n:Person) WHERE n.name = 'Alice'")
@@ -65,8 +67,15 @@ class TestValidateCypher:
         assert any("Unknown label: Spaceship" in e for e in errors)
 
     def test_accepts_known_labels(self):
-        for label in ["Person", "Organization", "Technology", "Location",
-                       "__Entity__", "Chunk", "Document"]:
+        for label in [
+            "Person",
+            "Organization",
+            "Technology",
+            "Location",
+            "__Entity__",
+            "Chunk",
+            "Document",
+        ]:
             assert validate_cypher(f"MATCH (n:{label}) RETURN n.name") == []
 
     def test_rejects_call_procedures(self):
@@ -211,9 +220,7 @@ class TestExecuteCypherRetrieval:
 
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(
-            return_value=LLMResponse(
-                content="```cypher\nMATCH (n:Person) RETURN n.name\n```"
-            )
+            return_value=LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```")
         )
         mock_graph = MagicMock()
         mock_graph.query_raw = AsyncMock(side_effect=Exception("connection error"))
@@ -232,9 +239,7 @@ class TestExecuteCypherRetrieval:
 
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(
-            return_value=LLMResponse(
-                content="```cypher\nMATCH (n:Person) RETURN n.name\n```"
-            )
+            return_value=LLMResponse(content="```cypher\nMATCH (n:Person) RETURN n.name\n```")
         )
         result_mock = MagicMock()
         result_mock.result_set = [["Alice"], ["Bob"]]
@@ -257,6 +262,7 @@ class TestRenderSchemaBlock:
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             render_ontology_block,
         )
+
         block = render_ontology_block(Ontology())
         assert "- Person" in block
         assert "name (STRING)" in block
@@ -272,13 +278,12 @@ class TestRenderSchemaBlock:
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             render_ontology_block,
         )
+
         s = Ontology(
             entities=[
                 Entity(
                     label="Person",
-                    properties=[
-                        Attribute(name="age", type="INTEGER", description="years")
-                    ],
+                    properties=[Attribute(name="age", type="INTEGER", description="years")],
                 ),
                 Entity(label="Company"),
             ],
@@ -306,6 +311,7 @@ class TestBuildSchemaPrompt:
         from graphrag_sdk.retrieval.strategies.cypher_generation import (
             build_ontology_prompt,
         )
+
         s = Ontology(
             entities=[
                 Entity(
@@ -323,18 +329,102 @@ class TestBuildSchemaPrompt:
 class TestValidateCypherWithSchema:
     def test_unknown_label_flagged_when_schema_provided(self):
         from graphrag_sdk.core.models import Entity, Ontology
+
         s = Ontology(entities=[Entity(label="Person")])
         errors = validate_cypher("MATCH (x:Bogus) RETURN x LIMIT 10", s)
         assert any("Unknown label: Bogus" in e for e in errors)
 
     def test_declared_label_accepted(self):
         from graphrag_sdk.core.models import Entity, Ontology
+
         s = Ontology(entities=[Entity(label="Customer")])
-        errors = validate_cypher(
-            "MATCH (c:Customer) RETURN c.name LIMIT 10", s
-        )
+        errors = validate_cypher("MATCH (c:Customer) RETURN c.name LIMIT 10", s)
         assert errors == []
 
     def test_no_schema_falls_back_to_historic_labels(self):
         errors = validate_cypher("MATCH (p:Person) RETURN p LIMIT 10")
         assert errors == []
+
+
+class TestCypherResultsAreInterpretable:
+    """A row reaches the answering LLM as text, so it has to say what it is.
+
+    An aggregate is the case that breaks: ``RETURN avg(p.age)`` produces a single
+    number, and a bare "39.5" in the context is something the final model cannot
+    attribute to anything. Measured before this: the query returned 39.5 and the
+    answer was "the context does not provide enough information".
+    """
+
+    @staticmethod
+    def _graph(header, rows):
+        from unittest.mock import AsyncMock, MagicMock
+
+        result = MagicMock()
+        result.header = header
+        result.result_set = rows
+        graph = MagicMock()
+        graph.query_raw = AsyncMock(return_value=result)
+        return graph
+
+    @staticmethod
+    def _llm(cypher):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from graphrag_sdk.core.models import LLMResponse
+
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(return_value=LLMResponse(content=f"```cypher\n{cypher}\n```"))
+        return llm
+
+    async def test_a_scalar_aggregate_is_labelled_with_its_column(self):
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        facts, _ = await execute_cypher_retrieval(
+            self._graph([[1, "average_age"]], [[39.5]]),
+            self._llm("MATCH (p:Person) RETURN avg(p.age) AS average_age LIMIT 25"),
+            "What is the average age of employees at Acme Corp?",
+        )
+        assert facts == ["average_age: 39.5"]
+
+    async def test_every_column_in_a_multi_column_row_is_labelled(self):
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        facts, _ = await execute_cypher_retrieval(
+            self._graph(
+                [[1, "person"], [1, "age"]],
+                [["Alice Smith", 34], ["Bob Jones", 45]],
+            ),
+            self._llm("MATCH (p:Person) RETURN p.name AS person, p.age AS age LIMIT 25"),
+            "List the people and their ages.",
+        )
+        assert facts == ["person: Alice Smith | age: 34", "person: Bob Jones | age: 45"]
+
+    async def test_entity_names_are_still_collected_for_the_entity_section(self):
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        _, entities = await execute_cypher_retrieval(
+            self._graph([[1, "person"]], [["Alice Smith"]]),
+            self._llm("MATCH (p:Person) RETURN p.name AS person LIMIT 25"),
+            "Who is there?",
+        )
+        assert entities["alice_smith"]["name"] == "Alice Smith"
+
+    async def test_a_missing_header_degrades_to_unlabelled_rows(self):
+        """A header is never essential, and a driver that omits it must not fail
+        the retrieval."""
+        from graphrag_sdk.retrieval.strategies.cypher_generation import (
+            execute_cypher_retrieval,
+        )
+
+        facts, _ = await execute_cypher_retrieval(
+            self._graph(None, [["Alice Smith", 34]]),
+            self._llm("MATCH (p:Person) RETURN p.name, p.age LIMIT 25"),
+            "Who is there?",
+        )
+        assert facts == ["Alice Smith | 34"]

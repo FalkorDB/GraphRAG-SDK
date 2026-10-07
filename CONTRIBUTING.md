@@ -142,6 +142,6 @@ The same pattern applies to resolution strategies (subclass `ResolutionStrategy`
 - [Issues](https://github.com/FalkorDB/GraphRAG-SDK/issues) -- Bug reports and feature requests
 <!-- - [Discord](https://discord.gg/INVITE_CODE) -- Real-time chat with the team -->
 
-Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+Please read our [Code of Conduct](https://github.com/FalkorDB/.github/blob/main/CODE_OF_CONDUCT.md) before participating.
 
 If you have questions or run into issues, open an issue in the repository or reach out to the maintainers.

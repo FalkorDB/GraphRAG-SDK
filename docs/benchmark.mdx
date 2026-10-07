@@ -1,0 +1,186 @@
+---
+title: "GraphRAG-Bench Methodology and Reproduction"
+sidebarTitle: "Benchmark"
+description: "Full GraphRAG-Bench methodology behind GraphRAG SDK's 71.48 overall score, with per-category results and reproduction instructions."
+---
+
+Results for [GraphRAG-SDK](https://github.com/FalkorDB/GraphRAG-SDK) on
+[GraphRAG-Bench](https://graphrag-bench.github.io/) (Xiang et al., ICLR 2026),
+covering both subsets and all four task categories.
+
+<Note>
+For the headline comparison against vector RAG (71.48 vs 55.39), the citation
+block and what a benchmark does and does not tell you about production
+hallucinations, see
+[GraphRAG Accuracy Benchmark: FalkorDB vs Vector RAG](/graphrag-accuracy-benchmark).
+This page is the deep methodology reference behind those numbers.
+</Note>
+
+The reproduction package — the runner, the ontology builders and pinned
+dependencies — is available on request; open an
+[issue](https://github.com/FalkorDB/GraphRAG-SDK/issues) or ask on
+[Discord](https://discord.gg/6M4QwDXn2w). The ontologies themselves are
+published below, along with the full configuration.
+
+This score is a ceiling on task performance against a fixed dataset, not a
+guarantee about your data. Grounded retrieval and an explicit abstention path
+are what set the floor for production reliability — see
+[Reducing LLM Hallucinations](/reducing-llm-hallucinations).
+
+## Results
+
+Scores are ACC unless noted. **Average is the unweighted mean of the four ACC
+values**, the convention the GraphRAG-Bench leaderboard uses.
+
+### GraphRAG-Bench (Medical) — Average 76.87
+
+| Level | ACC | ROUGE-L | Cov | FS |
+| --- | --- | --- | --- | --- |
+| Fact Retrieval | 74.50 | 45.43 | — | — |
+| Complex Reasoning | 76.47 | 26.55 | — | — |
+| Contextual Summarize | 82.29 | — | 62.02 | — |
+| Creative Generation | 74.21 | — | 49.72 | 70.75 |
+
+### GraphRAG-Bench (Novel) — Average 66.09
+
+| Level | ACC | ROUGE-L | Cov | FS |
+| --- | --- | --- | --- | --- |
+| Fact Retrieval | 65.49 | 41.82 | — | — |
+| Complex Reasoning | 59.26 | 24.62 | — | — |
+| Contextual Summarize | 75.42 | — | 54.11 | — |
+| Creative Generation | 64.21 | — | 43.38 | 68.77 |
+
+### Against the published leaderboard
+
+Competitor figures are taken from the
+[GraphRAG-Bench leaderboard](https://graphrag-bench.github.io/) as published;
+we did not re-run them. All entries use `gpt-4o-mini` as the generation
+backbone.
+
+| Method | Novel | Medical |
+| --- | --- | --- |
+| **GraphRAG-SDK (FalkorDB)** | **66.09** | **76.87** |
+| AutoPrunedRetriever-llm | 63.72 | 67.00 |
+| G-reasoner | 58.94 | 73.30 |
+| HippoRAG2 | 56.48 | 64.85 |
+| Fast-GraphRAG | 52.02 | 64.12 |
+| MS-GraphRAG (local) | 50.93 | 45.16 |
+| Lazy-GraphRAG | 50.59 | 56.89 |
+| StructRAG | 49.13 | 58.56 |
+| RAG (w/ rerank) | 48.35 | 62.43 |
+| KGP | 48.01 | 56.33 |
+| RAG (w/o rerank) | 47.93 | 61.00 |
+| KET-RAG | 47.62 | 47.05 |
+| LightRAG | 45.09 | 62.59 |
+| HippoRAG | 44.75 | 59.08 |
+| MS-GraphRAG (global) | 44.52 | 28.56 |
+| RAPTOR | 43.24 | 57.10 |
+
+## Configuration
+
+Per the benchmark's Appendix H.2, GraphRAG-SDK's own defaults are preserved
+rather than tuned to the benchmark; the protocol is matched on the backbone
+model and the judge.
+
+| Setting | Value | Source |
+| --- | --- | --- |
+| Backbone LLM | `gpt-4o-mini` (Azure OpenAI) — graph construction *and* generation | Benchmark protocol |
+| Generation temperature | 0.7 | Appendix H.2 |
+| Framework | GraphRAG-SDK 1.3.0 (PyPI) on FalkorDB | — |
+| Graph layout | one graph per corpus document | — |
+| Chunking | `SentenceTokenCapChunking`, max_tokens 384 (was 512 before this release), overlap 2 sentences | SDK default |
+| Retrieval | `MultiPathRetrieval` — chunk_top_k 15, rel_top_k 15, max_entities 30, max_relationships 20, keyword_limit 10 | SDK default |
+| Embeddings | `text-embedding-3-large` @ 1024 dimensions | Declared below |
+| Text-to-Cypher | enabled | Declared below |
+| Evaluation | benchmark's `Evaluation/generation_eval.py`, unmodified | Benchmark protocol |
+| Judge | `gpt-4o-mini`, `BAAI/bge-large-en-v1.5` embeddings, temperature 0, seed 42 | Benchmark protocol |
+
+### Declared deviations from SDK defaults
+
+Two settings were raised above the SDK's own defaults. Both are single global
+values, chosen before any results were scored, and applied identically to both
+subsets.
+
+- **`enable_cypher = True`** (SDK default `False`) — ontology-guided
+  text-to-Cypher retrieval is a core GraphRAG-SDK capability, enabled so the
+  measurement reflects the framework as deployed. It contributed to 22% of
+  Medical and 29% of Novel answers.
+- **`embedding_dimension = 1024`** (SDK default `256`) — the same vector width
+  as `bge-large-en-v1.5`, the embedding model Appendix H.2 specifies for
+  evaluated systems.
+
+### Benchmark integrity
+
+The ontologies were hand-authored from the **corpus only**. The question sets
+and the `evidence`, `evidence_relations` and `evidence_triple` fields were never
+read during ontology design or indexing.
+
+Both are published here so this is checkable without needing the runner:
+
+| Subset | Ontology | Entities | Relations |
+| --- | --- | ---: | ---: |
+| Medical | [`ontology_medical.json`](https://github.com/FalkorDB/GraphRAG-SDK/blob/6faaf6b03979ddf2a696749f082aee6c61606f1c/docs/benchmark/ontology_medical.json) | 10 | 13 |
+| Novel | [`ontology_novel.json`](https://github.com/FalkorDB/GraphRAG-SDK/blob/6faaf6b03979ddf2a696749f082aee6c61606f1c/docs/benchmark/ontology_novel.json) | 8 | 13 |
+
+They contain only domain type definitions — entity labels, their descriptions
+and properties, and the relation patterns between them. No question, answer or
+evidence text appears in either file.
+
+## How the run works
+
+Per subset, the pipeline runs in three stages:
+
+1. **Index** — each corpus document is chunked, and entities and relationships
+   are extracted against that subset's ontology into its own FalkorDB graph
+   (one graph per document, so retrieval is scoped to the document a question
+   was written against).
+2. **Answer** — every question in the subset is answered through
+   `MultiPathRetrieval`, with the retrieved context recorded alongside the
+   answer.
+3. **Judge** — answers are scored by the benchmark's own
+   `Evaluation/generation_eval.py`, unmodified, with `gpt-4o-mini` as judge and
+   `bge-large-en-v1.5` embeddings.
+
+The run produces, per subset: the leaderboard row, the fully resolved
+configuration, per-question predictions with their retrieved context, and each
+answer's individual judge scores.
+
+Indexing cost, measured on a 24-core machine and dominated by extraction API
+calls rather than local compute: Medical (1 corpus, 510 chunks) ~1.5 h end to
+end; Novel (20 documents, ~2,500 chunks) ~4 h.
+
+## Counts and caveats
+
+| | Medical | Novel |
+| --- | --- | --- |
+| Questions in dataset | 2062 | 2010 |
+| Predictions produced | 2062 | 2009 |
+| Generation errors / empty answers | 0 / 0 | 0 / 0 |
+| Samples scored by the evaluator | 2053 | 1995 |
+
+Two things worth stating plainly:
+
+**Novel is 2009 rather than 2010.** The dataset contains a duplicate question
+id (`Novel-55f0c0e2`) carrying identical question text under two different
+`source` values with contradictory ground truths — one answers the question
+asked, the other is unrelated. Our runner answers each id once. This has been
+reported to the benchmark authors.
+
+**The evaluator skips samples whose judge call raises**, so the averages are
+over 2053 of 2062 Medical and 1995 of 2009 Novel predictions. Every prediction
+itself succeeded; there were no generation failures or empty answers in either
+subset.
+
+<Note>
+A benchmark score measures task performance on a fixed, offline dataset. It
+does not measure hallucination rate on your own data — that also depends on
+your source-data quality, how narrowly retrieval is scoped, prompting, and
+the abstention logic your application defines. See
+[Reducing LLM Hallucinations](/reducing-llm-hallucinations) for how to ground
+and verify answers in your own deployment.
+</Note>
+
+---
+
+*Leaderboard figures as published at graphrag-bench.github.io. Last updated:
+August 2026.*

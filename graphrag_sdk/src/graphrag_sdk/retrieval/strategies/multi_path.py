@@ -214,6 +214,15 @@ class MultiPathRetrieval(RetrievalStrategy):
         self._router = router
         self._ontology = ontology
 
+    def set_ontology(self, ontology: Ontology | None) -> None:
+        """Adopt the current ontology, so generated Cypher sees typed columns.
+
+        Load bearing for structured sources. Their whole contribution to
+        retrieval is that ``Person.age`` is declared an INTEGER, and a mapping
+        declares that during ingest — after this strategy was constructed.
+        """
+        self._ontology = ontology
+
     # -- Template Method hook --
 
     async def _execute(
@@ -431,6 +440,7 @@ class MultiPathRetrieval(RetrievalStrategy):
             source_passages,
             q_type_hint,
             cypher_results=cypher_facts if cypher_facts else None,
+            cypher_question=query if cypher_facts else "",
             max_cypher=max_cypher_out,
             max_entities=max_entities_out,
             max_relationships=max_relationships_out,
